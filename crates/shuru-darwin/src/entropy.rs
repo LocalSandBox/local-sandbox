@@ -1,11 +1,8 @@
-use objc2::rc::{Id, Shared};
-
-use crate::sys::virtualization::{
-    VZEntropyDeviceConfiguration, VZVirtioEntropyDeviceConfiguration,
-};
+use objc2::rc::Retained;
+use objc2_virtualization::{VZEntropyDeviceConfiguration, VZVirtioEntropyDeviceConfiguration};
 
 pub struct VirtioEntropyDevice {
-    inner: Id<VZVirtioEntropyDeviceConfiguration, Shared>,
+    inner: Retained<VZVirtioEntropyDeviceConfiguration>,
 }
 
 impl VirtioEntropyDevice {
@@ -15,8 +12,8 @@ impl VirtioEntropyDevice {
         }
     }
 
-    pub(crate) fn as_entropy_config(&self) -> Id<VZEntropyDeviceConfiguration, Shared> {
-        unsafe { Id::cast(self.inner.clone()) }
+    pub(crate) fn as_entropy_config(&self) -> Retained<VZEntropyDeviceConfiguration> {
+        unsafe { Retained::cast_unchecked(self.inner.clone()) }
     }
 }
 

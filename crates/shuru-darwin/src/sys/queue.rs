@@ -1,10 +1,9 @@
 use std::ffi::CString;
 use std::mem;
 use std::os::raw::{c_char, c_void};
-use std::str;
 
 use block2::Block;
-use objc2::{Encode, Encoding, RefEncode};
+use objc2::encode::{Encode, Encoding, RefEncode};
 
 #[repr(C)]
 pub struct dispatch_object_s {
@@ -29,7 +28,6 @@ pub type dispatch_queue_t = *mut dispatch_object_s;
 pub type dispatch_queue_attr_t = *const dispatch_object_s;
 
 extern "C" {
-    static _dispatch_main_q: dispatch_object_s;
     static _dispatch_queue_attr_concurrent: dispatch_object_s;
 
     pub fn dispatch_queue_create(
@@ -42,13 +40,13 @@ extern "C" {
         context: *mut c_void,
         work: dispatch_function_t,
     );
-    pub fn dispatch_async(queue: dispatch_queue_t, block: &Block<(), ()>);
+    pub fn dispatch_async(queue: dispatch_queue_t, block: &Block<dyn Fn()>);
     pub fn dispatch_sync_f(
         queue: dispatch_queue_t,
         context: *mut c_void,
         work: dispatch_function_t,
     );
-    pub fn dispatch_sync(queue: dispatch_queue_t, block: &Block<(), ()>);
+    pub fn dispatch_sync(queue: dispatch_queue_t, block: &Block<dyn Fn()>);
 
     pub fn dispatch_release(object: dispatch_object_t);
     pub fn dispatch_resume(object: dispatch_object_t);
@@ -124,9 +122,6 @@ impl QueueAttribute {
 }
 
 /// A Grand Central Dispatch queue.
-///
-/// For more information, see Apple's [Grand Central Dispatch reference](
-/// https://developer.apple.com/library/mac/documentation/Performance/Reference/GCD_libdispatch_Ref/index.html).
 #[derive(Debug)]
 pub struct Queue {
     pub(crate) ptr: dispatch_queue_t,
@@ -138,6 +133,17 @@ impl Queue {
         let label = CString::new(label).unwrap();
         let queue = unsafe { dispatch_queue_create(label.as_ptr(), attr.as_raw()) };
         Queue { ptr: queue }
+    }
+
+    /// Returns a reference usable as a `dispatch2::DispatchQueue`.
+    ///
+    /// # Safety
+    ///
+    /// `dispatch2::DispatchQueue` is an opaque `#[repr(C)]` type used behind references.
+    /// Our `dispatch_queue_t` pointer points to the same underlying dispatch queue object,
+    /// so we can reinterpret it as `&DispatchQueue`.
+    pub(crate) unsafe fn as_dispatch2(&self) -> &dispatch2::DispatchQueue {
+        &*(self.ptr as *const dispatch2::DispatchQueue)
     }
 
     /// Submits a closure for execution on self and waits until it completes.
@@ -178,14 +184,14 @@ impl Queue {
     }
 
     #[allow(dead_code)]
-    pub fn exec_block_async(&self, block: &Block<(), ()>) {
+    pub fn exec_block_async(&self, block: &Block<dyn Fn()>) {
         unsafe {
             dispatch_async(self.ptr, block);
         }
     }
 
     #[allow(dead_code)]
-    pub fn exec_block_sync(&self, block: &Block<(), ()>) {
+    pub fn exec_block_sync(&self, block: &Block<dyn Fn()>) {
         unsafe {
             dispatch_sync(self.ptr, block);
         }
@@ -193,10 +199,6 @@ impl Queue {
 
     /// Suspends the invocation of blocks on self and returns a `SuspendGuard`
     /// that can be dropped to resume.
-    ///
-    /// The suspension occurs after completion of any blocks running at the
-    /// time of the call.
-    /// Invocation does not resume until all `SuspendGuard`s have been dropped.
     #[allow(dead_code)]
     pub fn suspend(&self) -> SuspendGuard {
         SuspendGuard::new(self)

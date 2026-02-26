@@ -2,13 +2,23 @@
 name = "shuru-darwin"
 version = "0.1.0"
 edition = "2021"
-description = "Unsafe Virtualization.framework bindings for shuru"
-
-[lints.rust]
-unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("not_implemented_yet"))'] }
+description = "Virtualization.framework bindings for shuru"
 
 [dependencies]
-block2 = "=0.2.0-alpha.8"
+block2 = "0.6"
 crossbeam-channel = "0.5"
+dispatch2 = "0.3"
 libc = "0.2"
-objc2 = "=0.3.0-beta.5"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = [
+    "NSString",
+    "NSURL",
+    "NSArray",
+    "NSError",
+    "NSFileHandle",
+    "NSKeyValueObserving",
+    "NSDictionary",
+    "NSObject",
+    "NSObjCRuntime",
+] }
+objc2-virtualization = { version = "0.3", features = ["dispatch2"] }

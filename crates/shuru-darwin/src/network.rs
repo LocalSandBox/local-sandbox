@@ -1,13 +1,12 @@
-use objc2::rc::{Id, Shared};
-use objc2::ClassType;
-
-use crate::sys::virtualization::{
-    VZMACAddress, VZNATNetworkDeviceAttachment, VZNetworkDeviceConfiguration,
-    VZVirtioNetworkDeviceConfiguration,
+use objc2::rc::Retained;
+use objc2::AnyThread;
+use objc2_virtualization::{
+    VZMACAddress, VZNATNetworkDeviceAttachment, VZNetworkDeviceAttachment,
+    VZNetworkDeviceConfiguration, VZVirtioNetworkDeviceConfiguration,
 };
 
 pub struct NATNetworkAttachment {
-    inner: Id<VZNATNetworkDeviceAttachment, Shared>,
+    inner: Retained<VZNATNetworkDeviceAttachment>,
 }
 
 impl NATNetworkAttachment {
@@ -27,7 +26,7 @@ impl Default for NATNetworkAttachment {
 }
 
 pub struct MACAddress {
-    inner: Id<VZMACAddress, Shared>,
+    inner: Retained<VZMACAddress>,
 }
 
 impl MACAddress {
@@ -51,7 +50,7 @@ impl Default for MACAddress {
 }
 
 pub struct VirtioNetworkDevice {
-    inner: Id<VZVirtioNetworkDeviceConfiguration, Shared>,
+    inner: Retained<VZVirtioNetworkDeviceConfiguration>,
 }
 
 impl VirtioNetworkDevice {
@@ -73,8 +72,8 @@ impl VirtioNetworkDevice {
 
     pub fn set_attachment(&self, attachment: &NATNetworkAttachment) {
         unsafe {
-            let id: Id<crate::sys::virtualization::VZNetworkDeviceAttachment, Shared> =
-                Id::cast(attachment.inner.clone());
+            let id: Retained<VZNetworkDeviceAttachment> =
+                Retained::cast_unchecked(attachment.inner.clone());
             self.inner.setAttachment(Some(&id));
         }
     }
@@ -85,8 +84,8 @@ impl VirtioNetworkDevice {
         }
     }
 
-    pub(crate) fn as_network_config(&self) -> Id<VZNetworkDeviceConfiguration, Shared> {
-        unsafe { Id::cast(self.inner.clone()) }
+    pub(crate) fn as_network_config(&self) -> Retained<VZNetworkDeviceConfiguration> {
+        unsafe { Retained::cast_unchecked(self.inner.clone()) }
     }
 }
 

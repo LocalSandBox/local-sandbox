@@ -1,12 +1,11 @@
-use objc2::rc::{Id, Shared};
-use objc2::ClassType;
-
-use crate::sys::virtualization::{
+use objc2::rc::Retained;
+use objc2::AnyThread;
+use objc2_virtualization::{
     VZMemoryBalloonDeviceConfiguration, VZVirtioTraditionalMemoryBalloonDeviceConfiguration,
 };
 
 pub struct VirtioMemoryBalloonDevice {
-    inner: Id<VZVirtioTraditionalMemoryBalloonDeviceConfiguration, Shared>,
+    inner: Retained<VZVirtioTraditionalMemoryBalloonDeviceConfiguration>,
 }
 
 impl VirtioMemoryBalloonDevice {
@@ -22,8 +21,8 @@ impl VirtioMemoryBalloonDevice {
 
     pub(crate) fn as_memory_balloon_config(
         &self,
-    ) -> Id<VZMemoryBalloonDeviceConfiguration, Shared> {
-        unsafe { Id::cast(self.inner.clone()) }
+    ) -> Retained<VZMemoryBalloonDeviceConfiguration> {
+        unsafe { Retained::cast_unchecked(self.inner.clone()) }
     }
 }
 

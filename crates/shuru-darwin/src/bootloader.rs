@@ -1,11 +1,10 @@
-use objc2::rc::{Id, Shared};
-use objc2::ClassType;
-
-use crate::sys::foundation::{NSString, NSURL};
-use crate::sys::virtualization::{VZBootLoader, VZLinuxBootLoader};
+use objc2::rc::Retained;
+use objc2::AnyThread;
+use objc2_foundation::{NSString, NSURL};
+use objc2_virtualization::{VZBootLoader, VZLinuxBootLoader};
 
 pub struct LinuxBootLoader {
-    inner: Id<VZLinuxBootLoader, Shared>,
+    inner: Retained<VZLinuxBootLoader>,
 }
 
 impl LinuxBootLoader {
@@ -18,9 +17,8 @@ impl LinuxBootLoader {
 
     pub fn new_with_kernel(kernel_path: &str) -> Self {
         unsafe {
-            let kernel_url = NSURL::file_url_with_path(kernel_path, false)
-                .absolute_url()
-                .unwrap();
+            let path = NSString::from_str(kernel_path);
+            let kernel_url = NSURL::fileURLWithPath_isDirectory(&path, false);
             LinuxBootLoader {
                 inner: VZLinuxBootLoader::initWithKernelURL(
                     VZLinuxBootLoader::alloc(),
@@ -32,9 +30,8 @@ impl LinuxBootLoader {
 
     pub fn set_initrd(&self, initrd_path: &str) {
         unsafe {
-            let initrd_url = NSURL::file_url_with_path(initrd_path, false)
-                .absolute_url()
-                .unwrap();
+            let path = NSString::from_str(initrd_path);
+            let initrd_url = NSURL::fileURLWithPath_isDirectory(&path, false);
             self.inner.setInitialRamdiskURL(Some(&initrd_url));
         }
     }
@@ -46,7 +43,7 @@ impl LinuxBootLoader {
         }
     }
 
-    pub(crate) fn as_vz_boot_loader(&self) -> Id<VZBootLoader, Shared> {
-        unsafe { Id::cast(self.inner.clone()) }
+    pub(crate) fn as_vz_boot_loader(&self) -> Retained<VZBootLoader> {
+        unsafe { Retained::cast_unchecked(self.inner.clone()) }
     }
 }

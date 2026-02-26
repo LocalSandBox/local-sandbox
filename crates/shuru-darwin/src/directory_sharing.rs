@@ -1,20 +1,20 @@
-use objc2::rc::{Id, Shared};
-use objc2::ClassType;
-
-use crate::sys::foundation::{NSString, NSURL};
-use crate::sys::virtualization::{
+use objc2::rc::Retained;
+use objc2::AnyThread;
+use objc2_foundation::{NSString, NSURL};
+use objc2_virtualization::{
     VZDirectoryShare, VZDirectorySharingDeviceConfiguration, VZSharedDirectory,
     VZSingleDirectoryShare, VZVirtioFileSystemDeviceConfiguration,
 };
 
 pub struct SharedDirectory {
-    inner: Id<VZSharedDirectory, Shared>,
+    inner: Retained<VZSharedDirectory>,
 }
 
 impl SharedDirectory {
     pub fn new(path: &str, read_only: bool) -> Self {
         unsafe {
-            let url = NSURL::file_url_with_path(path, true);
+            let ns_path = NSString::from_str(path);
+            let url = NSURL::fileURLWithPath_isDirectory(&ns_path, true);
             let inner =
                 VZSharedDirectory::initWithURL_readOnly(VZSharedDirectory::alloc(), &url, read_only);
             SharedDirectory { inner }
@@ -23,7 +23,7 @@ impl SharedDirectory {
 }
 
 pub struct VirtioFileSystemDevice {
-    inner: Id<VZVirtioFileSystemDeviceConfiguration, Shared>,
+    inner: Retained<VZVirtioFileSystemDeviceConfiguration>,
 }
 
 impl VirtioFileSystemDevice {
@@ -35,13 +35,13 @@ impl VirtioFileSystemDevice {
                 &ns_tag,
             );
 
-            let single_share: Id<VZDirectoryShare, Shared> = Id::cast(
+            let single_share: Retained<VZDirectoryShare> = Retained::cast_unchecked(
                 VZSingleDirectoryShare::initWithDirectory(
                     VZSingleDirectoryShare::alloc(),
                     &directory.inner,
                 ),
             );
-            inner.setShare(&single_share);
+            inner.setShare(Some(&*single_share));
 
             VirtioFileSystemDevice { inner }
         }
@@ -49,7 +49,7 @@ impl VirtioFileSystemDevice {
 
     pub(crate) fn as_directory_sharing_config(
         &self,
-    ) -> Id<VZDirectorySharingDeviceConfiguration, Shared> {
-        unsafe { Id::cast(self.inner.clone()) }
+    ) -> Retained<VZDirectorySharingDeviceConfiguration> {
+        unsafe { Retained::cast_unchecked(self.inner.clone()) }
     }
 }

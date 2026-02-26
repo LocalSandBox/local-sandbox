@@ -1,16 +1,15 @@
 use std::os::fd::RawFd;
 
-use objc2::rc::{Id, Shared};
-use objc2::ClassType;
-
-use crate::sys::foundation::NSFileHandle;
-use crate::sys::virtualization::{
-    VZFileHandleSerialPortAttachment, VZSerialPortConfiguration,
+use objc2::rc::Retained;
+use objc2::AnyThread;
+use objc2_foundation::NSFileHandle;
+use objc2_virtualization::{
+    VZFileHandleSerialPortAttachment, VZSerialPortAttachment, VZSerialPortConfiguration,
     VZVirtioConsoleDeviceSerialPortConfiguration,
 };
 
 pub struct FileHandleSerialAttachment {
-    inner: Id<VZFileHandleSerialPortAttachment, Shared>,
+    inner: Retained<VZFileHandleSerialPortAttachment>,
 }
 
 impl FileHandleSerialAttachment {
@@ -51,13 +50,13 @@ impl FileHandleSerialAttachment {
 }
 
 pub struct VirtioConsoleSerialPort {
-    inner: Id<VZVirtioConsoleDeviceSerialPortConfiguration, Shared>,
+    inner: Retained<VZVirtioConsoleDeviceSerialPortConfiguration>,
 }
 
 impl VirtioConsoleSerialPort {
     pub fn new() -> Self {
         VirtioConsoleSerialPort {
-            inner: VZVirtioConsoleDeviceSerialPortConfiguration::new(),
+            inner: unsafe { VZVirtioConsoleDeviceSerialPortConfiguration::new() },
         }
     }
 
@@ -69,14 +68,14 @@ impl VirtioConsoleSerialPort {
 
     pub fn set_attachment(&self, attachment: &FileHandleSerialAttachment) {
         unsafe {
-            let id: Id<crate::sys::virtualization::VZSerialPortAttachment, Shared> =
-                Id::cast(attachment.inner.clone());
+            let id: Retained<VZSerialPortAttachment> =
+                Retained::cast_unchecked(attachment.inner.clone());
             self.inner.setAttachment(Some(&id));
         }
     }
 
-    pub(crate) fn as_serial_port_config(&self) -> Id<VZSerialPortConfiguration, Shared> {
-        unsafe { Id::cast(self.inner.clone()) }
+    pub(crate) fn as_serial_port_config(&self) -> Retained<VZSerialPortConfiguration> {
+        unsafe { Retained::cast_unchecked(self.inner.clone()) }
     }
 }
 

@@ -1,4 +1,6 @@
-use objc2::rc::{Id, Shared};
+use objc2::rc::Retained;
+use objc2_foundation::NSArray;
+use objc2_virtualization::VZVirtualMachineConfiguration;
 
 use crate::bootloader::LinuxBootLoader;
 use crate::directory_sharing::VirtioFileSystemDevice;
@@ -9,11 +11,9 @@ use crate::network::VirtioNetworkDevice;
 use crate::serial::VirtioConsoleSerialPort;
 use crate::socket::VirtioSocketDevice;
 use crate::storage::StorageDevice;
-use crate::sys::foundation::NSArray;
-use crate::sys::virtualization::VZVirtualMachineConfiguration;
 
 pub struct VirtualMachineConfiguration {
-    pub(crate) inner: Id<VZVirtualMachineConfiguration, Shared>,
+    pub(crate) inner: Retained<VZVirtualMachineConfiguration>,
 }
 
 impl VirtualMachineConfiguration {
@@ -45,62 +45,62 @@ impl VirtualMachineConfiguration {
     }
 
     pub fn set_entropy_devices(&self, devices: &[VirtioEntropyDevice]) {
-        let ids = devices.iter().map(|d| d.as_entropy_config()).collect();
-        let array = NSArray::from_vec(ids);
+        let ids: Vec<_> = devices.iter().map(|d| d.as_entropy_config()).collect();
+        let array = NSArray::from_retained_slice(&ids);
         unsafe {
             self.inner.setEntropyDevices(&array);
         }
     }
 
     pub fn set_serial_ports(&self, ports: &[VirtioConsoleSerialPort]) {
-        let ids = ports.iter().map(|s| s.as_serial_port_config()).collect();
-        let array = NSArray::from_vec(ids);
+        let ids: Vec<_> = ports.iter().map(|s| s.as_serial_port_config()).collect();
+        let array = NSArray::from_retained_slice(&ids);
         unsafe {
             self.inner.setSerialPorts(&array);
         }
     }
 
     pub fn set_memory_balloon_devices(&self, devices: &[VirtioMemoryBalloonDevice]) {
-        let ids = devices
+        let ids: Vec<_> = devices
             .iter()
             .map(|d| d.as_memory_balloon_config())
             .collect();
-        let array = NSArray::from_vec(ids);
+        let array = NSArray::from_retained_slice(&ids);
         unsafe {
             self.inner.setMemoryBalloonDevices(&array);
         }
     }
 
     pub fn set_storage_devices(&self, devices: &[&dyn StorageDevice]) {
-        let ids = devices.iter().map(|d| d.as_storage_config()).collect();
-        let array = NSArray::from_vec(ids);
+        let ids: Vec<_> = devices.iter().map(|d| d.as_storage_config()).collect();
+        let array = NSArray::from_retained_slice(&ids);
         unsafe {
             self.inner.setStorageDevices(&array);
         }
     }
 
     pub fn set_network_devices(&self, devices: &[VirtioNetworkDevice]) {
-        let ids = devices.iter().map(|d| d.as_network_config()).collect();
-        let array = NSArray::from_vec(ids);
+        let ids: Vec<_> = devices.iter().map(|d| d.as_network_config()).collect();
+        let array = NSArray::from_retained_slice(&ids);
         unsafe {
             self.inner.setNetworkDevices(&array);
         }
     }
 
     pub fn set_socket_devices(&self, devices: &[VirtioSocketDevice]) {
-        let ids = devices.iter().map(|d| d.as_socket_config()).collect();
-        let array = NSArray::from_vec(ids);
+        let ids: Vec<_> = devices.iter().map(|d| d.as_socket_config()).collect();
+        let array = NSArray::from_retained_slice(&ids);
         unsafe {
             self.inner.setSocketDevices(&array);
         }
     }
 
     pub fn set_directory_sharing_devices(&self, devices: &[VirtioFileSystemDevice]) {
-        let ids = devices
+        let ids: Vec<_> = devices
             .iter()
             .map(|d| d.as_directory_sharing_config())
             .collect();
-        let array = NSArray::from_vec(ids);
+        let array = NSArray::from_retained_slice(&ids);
         unsafe {
             self.inner.setDirectorySharingDevices(&array);
         }
@@ -119,7 +119,7 @@ impl VirtualMachineConfiguration {
 impl Default for VirtualMachineConfiguration {
     fn default() -> Self {
         VirtualMachineConfiguration {
-            inner: VZVirtualMachineConfiguration::new(),
+            inner: unsafe { VZVirtualMachineConfiguration::new() },
         }
     }
 }

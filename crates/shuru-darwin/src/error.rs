@@ -1,4 +1,4 @@
-use crate::sys::foundation::NSError;
+use objc2_foundation::NSError;
 
 #[derive(Debug, Clone)]
 pub struct VzError {
@@ -14,7 +14,7 @@ impl VzError {
 
     pub(crate) fn from_ns_error(err: &NSError) -> Self {
         VzError {
-            message: err.localized_description(),
+            message: err.localizedDescription().to_string(),
         }
     }
 }

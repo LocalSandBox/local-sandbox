@@ -2,20 +2,21 @@ use std::ffi::c_void;
 use std::net::TcpStream;
 use std::os::unix::io::FromRawFd;
 
-use block2::ConcreteBlock;
+use block2::RcBlock;
 use crossbeam_channel::{bounded, Receiver, Sender};
-use objc2::rc::{autoreleasepool, Id, Shared};
-use objc2::runtime::{NSObject, NSObjectProtocol, Object};
-use objc2::ClassType;
-use objc2::{declare_class, msg_send_id};
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2::{define_class, msg_send, AnyThread};
+use objc2_foundation::{
+    NSKeyValueObservingOptions, NSObject, NSObjectNSKeyValueObserverRegistration, NSString,
+};
+use objc2_virtualization::{
+    VZVirtioSocketConnection, VZVirtioSocketDevice, VZVirtualMachine, VZVirtualMachineState,
+};
 
 use crate::configuration::VirtualMachineConfiguration;
 use crate::error::{Result, VzError};
-use crate::sys::foundation::{NSError, NSKeyValueObservingOptions, NSString};
 use crate::sys::queue::{Queue, QueueAttribute};
-use crate::sys::virtualization::{
-    VZVirtioSocketConnection, VZVirtioSocketDevice, VZVirtualMachine,
-};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmState {
@@ -30,30 +31,80 @@ pub enum VmState {
     Unknown = -1,
 }
 
+/// Wrapper asserting thread safety for types whose access is serialized via dispatch queue.
+#[derive(Debug)]
+struct ThreadSafe<T>(T);
+unsafe impl<T> Send for ThreadSafe<T> {}
+unsafe impl<T> Sync for ThreadSafe<T> {}
+
+impl<T> std::ops::Deref for ThreadSafe<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
 /// Heap-allocated context for the KVO observer.
 /// Must live on the heap so the pointer remains stable after VirtualMachine moves.
 #[derive(Debug)]
 struct ObserverContext {
-    machine: Id<VZVirtualMachine, Shared>,
+    machine: ThreadSafe<Retained<VZVirtualMachine>>,
     notifier: Sender<VmState>,
     state_notifications: Receiver<VmState>,
 }
 
 impl ObserverContext {
     fn state(&self) -> VmState {
-        unsafe {
-            match self.machine.state() {
-                0 => VmState::Stopped,
-                1 => VmState::Running,
-                2 => VmState::Paused,
-                3 => VmState::Error,
-                4 => VmState::Starting,
-                5 => VmState::Pausing,
-                6 => VmState::Resuming,
-                7 => VmState::Stopping,
-                _ => VmState::Unknown,
+        let vz_state = unsafe { self.machine.state() };
+        match vz_state {
+            s if s == VZVirtualMachineState::Stopped => VmState::Stopped,
+            s if s == VZVirtualMachineState::Running => VmState::Running,
+            s if s == VZVirtualMachineState::Paused => VmState::Paused,
+            s if s == VZVirtualMachineState::Error => VmState::Error,
+            s if s == VZVirtualMachineState::Starting => VmState::Starting,
+            s if s == VZVirtualMachineState::Pausing => VmState::Pausing,
+            s if s == VZVirtualMachineState::Resuming => VmState::Resuming,
+            s if s == VZVirtualMachineState::Stopping => VmState::Stopping,
+            _ => VmState::Unknown,
+        }
+    }
+}
+
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[name = "VirtualMachineStateObserver"]
+    #[derive(Debug)]
+    struct VirtualMachineStateObserver;
+
+    impl VirtualMachineStateObserver {
+        #[unsafe(method(observeValueForKeyPath:ofObject:change:context:))]
+        fn observe_value_for_key_path(
+            &self,
+            key_path: Option<&NSString>,
+            _object: Option<&AnyObject>,
+            _change: Option<&AnyObject>,
+            context: *mut c_void,
+        ) {
+            if let Some(msg) = key_path {
+                let key = msg.to_string();
+                if key == "state" {
+                    let ctx: &ObserverContext =
+                        unsafe { &*(context as *const ObserverContext) };
+                    let _ = ctx.state_notifications.try_recv();
+                    let _ = ctx.notifier.send(ctx.state());
+                }
             }
         }
+    }
+);
+
+unsafe impl Send for VirtualMachineStateObserver {}
+unsafe impl Sync for VirtualMachineStateObserver {}
+
+impl VirtualMachineStateObserver {
+    fn new() -> Retained<Self> {
+        let this = Self::alloc().set_ivars(());
+        unsafe { msg_send![super(this), init] }
     }
 }
 
@@ -61,24 +112,25 @@ impl ObserverContext {
 pub struct VirtualMachine {
     ctx: Box<ObserverContext>,
     queue: Queue,
-    observer: Id<VirtualMachineStateObserver, Shared>,
+    observer: Retained<VirtualMachineStateObserver>,
 }
 
 impl VirtualMachine {
     pub fn new(config: &VirtualMachineConfiguration) -> Self {
         unsafe {
             let queue = Queue::create("com.virt.fwk.rs", QueueAttribute::Serial);
+            let dispatch_queue = queue.as_dispatch2();
             let machine = VZVirtualMachine::initWithConfiguration_queue(
                 VZVirtualMachine::alloc(),
                 &config.inner,
-                queue.ptr,
+                dispatch_queue,
             );
 
             let (sender, receiver) = bounded(1);
             let observer = VirtualMachineStateObserver::new();
 
             let ctx = Box::new(ObserverContext {
-                machine,
+                machine: ThreadSafe(machine),
                 notifier: sender,
                 state_notifications: receiver,
             });
@@ -90,7 +142,7 @@ impl VirtualMachine {
             ctx.machine.addObserver_forKeyPath_options_context(
                 &observer,
                 &key,
-                NSKeyValueObservingOptions::NSKeyValueObservingOptionNew,
+                NSKeyValueObservingOptions::New,
                 ctx_ptr as *mut c_void,
             );
 
@@ -111,54 +163,62 @@ impl VirtualMachine {
     }
 
     pub fn start(&self) -> Result<()> {
-        unsafe {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let dispatch_block = ConcreteBlock::new(move || {
-                let inner_tx = tx.clone();
-                let completion_handler = ConcreteBlock::new(move |err: *mut NSError| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let machine = self.ctx.machine.0.clone();
+        let machine = ThreadSafe(machine);
+
+        let dispatch_block = RcBlock::new(move || {
+            let inner_tx = tx.clone();
+            let completion_handler =
+                RcBlock::new(move |err: *mut objc2_foundation::NSError| {
                     if err.is_null() {
                         inner_tx.send(Ok(())).unwrap();
                     } else {
                         inner_tx
-                            .send(Err(VzError::from_ns_error(err.as_mut().unwrap())))
+                            .send(Err(unsafe {
+                                VzError::from_ns_error(&*err)
+                            }))
                             .unwrap();
                     }
                 });
 
-                let completion_handler = completion_handler.copy();
-                self.ctx.machine.startWithCompletionHandler(&completion_handler);
-            });
+            unsafe {
+                machine.startWithCompletionHandler(&completion_handler);
+            }
+        });
 
-            let dispatch_block_clone = dispatch_block.clone();
-            self.queue.exec_block_async(&dispatch_block_clone);
+        self.queue.exec_block_async(&dispatch_block);
 
-            rx.recv()
-                .map_err(|_| VzError::new("VM start channel closed"))?
-        }
+        rx.recv()
+            .map_err(|_| VzError::new("VM start channel closed"))?
     }
 
     pub fn stop(&self) -> Result<()> {
         let (tx, rx) = std::sync::mpsc::channel();
-        let dispatch_block = ConcreteBlock::new(move || {
+        let machine = self.ctx.machine.0.clone();
+        let machine = ThreadSafe(machine);
+
+        let dispatch_block = RcBlock::new(move || {
             let inner_tx = tx.clone();
-            unsafe {
-                let completion_handler = ConcreteBlock::new(move |err: *mut NSError| {
+            let completion_handler =
+                RcBlock::new(move |err: *mut objc2_foundation::NSError| {
                     if err.is_null() {
                         inner_tx.send(Ok(())).unwrap();
                     } else {
                         inner_tx
-                            .send(Err(VzError::from_ns_error(err.as_mut().unwrap())))
+                            .send(Err(unsafe {
+                                VzError::from_ns_error(&*err)
+                            }))
                             .unwrap();
                     }
                 });
 
-                let completion_handler = completion_handler.copy();
-                self.ctx.machine.stopWithCompletionHandler(&completion_handler);
+            unsafe {
+                machine.stopWithCompletionHandler(&completion_handler);
             }
         });
 
-        let dispatch_block_clone = dispatch_block.clone();
-        self.queue.exec_block_async(&dispatch_block_clone);
+        self.queue.exec_block_async(&dispatch_block);
 
         rx.recv()
             .map_err(|_| VzError::new("VM stop channel closed"))?
@@ -193,22 +253,28 @@ impl VirtualMachine {
     /// Must dispatch on the VM's queue per Apple Virtualization framework requirements.
     pub fn connect_to_vsock_port(&self, port: u32) -> Result<TcpStream> {
         let (tx, rx) = std::sync::mpsc::channel::<Result<TcpStream>>();
+        let machine = self.ctx.machine.0.clone();
+        let machine = ThreadSafe(machine);
 
-        let dispatch_block = ConcreteBlock::new(move || {
-            let devices = unsafe { self.ctx.machine.socketDevices() };
-            let count = devices.count();
+        let dispatch_block = RcBlock::new(move || {
+            let devices = unsafe { machine.socketDevices() };
+            let count = devices.len();
             if count == 0 {
                 tx.send(Err(VzError::new("No socket devices found on the VM")))
                     .ok();
                 return;
             }
 
-            let device: Id<VZVirtioSocketDevice, Shared> =
-                unsafe { Id::cast(devices.object_at_index(0)) };
+            let device_obj = devices.objectAtIndex(0);
+            // Downcast VZSocketDevice to VZVirtioSocketDevice
+            let device: &VZVirtioSocketDevice = unsafe {
+                &*(&*device_obj as *const _ as *const VZVirtioSocketDevice)
+            };
 
             let inner_tx = tx.clone();
-            let completion_handler = ConcreteBlock::new(
-                move |conn: *mut VZVirtioSocketConnection, err: *mut NSError| {
+            let completion_handler = RcBlock::new(
+                move |conn: *mut VZVirtioSocketConnection,
+                      err: *mut objc2_foundation::NSError| {
                     if !err.is_null() {
                         let error = unsafe { VzError::from_ns_error(&*err) };
                         inner_tx.send(Err(error)).ok();
@@ -231,15 +297,13 @@ impl VirtualMachine {
                     }
                 },
             );
-            let completion_handler = completion_handler.copy();
 
             unsafe {
                 device.connectToPort_completionHandler(port, &completion_handler);
             }
         });
 
-        let dispatch_block_clone = dispatch_block.clone();
-        self.queue.exec_block_async(&dispatch_block_clone);
+        self.queue.exec_block_async(&dispatch_block);
 
         rx.recv()
             .map_err(|_| VzError::new("vsock connection channel closed"))?
@@ -262,48 +326,5 @@ impl Drop for VirtualMachine {
                 ctx_ptr as *mut c_void,
             );
         }
-    }
-}
-
-declare_class!(
-    #[derive(Debug)]
-    struct VirtualMachineStateObserver;
-
-    unsafe impl ClassType for VirtualMachineStateObserver {
-        type Super = NSObject;
-        const NAME: &'static str = "VirtualMachineStateObserver";
-    }
-
-    unsafe impl VirtualMachineStateObserver {
-        #[method(observeValueForKeyPath:ofObject:change:context:)]
-        unsafe fn observe_value_for_key_path(
-            &self,
-            key_path: Option<&NSString>,
-            _object: Option<&NSObject>,
-            _change: Option<&Object>,
-            context: *mut c_void,
-        ) {
-            if let Some(msg) = key_path {
-                let key = autoreleasepool(|pool| msg.as_str(pool).to_owned());
-
-                if key == "state" {
-                    let ctx: &ObserverContext = &*(context as *const ObserverContext);
-                    let _ = ctx.state_notifications.try_recv();
-                    let _ = ctx.notifier.send(ctx.state());
-                }
-            }
-        }
-    }
-);
-
-unsafe impl NSObjectProtocol for VirtualMachineStateObserver {}
-
-unsafe impl Send for VirtualMachineStateObserver {}
-
-unsafe impl Sync for VirtualMachineStateObserver {}
-
-impl VirtualMachineStateObserver {
-    pub fn new() -> Id<Self, Shared> {
-        unsafe { msg_send_id![Self::alloc(), init] }
     }
 }

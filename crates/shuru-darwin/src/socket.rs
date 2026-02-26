@@ -1,11 +1,8 @@
-use objc2::rc::{Id, Shared};
-
-use crate::sys::virtualization::{
-    VZSocketDeviceConfiguration, VZVirtioSocketDeviceConfiguration,
-};
+use objc2::rc::Retained;
+use objc2_virtualization::{VZSocketDeviceConfiguration, VZVirtioSocketDeviceConfiguration};
 
 pub struct VirtioSocketDevice {
-    inner: Id<VZVirtioSocketDeviceConfiguration, Shared>,
+    inner: Retained<VZVirtioSocketDeviceConfiguration>,
 }
 
 impl VirtioSocketDevice {
@@ -15,8 +12,8 @@ impl VirtioSocketDevice {
         }
     }
 
-    pub(crate) fn as_socket_config(&self) -> Id<VZSocketDeviceConfiguration, Shared> {
-        unsafe { Id::cast(self.inner.clone()) }
+    pub(crate) fn as_socket_config(&self) -> Retained<VZSocketDeviceConfiguration> {
+        unsafe { Retained::cast_unchecked(self.inner.clone()) }
     }
 }
 
