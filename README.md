@@ -6,7 +6,7 @@ Shuru boots lightweight Linux VMs using Apple's Virtualization.framework. Each s
 
 ## Requirements
 
-- macOS on Apple Silicon
+- macOS 14 (Sonoma) or later on Apple Silicon
 
 ## Install
 

@@ -22,5 +22,8 @@ pub use memory::VirtioMemoryBalloonDevice;
 pub use network::{NATNetworkAttachment, MACAddress, VirtioNetworkDevice};
 pub use serial::{FileHandleSerialAttachment, VirtioConsoleSerialPort};
 pub use socket::VirtioSocketDevice;
-pub use storage::{DiskImageAttachment, VirtioBlockDevice};
+pub use storage::{
+    DiskImageAttachment, DiskImageCachingMode, DiskImageSynchronizationMode, StorageDevice,
+    VirtioBlockDevice,
+};
 pub use vm::{VirtualMachine, VmState};

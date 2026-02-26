@@ -4,9 +4,47 @@ use objc2::ClassType;
 use crate::error::{Result, VzError};
 use crate::sys::foundation::{NSString, NSURL};
 use crate::sys::virtualization::{
-    VZDiskImageStorageDeviceAttachment, VZStorageDeviceConfiguration,
-    VZVirtioBlockDeviceConfiguration,
+    VZDiskImageCachingMode, VZDiskImageStorageDeviceAttachment, VZDiskImageSynchronizationMode,
+    VZStorageDeviceAttachment, VZStorageDeviceConfiguration, VZVirtioBlockDeviceConfiguration,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiskImageCachingMode {
+    Automatic,
+    Cached,
+    Uncached,
+}
+
+impl DiskImageCachingMode {
+    fn to_vz(self) -> VZDiskImageCachingMode {
+        match self {
+            Self::Automatic => VZDiskImageCachingMode::Automatic,
+            Self::Cached => VZDiskImageCachingMode::Cached,
+            Self::Uncached => VZDiskImageCachingMode::Uncached,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiskImageSynchronizationMode {
+    Full,
+    Fsync,
+    None,
+}
+
+impl DiskImageSynchronizationMode {
+    fn to_vz(self) -> VZDiskImageSynchronizationMode {
+        match self {
+            Self::Full => VZDiskImageSynchronizationMode::Full,
+            Self::Fsync => VZDiskImageSynchronizationMode::Fsync,
+            Self::None => VZDiskImageSynchronizationMode::None,
+        }
+    }
+}
+
+pub trait StorageDevice {
+    fn as_storage_config(&self) -> Id<VZStorageDeviceConfiguration, Shared>;
+}
 
 pub struct DiskImageAttachment {
     inner: Id<VZDiskImageStorageDeviceAttachment, Shared>,
@@ -27,6 +65,28 @@ impl DiskImageAttachment {
             Ok(DiskImageAttachment { inner })
         }
     }
+
+    pub fn new_with_options(
+        path: &str,
+        read_only: bool,
+        caching_mode: DiskImageCachingMode,
+        synchronization_mode: DiskImageSynchronizationMode,
+    ) -> Result<Self> {
+        unsafe {
+            let url = NSURL::file_url_with_path(path, false)
+                .absolute_url()
+                .unwrap();
+            let inner = VZDiskImageStorageDeviceAttachment::initWithURL_readOnly_cachingMode_synchronizationMode_error(
+                VZDiskImageStorageDeviceAttachment::alloc(),
+                &url,
+                read_only,
+                caching_mode.to_vz() as isize,
+                synchronization_mode.to_vz() as isize,
+            )
+            .map_err(|e| VzError::from_ns_error(&e))?;
+            Ok(DiskImageAttachment { inner })
+        }
+    }
 }
 
 pub struct VirtioBlockDevice {
@@ -36,10 +96,8 @@ pub struct VirtioBlockDevice {
 impl VirtioBlockDevice {
     pub fn new(attachment: &DiskImageAttachment) -> Self {
         unsafe {
-            let attachment_id: Id<
-                crate::sys::virtualization::VZStorageDeviceAttachment,
-                Shared,
-            > = Id::cast(attachment.inner.clone());
+            let attachment_id: Id<VZStorageDeviceAttachment, Shared> =
+                Id::cast(attachment.inner.clone());
             let inner = VZVirtioBlockDeviceConfiguration::initWithAttachment(
                 VZVirtioBlockDeviceConfiguration::alloc(),
                 &attachment_id,
@@ -63,8 +121,10 @@ impl VirtioBlockDevice {
             self.inner.setBlockDeviceIdentifier(&id);
         }
     }
+}
 
-    pub(crate) fn as_storage_config(&self) -> Id<VZStorageDeviceConfiguration, Shared> {
+impl StorageDevice for VirtioBlockDevice {
+    fn as_storage_config(&self) -> Id<VZStorageDeviceConfiguration, Shared> {
         unsafe { Id::cast(self.inner.clone()) }
     }
 }

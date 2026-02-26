@@ -8,7 +8,7 @@ use crate::memory::VirtioMemoryBalloonDevice;
 use crate::network::VirtioNetworkDevice;
 use crate::serial::VirtioConsoleSerialPort;
 use crate::socket::VirtioSocketDevice;
-use crate::storage::VirtioBlockDevice;
+use crate::storage::StorageDevice;
 use crate::sys::foundation::NSArray;
 use crate::sys::virtualization::VZVirtualMachineConfiguration;
 
@@ -71,7 +71,7 @@ impl VirtualMachineConfiguration {
         }
     }
 
-    pub fn set_storage_devices(&self, devices: &[VirtioBlockDevice]) {
+    pub fn set_storage_devices(&self, devices: &[&dyn StorageDevice]) {
         let ids = devices.iter().map(|d| d.as_storage_config()).collect();
         let array = NSArray::from_vec(ids);
         unsafe {

@@ -127,10 +127,15 @@ impl VmConfigBuilder {
         let serial = VirtioConsoleSerialPort::new_with_attachment(&serial_attachment);
         config.set_serial_ports(&[serial]);
 
-        let disk_attachment = DiskImageAttachment::new(&rootfs_path, false)
-            .map_err(|e| anyhow::anyhow!("Failed to create disk attachment: {}", e))?;
+        let disk_attachment = DiskImageAttachment::new_with_options(
+            &rootfs_path,
+            false,
+            DiskImageCachingMode::Cached,
+            DiskImageSynchronizationMode::Fsync,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to create disk attachment: {}", e))?;
         let block_device = VirtioBlockDevice::new(&disk_attachment);
-        config.set_storage_devices(&[block_device]);
+        config.set_storage_devices(&[&block_device]);
 
         if self.allow_net {
             let net_attachment = NATNetworkAttachment::new();
@@ -223,8 +228,15 @@ impl Sandbox {
             if line.is_empty() {
                 bail!("guest closed connection during mount init");
             }
-            let resp: MountResponse =
-                serde_json::from_str(line).context("parsing mount response")?;
+            let resp: MountResponse = match serde_json::from_str(line) {
+                Ok(r) => r,
+                Err(_) => {
+                    bail!(
+                        "guest does not support directory mounts. \
+                         Run `shuru upgrade` and recreate the checkpoint to enable --mount."
+                    );
+                }
+            };
             if !resp.ok {
                 bail!(
                     "mount failed: {} -> {}: {}",

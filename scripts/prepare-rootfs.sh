@@ -245,7 +245,6 @@ done
 if [ ! -b /dev/vda ]; then
     echo "initramfs: ERROR - /dev/vda not found!"
     echo "Block devices:"
-    ls -la /dev/vd* 2>/dev/null || echo "  (none)"
     cat /proc/partitions
     echo "Dropping to shell..."
     exec /bin/sh
