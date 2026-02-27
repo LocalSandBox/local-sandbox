@@ -1,11 +1,10 @@
 #![forbid(unsafe_code)]
 
-mod proto;
 mod sandbox;
 
-pub use proto::{
-    ControlMessage, ExecRequest, ExecResponse, ForwardRequest, ForwardResponse, MountRequest,
-    MountResponse, PortMapping,
+pub use shuru_proto::{
+    frame, ExecRequest, ForwardRequest, ForwardResponse, MountRequest, MountResponse, PortMapping,
+    VSOCK_PORT, VSOCK_PORT_FORWARD,
 };
 pub use sandbox::{MountConfig, PortForwardHandle, Sandbox, VmConfigBuilder};
 
@@ -13,9 +12,6 @@ pub use sandbox::{MountConfig, PortForwardHandle, Sandbox, VmConfigBuilder};
 pub use shuru_darwin::VirtualMachine;
 pub use shuru_darwin::VmState;
 pub use shuru_darwin::VzError;
-
-pub const VSOCK_PORT: u32 = 1024;
-pub const VSOCK_PORT_FORWARD: u32 = 1025;
 
 pub fn default_data_dir() -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());

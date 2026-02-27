@@ -8,6 +8,6 @@ name = "shuru-guest"
 path = "src/main.rs"
 
 [dependencies]
+shuru-proto = { path = "../shuru-proto" }
 libc = "0.2"
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"

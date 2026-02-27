@@ -1,34 +1,26 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Serialize)]
+/// Binary framing for all vsock communication.
+///
+/// Frame format: `[u32 BE length][u8 type][payload...]`
+/// Length = size of type byte + payload (excludes the 4-byte length prefix).
+/// Max frame size: 1 MB.
+pub mod frame;
+
+// --- Exec protocol ---
+
+#[derive(Serialize, Deserialize)]
 pub struct ExecRequest {
     pub argv: Vec<String>,
+    #[serde(default)]
     pub env: HashMap<String, String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tty: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rows: Option<u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cols: Option<u16>,
-}
-
-#[derive(Deserialize)]
-pub struct ExecResponse {
-    #[serde(rename = "type")]
-    pub msg_type: String,
-    pub data: Option<String>,
-    pub code: Option<i32>,
-}
-
-/// Host-to-guest control messages sent after the initial ExecRequest (TTY mode only).
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum ControlMessage {
-    #[serde(rename = "stdin")]
-    Stdin { data: String },
-    #[serde(rename = "resize")]
-    Resize { rows: u16, cols: u16 },
 }
 
 // --- Port forwarding protocol ---
@@ -71,3 +63,6 @@ pub struct MountResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
+
+pub const VSOCK_PORT: u32 = 1024;
+pub const VSOCK_PORT_FORWARD: u32 = 1025;

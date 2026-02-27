@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,11 +12,10 @@ use crossbeam_channel::Receiver;
 use shuru_darwin::terminal;
 use shuru_darwin::*;
 
-use crate::proto::{
-    ControlMessage, ExecRequest, ExecResponse, ForwardRequest, ForwardResponse, MountRequest,
-    MountResponse, PortMapping,
+use shuru_proto::{
+    frame, ExecRequest, ForwardRequest, ForwardResponse, MountRequest, MountResponse, PortMapping,
+    VSOCK_PORT, VSOCK_PORT_FORWARD,
 };
-use crate::{VSOCK_PORT, VSOCK_PORT_FORWARD};
 
 // --- Mount types ---
 
@@ -214,21 +213,16 @@ impl Sandbox {
     fn send_mount_requests(
         &self,
         writer: &mut impl Write,
-        reader: &mut BufReader<TcpStream>,
+        reader: &mut impl Read,
     ) -> Result<()> {
         let mounts = std::mem::take(&mut *self.mounts.lock().unwrap());
         for req in &mounts {
-            writeln!(writer, "{}", serde_json::to_string(req)?)?;
-            writer.flush()?;
-            let mut line = String::new();
-            reader
-                .read_line(&mut line)
-                .context("reading mount response")?;
-            let line = line.trim();
-            if line.is_empty() {
-                bail!("guest closed connection during mount init");
-            }
-            let resp: MountResponse = match serde_json::from_str(line) {
+            frame::send_json(writer, frame::MOUNT_REQ, &req)
+                .context("sending mount request")?;
+            let (_msg_type, payload) = frame::read_frame(reader)
+                .context("reading mount response")?
+                .context("guest closed connection during mount init")?;
+            let resp: MountResponse = match serde_json::from_slice(&payload) {
                 Ok(r) => r,
                 Err(_) => {
                     bail!(
@@ -259,7 +253,7 @@ impl Sandbox {
     ) -> Result<i32> {
         let stream = self.connect_vsock()?;
         let mut writer = stream.try_clone()?;
-        let mut reader = BufReader::new(stream);
+        let mut reader = stream;
 
         self.send_mount_requests(&mut writer, &mut reader)?;
 
@@ -270,43 +264,30 @@ impl Sandbox {
             rows: None,
             cols: None,
         };
-        writeln!(writer, "{}", serde_json::to_string(&req)?)?;
-        writer.flush()?;
+        frame::send_json(&mut writer, frame::EXEC_REQ, &req)?;
 
         let mut exit_code = 0;
 
-        for line in reader.lines() {
-            let line = line.context("reading vsock response")?;
-            if line.is_empty() {
-                continue;
-            }
-
-            let resp: ExecResponse =
-                serde_json::from_str(&line).context("parsing vsock response")?;
-
-            match resp.msg_type.as_str() {
-                "stdout" => {
-                    if let Some(data) = &resp.data {
-                        write!(stdout, "{}", data)?;
-                    }
+        loop {
+            match frame::read_frame(&mut reader).context("reading vsock response")? {
+                Some((frame::STDOUT, payload)) => {
+                    stdout.write_all(&payload)?;
                 }
-                "stderr" => {
-                    if let Some(data) = &resp.data {
-                        write!(stderr, "{}", data)?;
-                    }
+                Some((frame::STDERR, payload)) => {
+                    stderr.write_all(&payload)?;
                 }
-                "exit" => {
-                    exit_code = resp.code.unwrap_or(0);
+                Some((frame::EXIT, payload)) => {
+                    exit_code = frame::parse_exit_code(&payload).unwrap_or(0);
                     break;
                 }
-                "error" => {
-                    if let Some(data) = &resp.data {
-                        write!(stderr, "guest error: {}", data)?;
-                    }
+                Some((frame::ERROR, payload)) => {
+                    let msg = String::from_utf8_lossy(&payload);
+                    write!(stderr, "guest error: {}", msg)?;
                     exit_code = 1;
                     break;
                 }
-                _ => {}
+                Some(_) => {} // unknown type, skip
+                None => break, // EOF
             }
         }
 
@@ -327,7 +308,7 @@ impl Sandbox {
 
         let stream = self.connect_vsock()?;
         let mut writer = stream.try_clone()?;
-        let mut reader = BufReader::new(stream);
+        let mut reader = stream;
 
         // Mount phase (sync, before raw mode)
         self.send_mount_requests(&mut writer, &mut reader)?;
@@ -340,104 +321,93 @@ impl Sandbox {
             rows: Some(rows),
             cols: Some(cols),
         };
-        writeln!(writer, "{}", serde_json::to_string(&req)?)?;
-        writer.flush()?;
+        frame::send_json(&mut writer, frame::EXEC_REQ, &req)?;
 
         // Enter raw mode - TerminalState restores on drop
         let _raw_guard = terminal::TerminalState::enter_raw_mode(stdin_fd);
 
-        // Install SIGWINCH handler
-        terminal::install_sigwinch_handler();
+        // Set up kqueue-based stdin relay (zero-latency I/O multiplexing)
+        let (relay, shutdown_signal) =
+            terminal::StdinRelay::new(stdin_fd).expect("failed to init stdin relay");
 
-        let done = Arc::new(AtomicBool::new(false));
         let exit_code = Arc::new(Mutex::new(0i32));
 
-        // Thread A: stdin → vsock (send stdin data + resize messages)
-        let done_a = done.clone();
+        // Thread A: stdin → vsock (kqueue blocks until data/resize/shutdown)
         let mut vsock_writer = writer.try_clone()?;
         let stdin_thread = std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
-
-            while !done_a.load(Ordering::SeqCst) {
-                if terminal::poll_read(stdin_fd, 100) {
-                    let n = terminal::read_raw(stdin_fd, &mut buf);
-                    if n == 0 {
-                        break;
+            loop {
+                match relay.wait() {
+                    terminal::StdinEvent::Ready => {
+                        let n = terminal::read_raw(stdin_fd, &mut buf);
+                        if n == 0 {
+                            break;
+                        }
+                        if frame::write_frame(&mut vsock_writer, frame::STDIN, &buf[..n]).is_err()
+                        {
+                            break;
+                        }
                     }
-                    let data = String::from_utf8_lossy(&buf[..n]);
-                    let msg = ControlMessage::Stdin {
-                        data: data.into_owned(),
-                    };
-                    if writeln!(vsock_writer, "{}", serde_json::to_string(&msg).unwrap()).is_err() {
-                        break;
+                    terminal::StdinEvent::Resize => {
+                        let (rows, cols) = terminal::terminal_size(stdin_fd);
+                        let payload = frame::resize_payload(rows, cols);
+                        if frame::write_frame(&mut vsock_writer, frame::RESIZE, &payload).is_err()
+                        {
+                            break;
+                        }
                     }
-                    let _ = vsock_writer.flush();
-                }
-
-                // Check SIGWINCH
-                if terminal::sigwinch_received() {
-                    let (rows, cols) = terminal::terminal_size(stdin_fd);
-                    let msg = ControlMessage::Resize { rows, cols };
-                    if writeln!(vsock_writer, "{}", serde_json::to_string(&msg).unwrap()).is_err() {
-                        break;
-                    }
-                    let _ = vsock_writer.flush();
+                    terminal::StdinEvent::Shutdown => break,
                 }
             }
         });
 
-        // Thread B: vsock → stdout (read responses, write output)
-        let done_b = done.clone();
+        // Thread B: vsock -> stdout (read binary frames, write raw output)
+        // Uses BufWriter + deferred flush to batch rapid TUI updates into
+        // fewer terminal writes, preventing visible tearing/flickering.
         let exit_code_b = exit_code.clone();
         let vsock_thread = std::thread::spawn(move || {
-            let mut stdout = std::io::stdout();
-            for line in reader.lines() {
-                let line = match line {
-                    Ok(l) => l,
-                    Err(_) => break,
-                };
-                if line.is_empty() {
-                    continue;
-                }
-
-                let resp: ExecResponse = match serde_json::from_str(&line) {
-                    Ok(r) => r,
-                    Err(_) => continue,
-                };
-
-                match resp.msg_type.as_str() {
-                    "stdout" => {
-                        if let Some(data) = &resp.data {
-                            let _ = stdout.write_all(data.as_bytes());
+            let mut reader = BufReader::new(reader);
+            let mut stdout = BufWriter::new(std::io::stdout());
+            loop {
+                match frame::read_frame(&mut reader) {
+                    Ok(Some((frame::STDOUT, payload))) => {
+                        let _ = stdout.write_all(&payload);
+                        // Only flush to the terminal when no more data is
+                        // already buffered from the vsock. This batches
+                        // rapid sequential messages (e.g. a full TUI
+                        // screen redraw) into a single terminal write.
+                        if reader.buffer().is_empty() {
                             let _ = stdout.flush();
                         }
                     }
-                    "exit" => {
-                        *exit_code_b.lock().unwrap() = resp.code.unwrap_or(0);
+                    Ok(Some((frame::EXIT, payload))) => {
+                        let _ = stdout.flush();
+                        *exit_code_b.lock().unwrap() =
+                            frame::parse_exit_code(&payload).unwrap_or(0);
                         break;
                     }
-                    "error" => {
-                        if let Some(data) = &resp.data {
-                            let _ = std::io::stderr()
-                                .write_all(format!("guest error: {}\r\n", data).as_bytes());
-                        }
+                    Ok(Some((frame::ERROR, payload))) => {
+                        let _ = stdout.flush();
+                        let msg = String::from_utf8_lossy(&payload);
+                        let _ = std::io::stderr()
+                            .write_all(format!("guest error: {}\r\n", msg).as_bytes());
                         *exit_code_b.lock().unwrap() = 1;
                         break;
                     }
-                    _ => {}
+                    Ok(Some(_)) => {} // unknown type, skip
+                    Ok(None) | Err(_) => break,
                 }
             }
-            done_b.store(true, Ordering::SeqCst);
+            let _ = stdout.flush();
+            shutdown_signal.signal();
         });
 
         // Wait for threads
         let _ = vsock_thread.join();
         let _ = stdin_thread.join();
 
-        // Restore SIGWINCH to default
-        terminal::reset_sigwinch_handler();
-
         // Terminal restored by _raw_guard drop
+        // SIGWINCH restored by StdinRelay drop
         let code = *exit_code.lock().unwrap();
         Ok(code)
     }
@@ -513,7 +483,10 @@ impl Sandbox {
                 }
             }
             match self.vm.connect_to_vsock_port(VSOCK_PORT) {
-                Ok(s) => return Ok(s),
+                Ok(s) => {
+                    let _ = s.set_nodelay(true);
+                    return Ok(s);
+                }
                 Err(e) => {
                     if attempt == 10 {
                         bail!("Failed to connect to guest after 10 attempts: {}", e);
@@ -550,17 +523,18 @@ fn handle_forward_connection(
     let mut vsock_stream = vm
         .connect_to_vsock_port(VSOCK_PORT_FORWARD)
         .map_err(|e| anyhow::anyhow!("vsock connect for port forward: {}", e))?;
+    let _ = vsock_stream.set_nodelay(true);
 
     // Send forward request
     let req = ForwardRequest { port: guest_port };
-    writeln!(vsock_stream, "{}", serde_json::to_string(&req)?)?;
-    vsock_stream.flush()?;
+    frame::send_json(&mut vsock_stream, frame::FWD_REQ, &req)?;
 
-    // Read response - byte-by-byte to avoid buffering past the newline
-    let line = read_line_raw(&mut vsock_stream)
-        .context("reading forward response")?;
+    // Read response frame
+    let (_msg_type, payload) = frame::read_frame(&mut vsock_stream)
+        .context("reading forward response")?
+        .context("guest closed connection during forward handshake")?;
     let resp: ForwardResponse =
-        serde_json::from_str(line.trim()).context("parsing forward response")?;
+        serde_json::from_slice(&payload).context("parsing forward response")?;
 
     if resp.status != "ok" {
         bail!(
@@ -572,26 +546,6 @@ fn handle_forward_connection(
     // Bidirectional relay between TCP and vsock
     relay(tcp_stream, vsock_stream);
     Ok(())
-}
-
-/// Read one line from a stream without any buffering beyond the newline.
-/// This prevents a BufReader from consuming bytes that belong to the relay phase.
-fn read_line_raw(stream: &mut TcpStream) -> Result<String> {
-    let mut buf = Vec::new();
-    let mut byte = [0u8; 1];
-    loop {
-        match stream.read(&mut byte) {
-            Ok(0) => bail!("unexpected EOF"),
-            Ok(_) => {
-                if byte[0] == b'\n' {
-                    break;
-                }
-                buf.push(byte[0]);
-            }
-            Err(e) => return Err(e.into()),
-        }
-    }
-    Ok(String::from_utf8(buf)?)
 }
 
 fn relay(a: TcpStream, b: TcpStream) {

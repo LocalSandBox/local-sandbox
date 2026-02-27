@@ -861,6 +861,14 @@ name = "shuru-guest"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "serde_json",
+ "shuru-proto",
+]
+
+[[package]]
+name = "shuru-proto"
+version = "0.1.0"
+dependencies = [
  "serde",
  "serde_json",
 ]
@@ -874,6 +882,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shuru-darwin",
+ "shuru-proto",
  "tracing",
 ]
 

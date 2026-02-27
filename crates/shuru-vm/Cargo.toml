@@ -6,6 +6,7 @@ description = "High-level VM management for shuru"
 
 [dependencies]
 shuru-darwin = { path = "../shuru-darwin" }
+shuru-proto = { path = "../shuru-proto" }
 anyhow = "1"
 crossbeam-channel = "0.5"
 serde = { version = "1", features = ["derive"] }

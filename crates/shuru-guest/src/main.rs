@@ -1,52 +1,12 @@
 #[cfg(target_os = "linux")]
 mod guest {
-    use std::io::{BufRead, BufReader, Read, Write};
+    use std::io::{Read, Write};
     use std::os::unix::io::FromRawFd;
     use std::process::{Command, Stdio};
 
-    use serde::{Deserialize, Serialize};
-
-    const VSOCK_PORT: u32 = 1024;
-    const VSOCK_PORT_FORWARD: u32 = 1025;
-
-    #[derive(Deserialize)]
-    pub struct ExecRequest {
-        pub argv: Vec<String>,
-        #[serde(default)]
-        pub env: std::collections::HashMap<String, String>,
-        #[serde(default)]
-        pub tty: bool,
-        #[serde(default = "default_rows")]
-        pub rows: u16,
-        #[serde(default = "default_cols")]
-        pub cols: u16,
-    }
-
-    fn default_rows() -> u16 {
-        24
-    }
-    fn default_cols() -> u16 {
-        80
-    }
-
-    #[derive(Serialize)]
-    pub struct ExecResponse {
-        #[serde(rename = "type")]
-        pub msg_type: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub data: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub code: Option<i32>,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(tag = "type")]
-    pub enum ControlMessage {
-        #[serde(rename = "stdin")]
-        Stdin { data: String },
-        #[serde(rename = "resize")]
-        Resize { rows: u16, cols: u16 },
-    }
+    use shuru_proto::frame;
+    use shuru_proto::{ExecRequest, ForwardRequest, ForwardResponse, MountRequest, MountResponse};
+    use shuru_proto::{VSOCK_PORT, VSOCK_PORT_FORWARD};
 
     fn mount_fs(source: &str, target: &str, fstype: &str, data: Option<&str>) -> bool {
         mount_fs_with_flags(source, target, fstype, 0, data)
@@ -96,22 +56,6 @@ mod guest {
         std::fs::create_dir_all("/dev/pts").ok();
         mount_fs("devpts", "/dev/pts", "devpts", Some("newinstance,ptmxmode=0666"));
         mount_fs("tmpfs", "/tmp", "tmpfs", None);
-    }
-
-    // --- Mount protocol ---
-
-    #[derive(Deserialize)]
-    struct MountRequest {
-        tag: String,
-        guest_path: String,
-    }
-
-    #[derive(Serialize)]
-    struct MountResponse {
-        tag: String,
-        ok: bool,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        error: Option<String>,
     }
 
     fn process_mount(req: &MountRequest) -> MountResponse {
@@ -311,87 +255,87 @@ mod guest {
         }
     }
 
-    fn send_response(fd: i32, resp: &ExecResponse) {
-        let json = serde_json::to_string(resp).unwrap();
-        let msg = format!("{}\n", json);
-        unsafe {
-            libc::write(fd, msg.as_ptr() as *const libc::c_void, msg.len());
-        }
-    }
-
-    fn send_error(fd: i32, msg: &str) {
-        send_response(
-            fd,
-            &ExecResponse {
-                msg_type: "error".into(),
-                data: Some(msg.into()),
-                code: None,
+    /// Write a binary frame using `writev` for a single atomic syscall.
+    /// Used by the PTY poll loop where we have a raw fd instead of a std Write.
+    fn write_frame_fd(fd: i32, msg_type: u8, payload: &[u8]) {
+        let len = 1u32 + payload.len() as u32;
+        let len_bytes = len.to_be_bytes();
+        let type_byte = [msg_type];
+        let iov = [
+            libc::iovec {
+                iov_base: len_bytes.as_ptr() as *mut libc::c_void,
+                iov_len: 4,
             },
-        );
+            libc::iovec {
+                iov_base: type_byte.as_ptr() as *mut libc::c_void,
+                iov_len: 1,
+            },
+            libc::iovec {
+                iov_base: payload.as_ptr() as *mut libc::c_void,
+                iov_len: payload.len(),
+            },
+        ];
+        unsafe {
+            libc::writev(fd, iov.as_ptr(), 3);
+        }
     }
 
     fn handle_connection(fd: i32) {
         // SAFETY: fd is a valid socket from accept()
         let stream = unsafe { std::net::TcpStream::from_raw_fd(fd) };
-        let mut reader = BufReader::new(stream.try_clone().expect("failed to clone stream"));
+        let _ = stream.set_nodelay(true);
+        let mut reader = stream.try_clone().expect("failed to clone stream");
         let mut writer = stream;
-        let mut line_buf = String::new();
 
         loop {
-            line_buf.clear();
-            match reader.read_line(&mut line_buf) {
-                Ok(0) => break,  // EOF
-                Err(_) => break,
-                Ok(_) => {}
-            }
-            let line = line_buf.trim();
-            if line.is_empty() {
-                continue;
-            }
-
-            // Mount request: Handle inline, continue reading
-            if let Ok(mount_req) = serde_json::from_str::<MountRequest>(line) {
-                let resp = process_mount(&mount_req);
-                let _ = writeln!(writer, "{}", serde_json::to_string(&resp).unwrap());
-                let _ = writer.flush();
-                continue;
-            }
-
-            // Exec request
-            let req: ExecRequest = match serde_json::from_str(line) {
-                Ok(r) => r,
-                Err(e) => {
-                    let resp = ExecResponse {
-                        msg_type: "error".into(),
-                        data: Some(format!("invalid request: {}", e)),
-                        code: None,
-                    };
-                    let _ = writeln!(writer, "{}", serde_json::to_string(&resp).unwrap());
-                    continue;
-                }
+            let (msg_type, payload) = match frame::read_frame(&mut reader) {
+                Ok(Some(f)) => f,
+                _ => break, // EOF or error
             };
 
-            if req.argv.is_empty() {
-                let resp = ExecResponse {
-                    msg_type: "error".into(),
-                    data: Some("empty argv".into()),
-                    code: None,
-                };
-                let _ = writeln!(writer, "{}", serde_json::to_string(&resp).unwrap());
-                continue;
-            }
+            match msg_type {
+                frame::MOUNT_REQ => {
+                    let mount_req: MountRequest = match serde_json::from_slice(&payload) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            let msg = format!("invalid mount request: {}", e);
+                            let _ = frame::write_frame(&mut writer, frame::ERROR, msg.as_bytes());
+                            continue;
+                        }
+                    };
+                    let resp = process_mount(&mount_req);
+                    let _ = frame::send_json(&mut writer, frame::MOUNT_RESP, &resp);
+                }
+                frame::EXEC_REQ => {
+                    let req: ExecRequest = match serde_json::from_slice(&payload) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            let msg = format!("invalid exec request: {}", e);
+                            let _ = frame::write_frame(&mut writer, frame::ERROR, msg.as_bytes());
+                            continue;
+                        }
+                    };
 
-            if req.tty {
-                // TTY mode: hand off the raw fd, the line-based protocol is over
-                let raw_fd = std::os::unix::io::AsRawFd::as_raw_fd(&writer);
-                // Prevent TcpStream from closing the fd on drop
-                std::mem::forget(writer);
-                handle_tty_exec(raw_fd, &req);
-                return;
-            }
+                    if req.argv.is_empty() {
+                        let _ = frame::write_frame(&mut writer, frame::ERROR, b"empty argv");
+                        continue;
+                    }
 
-            // Non-TTY mode: piped exec (original behavior)
-            handle_piped_exec(&req, &mut writer);
+                    if req.tty.unwrap_or(false) {
+                        // TTY mode: hand off the raw fd
+                        let raw_fd = std::os::unix::io::AsRawFd::as_raw_fd(&writer);
+                        // Prevent TcpStream from closing the fd on drop
+                        std::mem::forget(writer);
+                        std::mem::forget(reader);
+                        handle_tty_exec(raw_fd, &req);
+                        return;
+                    }
+
+                    // Non-TTY mode: piped exec
+                    handle_piped_exec(&req, &mut writer);
+                }
+                _ => {} // unknown type, skip
+            }
         }
     }
 
@@ -408,14 +352,14 @@ mod guest {
 
         match cmd.spawn() {
             Ok(mut child) => {
-                let mut stdout_data = String::new();
-                let mut stderr_data = String::new();
+                let mut stdout_data = Vec::new();
+                let mut stderr_data = Vec::new();
 
                 if let Some(mut stdout) = child.stdout.take() {
-                    let _ = stdout.read_to_string(&mut stdout_data);
+                    let _ = stdout.read_to_end(&mut stdout_data);
                 }
                 if let Some(mut stderr) = child.stderr.take() {
-                    let _ = stderr.read_to_string(&mut stderr_data);
+                    let _ = stderr.read_to_end(&mut stderr_data);
                 }
 
                 let status = child.wait().expect("failed to wait on child");
@@ -429,37 +373,18 @@ mod guest {
                 }
 
                 if !stdout_data.is_empty() {
-                    let resp = ExecResponse {
-                        msg_type: "stdout".into(),
-                        data: Some(stdout_data),
-                        code: None,
-                    };
-                    let _ = writeln!(writer, "{}", serde_json::to_string(&resp).unwrap());
+                    let _ = frame::write_frame(writer, frame::STDOUT, &stdout_data);
                 }
 
                 if !stderr_data.is_empty() {
-                    let resp = ExecResponse {
-                        msg_type: "stderr".into(),
-                        data: Some(stderr_data),
-                        code: None,
-                    };
-                    let _ = writeln!(writer, "{}", serde_json::to_string(&resp).unwrap());
+                    let _ = frame::write_frame(writer, frame::STDERR, &stderr_data);
                 }
 
-                let resp = ExecResponse {
-                    msg_type: "exit".into(),
-                    data: None,
-                    code: Some(exit_code),
-                };
-                let _ = writeln!(writer, "{}", serde_json::to_string(&resp).unwrap());
+                let _ = frame::write_frame(writer, frame::EXIT, &frame::exit_payload(exit_code));
             }
             Err(e) => {
-                let resp = ExecResponse {
-                    msg_type: "error".into(),
-                    data: Some(format!("failed to spawn: {}", e)),
-                    code: None,
-                };
-                let _ = writeln!(writer, "{}", serde_json::to_string(&resp).unwrap());
+                let msg = format!("failed to spawn: {}", e);
+                let _ = frame::write_frame(writer, frame::ERROR, msg.as_bytes());
             }
         }
     }
@@ -470,8 +395,8 @@ mod guest {
         unsafe {
             // Set up initial winsize
             let ws = libc::winsize {
-                ws_row: req.rows,
-                ws_col: req.cols,
+                ws_row: req.rows.unwrap_or(24),
+                ws_col: req.cols.unwrap_or(80),
                 ws_xpixel: 0,
                 ws_ypixel: 0,
             };
@@ -487,14 +412,14 @@ mod guest {
                 &ws as *const libc::winsize as *mut libc::winsize,
             ) < 0
             {
-                send_error(vsock_fd, "openpty failed");
+                write_frame_fd(vsock_fd, frame::ERROR, b"openpty failed");
                 libc::close(vsock_fd);
                 return;
             }
 
             let pid = libc::fork();
             if pid < 0 {
-                send_error(vsock_fd, "fork failed");
+                write_frame_fd(vsock_fd, frame::ERROR, b"fork failed");
                 libc::close(master);
                 libc::close(slave);
                 libc::close(vsock_fd);
@@ -593,7 +518,7 @@ mod guest {
                 break;
             }
 
-            // Check vsock for control messages (stdin, resize)
+            // Check vsock for binary frames (stdin, resize)
             if fds[0].revents & libc::POLLIN != 0 {
                 let n = unsafe {
                     libc::read(
@@ -611,38 +536,35 @@ mod guest {
                 }
                 vsock_buf.extend_from_slice(&read_buf[..n as usize]);
 
-                // Process complete JSON lines
-                while let Some(pos) = vsock_buf.iter().position(|&b| b == b'\n') {
-                    let line: Vec<u8> = vsock_buf.drain(..=pos).collect();
-                    let line_str = String::from_utf8_lossy(&line);
-                    let line_str = line_str.trim();
-                    if line_str.is_empty() {
-                        continue;
-                    }
-
-                    if let Ok(msg) = serde_json::from_str::<ControlMessage>(line_str) {
-                        match msg {
-                            ControlMessage::Stdin { data } => {
-                                let bytes = data.as_bytes();
+                // Process complete binary frames
+                while let Some((msg_type, payload_start, total_len)) =
+                    frame::try_parse(&vsock_buf)
+                {
+                    let payload = &vsock_buf[payload_start..total_len];
+                    match msg_type {
+                        frame::STDIN => unsafe {
+                            libc::write(
+                                master_fd,
+                                payload.as_ptr() as *const libc::c_void,
+                                payload.len(),
+                            );
+                        },
+                        frame::RESIZE => {
+                            if let Some((rows, cols)) = frame::parse_resize(payload) {
                                 unsafe {
-                                    libc::write(
-                                        master_fd,
-                                        bytes.as_ptr() as *const libc::c_void,
-                                        bytes.len(),
-                                    );
+                                    let ws = libc::winsize {
+                                        ws_row: rows,
+                                        ws_col: cols,
+                                        ws_xpixel: 0,
+                                        ws_ypixel: 0,
+                                    };
+                                    libc::ioctl(master_fd, libc::TIOCSWINSZ, &ws);
                                 }
                             }
-                            ControlMessage::Resize { rows, cols } => unsafe {
-                                let ws = libc::winsize {
-                                    ws_row: rows,
-                                    ws_col: cols,
-                                    ws_xpixel: 0,
-                                    ws_ypixel: 0,
-                                };
-                                libc::ioctl(master_fd, libc::TIOCSWINSZ, &ws);
-                            },
                         }
+                        _ => {}
                     }
+                    vsock_buf.drain(..total_len);
                 }
             }
 
@@ -653,7 +575,7 @@ mod guest {
                 break;
             }
 
-            // Check PTY master for output
+            // Check PTY master for output — send raw bytes as STDOUT frames
             if fds[1].revents & libc::POLLIN != 0 {
                 let n = unsafe {
                     libc::read(
@@ -663,15 +585,7 @@ mod guest {
                     )
                 };
                 if n > 0 {
-                    let data = String::from_utf8_lossy(&read_buf[..n as usize]);
-                    send_response(
-                        vsock_fd,
-                        &ExecResponse {
-                            msg_type: "stdout".into(),
-                            data: Some(data.into_owned()),
-                            code: None,
-                        },
-                    );
+                    write_frame_fd(vsock_fd, frame::STDOUT, &read_buf[..n as usize]);
                 }
             }
 
@@ -688,15 +602,7 @@ mod guest {
                     if n <= 0 {
                         break;
                     }
-                    let data = String::from_utf8_lossy(&read_buf[..n as usize]);
-                    send_response(
-                        vsock_fd,
-                        &ExecResponse {
-                            msg_type: "stdout".into(),
-                            data: Some(data.into_owned()),
-                            code: None,
-                        },
-                    );
+                    write_frame_fd(vsock_fd, frame::STDOUT, &read_buf[..n as usize]);
                 }
                 break;
             }
@@ -723,28 +629,7 @@ mod guest {
             1
         };
 
-        send_response(
-            vsock_fd,
-            &ExecResponse {
-                msg_type: "exit".into(),
-                data: None,
-                code: Some(exit_code),
-            },
-        );
-    }
-
-    // --- Port forwarding ---
-
-    #[derive(Deserialize)]
-    struct ForwardRequest {
-        port: u16,
-    }
-
-    #[derive(Serialize)]
-    struct ForwardResponse {
-        status: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        message: Option<String>,
+        write_frame_fd(vsock_fd, frame::EXIT, &frame::exit_payload(exit_code));
     }
 
     fn forward_accept_loop(listener_fd: i32) {
@@ -763,42 +648,24 @@ mod guest {
         }
     }
 
-    /// Read one line from a stream byte-by-byte, without buffering past the newline.
-    fn read_line_raw(stream: &mut std::net::TcpStream) -> Option<String> {
-        let mut buf = Vec::new();
-        let mut byte = [0u8; 1];
-        loop {
-            match stream.read(&mut byte) {
-                Ok(0) => return None,
-                Ok(_) => {
-                    if byte[0] == b'\n' {
-                        break;
-                    }
-                    buf.push(byte[0]);
-                }
-                Err(_) => return None,
-            }
-        }
-        String::from_utf8(buf).ok()
-    }
-
     fn handle_forward_connection(fd: i32) {
         let mut stream = unsafe { std::net::TcpStream::from_raw_fd(fd) };
+        let _ = stream.set_nodelay(true);
 
-        // Read the forward request byte-by-byte to avoid buffering past newline
-        let line = match read_line_raw(&mut stream) {
-            Some(l) if !l.is_empty() => l,
+        // Read the forward request frame
+        let (_msg_type, payload) = match frame::read_frame(&mut stream) {
+            Ok(Some(f)) => f,
             _ => return,
         };
 
-        let req: ForwardRequest = match serde_json::from_str(&line) {
+        let req: ForwardRequest = match serde_json::from_slice(&payload) {
             Ok(r) => r,
             Err(e) => {
                 let resp = ForwardResponse {
                     status: "error".into(),
                     message: Some(format!("invalid request: {}", e)),
                 };
-                let _ = writeln!(stream, "{}", serde_json::to_string(&resp).unwrap());
+                let _ = frame::send_json(&mut stream, frame::FWD_RESP, &resp);
                 return;
             }
         };
@@ -812,7 +679,7 @@ mod guest {
                     status: "error".into(),
                     message: Some(format!("connection refused: {}", e)),
                 };
-                let _ = writeln!(stream, "{}", serde_json::to_string(&resp).unwrap());
+                let _ = frame::send_json(&mut stream, frame::FWD_RESP, &resp);
                 return;
             }
         };
@@ -822,10 +689,9 @@ mod guest {
             status: "ok".into(),
             message: None,
         };
-        if writeln!(stream, "{}", serde_json::to_string(&resp).unwrap()).is_err() {
+        if frame::send_json(&mut stream, frame::FWD_RESP, &resp).is_err() {
             return;
         }
-        let _ = stream.flush();
 
         // Bidirectional relay between vsock and TCP
         forward_relay(stream, tcp_stream);
