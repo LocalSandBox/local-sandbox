@@ -326,6 +326,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
             mkdir -p /mnt/rootfs/proc /mnt/rootfs/sys /mnt/rootfs/dev /mnt/rootfs/tmp /mnt/rootfs/run
             echo "shuru" > /mnt/rootfs/etc/hostname
             echo "nameserver 8.8.8.8" > /mnt/rootfs/etc/resolv.conf
+            apk add --no-cache --root /mnt/rootfs gcompat > /dev/null 2>&1
             umount /mnt/rootfs
             echo "==> Rootfs populated successfully"
         '
@@ -345,6 +346,7 @@ else
     sudo mkdir -p "${MOUNT_DIR}/proc" "${MOUNT_DIR}/sys" "${MOUNT_DIR}/dev" "${MOUNT_DIR}/tmp" "${MOUNT_DIR}/run"
     echo "shuru" | sudo tee "${MOUNT_DIR}/etc/hostname" > /dev/null
     echo "nameserver 8.8.8.8" | sudo tee "${MOUNT_DIR}/etc/resolv.conf" > /dev/null
+    sudo apk add --no-cache --root "$MOUNT_DIR" gcompat > /dev/null 2>&1
     sudo umount "$MOUNT_DIR"
     rmdir "$MOUNT_DIR" 2>/dev/null || true
 fi
