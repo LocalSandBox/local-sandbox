@@ -1,3 +1,5 @@
+use std::os::unix::fs::MetadataExt;
+
 use anyhow::{bail, Result};
 
 use shuru_vm::default_data_dir;
@@ -28,7 +30,7 @@ pub(crate) fn create(
     std::fs::create_dir_all(&checkpoints_dir)?;
     let checkpoint_path = format!("{}/{}.ext4", checkpoints_dir, name);
     eprintln!("shuru: saving checkpoint '{}'...", name);
-    std::fs::copy(&prepared.work_rootfs, &checkpoint_path)?;
+    vm::clone_file(&prepared.work_rootfs, &checkpoint_path)?;
     eprintln!("shuru: checkpoint '{}' saved", name);
 
     let _ = std::fs::remove_dir_all(&prepared.instance_dir);
@@ -59,7 +61,8 @@ pub(crate) fn list() -> Result<()> {
                 .unwrap_or("?")
                 .to_string();
             let meta = entry.metadata()?;
-            checkpoints.push((name, meta.len(), meta.modified()?));
+            let disk_usage = meta.blocks() * 512;
+            checkpoints.push((name, disk_usage, meta.modified()?));
         }
     }
 

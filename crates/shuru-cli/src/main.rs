@@ -116,6 +116,12 @@ fn main() -> Result<()> {
             }
             CheckpointCommands::List => checkpoint::list()?,
             CheckpointCommands::Delete { name } => checkpoint::delete(&name)?,
+            CheckpointCommands::Push { name: _ } => {
+                anyhow::bail!("checkpoint push is not yet implemented")
+            }
+            CheckpointCommands::Pull { name: _ } => {
+                anyhow::bail!("checkpoint pull is not yet implemented")
+            }
         },
     }
 

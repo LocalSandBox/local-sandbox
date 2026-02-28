@@ -117,4 +117,16 @@ pub(crate) enum CheckpointCommands {
         /// Checkpoint name
         name: String,
     },
+
+    /// Push a checkpoint to a remote store
+    Push {
+        /// Checkpoint name
+        name: String,
+    },
+
+    /// Pull a checkpoint from a remote store
+    Pull {
+        /// Checkpoint name
+        name: String,
+    },
 }

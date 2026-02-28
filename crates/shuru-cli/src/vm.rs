@@ -1,7 +1,27 @@
 use std::collections::HashMap;
+use std::ffi::CString;
 use std::io::IsTerminal;
 
 use anyhow::{bail, Context, Result};
+
+extern "C" {
+    fn clonefile(
+        src: *const libc::c_char,
+        dst: *const libc::c_char,
+        flags: u32,
+    ) -> libc::c_int;
+}
+
+pub(crate) fn clone_file(src: &str, dst: &str) -> Result<()> {
+    let c_src = CString::new(src).context("invalid source path")?;
+    let c_dst = CString::new(dst).context("invalid destination path")?;
+    let ret = unsafe { clonefile(c_src.as_ptr(), c_dst.as_ptr(), 0) };
+    if ret != 0 {
+        let err = std::io::Error::last_os_error();
+        bail!("clonefile({} -> {}) failed: {}", src, dst, err);
+    }
+    Ok(())
+}
 
 use shuru_vm::{MountConfig, PortMapping, Sandbox};
 
@@ -23,7 +43,6 @@ pub(crate) struct PreparedVm {
     pub mounts: Vec<MountConfig>,
 }
 
-/// Resolve config, create a CoW working copy of the rootfs, and extend it to disk_size.
 pub(crate) fn prepare_vm(
     vm: &VmArgs,
     cfg: &ShuruConfig,
@@ -114,12 +133,12 @@ pub(crate) fn prepare_vm(
         }
     };
 
-    // Create per-instance working copy (CoW clone on APFS — near-instant)
+    // Create per-instance working copy
     let instance_dir = format!("{}/instances/{}", data_dir, std::process::id());
     std::fs::create_dir_all(&instance_dir)?;
     let work_rootfs = format!("{}/rootfs.ext4", instance_dir);
     eprintln!("shuru: creating working copy...");
-    std::fs::copy(&source, &work_rootfs)?;
+    clone_file(&source, &work_rootfs)?;
 
     // Extend to requested disk size
     let f = std::fs::OpenOptions::new()
@@ -153,7 +172,6 @@ pub(crate) fn prepare_vm(
     })
 }
 
-/// Build a sandbox, start the VM, run the command, and return the exit code.
 pub(crate) fn run_command(prepared: &PreparedVm, command: &[String]) -> Result<i32> {
     eprintln!("shuru: kernel={}", prepared.kernel_path);
     eprintln!("shuru: rootfs={} (work copy)", prepared.work_rootfs);
@@ -204,7 +222,6 @@ pub(crate) fn run_command(prepared: &PreparedVm, command: &[String]) -> Result<i
     Ok(exit_code)
 }
 
-/// Parse a "HOST:GUEST" mount spec string.
 fn parse_mount_spec(s: &str) -> Result<MountConfig> {
     let parts: Vec<&str> = s.splitn(2, ':').collect();
     if parts.len() < 2 {
@@ -227,7 +244,6 @@ fn parse_mount_spec(s: &str) -> Result<MountConfig> {
     })
 }
 
-/// Parse a "HOST:GUEST" port mapping string.
 fn parse_port_mapping(s: &str) -> Result<PortMapping> {
     let parts: Vec<&str> = s.split(':').collect();
     if parts.len() != 2 {
