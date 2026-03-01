@@ -30,7 +30,6 @@ use crate::cli::VmArgs;
 use crate::config::ShuruConfig;
 
 pub(crate) struct PreparedVm {
-    pub data_dir: String,
     pub instance_dir: String,
     pub work_rootfs: String,
     pub kernel_path: String,
@@ -158,7 +157,6 @@ pub(crate) fn prepare_vm(
     };
 
     Ok(PreparedVm {
-        data_dir,
         instance_dir,
         work_rootfs,
         kernel_path,

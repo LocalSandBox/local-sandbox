@@ -22,13 +22,17 @@ pub(crate) fn create(
         vec!["/bin/sh".to_string()]
     };
 
+    let data_dir = shuru_vm::default_data_dir();
+    let checkpoints_dir = format!("{}/checkpoints", data_dir);
+    let checkpoint_path = format!("{}/{}.ext4", checkpoints_dir, name);
+    if std::path::Path::new(&checkpoint_path).exists() {
+        bail!("checkpoint '{}' already exists, delete it first", name);
+    }
+
     let prepared = vm::prepare_vm(vm_args, &cfg, from)?;
     let exit_code = vm::run_command(&prepared, &command)?;
 
-    // Save working copy as checkpoint
-    let checkpoints_dir = format!("{}/checkpoints", prepared.data_dir);
     std::fs::create_dir_all(&checkpoints_dir)?;
-    let checkpoint_path = format!("{}/{}.ext4", checkpoints_dir, name);
     eprintln!("shuru: saving checkpoint '{}'...", name);
     vm::clone_file(&prepared.work_rootfs, &checkpoint_path)?;
     eprintln!("shuru: checkpoint '{}' saved", name);
