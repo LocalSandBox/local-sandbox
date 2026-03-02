@@ -11,6 +11,12 @@ Shuru boots lightweight Linux VMs using Apple's Virtualization.framework. Each s
 ## Install
 
 ```sh
+brew tap superhq-ai/tap && brew install shuru
+```
+
+Or via the install script:
+
+```sh
 curl -fsSL https://raw.githubusercontent.com/superhq-ai/shuru/main/install.sh | sh
 ```
 
