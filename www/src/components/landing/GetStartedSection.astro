@@ -12,13 +12,45 @@
     </div>
 
     <div class="mx-auto mt-12 max-w-2xl border border-border">
-      <div class="flex items-center gap-2 border-b border-border px-4 py-2.5">
-        <span class="h-2.5 w-2.5 border border-[#ff5f57] bg-[#ff5f57]/20"></span>
-        <span class="h-2.5 w-2.5 border border-[#febc2e] bg-[#febc2e]/20"></span>
-        <span class="h-2.5 w-2.5 border border-[#28c840] bg-[#28c840]/20"></span>
-        <span class="ml-2 font-mono text-[10px] text-dim">terminal</span>
+      <div class="flex items-center border-b border-border">
+        <button class="install-tab active px-4 py-2.5 font-mono text-[10px] uppercase tracking-widest" data-tab="homebrew">
+          <svg class="inline-block h-3 w-3 mr-1.5 -mt-px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 11h1a3 3 0 0 1 0 6h-1"/><path d="M3 11h14v7a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4Z"/><path d="m6 8 4-6"/><path d="m11 8 2-4"/></svg>
+          Homebrew
+        </button>
+        <button class="install-tab px-4 py-2.5 font-mono text-[10px] uppercase tracking-widest" data-tab="script">
+          <svg class="inline-block h-3 w-3 mr-1.5 -mt-px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>
+          Script
+        </button>
       </div>
-      <div class="relative p-5 font-mono text-xs leading-[1.8] md:p-6 md:text-sm">
+
+      <div class="install-panel active relative p-5 font-mono text-xs leading-[1.8] md:p-6 md:text-sm" data-tab="homebrew">
+        <button
+          class="copy-btn absolute top-4 right-4 flex h-7 w-7 items-center justify-center border border-border text-dim transition-colors hover:border-muted hover:text-muted"
+          data-cmd="brew tap superhq-ai/tap && brew install shuru"
+          aria-label="Copy install command"
+        >
+          <svg class="copy-icon h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="0" />
+            <path d="M5 15H4a1 1 0 01-1-1V4a1 1 0 011-1h10a1 1 0 011 1v1" />
+          </svg>
+          <svg class="check-icon hidden h-3.5 w-3.5 text-amber" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+            <path d="M5 13l4 4L19 7" />
+          </svg>
+        </button>
+        <p class="text-dim"># Install</p>
+        <p>
+          <span class="text-dim">$</span>
+          <span class="text-text"> brew tap superhq-ai/tap && brew install shuru</span>
+        </p>
+        <br />
+        <p class="text-dim"># Run your first sandbox</p>
+        <p>
+          <span class="text-dim">$</span>
+          <span class="text-text"> shuru run</span>
+        </p>
+      </div>
+
+      <div class="install-panel relative p-5 font-mono text-xs leading-[1.8] md:p-6 md:text-sm" data-tab="script">
         <button
           class="copy-btn absolute top-4 right-4 flex h-7 w-7 items-center justify-center border border-border text-dim transition-colors hover:border-muted hover:text-muted"
           data-cmd="curl -fsSL https://shuru.run/install.sh | sh"
@@ -48,3 +80,43 @@
   </div>
 </section>
 
+<style>
+  .install-tab {
+    color: var(--color-dim);
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    transition: color 0.15s ease, border-color 0.15s ease;
+    background: none;
+  }
+
+  .install-tab:hover {
+    color: var(--color-muted);
+  }
+
+  .install-tab.active {
+    color: var(--color-amber, #f59e0b);
+    border-bottom-color: var(--color-amber, #f59e0b);
+  }
+
+  .install-panel {
+    display: none;
+  }
+
+  .install-panel.active {
+    display: block;
+  }
+</style>
+
+<script>
+  document.querySelectorAll('.install-tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      const target = (tab as HTMLElement).dataset.tab;
+
+      document.querySelectorAll('.install-tab').forEach((t) => t.classList.remove('active'));
+      document.querySelectorAll('.install-panel').forEach((p) => p.classList.remove('active'));
+
+      tab.classList.add('active');
+      document.querySelector(`.install-panel[data-tab="${target}"]`)?.classList.add('active');
+    });
+  });
+</script>
