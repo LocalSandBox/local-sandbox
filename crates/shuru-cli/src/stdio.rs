@@ -99,6 +99,8 @@ pub(crate) fn run_stdio(prepared: &PreparedVm) -> Result<i32> {
             }
             Command::Checkpoint { name } => {
                 handle_checkpoint(&sandbox, prepared, &req.id, &name, &mut out)?;
+                let _ = sandbox.stop();
+                return Ok(0);
             }
         }
     }

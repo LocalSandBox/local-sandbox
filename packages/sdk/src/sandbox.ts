@@ -3,6 +3,7 @@ import type { ExecResult, StartOptions } from "./types";
 
 export class Sandbox {
 	private proc: ShuruProcess;
+	private stopped = false;
 
 	private constructor(proc: ShuruProcess) {
 		this.proc = proc;
@@ -70,9 +71,13 @@ export class Sandbox {
 		if (resp.type !== "checkpoint") {
 			throw new Error(`unexpected response type: ${resp.type}`);
 		}
+		this.stopped = true;
+		await this.proc.stop();
 	}
 
 	async stop(): Promise<void> {
+		if (this.stopped) return;
+		this.stopped = true;
 		await this.proc.stop();
 	}
 }

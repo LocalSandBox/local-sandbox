@@ -121,8 +121,7 @@ const sb = await Sandbox.start({ from: "python-env" });
 const result = await sb.exec("python3 -c 'print(1+1)'");
 console.log(result.stdout); // "2\n"
 
-await sb.checkpoint("after-run");
-await sb.stop();
+await sb.checkpoint("after-run"); // saves disk state and stops the VM
 ```
 
 See the [SDK README](packages/sdk/README.md) for full API docs.

@@ -21,9 +21,7 @@ console.log(result.stdout); // "hello\n"
 await sb.writeFile("/tmp/app.ts", "console.log('hi')");
 const content = await sb.readFile("/tmp/app.ts");
 
-await sb.checkpoint("my-env");
-
-await sb.stop();
+await sb.checkpoint("my-env"); // saves disk state and stops the VM
 ```
 
 ### Start from a checkpoint
@@ -77,11 +75,11 @@ Write a file to the VM.
 
 ### `sandbox.checkpoint(name): Promise<void>`
 
-Snapshot the VM's disk. The VM keeps running.
+Save the VM's disk state and stop the VM. To continue working, call `Sandbox.start({ from: name })`.
 
 ### `sandbox.stop(): Promise<void>`
 
-Stop the VM. Unsaved changes are discarded.
+Stop the VM without saving. All changes are discarded.
 
 ## Requirements
 
