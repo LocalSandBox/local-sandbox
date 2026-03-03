@@ -26,7 +26,7 @@ jobs:
       - run: bunx --bun @biomejs/biome check src/
         working-directory: packages/sdk
 
-      - run: npm version ${{ inputs.version }} --no-git-tag-version
+      - run: npm version ${{ inputs.version }} --no-git-tag-version --allow-same-version
         working-directory: packages/sdk
 
       - run: npm publish --access public --provenance
