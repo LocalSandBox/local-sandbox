@@ -27,5 +27,3 @@ jobs:
 
       - run: npm publish --access public --provenance
         working-directory: packages/sdk
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
