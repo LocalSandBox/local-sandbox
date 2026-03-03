@@ -105,6 +105,28 @@ Shuru loads `shuru.json` from the current directory (or `--config PATH`). All fi
 }
 ```
 
+## SDK
+
+Use shuru programmatically from TypeScript with the [`@superhq/shuru`](https://www.npmjs.com/package/@superhq/shuru) package.
+
+```sh
+bun add @superhq/shuru
+```
+
+```ts
+import { Sandbox } from "@superhq/shuru";
+
+const sb = await Sandbox.start({ from: "python-env" });
+
+const result = await sb.exec("python3 -c 'print(1+1)'");
+console.log(result.stdout); // "2\n"
+
+await sb.checkpoint("after-run");
+await sb.stop();
+```
+
+See the [SDK README](packages/sdk/README.md) for full API docs.
+
 ## Agent Skill
 
 Shuru ships as an [agent skill](https://agentskills.io) so AI agents (Claude Code, Cursor, Copilot, etc.) can use it automatically.
