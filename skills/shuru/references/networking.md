@@ -5,7 +5,7 @@ Networking is **off by default**. Pass `--allow-net` to enable it.
 ## Enabling Network Access
 
 ```bash
-shuru run --allow-net -- apk add curl && curl https://example.com
+shuru run --allow-net -- sh -c 'apt-get install -y curl && curl https://example.com'
 ```
 
 Or set it in `shuru.json`:
@@ -49,6 +49,6 @@ To install packages, either:
 2. Create a checkpoint with packages pre-installed, then run without networking:
 
 ```bash
-shuru checkpoint create with-tools --allow-net -- apk add curl jq python3
+shuru checkpoint create with-tools --allow-net -- apt-get install -y curl jq python3
 shuru run --from with-tools -- python3 script.py   # no --allow-net needed
 ```

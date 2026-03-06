@@ -5,7 +5,7 @@ description: Run commands in an isolated Linux microVM sandbox using the shuru C
 
 # Sandboxed Execution with Shuru
 
-Shuru boots an ephemeral Linux microVM (Alpine, ARM64) on macOS. Each `shuru run` gets a fresh disk clone - all changes are discarded on exit. Use it whenever you need to run commands in isolation from the host.
+Shuru boots an ephemeral Linux microVM (Debian, ARM64) on macOS. Each `shuru run` gets a fresh disk clone - all changes are discarded on exit. Use it whenever you need to run commands in isolation from the host.
 
 ## Core Workflow
 
@@ -19,10 +19,10 @@ shuru run -- echo "hello from the sandbox"
 shuru run --mount ./src:/workspace -- ls /workspace
 
 # 3. If the command needs network access (install packages, fetch data)
-shuru run --allow-net -- apk add curl && curl https://example.com
+shuru run --allow-net -- sh -c 'apt-get install -y curl && curl https://example.com'
 
 # 4. If setup is expensive, save a checkpoint and reuse it
-shuru checkpoint create node-env --allow-net -- apk add nodejs npm
+shuru checkpoint create node-env --allow-net -- apt-get install -y nodejs npm
 shuru run --from node-env --mount .:/workspace -- node /workspace/app.js
 ```
 
@@ -31,7 +31,7 @@ shuru run --from node-env --mount .:/workspace -- node /workspace/app.js
 Chain commands with `sh -c` when you need multiple steps:
 
 ```bash
-shuru run --allow-net -- sh -c 'apk add python3 py3-pip && python3 -c "print(1+1)"'
+shuru run --allow-net -- sh -c 'apt-get install -y python3 python3-pip && python3 -c "print(1+1)"'
 
 shuru run --mount .:/workspace -- sh -c 'cd /workspace && ls -la && cat README.md'
 ```
@@ -102,7 +102,7 @@ Create a checkpoint with all dependencies pre-installed, then use it for fast ru
 
 ```bash
 # One-time setup
-shuru checkpoint create python-dev --allow-net -- sh -c 'apk add python3 py3-pip && pip install pytest requests'
+shuru checkpoint create python-dev --allow-net -- sh -c 'apt-get install -y python3 python3-pip && pip install pytest requests'
 
 # Fast subsequent runs
 shuru run --from python-dev --mount .:/workspace -- sh -c 'cd /workspace && pytest'
@@ -124,7 +124,7 @@ Mount source, build inside the VM, results appear on host via the mount:
 ```bash
 shuru run --mount .:/workspace --cpus 4 --memory 4096 -- sh -c '
   cd /workspace
-  apk add build-base
+  apt-get install -y build-essential
   make -j4
   make test
 '
@@ -144,8 +144,8 @@ shuru run --allow-net --from node-env -p 3000:3000 --mount .:/app -- sh -c '
 Build environments incrementally:
 
 ```bash
-shuru checkpoint create base --allow-net -- apk add build-base git curl
-shuru checkpoint create node --from base --allow-net -- sh -c 'apk add nodejs npm'
+shuru checkpoint create base --allow-net -- apt-get install -y build-essential git curl
+shuru checkpoint create node --from base --allow-net -- apt-get install -y nodejs npm
 shuru checkpoint create project --from node --allow-net --mount .:/app -- sh -c 'cd /app && npm install'
 # Now "project" has OS deps + Node + node_modules baked in
 shuru run --from project --mount .:/app -- sh -c 'cd /app && npm test'
@@ -172,7 +172,7 @@ CLI flags override config values. See [references/config.md](references/config.m
 ## Important Constraints
 
 - **Networking is off by default.** You must pass `--allow-net` to install packages or make HTTP requests.
-- **The guest is Alpine Linux (aarch64).** Use `apk add` for packages, not apt or yum.
+- **The guest is Debian Linux (aarch64).** Use `apt-get install` for packages.
 - **Ephemeral by default.** Everything is discarded on exit unless you checkpoint.
 - **Mounts are read-write.** Changes to mounted directories are visible on the host immediately.
 - **macOS only** (Apple Silicon). Uses Apple Virtualization.framework.

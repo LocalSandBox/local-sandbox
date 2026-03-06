@@ -17,8 +17,8 @@ If `--from` is specified, the VM boots from that checkpoint instead of the base 
 Checkpoints can be layered. Each layer only stores its diff from the parent:
 
 ```bash
-shuru checkpoint create base --allow-net -- apk add build-base git
-shuru checkpoint create node --from base --allow-net -- apk add nodejs npm
+shuru checkpoint create base --allow-net -- apt-get install -y build-essential git
+shuru checkpoint create node --from base --allow-net -- apt-get install -y nodejs npm
 shuru checkpoint create deps --from node --allow-net --mount .:/app -- sh -c 'cd /app && npm ci'
 ```
 

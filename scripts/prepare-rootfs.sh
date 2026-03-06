@@ -1,31 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 
-ALPINE_VERSION="3.21"
-ALPINE_RELEASE="3.21.3"
-ARCH="aarch64"
+DEBIAN_RELEASE="trixie"
 DATA_DIR="${HOME}/.local/share/shuru"
 ROOTFS_IMG="${DATA_DIR}/rootfs.ext4"
 KERNEL_PATH="${DATA_DIR}/Image"
 INITRAMFS_PATH="${DATA_DIR}/initramfs.cpio.gz"
 GUEST_BINARY="target/aarch64-unknown-linux-musl/release/shuru-guest"
-ROOTFS_SIZE_MB=512
-
-ALPINE_MIRROR="https://dl-cdn.alpinelinux.org/alpine"
-MINIROOTFS_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/releases/${ARCH}/alpine-minirootfs-${ALPINE_RELEASE}-${ARCH}.tar.gz"
-KERNEL_PKG_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/main/${ARCH}"
+ROOTFS_SIZE_MB=1024
 
 echo "==> Shuru rootfs preparation script"
-echo "    Alpine ${ALPINE_RELEASE} for ${ARCH}"
+echo "    Debian ${DEBIAN_RELEASE} (kernel + rootfs)"
 echo ""
-
-# Check for required tools
-for tool in curl tar dd; do
-    if ! command -v "$tool" &>/dev/null; then
-        echo "ERROR: Required tool '$tool' not found."
-        exit 1
-    fi
-done
 
 if [[ "$(uname)" == "Darwin" ]]; then
     if ! command -v docker &>/dev/null; then
@@ -46,77 +32,31 @@ GUEST_BINARY="$(cd "$(dirname "$GUEST_BINARY")" && pwd)/$(basename "$GUEST_BINAR
 
 mkdir -p "$DATA_DIR"
 
-# --- Download Alpine minirootfs ---
-MINIROOTFS_TAR="${DATA_DIR}/alpine-minirootfs-${ALPINE_RELEASE}-${ARCH}.tar.gz"
-if [ ! -f "$MINIROOTFS_TAR" ]; then
-    echo "==> Downloading Alpine minirootfs..."
-    curl -L -o "$MINIROOTFS_TAR" "$MINIROOTFS_URL"
-else
-    echo "==> Alpine minirootfs already downloaded."
-fi
-
-# --- Download kernel ---
+# --- Extract kernel ---
 if [ ! -f "$KERNEL_PATH" ]; then
-    echo "==> Downloading Alpine linux-virt kernel (VirtIO built-in)..."
-    TMPDIR=$(mktemp -d)
-    trap "rm -rf $TMPDIR" EXIT
+    echo "==> Extracting Debian cloud kernel..."
 
-    curl -sL -o "${TMPDIR}/APKINDEX.tar.gz" "${KERNEL_PKG_URL}/APKINDEX.tar.gz"
-    tar xzf "${TMPDIR}/APKINDEX.tar.gz" -C "$TMPDIR" 2>/dev/null || true
-
-    VIRT_VERSION=$(awk '/^P:linux-virt$/{found=1} found && /^V:/{print substr($0,3); exit}' "${TMPDIR}/APKINDEX")
-    if [ -z "$VIRT_VERSION" ]; then
-        echo "ERROR: Could not find linux-virt package version in APKINDEX"
-        exit 1
-    fi
-    echo "    Found linux-virt version: ${VIRT_VERSION}"
-
-    VIRT_PKG="linux-virt-${VIRT_VERSION}.apk"
-    curl -L -o "${TMPDIR}/${VIRT_PKG}" "${KERNEL_PKG_URL}/${VIRT_PKG}"
-
-    mkdir -p "${TMPDIR}/kernel"
-    tar xzf "${TMPDIR}/${VIRT_PKG}" -C "${TMPDIR}/kernel" 2>/dev/null || true
-
-    if [ -f "${TMPDIR}/kernel/boot/vmlinuz-virt" ]; then
-        echo "    Extracting uncompressed Image from vmlinuz-virt..."
-        # Apple's VZLinuxBootLoader requires the uncompressed ARM64 Image format.
-        # vmlinuz-virt is gzip-compressed with a PE32+ EFI stub header.
-        # Extract the raw Image by finding and decompressing the gzip stream.
-        python3 -c "
-import zlib
-data = open('${TMPDIR}/kernel/boot/vmlinuz-virt', 'rb').read()
-# Find gzip magic (1f 8b 08)
-for i in range(len(data) - 2):
-    if data[i] == 0x1f and data[i+1] == 0x8b and data[i+2] == 0x08:
-        try:
-            d = zlib.decompressobj(-15)
-            result = d.decompress(data[i+10:])
-            result += d.flush()
-            if len(result) > 0x40 and result[0x38:0x3c] == b'ARMd':
-                with open('${KERNEL_PATH}', 'wb') as f:
-                    f.write(result)
-                print(f'Extracted {len(result)} byte ARM64 Image')
-                break
-        except:
-            continue
-else:
-    print('ERROR: Could not extract kernel Image')
-    exit(1)
-"
-        echo "    Kernel saved to ${KERNEL_PATH}"
-    else
-        echo "ERROR: vmlinuz-virt not found in the kernel package."
-        echo "       Contents:"
-        find "${TMPDIR}/kernel" -type f | head -20
-        exit 1
-    fi
+    docker run --rm \
+        --platform linux/arm64/v8 \
+        -v "${DATA_DIR}:/output" \
+        debian:${DEBIAN_RELEASE}-slim /bin/sh -c '
+            set -e
+            apt-get update -qq > /dev/null 2>&1
+            apt-get install -y -qq linux-image-cloud-arm64 > /dev/null 2>&1
+            VMLINUZ=$(ls /boot/vmlinuz-* | head -1)
+            echo "    Found: ${VMLINUZ}"
+            cp "${VMLINUZ}" /output/Image
+            echo "    Kernel copied to /output/Image"
+        '
+    echo "    Kernel saved to ${KERNEL_PATH}"
 else
     echo "==> Kernel already present."
 fi
 
 # --- Build initramfs with VirtIO block + vsock modules ---
-# linux-virt has virtio, virtio_pci, virtio_console built-in (=y)
-# but virtio_blk, virtio_net, vsock are still modules (=m)
+# Debian cloud kernel has virtio_pci, virtio_console, ext4, fuse, virtiofs,
+# af_packet, crc32c built-in (=y). Only virtio_blk, virtio_net, vsock, overlay
+# are modules (=m).
 if [ ! -f "$INITRAMFS_PATH" ]; then
     echo "==> Building initramfs with VirtIO modules..."
 
@@ -146,9 +86,11 @@ DHCPEOF
         -v "${DATA_DIR}:/output" \
         -v "${UDHCPC_SCRIPT}:/tmp/udhcpc.sh:ro" \
         -v "${GUEST_BINARY}:/tmp/shuru-init:ro" \
-        alpine:3.21 /bin/sh -c '
+        debian:${DEBIAN_RELEASE}-slim /bin/sh -c '
             set -e
-            apk add --no-cache linux-virt kmod findutils cpio gzip > /dev/null 2>&1
+            apt-get update -qq > /dev/null 2>&1
+            apt-get install -y -qq linux-image-cloud-arm64 busybox-static \
+                e2fsprogs pax-utils kmod cpio > /dev/null 2>&1
             KVER=$(ls /lib/modules/ | head -1)
             echo "Kernel modules version: ${KVER}"
 
@@ -158,29 +100,21 @@ DHCPEOF
             mkdir -p /initramfs/newroot
             mkdir -p "/initramfs/lib/modules/${KVER}"
 
-            # Busybox (static) for shell + utilities — must be statically linked
-            # since initramfs has no dynamic linker
-            apk add --no-cache busybox-static > /dev/null 2>&1
-            cp /bin/busybox.static /initramfs/bin/busybox
+            # Busybox (static) for shell + utilities
+            cp /bin/busybox /initramfs/bin/busybox
             for cmd in sh mount umount switch_root modprobe insmod mkdir echo cat sleep mknod ln cp chmod ifconfig route udhcpc; do
                 ln -sf busybox "/initramfs/bin/${cmd}"
             done
 
             # e2fsck + resize2fs for journal recovery and filesystem resize
-            apk add --no-cache lddtree e2fsprogs e2fsprogs-extra > /dev/null 2>&1
             lddtree -l /sbin/e2fsck /usr/sbin/resize2fs | sort -u \
                 | cpio --quiet -pdm /initramfs
 
-            # Copy needed modules (virtio_blk, ext4, net, vsock and deps)
+            # Copy needed modules (only those not built-in)
             echo "Copying kernel modules..."
             for mod in \
                 kernel/drivers/block/virtio_blk.ko* \
-                kernel/crypto/crc32c_generic.ko* \
                 kernel/lib/libcrc32c.ko* \
-                kernel/fs/ext4/ext4.ko* \
-                kernel/fs/jbd2/jbd2.ko* \
-                kernel/fs/mbcache.ko* \
-                kernel/lib/crc16.ko* \
                 kernel/drivers/net/virtio_net.ko* \
                 kernel/drivers/net/net_failover.ko* \
                 kernel/net/core/failover.ko* \
@@ -192,9 +126,6 @@ DHCPEOF
                 kernel/drivers/virtio/virtio_mmio.ko* \
                 kernel/net/vmw_vsock/vsock_loopback.ko* \
                 kernel/net/vmw_vsock/vsock_diag.ko* \
-                kernel/net/packet/af_packet.ko* \
-                kernel/fs/fuse/fuse.ko* \
-                kernel/fs/fuse/virtiofs.ko* \
                 kernel/fs/overlayfs/overlay.ko*; do
                 for f in /lib/modules/${KVER}/${mod}; do
                     if [ -f "${f}" ]; then
@@ -232,7 +163,7 @@ DHCPEOF
 /bin/mount -t devtmpfs none /dev
 
 echo "initramfs: loading modules..."
-for mod in virtio_blk crc32c_generic libcrc32c jbd2 mbcache ext4 af_packet virtio_net vsock vmw_vsock_virtio_transport_common vmw_vsock_virtio_transport fuse virtiofs overlay; do
+for mod in virtio_blk libcrc32c virtio_net vsock vmw_vsock_virtio_transport_common vmw_vsock_virtio_transport overlay; do
     /bin/modprobe ${mod} 2>/dev/null && echo "  loaded: ${mod}" || echo "  FAILED: ${mod}"
 done
 
@@ -295,70 +226,125 @@ else
     echo "==> Initramfs already present."
 fi
 
-# --- Create ext4 rootfs image ---
-echo "==> Creating ext4 rootfs image (${ROOTFS_SIZE_MB}MB)..."
+# --- Create ext4 rootfs image with Debian trixie ---
+if [ -f "$ROOTFS_IMG" ]; then
+    echo "==> Rootfs already present."
+else
+echo "==> Creating ext4 rootfs image (${ROOTFS_SIZE_MB}MB) with Debian ${DEBIAN_RELEASE}..."
 
-# Create empty image file
-dd if=/dev/zero of="$ROOTFS_IMG" bs=1M count="$ROOTFS_SIZE_MB" 2>&1
+# Create sparse image file
+truncate -s ${ROOTFS_SIZE_MB}M "$ROOTFS_IMG"
 
 if [[ "$(uname)" == "Darwin" ]]; then
     echo ""
-    echo "==> macOS detected. Using Docker for ext4 formatting and population."
+    echo "==> macOS detected. Using Docker for ext4 formatting and Debian bootstrap."
     echo ""
 
-    DOCKER_WORKDIR=$(mktemp -d)
-    cp "$MINIROOTFS_TAR" "${DOCKER_WORKDIR}/rootfs.tar.gz"
-    cp "$GUEST_BINARY" "${DOCKER_WORKDIR}/shuru-guest"
-
-    # Format + populate entirely inside Docker
+    # Format + debootstrap + populate entirely inside Docker
     docker run --rm --privileged \
         --platform linux/arm64/v8 \
+        -e DEBIAN_RELEASE="${DEBIAN_RELEASE}" \
         -v "${ROOTFS_IMG}:/rootfs.ext4" \
-        -v "${DOCKER_WORKDIR}:/workdir:ro" \
-        alpine:3.21 /bin/sh -c '
+        -v "${GUEST_BINARY}:/tmp/shuru-guest:ro" \
+        debian:${DEBIAN_RELEASE}-slim /bin/sh -c '
             set -e
-            apk add --no-cache e2fsprogs > /dev/null 2>&1
+            apt-get update -qq
+            apt-get install -y -qq debootstrap e2fsprogs > /dev/null 2>&1
+
             mkfs.ext4 -F /rootfs.ext4
             mkdir -p /mnt/rootfs
             mount -o loop /rootfs.ext4 /mnt/rootfs
-            tar xzf /workdir/rootfs.tar.gz -C /mnt/rootfs
-            cp /workdir/shuru-guest /mnt/rootfs/usr/bin/shuru-init
+
+            echo "==> Running debootstrap (this may take a few minutes)..."
+            debootstrap --arch=arm64 --variant=minbase ${DEBIAN_RELEASE} /mnt/rootfs http://deb.debian.org/debian
+
+            # Strip docs, man pages, and locales (slim image approach)
+            mkdir -p /mnt/rootfs/etc/dpkg/dpkg.cfg.d
+            cat > /mnt/rootfs/etc/dpkg/dpkg.cfg.d/01-nodoc << DPKGEOF
+path-exclude /usr/share/doc/*
+path-exclude /usr/share/man/*
+path-exclude /usr/share/info/*
+path-exclude /usr/share/locale/*
+path-include /usr/share/locale/en*
+DPKGEOF
+
+            # Install essential packages
+            chroot /mnt/rootfs apt-get update -qq
+            chroot /mnt/rootfs apt-get install -y -qq --no-install-recommends \
+                ca-certificates curl git iproute2 \
+                openssh-client jq less procps xz-utils libgomp1 > /dev/null 2>&1
+
+            # Clean up docs that debootstrap already installed
+            rm -rf /mnt/rootfs/usr/share/doc/* /mnt/rootfs/usr/share/man/* /mnt/rootfs/usr/share/info/*
+            find /mnt/rootfs/usr/share/locale -mindepth 1 -maxdepth 1 ! -name "en*" -exec rm -rf {} + 2>/dev/null || true
+
+            chroot /mnt/rootfs apt-get clean
+            rm -rf /mnt/rootfs/var/lib/apt/lists/*
+
+            # Install guest binary
+            cp /tmp/shuru-guest /mnt/rootfs/usr/bin/shuru-init
             chmod 755 /mnt/rootfs/usr/bin/shuru-init
+
+            # Basic configuration
             mkdir -p /mnt/rootfs/proc /mnt/rootfs/sys /mnt/rootfs/dev /mnt/rootfs/tmp /mnt/rootfs/run
             echo "shuru" > /mnt/rootfs/etc/hostname
             echo "nameserver 8.8.8.8" > /mnt/rootfs/etc/resolv.conf
-            apk add --no-cache --root /mnt/rootfs gcompat > /dev/null 2>&1
-            umount /mnt/rootfs
-            echo "==> Rootfs populated successfully"
-        '
 
-    rm -rf "$DOCKER_WORKDIR"
+            umount /mnt/rootfs
+            echo "==> Debian rootfs populated successfully"
+        '
 else
     # Linux: can use native tools
-    if ! command -v mkfs.ext4 &>/dev/null; then
-        sudo apt-get update && sudo apt-get install -y e2fsprogs
+    MISSING_PKGS=""
+    command -v mkfs.ext4 &>/dev/null || MISSING_PKGS="e2fsprogs"
+    command -v debootstrap &>/dev/null || MISSING_PKGS="${MISSING_PKGS} debootstrap"
+    if [ -n "$MISSING_PKGS" ]; then
+        sudo apt-get update && sudo apt-get install -y $MISSING_PKGS
     fi
+
     mkfs.ext4 -F "$ROOTFS_IMG"
     MOUNT_DIR=$(mktemp -d)
     sudo mount -o loop "$ROOTFS_IMG" "$MOUNT_DIR"
-    sudo tar xzf "$MINIROOTFS_TAR" -C "$MOUNT_DIR"
+
+    echo "==> Running debootstrap (this may take a few minutes)..."
+    sudo debootstrap --arch=arm64 --variant=minbase "${DEBIAN_RELEASE}" "$MOUNT_DIR" http://deb.debian.org/debian
+
+    # Strip docs, man pages, and locales (slim image approach)
+    sudo mkdir -p "${MOUNT_DIR}/etc/dpkg/dpkg.cfg.d"
+    cat <<'DPKGEOF' | sudo tee "${MOUNT_DIR}/etc/dpkg/dpkg.cfg.d/01-nodoc" > /dev/null
+path-exclude /usr/share/doc/*
+path-exclude /usr/share/man/*
+path-exclude /usr/share/info/*
+path-exclude /usr/share/locale/*
+path-include /usr/share/locale/en*
+DPKGEOF
+
+    # Install essential packages
+    sudo chroot "$MOUNT_DIR" apt-get update -qq
+    sudo chroot "$MOUNT_DIR" apt-get install -y -qq --no-install-recommends \
+        ca-certificates curl git iproute2 \
+        openssh-client jq less procps xz-utils libgomp1 > /dev/null 2>&1
+
+    # Clean up docs that debootstrap already installed
+    sudo rm -rf "${MOUNT_DIR}/usr/share/doc/"* "${MOUNT_DIR}/usr/share/man/"* "${MOUNT_DIR}/usr/share/info/"*
+    sudo find "${MOUNT_DIR}/usr/share/locale" -mindepth 1 -maxdepth 1 ! -name "en*" -exec rm -rf {} + 2>/dev/null || true
+
+    sudo chroot "$MOUNT_DIR" apt-get clean
+    sudo rm -rf "${MOUNT_DIR}/var/lib/apt/lists/"*
+
+    # Install guest binary
     sudo cp "$GUEST_BINARY" "${MOUNT_DIR}/usr/bin/shuru-init"
     sudo chmod 755 "${MOUNT_DIR}/usr/bin/shuru-init"
+
+    # Basic configuration
     sudo mkdir -p "${MOUNT_DIR}/proc" "${MOUNT_DIR}/sys" "${MOUNT_DIR}/dev" "${MOUNT_DIR}/tmp" "${MOUNT_DIR}/run"
     echo "shuru" | sudo tee "${MOUNT_DIR}/etc/hostname" > /dev/null
     echo "nameserver 8.8.8.8" | sudo tee "${MOUNT_DIR}/etc/resolv.conf" > /dev/null
-    # Install gcompat into the Alpine rootfs
-    if command -v apk &>/dev/null; then
-        sudo apk add --no-cache --root "$MOUNT_DIR" gcompat > /dev/null 2>&1
-    else
-        # Non-Alpine host (e.g. Ubuntu CI): chroot into the ARM64 Alpine rootfs
-        sudo mount --bind /etc/resolv.conf "${MOUNT_DIR}/etc/resolv.conf"
-        sudo chroot "$MOUNT_DIR" /sbin/apk add --no-cache gcompat > /dev/null 2>&1
-        sudo umount "${MOUNT_DIR}/etc/resolv.conf" 2>/dev/null || true
-    fi
+
     sudo umount "$MOUNT_DIR"
     rmdir "$MOUNT_DIR" 2>/dev/null || true
 fi
+fi # rootfs existence check
 
 echo ""
 echo "==> Done!"

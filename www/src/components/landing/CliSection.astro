@@ -88,7 +88,7 @@
             <p class="text-amber">hello from the sandbox</p>
             <br />
             <p><span class="text-dim">$</span> <span class="text-text">shuru run -- cat /etc/os-release | head -1</span></p>
-            <p class="text-amber">NAME="Alpine Linux"</p>
+            <p class="text-amber">NAME="Debian GNU/Linux"</p>
             <br />
             <p class="text-muted"># VM boots, runs, and tears down — nothing persists.</p>
           </div>
@@ -97,9 +97,9 @@
             <p><span class="text-dim">$</span> <span class="text-text">shuru run -- ping -c1 8.8.8.8</span></p>
             <p class="text-red-400">ping: sendto: Operation not permitted</p>
             <br />
-            <p><span class="text-dim">$</span> <span class="text-text">shuru run --allow-net -- apk add python3</span></p>
-            <p class="text-muted">fetch https://dl-cdn.alpinelinux.org/...</p>
-            <p class="text-amber">OK: 45 MiB in 28 packages</p>
+            <p><span class="text-dim">$</span> <span class="text-text">shuru run --allow-net -- apt-get install -y python3</span></p>
+            <p class="text-muted">Reading package lists...</p>
+            <p class="text-amber">Setting up python3 ... done</p>
           </div>
 
           <div class="cli-panel p-5 font-mono text-xs leading-[1.8] md:p-6 md:text-sm" data-hash="resources">
@@ -123,7 +123,7 @@
           </div>
 
           <div class="cli-panel p-5 font-mono text-xs leading-[1.8] md:p-6 md:text-sm" data-hash="checkpoints">
-          <p><span class="text-dim">$</span> <span class="text-text">shuru checkpoint create myenv --allow-net -- sh -c 'apk add nodejs npm'</span></p>
+          <p><span class="text-dim">$</span> <span class="text-text">shuru checkpoint create myenv --allow-net -- sh -c 'apt-get install -y nodejs npm'</span></p>
             <p class="text-amber">shuru: checkpoint 'myenv' saved</p>
             <br />
             <p><span class="text-dim">$</span> <span class="text-text">shuru run --from myenv -- node -e 'console.log("ready")'</span></p>
@@ -133,7 +133,7 @@
           </div>
 
           <div class="cli-panel p-5 font-mono text-xs leading-[1.8] md:p-6 md:text-sm" data-hash="port-forwarding">
-            <p><span class="text-dim">$</span> <span class="text-text">shuru checkpoint create py --allow-net -- apk add python3</span></p>
+            <p><span class="text-dim">$</span> <span class="text-text">shuru checkpoint create py --allow-net -- apt-get install -y python3</span></p>
             <p class="text-amber">shuru: checkpoint 'py' saved</p>
             <br />
             <p><span class="text-dim">$</span> <span class="text-text">shuru run --from py -p 8080:8000 -- python3 -m http.server 8000</span></p>

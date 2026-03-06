@@ -58,7 +58,7 @@ Forward host ports to guest ports over vsock. Works without `--allow-net` — th
 
 ```sh
 # Install python3 into a checkpoint, then serve with port forwarding
-shuru checkpoint create py --allow-net -- apk add python3
+shuru checkpoint create py --allow-net -- apt-get install -y python3
 shuru run --from py -p 8080:8000 -- python3 -m http.server 8000
 
 # From the host (in another terminal)
@@ -76,7 +76,7 @@ Checkpoints save the disk state so you can reuse an environment across runs.
 
 ```sh
 # Set up an environment and save it
-shuru checkpoint create myenv --allow-net -- sh -c 'apk add python3 gcc'
+shuru checkpoint create myenv --allow-net -- sh -c 'apt-get install -y python3 gcc'
 
 # Run from a checkpoint (ephemeral -- changes are discarded)
 shuru run --from myenv -- python3 script.py
@@ -160,9 +160,13 @@ Once installed, agents will use `shuru run` whenever they need sandboxed executi
 │         │   shuru-guest    │                │
 │         │   (PID 1 init)   │                │
 │         └──────────────────┘                │
-│  Alpine Linux 3.21 / linux-virt 6.12        │
+│  Debian GNU/Linux 13 (trixie)               │
 └─────────────────────────────────────────────┘
 ```
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes and breaking changes.
 
 ## Bugs
 
