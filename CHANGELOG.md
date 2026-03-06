@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 (unreleased)
+## 0.2.0
 
 ### Breaking: Guest OS migrated from Alpine Linux to Debian
 
