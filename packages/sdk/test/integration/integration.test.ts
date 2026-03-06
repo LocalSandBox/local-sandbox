@@ -52,7 +52,7 @@ describe.if(canRun)("sandbox lifecycle", () => {
 		const content = "hello from integration test\nline 2\n";
 		await sb.writeFile("/tmp/sdk-test.txt", content);
 		const read = await sb.readFile("/tmp/sdk-test.txt");
-		expect(read).toBe(content);
+		expect(new TextDecoder().decode(read)).toBe(content);
 	}, 30_000);
 
 	test("multiple sequential execs", async () => {
