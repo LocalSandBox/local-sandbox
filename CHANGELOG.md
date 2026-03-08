@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.0
+
+### Custom minimal kernel, faster boot
+
+Boot time reduced from ~5s to ~1s by replacing the Debian cloud kernel with a custom minimal Linux 6.12.x kernel.
+
+**What changed:**
+
+- Custom kernel built from `kernel/shuru_defconfig` with all VirtIO drivers built-in (~8MB, no loadable modules)
+- Simplified initramfs (no module loading, no DHCP, no device polling)
+- Quiet boot by default, use `--verbose` to see kernel output
+- Faster vsock connection (50x200ms retries instead of 10x1s)
+- Re-enabled ext4 journal for data integrity
+- Added `scripts/build-kernel.sh` for Docker-based kernel builds with native aarch64 fallback
+
+**Note:** Existing checkpoints created with 0.2.x will continue to work.
+
 ## 0.2.0
 
 ### Breaking: Guest OS migrated from Alpine Linux to Debian
