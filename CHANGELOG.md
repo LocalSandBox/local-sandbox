@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- Fixed TLS certificate validation failures by syncing guest clock from host via kernel cmdline
+
 ## 0.3.0
 
 ### Custom minimal kernel, faster boot
