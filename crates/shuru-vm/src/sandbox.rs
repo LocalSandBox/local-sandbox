@@ -121,12 +121,16 @@ impl VmConfigBuilder {
             boot_loader.set_initrd(initrd);
         }
 
+        let epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let cmdline = if self.verbose {
-            "console=hvc0 root=/dev/vda rw"
+            format!("console=hvc0 root=/dev/vda rw shuru.epoch={epoch}")
         } else {
-            "console=hvc0 root=/dev/vda rw quiet"
+            format!("console=hvc0 root=/dev/vda rw quiet shuru.epoch={epoch}")
         };
-        boot_loader.set_command_line(cmdline);
+        boot_loader.set_command_line(&cmdline);
 
         let memory_bytes = self.memory_mb * 1024 * 1024;
         let config = VirtualMachineConfiguration::new(&boot_loader, self.cpus, memory_bytes);

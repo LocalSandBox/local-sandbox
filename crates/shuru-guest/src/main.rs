@@ -813,11 +813,35 @@ mod guest {
         }
     }
 
+    fn sync_clock() {
+        let cmdline = match std::fs::read_to_string("/proc/cmdline") {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        for param in cmdline.split_whitespace() {
+            if let Some(val) = param.strip_prefix("shuru.epoch=") {
+                if let Ok(epoch) = val.parse::<i64>() {
+                    let tv = libc::timeval {
+                        tv_sec: epoch,
+                        tv_usec: 0,
+                    };
+                    unsafe {
+                        libc::settimeofday(&tv, std::ptr::null());
+                    }
+                    eprintln!("shuru-guest: clock set to {}", epoch);
+                }
+                break;
+            }
+        }
+    }
+
     pub fn run() -> ! {
         eprintln!("shuru-guest: starting as PID 1");
 
         mount_filesystems();
         eprintln!("shuru-guest: filesystems mounted");
+
+        sync_clock();
 
         // Set hostname
         let hostname = b"shuru\0";
