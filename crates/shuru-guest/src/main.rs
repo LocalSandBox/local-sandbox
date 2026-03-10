@@ -7,7 +7,7 @@ mod guest {
     use shuru_proto::frame;
     use shuru_proto::{
         ExecRequest, ForwardRequest, ForwardResponse, MountRequest, MountResponse,
-        ReadFileRequest, WriteFileRequest, WriteFileResponse,
+        ReadFileRequest, WatchEvent, WatchRequest, WriteFileRequest, WriteFileResponse,
     };
     use shuru_proto::{VSOCK_PORT, VSOCK_PORT_FORWARD};
 
@@ -334,8 +334,21 @@ mod guest {
                         return;
                     }
 
-                    // Non-TTY mode: piped exec
-                    handle_piped_exec(&req, &mut writer);
+                    // Non-TTY streaming mode: takes ownership of streams
+                    handle_piped_exec(&req, reader, writer);
+                    return;
+                }
+                frame::WATCH_REQ => {
+                    let req: WatchRequest = match serde_json::from_slice(&payload) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            let msg = format!("invalid watch request: {}", e);
+                            let _ = frame::write_frame(&mut writer, frame::ERROR, msg.as_bytes());
+                            continue;
+                        }
+                    };
+                    handle_watch(&req, writer);
+                    return;
                 }
                 frame::READ_FILE_REQ => {
                     let req: ReadFileRequest = match serde_json::from_slice(&payload) {
@@ -426,7 +439,7 @@ mod guest {
         }
     }
 
-    fn handle_piped_exec(req: &ExecRequest, writer: &mut impl Write) {
+    fn handle_piped_exec(req: &ExecRequest, vsock_reader: std::net::TcpStream, vsock_writer: std::net::TcpStream) {
         let mut cmd = Command::new(&req.argv[0]);
         if req.argv.len() > 1 {
             cmd.args(&req.argv[1..]);
@@ -434,46 +447,250 @@ mod guest {
         for (k, v) in &req.env {
             cmd.env(k, v);
         }
+        if let Some(ref cwd) = req.cwd {
+            cmd.current_dir(cwd);
+        }
+        cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
         match cmd.spawn() {
             Ok(mut child) => {
-                let mut stdout_data = Vec::new();
-                let mut stderr_data = Vec::new();
+                let child_pid = child.id() as i32;
 
-                if let Some(mut stdout) = child.stdout.take() {
-                    let _ = stdout.read_to_end(&mut stdout_data);
-                }
-                if let Some(mut stderr) = child.stderr.take() {
-                    let _ = stderr.read_to_end(&mut stderr_data);
-                }
+                // Channel serializes all frame writes to prevent interleaving
+                let (tx, rx) = std::sync::mpsc::channel::<(u8, Vec<u8>)>();
 
+                // Writer thread: drains channel, writes frames to vsock
+                let mut frame_writer = vsock_writer;
+                let writer_thread = std::thread::spawn(move || {
+                    for (frame_type, payload) in rx {
+                        if frame::write_frame(&mut frame_writer, frame_type, &payload).is_err() {
+                            break;
+                        }
+                    }
+                });
+
+                // Thread: child stdout -> STDOUT frames
+                let child_stdout = child.stdout.take().unwrap();
+                let tx_stdout = tx.clone();
+                let stdout_thread = std::thread::spawn(move || {
+                    let mut stdout = child_stdout;
+                    let mut buf = [0u8; 8192];
+                    loop {
+                        match stdout.read(&mut buf) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                if tx_stdout.send((frame::STDOUT, buf[..n].to_vec())).is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                });
+
+                // Thread: child stderr -> STDERR frames
+                let child_stderr = child.stderr.take().unwrap();
+                let tx_stderr = tx.clone();
+                let stderr_thread = std::thread::spawn(move || {
+                    let mut stderr = child_stderr;
+                    let mut buf = [0u8; 8192];
+                    loop {
+                        match stderr.read(&mut buf) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                if tx_stderr.send((frame::STDERR, buf[..n].to_vec())).is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                });
+
+                // Thread: vsock STDIN/KILL frames -> child stdin
+                let child_stdin = child.stdin.take().unwrap();
+                let input_thread = std::thread::spawn(move || {
+                    let mut stdin = child_stdin;
+                    let mut reader = vsock_reader;
+                    loop {
+                        match frame::read_frame(&mut reader) {
+                            Ok(Some((frame::STDIN, data))) => {
+                                if stdin.write_all(&data).is_err() {
+                                    break;
+                                }
+                                let _ = stdin.flush();
+                            }
+                            Ok(Some((frame::KILL, _))) => {
+                                unsafe { libc::kill(child_pid, libc::SIGTERM) };
+                                break;
+                            }
+                            _ => break,
+                        }
+                    }
+                });
+
+                // Wait for output to drain, then wait for child
+                let _ = stdout_thread.join();
+                let _ = stderr_thread.join();
                 let status = child.wait().expect("failed to wait on child");
                 let exit_code = status.code().unwrap_or(-1);
 
-                // Flush all filesystem writes to disk before reporting exit.
-                // Without this, data can be lost if the VM is stopped immediately
-                // after the exit code is sent (e.g. during checkpoint create).
-                unsafe {
-                    libc::sync();
-                }
+                unsafe { libc::sync(); }
 
-                if !stdout_data.is_empty() {
-                    let _ = frame::write_frame(writer, frame::STDOUT, &stdout_data);
-                }
+                let _ = tx.send((frame::EXIT, frame::exit_payload(exit_code).to_vec()));
+                drop(tx);
+                let _ = writer_thread.join();
 
-                if !stderr_data.is_empty() {
-                    let _ = frame::write_frame(writer, frame::STDERR, &stderr_data);
-                }
-
-                let _ = frame::write_frame(writer, frame::EXIT, &frame::exit_payload(exit_code));
+                // Input thread will exit when vsock closes or we drop
+                drop(input_thread);
             }
             Err(e) => {
                 let msg = format!("failed to spawn: {}", e);
-                let _ = frame::write_frame(writer, frame::ERROR, msg.as_bytes());
+                let mut w = vsock_writer;
+                let _ = frame::write_frame(&mut w, frame::ERROR, msg.as_bytes());
             }
         }
+    }
+
+    fn handle_watch(req: &WatchRequest, mut writer: std::net::TcpStream) {
+        use std::collections::HashMap;
+        use std::ffi::CString;
+        use std::os::unix::io::AsRawFd;
+
+        let inotify_fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK) };
+        if inotify_fd < 0 {
+            let _ = frame::write_frame(&mut writer, frame::ERROR, b"inotify_init failed");
+            return;
+        }
+
+        let mask = libc::IN_CREATE | libc::IN_MODIFY | libc::IN_DELETE
+            | libc::IN_MOVED_FROM | libc::IN_MOVED_TO;
+
+        let mut wd_to_path: HashMap<i32, String> = HashMap::new();
+
+        fn add_watches(
+            inotify_fd: i32,
+            path: &str,
+            mask: u32,
+            wd_to_path: &mut HashMap<i32, String>,
+            recursive: bool,
+        ) {
+            let c_path = match CString::new(path) {
+                Ok(p) => p,
+                Err(_) => return,
+            };
+            let wd = unsafe { libc::inotify_add_watch(inotify_fd, c_path.as_ptr(), mask) };
+            if wd >= 0 {
+                wd_to_path.insert(wd, path.to_string());
+            }
+            if !recursive {
+                return;
+            }
+            let entries = match std::fs::read_dir(path) {
+                Ok(e) => e,
+                Err(_) => return,
+            };
+            for entry in entries.flatten() {
+                if let Ok(ft) = entry.file_type() {
+                    if ft.is_dir() {
+                        if let Some(p) = entry.path().to_str() {
+                            add_watches(inotify_fd, p, mask, wd_to_path, true);
+                        }
+                    }
+                }
+            }
+        }
+
+        add_watches(inotify_fd, &req.path, mask, &mut wd_to_path, req.recursive);
+
+        let vsock_raw = writer.as_raw_fd();
+        let mut buf = [0u8; 4096];
+
+        loop {
+            let mut fds = [libc::pollfd {
+                fd: inotify_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            }];
+            let ret = unsafe { libc::poll(fds.as_mut_ptr(), 1, 500) };
+
+            if ret > 0 && (fds[0].revents & libc::POLLIN != 0) {
+                let n = unsafe {
+                    libc::read(inotify_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
+                };
+                if n <= 0 {
+                    continue;
+                }
+
+                let mut offset = 0usize;
+                while offset < n as usize {
+                    if offset + std::mem::size_of::<libc::inotify_event>() > n as usize {
+                        break;
+                    }
+                    let event = unsafe {
+                        &*(buf.as_ptr().add(offset) as *const libc::inotify_event)
+                    };
+                    let name_len = event.len as usize;
+                    offset += std::mem::size_of::<libc::inotify_event>() + name_len;
+
+                    let dir = wd_to_path.get(&event.wd).map(|s| s.as_str()).unwrap_or("");
+                    let filename = if name_len > 0 {
+                        let name_start = offset - name_len;
+                        let name_bytes = &buf[name_start..offset];
+                        let end = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
+                        std::str::from_utf8(&name_bytes[..end]).unwrap_or("")
+                    } else {
+                        ""
+                    };
+
+                    let full_path = if filename.is_empty() {
+                        dir.to_string()
+                    } else {
+                        format!("{}/{}", dir, filename)
+                    };
+
+                    let event_type = if event.mask & libc::IN_CREATE != 0 {
+                        "create"
+                    } else if event.mask & libc::IN_MODIFY != 0 {
+                        "modify"
+                    } else if event.mask & libc::IN_DELETE != 0 {
+                        "delete"
+                    } else if event.mask & (libc::IN_MOVED_FROM | libc::IN_MOVED_TO) != 0 {
+                        "rename"
+                    } else {
+                        continue;
+                    };
+
+                    // If a new directory was created, add watches
+                    if event.mask & libc::IN_CREATE != 0 && event.mask & libc::IN_ISDIR != 0 {
+                        add_watches(inotify_fd, &full_path, mask, &mut wd_to_path, req.recursive);
+                    }
+
+                    let evt = WatchEvent {
+                        path: full_path,
+                        event: event_type.to_string(),
+                    };
+                    if let Ok(payload) = serde_json::to_vec(&evt) {
+                        if frame::write_frame(&mut writer, frame::WATCH_EVENT, &payload).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Check if vsock peer hung up (host closed connection = stop watching)
+            let mut vfds = [libc::pollfd {
+                fd: vsock_raw,
+                events: 0,
+                revents: 0,
+            }];
+            unsafe { libc::poll(vfds.as_mut_ptr(), 1, 0) };
+            if vfds[0].revents & libc::POLLHUP != 0 {
+                break;
+            }
+        }
+
+        unsafe { libc::close(inotify_fd) };
     }
 
     fn handle_tty_exec(vsock_fd: i32, req: &ExecRequest) {
@@ -529,6 +746,13 @@ mod guest {
                 // Close any other inherited fds
                 for fd in 3..1024 {
                     libc::close(fd);
+                }
+
+                // Change directory if requested
+                if let Some(ref cwd) = req.cwd {
+                    if let Ok(dir) = CString::new(cwd.as_str()) {
+                        libc::chdir(dir.as_ptr());
+                    }
                 }
 
                 // Set environment

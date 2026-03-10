@@ -1069,7 +1069,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "shuru-cli"
-version = "0.3.3"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -1078,6 +1078,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "shuru-proto",
  "shuru-proxy",
  "shuru-vm",
  "tar",
@@ -1101,7 +1102,7 @@ dependencies = [
 
 [[package]]
 name = "shuru-guest"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "serde_json",
@@ -1110,7 +1111,7 @@ dependencies = [
 
 [[package]]
 name = "shuru-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1135,7 +1136,7 @@ dependencies = [
 
 [[package]]
 name = "shuru-vm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",

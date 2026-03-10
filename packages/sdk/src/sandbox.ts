@@ -1,11 +1,20 @@
 import { ShuruProcess } from "./process";
-import type { ExecResult, StartOptions } from "./types";
+import { SandboxProcess } from "./process-handle";
+import type {
+	ExecResult,
+	FileChangeEvent,
+	SpawnOptions,
+	StartOptions,
+	WatchOptions,
+} from "./types";
 
 const Method = {
 	EXEC: "exec",
+	SPAWN: "spawn",
 	READ_FILE: "read_file",
 	WRITE_FILE: "write_file",
 	CHECKPOINT: "checkpoint",
+	WATCH: "watch",
 } as const;
 
 export class Sandbox {
@@ -40,6 +49,28 @@ export class Sandbox {
 			stderr: r.stderr,
 			exitCode: r.exit_code,
 		};
+	}
+
+	async spawn(command: string, opts?: SpawnOptions): Promise<SandboxProcess> {
+		const resp = await this.proc.send(Method.SPAWN, {
+			argv: ["sh", "-c", command],
+			cwd: opts?.cwd,
+			env: opts?.env,
+		});
+		const { pid } = resp.result as { pid: string };
+		return new SandboxProcess(this.proc, pid);
+	}
+
+	async watch(
+		path: string,
+		handler: (event: FileChangeEvent) => void,
+		opts?: WatchOptions,
+	): Promise<void> {
+		this.proc.fileChangeHandler = handler;
+		await this.proc.send(Method.WATCH, {
+			path,
+			recursive: opts?.recursive ?? true,
+		});
 	}
 
 	async readFile(path: string): Promise<Uint8Array> {

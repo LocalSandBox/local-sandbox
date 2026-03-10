@@ -1,9 +1,12 @@
+use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
+use shuru_proto::{frame, WatchEvent};
 use shuru_vm::Sandbox;
 
 use crate::vm::{self, PreparedVm};
@@ -12,6 +15,10 @@ const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::
 
 mod method {
     pub const EXEC: &str = "exec";
+    pub const SPAWN: &str = "spawn";
+    pub const KILL: &str = "kill";
+    pub const INPUT: &str = "input";
+    pub const WATCH: &str = "watch";
     pub const READ_FILE: &str = "read_file";
     pub const WRITE_FILE: &str = "write_file";
     pub const CHECKPOINT: &str = "checkpoint";
@@ -27,6 +34,7 @@ const SERVER_ERROR: i32 = -32000;
 
 #[derive(Deserialize)]
 struct JsonRpcRequest {
+    #[serde(default)]
     id: serde_json::Value,
     method: String,
     #[serde(default)]
@@ -34,9 +42,11 @@ struct JsonRpcRequest {
 }
 
 #[derive(Serialize)]
-struct JsonRpcNotification {
+struct JsonRpcNotification<P: Serialize> {
     jsonrpc: &'static str,
     method: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    params: Option<P>,
 }
 
 #[derive(Serialize)]
@@ -69,6 +79,11 @@ struct ExecResultPayload {
 }
 
 #[derive(Serialize)]
+struct SpawnResultPayload {
+    pid: String,
+}
+
+#[derive(Serialize)]
 struct ReadFileResultPayload {
     content: String,
 }
@@ -76,11 +91,62 @@ struct ReadFileResultPayload {
 #[derive(Serialize)]
 struct EmptyResult {}
 
+// --- Notification payloads ---
+
+#[derive(Serialize)]
+struct OutputParams {
+    pid: String,
+    stream: String,
+    data: String,
+}
+
+#[derive(Serialize)]
+struct ExitParams {
+    pid: String,
+    code: i32,
+}
+
+#[derive(Serialize)]
+struct FileChangeParams {
+    path: String,
+    event: String,
+}
+
 // --- Param types ---
 
 #[derive(Deserialize)]
 struct ExecParams {
     argv: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct SpawnParams {
+    argv: Vec<String>,
+    #[serde(default)]
+    env: HashMap<String, String>,
+    cwd: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct KillParams {
+    pid: String,
+}
+
+#[derive(Deserialize)]
+struct InputParams {
+    pid: String,
+    data: String,
+}
+
+#[derive(Deserialize)]
+struct WatchParams {
+    path: String,
+    #[serde(default = "default_true")]
+    recursive: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
@@ -99,19 +165,53 @@ struct CheckpointParams {
     name: String,
 }
 
-fn send_json(w: &mut impl Write, value: &impl Serialize) -> Result<()> {
+// --- Events from background threads ---
+
+enum Event {
+    Output {
+        pid: String,
+        stream: &'static str,
+        data: Vec<u8>,
+    },
+    Exit {
+        pid: String,
+        code: i32,
+    },
+    FileChange {
+        path: String,
+        event: String,
+    },
+}
+
+// --- Process handle for stdin/kill ---
+
+enum ProcessInput {
+    Stdin(Vec<u8>),
+    Kill,
+}
+
+struct ProcessHandle {
+    input_tx: std::sync::mpsc::Sender<ProcessInput>,
+}
+
+// --- Shared writer ---
+
+type SharedWriter = Arc<Mutex<io::Stdout>>;
+
+fn send_json_shared(w: &SharedWriter, value: &impl Serialize) -> Result<()> {
     let line = serde_json::to_string(value)?;
-    writeln!(w, "{}", line)?;
-    w.flush()?;
+    let mut out = w.lock().unwrap();
+    writeln!(out, "{}", line)?;
+    out.flush()?;
     Ok(())
 }
 
-fn send_result<T: Serialize>(
-    w: &mut impl Write,
+fn send_result_shared<T: Serialize>(
+    w: &SharedWriter,
     id: serde_json::Value,
     result: T,
 ) -> Result<()> {
-    send_json(
+    send_json_shared(
         w,
         &JsonRpcResult {
             jsonrpc: "2.0",
@@ -121,13 +221,13 @@ fn send_result<T: Serialize>(
     )
 }
 
-fn send_error(
-    w: &mut impl Write,
+fn send_error_shared(
+    w: &SharedWriter,
     id: serde_json::Value,
     code: i32,
     message: String,
 ) -> Result<()> {
-    send_json(
+    send_json_shared(
         w,
         &JsonRpcErrorResp {
             jsonrpc: "2.0",
@@ -137,22 +237,10 @@ fn send_error(
     )
 }
 
-macro_rules! parse_params {
-    ($params:expr, $id:expr, $out:expr) => {
-        match serde_json::from_value($params) {
-            Ok(p) => p,
-            Err(e) => {
-                send_error($out, $id, INVALID_PARAMS, format!("invalid params: {}", e))?;
-                continue;
-            }
-        }
-    };
-}
-
 pub(crate) fn run_stdio(prepared: &PreparedVm) -> Result<i32> {
-    let mut out = io::stdout().lock();
+    let out: SharedWriter = Arc::new(Mutex::new(io::stdout()));
 
-    let sandbox = vm::build_sandbox(prepared, false, None)?;
+    let sandbox = Arc::new(vm::build_sandbox(prepared, false, None)?);
     sandbox.start()?;
 
     let _fwd = if !prepared.forwards.is_empty() {
@@ -161,26 +249,85 @@ pub(crate) fn run_stdio(prepared: &PreparedVm) -> Result<i32> {
         None
     };
 
-    send_json(
-        &mut out,
-        &JsonRpcNotification {
+    // Event channel: background threads -> main loop
+    let (event_tx, event_rx) = std::sync::mpsc::channel::<Event>();
+
+    // Send ready notification
+    send_json_shared(
+        &out,
+        &JsonRpcNotification::<()> {
             jsonrpc: "2.0",
             method: "ready",
+            params: None,
         },
     )?;
 
-    let stdin = io::stdin().lock();
-    for line in stdin.lines() {
-        let line = line?;
-        if line.is_empty() {
+    let mut pid_counter: u64 = 0;
+    let mut processes: HashMap<String, ProcessHandle> = HashMap::new();
+
+    // Spawn a thread to drain events and write notifications to stdout.
+    // This ensures we never block the main stdin-reading loop.
+    let out_for_events = out.clone();
+    let event_thread = std::thread::spawn(move || {
+        for event in event_rx {
+            let res = match event {
+                Event::Output { pid, stream, data } => send_json_shared(
+                    &out_for_events,
+                    &JsonRpcNotification {
+                        jsonrpc: "2.0",
+                        method: "output",
+                        params: Some(OutputParams {
+                            pid,
+                            stream: stream.to_string(),
+                            data: BASE64.encode(&data),
+                        }),
+                    },
+                ),
+                Event::Exit { pid, code } => send_json_shared(
+                    &out_for_events,
+                    &JsonRpcNotification {
+                        jsonrpc: "2.0",
+                        method: "exit",
+                        params: Some(ExitParams { pid, code }),
+                    },
+                ),
+                Event::FileChange { path, event } => send_json_shared(
+                    &out_for_events,
+                    &JsonRpcNotification {
+                        jsonrpc: "2.0",
+                        method: "file_change",
+                        params: Some(FileChangeParams { path, event }),
+                    },
+                ),
+            };
+            if res.is_err() {
+                break;
+            }
+        }
+    });
+
+    let stdin = io::stdin();
+    let mut reader = stdin.lock();
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break, // EOF
+            Err(_) => break,
+            Ok(_) => {}
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
             continue;
         }
 
-        let req: JsonRpcRequest = match serde_json::from_str(&line) {
+        let req: JsonRpcRequest = match serde_json::from_str(trimmed) {
             Ok(r) => r,
             Err(e) => {
-                send_error(
-                    &mut out,
+                send_error_shared(
+                    &out,
                     serde_json::Value::Null,
                     PARSE_ERROR,
                     format!("parse error: {}", e),
@@ -191,26 +338,238 @@ pub(crate) fn run_stdio(prepared: &PreparedVm) -> Result<i32> {
 
         match req.method.as_str() {
             method::EXEC => {
-                let params: ExecParams = parse_params!(req.params, req.id, &mut out);
-                handle_exec(&sandbox, req.id, &params.argv, &mut out)?;
+                let params: ExecParams = match serde_json::from_value(req.params) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        send_error_shared(&out, req.id, INVALID_PARAMS, format!("invalid params: {}", e))?;
+                        continue;
+                    }
+                };
+                handle_exec(&sandbox, req.id, &params.argv, &out)?;
             }
+
+            method::SPAWN => {
+                let params: SpawnParams = match serde_json::from_value(req.params) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        send_error_shared(&out, req.id, INVALID_PARAMS, format!("invalid params: {}", e))?;
+                        continue;
+                    }
+                };
+
+                pid_counter += 1;
+                let pid = format!("p{}", pid_counter);
+
+                // Channel for sending stdin/kill to the process
+                let (input_tx, input_rx) = std::sync::mpsc::channel::<ProcessInput>();
+                processes.insert(pid.clone(), ProcessHandle { input_tx });
+
+                let sb = sandbox.clone();
+                let tx = event_tx.clone();
+                let pid_clone = pid.clone();
+
+                std::thread::spawn(move || {
+                    let argv: Vec<&str> = params.argv.iter().map(|s| s.as_str()).collect();
+                    let stream = match sb.open_exec(&argv, &params.env, params.cwd.as_deref()) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("shuru: spawn failed: {}", e);
+                            let _ = tx.send(Event::Exit {
+                                pid: pid_clone,
+                                code: 1,
+                            });
+                            return;
+                        }
+                    };
+
+                    let mut vsock_reader = match stream.try_clone() {
+                        Ok(r) => r,
+                        Err(_) => return,
+                    };
+                    let mut vsock_writer = stream;
+
+                    // Thread: forward stdin/kill from SDK to vsock
+                    let input_thread = std::thread::spawn(move || {
+                        for msg in input_rx {
+                            match msg {
+                                ProcessInput::Stdin(data) => {
+                                    if frame::write_frame(&mut vsock_writer, frame::STDIN, &data)
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                ProcessInput::Kill => {
+                                    let _ =
+                                        frame::write_frame(&mut vsock_writer, frame::KILL, &[]);
+                                    break;
+                                }
+                            }
+                        }
+                    });
+
+                    // Read vsock frames -> send events
+                    let pid_for_read = pid_clone.clone();
+                    loop {
+                        match frame::read_frame(&mut vsock_reader) {
+                            Ok(Some((frame::STDOUT, data))) => {
+                                let _ = tx.send(Event::Output {
+                                    pid: pid_for_read.clone(),
+                                    stream: "stdout",
+                                    data,
+                                });
+                            }
+                            Ok(Some((frame::STDERR, data))) => {
+                                let _ = tx.send(Event::Output {
+                                    pid: pid_for_read.clone(),
+                                    stream: "stderr",
+                                    data,
+                                });
+                            }
+                            Ok(Some((frame::EXIT, data))) => {
+                                let code = frame::parse_exit_code(&data).unwrap_or(0);
+                                let _ = tx.send(Event::Exit {
+                                    pid: pid_for_read.clone(),
+                                    code,
+                                });
+                                break;
+                            }
+                            Ok(Some((frame::ERROR, data))) => {
+                                let _ = tx.send(Event::Output {
+                                    pid: pid_for_read.clone(),
+                                    stream: "stderr",
+                                    data,
+                                });
+                                let _ = tx.send(Event::Exit {
+                                    pid: pid_for_read.clone(),
+                                    code: 1,
+                                });
+                                break;
+                            }
+                            _ => {
+                                let _ = tx.send(Event::Exit {
+                                    pid: pid_for_read.clone(),
+                                    code: 1,
+                                });
+                                break;
+                            }
+                        }
+                    }
+
+                    let _ = input_thread.join();
+                });
+
+                send_result_shared(&out, req.id, SpawnResultPayload { pid })?;
+            }
+
+            method::KILL => {
+                let params: KillParams = match serde_json::from_value(req.params) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        send_error_shared(&out, req.id, INVALID_PARAMS, format!("invalid params: {}", e))?;
+                        continue;
+                    }
+                };
+                if let Some(handle) = processes.get(&params.pid) {
+                    let _ = handle.input_tx.send(ProcessInput::Kill);
+                }
+                send_result_shared(&out, req.id, EmptyResult {})?;
+            }
+
+            method::INPUT => {
+                // Fire-and-forget notification (may have no id)
+                let params: InputParams = match serde_json::from_value(req.params) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                if let Some(handle) = processes.get(&params.pid) {
+                    if let Ok(data) = BASE64.decode(&params.data) {
+                        let _ = handle.input_tx.send(ProcessInput::Stdin(data));
+                    }
+                }
+            }
+
+            method::WATCH => {
+                let params: WatchParams = match serde_json::from_value(req.params) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        send_error_shared(&out, req.id, INVALID_PARAMS, format!("invalid params: {}", e))?;
+                        continue;
+                    }
+                };
+
+                let sb = sandbox.clone();
+                let tx = event_tx.clone();
+                let path = params.path.clone();
+                let recursive = params.recursive;
+
+                std::thread::spawn(move || {
+                    let stream = match sb.open_watch(&path, recursive) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("shuru: watch failed: {}", e);
+                            return;
+                        }
+                    };
+                    let mut reader = stream;
+                    loop {
+                        match frame::read_frame(&mut reader) {
+                            Ok(Some((frame::WATCH_EVENT, data))) => {
+                                if let Ok(evt) = serde_json::from_slice::<WatchEvent>(&data) {
+                                    let _ = tx.send(Event::FileChange {
+                                        path: evt.path,
+                                        event: evt.event,
+                                    });
+                                }
+                            }
+                            _ => break,
+                        }
+                    }
+                });
+
+                send_result_shared(&out, req.id, EmptyResult {})?;
+            }
+
             method::READ_FILE => {
-                let params: ReadFileParams = parse_params!(req.params, req.id, &mut out);
-                handle_read_file(&sandbox, req.id, &params.path, &mut out)?;
+                let params: ReadFileParams = match serde_json::from_value(req.params) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        send_error_shared(&out, req.id, INVALID_PARAMS, format!("invalid params: {}", e))?;
+                        continue;
+                    }
+                };
+                handle_read_file(&sandbox, req.id, &params.path, &out)?;
             }
+
             method::WRITE_FILE => {
-                let params: WriteFileParams = parse_params!(req.params, req.id, &mut out);
-                handle_write_file(&sandbox, req.id, &params.path, &params.content, &mut out)?;
+                let params: WriteFileParams = match serde_json::from_value(req.params) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        send_error_shared(&out, req.id, INVALID_PARAMS, format!("invalid params: {}", e))?;
+                        continue;
+                    }
+                };
+                handle_write_file(&sandbox, req.id, &params.path, &params.content, &out)?;
             }
+
             method::CHECKPOINT => {
-                let params: CheckpointParams = parse_params!(req.params, req.id, &mut out);
-                handle_checkpoint(&sandbox, prepared, req.id, &params.name, &mut out)?;
+                let params: CheckpointParams = match serde_json::from_value(req.params) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        send_error_shared(&out, req.id, INVALID_PARAMS, format!("invalid params: {}", e))?;
+                        continue;
+                    }
+                };
+                handle_checkpoint(&sandbox, prepared, req.id, &params.name, &out)?;
                 let _ = sandbox.stop();
+                drop(event_tx);
+                let _ = event_thread.join();
                 return Ok(0);
             }
+
             _ => {
-                send_error(
-                    &mut out,
+                send_error_shared(
+                    &out,
                     req.id,
                     METHOD_NOT_FOUND,
                     format!("method not found: {}", req.method),
@@ -220,6 +579,8 @@ pub(crate) fn run_stdio(prepared: &PreparedVm) -> Result<i32> {
     }
 
     let _ = sandbox.stop();
+    drop(event_tx);
+    let _ = event_thread.join();
     Ok(0)
 }
 
@@ -227,7 +588,7 @@ fn handle_exec(
     sandbox: &Sandbox,
     id: serde_json::Value,
     argv: &[String],
-    out: &mut impl Write,
+    out: &SharedWriter,
 ) -> Result<()> {
     let mut stdout_buf = Vec::new();
     let mut stderr_buf = Vec::new();
@@ -235,11 +596,11 @@ fn handle_exec(
     let exit_code = match sandbox.exec(argv, &mut stdout_buf, &mut stderr_buf) {
         Ok(code) => code,
         Err(e) => {
-            return send_error(out, id, SERVER_ERROR, format!("exec failed: {}", e));
+            return send_error_shared(out, id, SERVER_ERROR, format!("exec failed: {}", e));
         }
     };
 
-    send_result(
+    send_result_shared(
         out,
         id,
         ExecResultPayload {
@@ -254,17 +615,17 @@ fn handle_read_file(
     sandbox: &Sandbox,
     id: serde_json::Value,
     path: &str,
-    out: &mut impl Write,
+    out: &SharedWriter,
 ) -> Result<()> {
     match sandbox.read_file(path) {
-        Ok(data) => send_result(
+        Ok(data) => send_result_shared(
             out,
             id,
             ReadFileResultPayload {
                 content: BASE64.encode(&data),
             },
         ),
-        Err(e) => send_error(out, id, SERVER_ERROR, format!("{}", e)),
+        Err(e) => send_error_shared(out, id, SERVER_ERROR, format!("{}", e)),
     }
 }
 
@@ -273,18 +634,18 @@ fn handle_write_file(
     id: serde_json::Value,
     path: &str,
     content: &str,
-    out: &mut impl Write,
+    out: &SharedWriter,
 ) -> Result<()> {
     let data = match BASE64.decode(content) {
         Ok(d) => d,
         Err(e) => {
-            return send_error(out, id, INVALID_PARAMS, format!("invalid base64: {}", e));
+            return send_error_shared(out, id, INVALID_PARAMS, format!("invalid base64: {}", e));
         }
     };
 
     match sandbox.write_file(path, &data) {
-        Ok(()) => send_result(out, id, EmptyResult {}),
-        Err(e) => send_error(out, id, SERVER_ERROR, format!("{}", e)),
+        Ok(()) => send_result_shared(out, id, EmptyResult {}),
+        Err(e) => send_error_shared(out, id, SERVER_ERROR, format!("{}", e)),
     }
 }
 
@@ -293,12 +654,12 @@ fn handle_checkpoint(
     prepared: &PreparedVm,
     id: serde_json::Value,
     name: &str,
-    out: &mut impl Write,
+    out: &SharedWriter,
 ) -> Result<()> {
     let mut discard_out = Vec::new();
     let mut discard_err = Vec::new();
     if let Err(e) = sandbox.exec(&["sync"], &mut discard_out, &mut discard_err) {
-        return send_error(out, id, SERVER_ERROR, format!("checkpoint sync failed: {}", e));
+        return send_error_shared(out, id, SERVER_ERROR, format!("checkpoint sync failed: {}", e));
     }
 
     let data_dir = shuru_vm::default_data_dir();
@@ -306,7 +667,7 @@ fn handle_checkpoint(
     let checkpoint_path = format!("{}/{}.ext4", checkpoints_dir, name);
 
     if let Err(e) = std::fs::create_dir_all(&checkpoints_dir) {
-        return send_error(
+        return send_error_shared(
             out,
             id,
             SERVER_ERROR,
@@ -315,8 +676,8 @@ fn handle_checkpoint(
     }
 
     if let Err(e) = vm::clone_file(&prepared.work_rootfs, &checkpoint_path) {
-        return send_error(out, id, SERVER_ERROR, format!("checkpoint clone failed: {}", e));
+        return send_error_shared(out, id, SERVER_ERROR, format!("checkpoint clone failed: {}", e));
     }
 
-    send_result(out, id, EmptyResult {})
+    send_result_shared(out, id, EmptyResult {})
 }

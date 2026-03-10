@@ -1,9 +1,15 @@
 import type { Subprocess } from "bun";
-import type { JsonRpcResponse, JsonRpcResult } from "./types";
+import type { FileChangeEvent, JsonRpcResponse, JsonRpcResult } from "./types";
 
 interface PendingRequest {
 	resolve: (value: JsonRpcResult) => void;
 	reject: (reason: Error) => void;
+}
+
+export interface ProcessEventHandlers {
+	onStdout: (data: Buffer) => void;
+	onStderr: (data: Buffer) => void;
+	onExit: (code: number) => void;
 }
 
 export class ShuruProcess {
@@ -12,6 +18,12 @@ export class ShuruProcess {
 	private idCounter = 0;
 	private onReady: (() => void) | null = null;
 	private onReadyError: ((err: Error) => void) | null = null;
+
+	/** Handlers for spawned process output/exit, keyed by pid. */
+	readonly processHandlers = new Map<string, ProcessEventHandlers>();
+
+	/** Handler for file change events from the guest watcher. */
+	fileChangeHandler: ((event: FileChangeEvent) => void) | null = null;
 
 	async start(args: string[]): Promise<void> {
 		this.proc = Bun.spawn(args, {
@@ -53,6 +65,14 @@ export class ShuruProcess {
 			proc.stdin.write(line);
 			proc.stdin.flush();
 		});
+	}
+
+	/** Send a fire-and-forget notification (no id, no response expected). */
+	sendNotification(method: string, params: Record<string, unknown>): void {
+		if (!this.proc) throw new Error("shuru process not started");
+		const line = `${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`;
+		this.proc.stdin.write(line);
+		this.proc.stdin.flush();
 	}
 
 	async stop(): Promise<void> {
@@ -132,11 +152,47 @@ export class ShuruProcess {
 	}
 
 	private dispatch(msg: JsonRpcResponse): void {
-		if ("method" in msg && msg.method === "ready") {
-			if (this.onReady) {
-				this.onReady();
-				this.onReady = null;
-				this.onReadyError = null;
+		// Handle notifications (no id)
+		if ("method" in msg && !("id" in msg)) {
+			const params = msg.params as Record<string, unknown> | undefined;
+
+			switch (msg.method) {
+				case "ready": {
+					if (this.onReady) {
+						this.onReady();
+						this.onReady = null;
+						this.onReadyError = null;
+					}
+					return;
+				}
+				case "output": {
+					if (!params) return;
+					const pid = params.pid as string;
+					const h = this.processHandlers.get(pid);
+					if (!h) return;
+					const buf = Buffer.from(params.data as string, "base64");
+					if (params.stream === "stdout") h.onStdout(buf);
+					else if (params.stream === "stderr") h.onStderr(buf);
+					return;
+				}
+				case "exit": {
+					if (!params) return;
+					const pid = params.pid as string;
+					const h = this.processHandlers.get(pid);
+					if (h) {
+						h.onExit(params.code as number);
+						this.processHandlers.delete(pid);
+					}
+					return;
+				}
+				case "file_change": {
+					if (!params) return;
+					this.fileChangeHandler?.({
+						path: params.path as string,
+						event: params.event as FileChangeEvent["event"],
+					});
+					return;
+				}
 			}
 			return;
 		}

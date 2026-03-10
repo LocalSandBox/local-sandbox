@@ -15,14 +15,27 @@ import { Sandbox } from "@superhq/shuru";
 
 const sb = await Sandbox.start();
 
+// Buffered exec — run a command and get the full result
 const result = await sb.exec("echo hello");
 console.log(result.stdout); // "hello\n"
 
+// Streaming spawn — real-time stdout/stderr
+const proc = await sb.spawn("npm run dev");
+proc.on("stdout", (data) => process.stdout.write(data));
+proc.on("stderr", (data) => process.stderr.write(data));
+proc.on("exit", (code) => console.log("exited:", code));
+
+// File watching — guest-side inotify events
+await sb.watch("/workspace", (event) => {
+  console.log(event.event, event.path); // "modify" "/workspace/src/main.ts"
+});
+
+// File I/O
 await sb.writeFile("/tmp/app.ts", "console.log('hi')");
 const data = await sb.readFile("/tmp/app.ts"); // Uint8Array
-const text = new TextDecoder().decode(data);
 
-await sb.checkpoint("my-env"); // saves disk state and stops the VM
+// Checkpoint — save disk state and stop
+await sb.checkpoint("my-env");
 ```
 
 ### Start from a checkpoint
@@ -58,8 +71,8 @@ const sb = await Sandbox.start({
 | `allowNet` | `boolean` | Enable network access |
 | `ports` | `string[]` | Port forwards (`"host:guest"`) |
 | `mounts` | `Record<string, string>` | Directory mounts (`{ hostPath: guestPath }`) |
-| `secrets` | `Record<string, SecretConfig>` | Secrets to inject via proxy (see below) |
-| `network` | `NetworkConfig` | Network access policy (see below) |
+| `secrets` | `Record<string, SecretConfig>` | Secrets to inject via proxy |
+| `network` | `NetworkConfig` | Network access policy |
 | `shuruBin` | `string` | Path to shuru binary (default: `"shuru"`) |
 
 ## API
@@ -70,7 +83,47 @@ Boot a new microVM. Returns when the VM is ready.
 
 ### `sandbox.exec(command): Promise<ExecResult>`
 
-Run a shell command in the VM. Returns `{ stdout, stderr, exitCode }`.
+Run a shell command in the VM. Returns `{ stdout, stderr, exitCode }`. Stdout and stderr are buffered — the promise resolves when the command finishes.
+
+### `sandbox.spawn(command, opts?): Promise<SandboxProcess>`
+
+Spawn a long-running command in the VM. Returns a `SandboxProcess` handle immediately, streaming output in real-time.
+
+```ts
+const proc = await sb.spawn("npm run dev", { cwd: "/workspace" });
+
+proc.on("stdout", (data: Buffer) => { /* real-time chunks */ });
+proc.on("stderr", (data: Buffer) => { /* real-time chunks */ });
+proc.on("exit", (code: number) => { /* process exited */ });
+
+proc.write("input to stdin\n"); // write to stdin
+await proc.kill();               // send SIGTERM
+const exitCode = await proc.exited; // await completion
+console.log(proc.pid);             // process ID
+```
+
+**`SpawnOptions`:**
+| Option | Type | Description |
+|--------|------|-------------|
+| `cwd` | `string` | Working directory for the command |
+| `env` | `Record<string, string>` | Environment variables |
+
+### `sandbox.watch(path, handler, opts?): Promise<void>`
+
+Watch a directory for file changes inside the guest VM. Uses guest-side inotify, so it detects writes to tmpfs overlays that host-side watchers cannot see.
+
+```ts
+await sb.watch("/workspace", (event) => {
+  console.log(event.event, event.path);
+  // event.event: "create" | "modify" | "delete" | "rename"
+  // event.path: full path of the changed file
+});
+```
+
+**`WatchOptions`:**
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `recursive` | `boolean` | `true` | Watch subdirectories recursively |
 
 ### `sandbox.readFile(path): Promise<Uint8Array>`
 
@@ -115,6 +168,17 @@ const sb = await Sandbox.start({
 ```
 
 Omit `network.allow` to allow all domains.
+
+## Concurrency
+
+Multiple `spawn()` calls run concurrently in the same VM. Each gets a unique pid and independent stdout/stderr streams. You can mix `spawn()`, `exec()`, and `watch()` freely:
+
+```ts
+// Start a dev server, run tests, and watch for changes — all at once
+const server = await sb.spawn("npm run dev", { cwd: "/workspace" });
+const watcher = sb.watch("/workspace", (e) => console.log(e));
+const tests = await sb.exec("npm test");
+```
 
 ## Requirements
 

@@ -29,6 +29,20 @@ export interface ExecResult {
 	exitCode: number;
 }
 
+export interface SpawnOptions {
+	cwd?: string;
+	env?: Record<string, string>;
+}
+
+export interface WatchOptions {
+	recursive?: boolean;
+}
+
+export interface FileChangeEvent {
+	path: string;
+	event: "create" | "modify" | "delete" | "rename";
+}
+
 // --- JSON-RPC 2.0 wire types (internal) ---
 
 export interface JsonRpcResult {
@@ -46,6 +60,7 @@ export interface JsonRpcError {
 export interface JsonRpcNotification {
 	jsonrpc: "2.0";
 	method: string;
+	params?: Record<string, unknown>;
 }
 
 export type JsonRpcResponse =

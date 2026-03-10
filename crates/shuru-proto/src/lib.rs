@@ -21,6 +21,8 @@ pub struct ExecRequest {
     pub rows: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cols: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 // --- Port forwarding protocol ---
@@ -82,6 +84,25 @@ pub struct WriteFileResponse {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+// --- File watching protocol ---
+
+#[derive(Serialize, Deserialize)]
+pub struct WatchRequest {
+    pub path: String,
+    #[serde(default = "default_true")]
+    pub recursive: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct WatchEvent {
+    pub path: String,
+    pub event: String,
 }
 
 pub const VSOCK_PORT: u32 = 1024;

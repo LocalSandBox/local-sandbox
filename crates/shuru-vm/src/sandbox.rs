@@ -15,7 +15,7 @@ use shuru_darwin::*;
 
 use shuru_proto::{
     frame, ExecRequest, ForwardRequest, ForwardResponse, MountRequest, MountResponse, PortMapping,
-    ReadFileRequest, WriteFileRequest, WriteFileResponse,
+    ReadFileRequest, WatchRequest, WriteFileRequest, WriteFileResponse,
     VSOCK_PORT, VSOCK_PORT_FORWARD,
 };
 
@@ -294,6 +294,7 @@ impl Sandbox {
             tty: None,
             rows: None,
             cols: None,
+            cwd: None,
         };
         frame::send_json(&mut writer, frame::EXEC_REQ, &req)?;
 
@@ -378,6 +379,52 @@ impl Sandbox {
         Ok(())
     }
 
+    /// Open a vsock connection for streaming exec. Returns the raw stream
+    /// after sending mounts + ExecRequest. Caller manages I/O (reads
+    /// STDOUT/STDERR/EXIT frames, writes STDIN/KILL frames).
+    pub fn open_exec(
+        &self,
+        argv: &[impl AsRef<str>],
+        env: &HashMap<String, String>,
+        cwd: Option<&str>,
+    ) -> Result<TcpStream> {
+        let stream = self.connect_vsock()?;
+        let mut writer = stream.try_clone()?;
+        let mut reader = stream.try_clone()?;
+
+        self.send_mount_requests(&mut writer, &mut reader)?;
+
+        let req = ExecRequest {
+            argv: argv.iter().map(|s| s.as_ref().to_string()).collect(),
+            env: env.clone(),
+            tty: None,
+            rows: None,
+            cols: None,
+            cwd: cwd.map(|s| s.to_string()),
+        };
+        frame::send_json(&mut writer, frame::EXEC_REQ, &req)?;
+
+        Ok(stream)
+    }
+
+    /// Open a vsock connection for file watching. Returns a stream that
+    /// emits WATCH_EVENT frames until the connection is closed.
+    pub fn open_watch(&self, path: &str, recursive: bool) -> Result<TcpStream> {
+        let stream = self.connect_vsock()?;
+        let mut writer = stream.try_clone()?;
+        let mut reader = stream.try_clone()?;
+
+        self.send_mount_requests(&mut writer, &mut reader)?;
+
+        let req = WatchRequest {
+            path: path.to_string(),
+            recursive,
+        };
+        frame::send_json(&mut writer, frame::WATCH_REQ, &req)?;
+
+        Ok(stream)
+    }
+
     /// Run an interactive shell session with PTY support.
     /// Puts the host terminal in raw mode, relays I/O bidirectionally over
     /// vsock, and handles SIGWINCH for window resize.
@@ -404,6 +451,7 @@ impl Sandbox {
             tty: Some(true),
             rows: Some(rows),
             cols: Some(cols),
+            cwd: None,
         };
         frame::send_json(&mut writer, frame::EXEC_REQ, &req)?;
 

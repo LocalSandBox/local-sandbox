@@ -9,6 +9,7 @@ pub const STDERR: u8 = 0x03;
 pub const RESIZE: u8 = 0x04;
 pub const EXIT: u8 = 0x05;
 pub const ERROR: u8 = 0x06;
+pub const KILL: u8 = 0x07;
 
 // Exec handshake
 pub const EXEC_REQ: u8 = 0x10;
@@ -27,6 +28,10 @@ pub const WRITE_FILE_RESP: u8 = 0x17;
 // Port forwarding
 pub const FWD_REQ: u8 = 0x20;
 pub const FWD_RESP: u8 = 0x21;
+
+// File watching
+pub const WATCH_REQ: u8 = 0x30;
+pub const WATCH_EVENT: u8 = 0x31;
 
 const MAX_FRAME: u32 = 1 << 20; // 1 MB
 
