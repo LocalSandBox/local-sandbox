@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.4.0
+
+### Streaming spawn, kill, and file watching
+
+Full streaming I/O across the guest, CLI, and SDK - spawn long-running processes, stream stdout/stderr in real-time, kill processes, write to stdin, and watch files for changes.
+
+#### Guest (`shuru-guest` 0.2.0)
+
+- Streaming piped exec: dedicated threads for stdout, stderr, and stdin relay with mpsc channel for frame serialization (no interleaved writes)
+- `cwd` support in both piped and TTY exec modes
+- Guest-side file watching via raw `libc::inotify` with recursive directory traversal, auto-watching new subdirectories, and `poll(2)` for clean shutdown on vsock hangup
+- New frame types: `KILL`, `WATCH_REQ`, `WATCH_EVENT`
+
+#### CLI (`shuru-cli` 0.4.0)
+
+- Rewrote `stdio.rs` from synchronous request-response to concurrent multiplexed architecture
+- Main thread reads stdin JSON-RPC, dedicated event thread writes notifications to stdout
+- Per-process std::threads relay vsock frames as JSON-RPC `output`/`exit` notifications
+- New methods: `spawn` (returns pid, streams in background), `kill`, `input` (stdin forwarding), `watch` (file change events)
+- `SharedWriter` (`Arc<Mutex<Stdout>>`) for thread-safe output from multiple process threads
+- `ProcessHandle` with `mpsc::Sender<ProcessInput>` for stdin/kill forwarding to the correct vsock connection
+- Backward-compatible: `exec`, `read_file`, `write_file`, `checkpoint` unchanged
+
+#### Protocol (`shuru-proto` 0.2.0)
+
+- Added `KILL` (0x07), `WATCH_REQ` (0x30), `WATCH_EVENT` (0x31) frame types
+- Added `cwd` field to `ExecRequest` (backward-compatible `Option`)
+- Added `WatchRequest` and `WatchEvent` types
+
+#### VM (`shuru-vm` 0.2.0)
+
+- `open_exec()`: connect vsock for streaming, returns raw `TcpStream` for caller-managed I/O
+- `open_watch()`: connect vsock for file watching, returns stream emitting `WATCH_EVENT` frames
+
+#### SDK (`@superhq/shuru` 0.3.0)
+
+- `sandbox.spawn(command, opts?)` — real-time stdout/stderr streaming via `SandboxProcess` handle
+- `sandbox.watch(path, handler, opts?)` — guest-side inotify file change events
+- `SandboxProcess`: `.on("stdout" | "stderr" | "exit")`, `.write()`, `.kill()`, `.exited`, `.pid`
+- `SpawnOptions` (`cwd`, `env`), `WatchOptions` (`recursive`), `FileChangeEvent` type
+- JSON-RPC notification dispatch for `output`, `exit`, `file_change` in `ShuruProcess`
+- Unit tests (13) with mock shuru binary: spawn streaming, kill, watch, concurrent operations
+- Integration tests (12) against real VM: streaming, stdin, kill, file creation/modification/deletion, recursive watch, concurrent watch+spawn
+
 ## 0.3.3
 
 - Added `--secret` and `--allow-host` CLI flags for inline proxy config (no `shuru.json` required)
