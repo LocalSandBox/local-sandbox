@@ -23,17 +23,15 @@ jobs:
         run: |
           publish() {
             local crate=$1
-            local version
-            version=$(cargo metadata --no-deps --format-version 1 \
-              | jq -r ".packages[] | select(.name == \"$crate\") | .version")
-
-            if cargo search "$crate" 2>/dev/null | grep -q "^${crate} = \"${version}\""; then
-              echo "⏭ $crate@$version already published, skipping"
-            else
-              echo "📦 Publishing $crate@$version"
-              cargo publish -p "$crate"
-              echo "⏳ Waiting for crates.io to index..."
+            if output=$(cargo publish -p "$crate" 2>&1); then
+              echo "Published $crate"
+              echo "Waiting for crates.io to index..."
               sleep 30
+            elif echo "$output" | grep -q "already exists"; then
+              echo "$crate already published, skipping"
+            else
+              echo "$output" >&2
+              return 1
             fi
           }
 
