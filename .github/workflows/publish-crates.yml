@@ -5,6 +5,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
 jobs:
   publish:
@@ -18,36 +19,26 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Publish shuru-proto
-        run: cargo publish -p shuru-proto
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Publish workspace crates
+        run: |
+          publish() {
+            local crate=$1
+            local version
+            version=$(cargo metadata --no-deps --format-version 1 \
+              | jq -r ".packages[] | select(.name == \"$crate\") | .version")
 
-      - name: Wait for crates.io indexing
-        run: sleep 30
+            if cargo search "$crate" 2>/dev/null | grep -q "^${crate} = \"${version}\""; then
+              echo "⏭ $crate@$version already published, skipping"
+            else
+              echo "📦 Publishing $crate@$version"
+              cargo publish -p "$crate"
+              echo "⏳ Waiting for crates.io to index..."
+              sleep 30
+            fi
+          }
 
-      - name: Publish shuru-darwin
-        run: cargo publish -p shuru-darwin
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Publish shuru-proxy
-        run: cargo publish -p shuru-proxy
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Wait for crates.io indexing
-        run: sleep 30
-
-      - name: Publish shuru-vm
-        run: cargo publish -p shuru-vm
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Wait for crates.io indexing
-        run: sleep 30
-
-      - name: Publish shuru-sdk
-        run: cargo publish -p shuru-sdk
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          publish shuru-proto
+          publish shuru-darwin
+          publish shuru-proxy
+          publish shuru-vm
+          publish shuru-sdk
