@@ -5,6 +5,7 @@ members = [
     "crates/shuru-darwin",
     "crates/shuru-proto",
     "crates/shuru-proxy",
+    "crates/shuru-sdk",
     "crates/shuru-vm",
     "crates/shuru-guest",
 ]

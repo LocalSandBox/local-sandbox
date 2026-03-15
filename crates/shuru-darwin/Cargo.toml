@@ -3,6 +3,8 @@ name = "shuru-darwin"
 version = "0.1.0"
 edition = "2021"
 description = "Virtualization.framework bindings for shuru"
+license = "Apache-2.0"
+repository = "https://github.com/superhq-ai/shuru"
 
 [dependencies]
 block2 = "0.6"

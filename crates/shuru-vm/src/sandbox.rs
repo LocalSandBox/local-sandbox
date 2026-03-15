@@ -520,6 +520,36 @@ impl Sandbox {
         Ok(stream)
     }
 
+    /// Open a vsock connection for an interactive shell with PTY support.
+    /// Like `open_exec` but with `tty=true`. Returns the raw stream after
+    /// sending mounts + ExecRequest. Caller manages I/O using the binary
+    /// frame protocol (STDIN/STDOUT/RESIZE/EXIT frames).
+    pub fn open_shell(
+        &self,
+        argv: &[impl AsRef<str>],
+        env: &HashMap<String, String>,
+        rows: u16,
+        cols: u16,
+    ) -> Result<TcpStream> {
+        let stream = self.connect_vsock()?;
+        let mut writer = stream.try_clone()?;
+        let mut reader = stream.try_clone()?;
+
+        self.send_mount_requests(&mut writer, &mut reader)?;
+
+        let req = ExecRequest {
+            argv: argv.iter().map(|s| s.as_ref().to_string()).collect(),
+            env: env.clone(),
+            tty: Some(true),
+            rows: Some(rows),
+            cols: Some(cols),
+            cwd: None,
+        };
+        frame::send_json(&mut writer, frame::EXEC_REQ, &req)?;
+
+        Ok(stream)
+    }
+
     /// Open a vsock connection for file watching. Returns a stream that
     /// emits WATCH_EVENT frames until the connection is closed.
     pub fn open_watch(&self, path: &str, recursive: bool) -> Result<TcpStream> {

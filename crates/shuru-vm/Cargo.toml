@@ -3,10 +3,12 @@ name = "shuru-vm"
 version = "0.3.0"
 edition = "2021"
 description = "High-level VM management for shuru"
+license = "Apache-2.0"
+repository = "https://github.com/superhq-ai/shuru"
 
 [dependencies]
-shuru-darwin = { path = "../shuru-darwin" }
-shuru-proto = { path = "../shuru-proto" }
+shuru-darwin = { version = "0.1.0", path = "../shuru-darwin" }
+shuru-proto = { version = "0.3.0", path = "../shuru-proto" }
 anyhow = "1"
 crossbeam-channel = "0.5"
 serde = { version = "1", features = ["derive"] }

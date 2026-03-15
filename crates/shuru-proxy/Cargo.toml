@@ -3,6 +3,8 @@ name = "shuru-proxy"
 version = "0.1.0"
 edition = "2021"
 description = "Transparent network proxy for shuru microVMs"
+license = "Apache-2.0"
+repository = "https://github.com/superhq-ai/shuru"
 
 [dependencies]
 smoltcp = { version = "0.12", default-features = false, features = [
