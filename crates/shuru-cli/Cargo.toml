@@ -8,6 +8,7 @@ name = "shuru"
 path = "src/main.rs"
 
 [dependencies]
+shuru-platform = { path = "../shuru-platform" }
 shuru-vm = { path = "../shuru-vm" }
 shuru-proto = { path = "../shuru-proto" }
 shuru-proxy = { path = "../shuru-proxy" }

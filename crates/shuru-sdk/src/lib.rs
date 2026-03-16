@@ -3,7 +3,8 @@ use std::io::BufReader;
 use std::net::TcpStream;
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
+use shuru_platform::asset_paths;
 use tokio::sync::{mpsc, oneshot};
 use tracing::info;
 
@@ -376,21 +377,6 @@ impl Drop for AsyncSandbox {
 // Internal: VM boot & command loop (runs on dedicated OS thread)
 // ---------------------------------------------------------------------------
 
-extern "C" {
-    fn clonefile(src: *const libc::c_char, dst: *const libc::c_char, flags: u32) -> libc::c_int;
-}
-
-fn clone_file_cow(src: &str, dst: &str) -> Result<()> {
-    let c_src = std::ffi::CString::new(src).context("invalid source path")?;
-    let c_dst = std::ffi::CString::new(dst).context("invalid destination path")?;
-    let ret = unsafe { clonefile(c_src.as_ptr(), c_dst.as_ptr(), 0) };
-    if ret != 0 {
-        let err = std::io::Error::last_os_error();
-        bail!("clonefile({} -> {}) failed: {}", src, dst, err);
-    }
-    Ok(())
-}
-
 fn boot_vm(
     config: SandboxConfig,
 ) -> Result<(
@@ -400,11 +386,12 @@ fn boot_vm(
     Option<shuru_vm::PortForwardHandle>,
 )> {
     let data_dir = config.data_dir.unwrap_or_else(shuru_vm::default_data_dir);
+    let paths = asset_paths(&data_dir);
 
     // Resolve asset paths
-    let kernel_path = format!("{}/Image", data_dir);
-    let rootfs_path = format!("{}/rootfs.ext4", data_dir);
-    let initrd_path_str = format!("{}/initramfs.cpio.gz", data_dir);
+    let kernel_path = paths.kernel.clone();
+    let rootfs_path = paths.rootfs.clone();
+    let initrd_path_str = paths.initramfs.clone();
 
     if !std::path::Path::new(&kernel_path).exists() {
         bail!(
@@ -416,7 +403,7 @@ fn boot_vm(
     // Determine rootfs source (checkpoint or base)
     let source = match &config.from {
         Some(name) => {
-            let path = format!("{}/checkpoints/{}.ext4", data_dir, name);
+            let path = format!("{}/{}.ext4", paths.checkpoints_dir, name);
             if !std::path::Path::new(&path).exists() {
                 bail!("Checkpoint '{}' not found", name);
             }
@@ -433,12 +420,12 @@ fn boot_vm(
         }
     };
 
-    // Create per-instance working copy (CoW via macOS clonefile)
-    let instance_dir = format!("{}/instances/sdk-{}", data_dir, std::process::id());
+    // Create a per-instance copy-on-write working disk via the platform helper.
+    let instance_dir = format!("{}/sdk-{}", paths.instances_dir, std::process::id());
     let _ = std::fs::remove_dir_all(&instance_dir);
     std::fs::create_dir_all(&instance_dir)?;
-    let work_rootfs = format!("{}/rootfs.ext4", instance_dir);
-    clone_file_cow(&source, &work_rootfs)?;
+    let work_rootfs = format!("{instance_dir}/rootfs.ext4");
+    shuru_platform::copy_file_cow(&source, &work_rootfs)?;
 
     // Extend disk to requested size
     let f = std::fs::OpenOptions::new().write(true).open(&work_rootfs)?;
@@ -567,14 +554,14 @@ fn run_vm_loop(
             SandboxCmd::Checkpoint { name, reply } => {
                 let result = (|| -> Result<()> {
                     let data_dir = shuru_vm::default_data_dir();
-                    let checkpoints_dir = format!("{}/checkpoints", data_dir);
-                    std::fs::create_dir_all(&checkpoints_dir)?;
-                    let checkpoint_path = format!("{}/{}.ext4", checkpoints_dir, name);
+                    let paths = asset_paths(&data_dir);
+                    std::fs::create_dir_all(&paths.checkpoints_dir)?;
+                    let checkpoint_path = format!("{}/{}.ext4", paths.checkpoints_dir, name);
                     if std::path::Path::new(&checkpoint_path).exists() {
                         std::fs::remove_file(&checkpoint_path)?;
                     }
-                    let work_rootfs = format!("{}/rootfs.ext4", instance_dir);
-                    clone_file_cow(&work_rootfs, &checkpoint_path)?;
+                    let work_rootfs = format!("{instance_dir}/rootfs.ext4");
+                    shuru_platform::copy_file_cow(&work_rootfs, &checkpoint_path)?;
                     info!("checkpoint '{}' saved", name);
                     Ok(())
                 })();

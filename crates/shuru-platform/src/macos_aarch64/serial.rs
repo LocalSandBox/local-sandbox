@@ -30,9 +30,6 @@ impl FileHandleSerialAttachment {
         }
     }
 
-    /// Create a serial attachment with no read handle (stdin disconnected).
-    /// Output goes to the given write fd. Useful for exec/shell mode where
-    /// the host stdin must not be consumed by the serial console.
     pub fn new_write_only(write_fd: RawFd) -> Self {
         unsafe {
             let file_handle_for_writing =

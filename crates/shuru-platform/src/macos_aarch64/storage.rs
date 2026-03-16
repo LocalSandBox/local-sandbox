@@ -6,7 +6,7 @@ use objc2_virtualization::{
     VZStorageDeviceAttachment, VZStorageDeviceConfiguration, VZVirtioBlockDeviceConfiguration,
 };
 
-use crate::error::{Result, VzError};
+use super::error::{Result, VzError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiskImageCachingMode {

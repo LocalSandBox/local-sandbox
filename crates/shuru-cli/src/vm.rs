@@ -1,24 +1,9 @@
 use std::collections::HashMap;
-use std::ffi::CString;
 use std::io::IsTerminal;
 
 use anyhow::{bail, Context, Result};
 
-extern "C" {
-    fn clonefile(src: *const libc::c_char, dst: *const libc::c_char, flags: u32) -> libc::c_int;
-}
-
-pub(crate) fn clone_file(src: &str, dst: &str) -> Result<()> {
-    let c_src = CString::new(src).context("invalid source path")?;
-    let c_dst = CString::new(dst).context("invalid destination path")?;
-    let ret = unsafe { clonefile(c_src.as_ptr(), c_dst.as_ptr(), 0) };
-    if ret != 0 {
-        let err = std::io::Error::last_os_error();
-        bail!("clonefile({} -> {}) failed: {}", src, dst, err);
-    }
-    Ok(())
-}
-
+use shuru_platform::asset_paths;
 use shuru_vm::{MountConfig, PortMapping, Sandbox};
 
 use crate::assets;
@@ -37,6 +22,10 @@ pub(crate) struct PreparedVm {
     pub verbose: bool,
     pub forwards: Vec<PortMapping>,
     pub mounts: Vec<MountConfig>,
+}
+
+pub(crate) fn clone_file(src: &str, dst: &str) -> Result<()> {
+    shuru_platform::copy_file_cow(src, dst)
 }
 
 pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &ShuruConfig, from: Option<&str>) -> Result<PreparedVm> {
@@ -100,6 +89,7 @@ pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &ShuruConfig, from: Option<&str>) -> 
     }
 
     let data_dir = shuru_vm::default_data_dir();
+    let paths = asset_paths(&data_dir);
 
     // Auto-download assets when using default paths
     if vm.kernel.is_none()
@@ -110,18 +100,9 @@ pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &ShuruConfig, from: Option<&str>) -> 
         assets::download_os_image(&data_dir)?;
     }
 
-    let kernel_path = vm
-        .kernel
-        .clone()
-        .unwrap_or_else(|| format!("{}/Image", data_dir));
-    let rootfs_path = vm
-        .rootfs
-        .clone()
-        .unwrap_or_else(|| format!("{}/rootfs.ext4", data_dir));
-    let initrd_path_str = vm
-        .initrd
-        .clone()
-        .unwrap_or_else(|| format!("{}/initramfs.cpio.gz", data_dir));
+    let kernel_path = vm.kernel.clone().unwrap_or_else(|| paths.kernel.clone());
+    let rootfs_path = vm.rootfs.clone().unwrap_or_else(|| paths.rootfs.clone());
+    let initrd_path_str = vm.initrd.clone().unwrap_or_else(|| paths.initramfs.clone());
 
     if !std::path::Path::new(&kernel_path).exists() {
         bail!(
@@ -131,10 +112,9 @@ pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &ShuruConfig, from: Option<&str>) -> 
     }
 
     // Determine source for working copy: checkpoint or base rootfs
-    let checkpoints_dir = format!("{}/checkpoints", data_dir);
     let source = match from {
         Some(name) => {
-            let path = format!("{}/{}.ext4", checkpoints_dir, name);
+            let path = format!("{}/{}.ext4", paths.checkpoints_dir, name);
             if !std::path::Path::new(&path).exists() {
                 bail!("Checkpoint '{}' not found", name);
             }
@@ -152,14 +132,14 @@ pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &ShuruConfig, from: Option<&str>) -> 
     };
 
     // Create per-instance working copy (clean any stale dir from PID reuse)
-    let instance_dir = format!("{}/instances/{}", data_dir, std::process::id());
+    let instance_dir = format!("{}/{}", paths.instances_dir, std::process::id());
     let _ = std::fs::remove_dir_all(&instance_dir);
     std::fs::create_dir_all(&instance_dir)?;
-    let work_rootfs = format!("{}/rootfs.ext4", instance_dir);
+    let work_rootfs = format!("{instance_dir}/rootfs.ext4");
     if verbose {
         eprintln!("shuru: creating working copy...");
     }
-    clone_file(&source, &work_rootfs)?;
+    shuru_platform::copy_file_cow(&source, &work_rootfs)?;
 
     // Extend to requested disk size
     let f = std::fs::OpenOptions::new().write(true).open(&work_rootfs)?;

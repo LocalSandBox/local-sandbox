@@ -2,12 +2,16 @@
 set -euo pipefail
 
 DEBIAN_RELEASE="trixie"
-DATA_DIR="${HOME}/.local/share/shuru"
+DATA_DIR="${SHURU_DATA_DIR:-${SHURU_DEFAULT_DATA_DIR:-${HOME}/.local/share/shuru}}"
 ROOTFS_IMG="${DATA_DIR}/rootfs.ext4"
 KERNEL_PATH="${DATA_DIR}/Image"
 INITRAMFS_PATH="${DATA_DIR}/initramfs.cpio.gz"
-GUEST_BINARY="target/aarch64-unknown-linux-musl/release/shuru-guest"
+GUEST_TARGET="${SHURU_GUEST_TARGET:-aarch64-unknown-linux-musl}"
+GUEST_BINARY="target/${GUEST_TARGET}/release/shuru-guest"
 ROOTFS_SIZE_MB=1024
+DOCKER_PLATFORM="${SHURU_DOCKER_PLATFORM:-linux/arm64/v8}"
+DEBOOTSTRAP_ARCH="${SHURU_DEBOOTSTRAP_ARCH:-arm64}"
+CODESIGN_ENTITLEMENTS="${SHURU_CODESIGN_ENTITLEMENTS:-shuru.entitlements}"
 
 echo "==> Shuru rootfs preparation script"
 echo "    Debian ${DEBIAN_RELEASE} (kernel + rootfs)"
@@ -23,7 +27,7 @@ fi
 
 if [ ! -f "$GUEST_BINARY" ]; then
     echo "ERROR: Guest binary not found at ${GUEST_BINARY}"
-    echo "       Run: cargo build -p shuru-guest --target aarch64-unknown-linux-musl --release"
+    echo "       Run: cargo build -p shuru-guest --target ${GUEST_TARGET} --release"
     exit 1
 fi
 
@@ -42,7 +46,7 @@ if [ ! -f "$INITRAMFS_PATH" ]; then
     echo "==> Building minimal initramfs..."
 
     docker run --rm \
-        --platform linux/arm64/v8 \
+        --platform "${DOCKER_PLATFORM}" \
         -v "${DATA_DIR}:/output" \
         -v "${GUEST_BINARY}:/tmp/shuru-init:ro" \
         debian:${DEBIAN_RELEASE}-slim /bin/sh -c '
@@ -106,8 +110,9 @@ if [[ "$(uname)" == "Darwin" ]]; then
     echo ""
 
     docker run --rm --privileged \
-        --platform linux/arm64/v8 \
+        --platform "${DOCKER_PLATFORM}" \
         -e DEBIAN_RELEASE="${DEBIAN_RELEASE}" \
+        -e DEBOOTSTRAP_ARCH="${DEBOOTSTRAP_ARCH}" \
         -v "${ROOTFS_IMG}:/rootfs.ext4" \
         -v "${GUEST_BINARY}:/tmp/shuru-guest:ro" \
         debian:${DEBIAN_RELEASE}-slim /bin/sh -c '
@@ -120,7 +125,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
             mount -o loop /rootfs.ext4 /mnt/rootfs
 
             echo "==> Running debootstrap (this may take a few minutes)..."
-            debootstrap --arch=arm64 --variant=minbase ${DEBIAN_RELEASE} /mnt/rootfs http://deb.debian.org/debian
+            debootstrap --arch=${DEBOOTSTRAP_ARCH} --variant=minbase ${DEBIAN_RELEASE} /mnt/rootfs http://deb.debian.org/debian
 
             mkdir -p /mnt/rootfs/etc/dpkg/dpkg.cfg.d
             cat > /mnt/rootfs/etc/dpkg/dpkg.cfg.d/01-nodoc << DPKGEOF
@@ -165,7 +170,7 @@ else
     sudo mount -o loop "$ROOTFS_IMG" "$MOUNT_DIR"
 
     echo "==> Running debootstrap (this may take a few minutes)..."
-    sudo debootstrap --arch=arm64 --variant=minbase "${DEBIAN_RELEASE}" "$MOUNT_DIR" http://deb.debian.org/debian
+    sudo debootstrap --arch="${DEBOOTSTRAP_ARCH}" --variant=minbase "${DEBIAN_RELEASE}" "$MOUNT_DIR" http://deb.debian.org/debian
 
     sudo mkdir -p "${MOUNT_DIR}/etc/dpkg/dpkg.cfg.d"
     cat <<'DPKGEOF' | sudo tee "${MOUNT_DIR}/etc/dpkg/dpkg.cfg.d/01-nodoc" > /dev/null
@@ -205,5 +210,5 @@ echo "    Kernel:     ${KERNEL_PATH}"
 echo "    Initramfs:  ${INITRAMFS_PATH}"
 echo "    Rootfs:     ${ROOTFS_IMG}"
 echo ""
-echo "    To run:  cargo build -p shuru-cli && codesign --entitlements shuru.entitlements --force -s - target/debug/shuru"
+echo "    To run:  cargo build -p shuru-cli && codesign --entitlements ${CODESIGN_ENTITLEMENTS} --force -s - target/debug/shuru"
 echo "             ./target/debug/shuru run -- echo hello"

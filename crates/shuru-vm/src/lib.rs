@@ -1,5 +1,10 @@
 #![forbid(unsafe_code)]
 
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+compile_error!(
+    "shuru-vm currently only supports macos/aarch64. Future platform slots exist in shuru-platform, but their runtimes are not implemented yet."
+);
+
 mod sandbox;
 
 pub use shuru_proto::{
@@ -8,13 +13,8 @@ pub use shuru_proto::{
     VSOCK_PORT, VSOCK_PORT_FORWARD,
 };
 pub use sandbox::{MountConfig, PortForwardHandle, Sandbox, VmConfigBuilder};
-
-// Re-exports from shuru-darwin for advanced/escape-hatch use
-pub use shuru_darwin::VirtualMachine;
-pub use shuru_darwin::VmState;
-pub use shuru_darwin::VzError;
+pub use shuru_platform::VmState;
 
 pub fn default_data_dir() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    format!("{}/.local/share/shuru", home)
+    shuru_platform::default_data_dir()
 }

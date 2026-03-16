@@ -19,8 +19,12 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-unknown-linux-musl
+
+      - name: Resolve platform metadata
+        run: cargo run -p xtask -- platform-meta --platform macos-aarch64 --format env --version "${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+
+      - name: Add guest target
+        run: rustup target add "${SHURU_GUEST_TARGET}"
 
       - name: Install musl toolchain and kernel build deps
         run: |
@@ -31,18 +35,13 @@ jobs:
       - name: Build shuru-guest
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-        run: cargo build -p shuru-guest --target aarch64-unknown-linux-musl --release
+        run: cargo build -p shuru-guest --target "${SHURU_GUEST_TARGET}" --release
 
       - name: Build OS image
-        run: ./scripts/prepare-rootfs.sh
+        run: cargo run -p xtask -- prepare-rootfs --platform macos-aarch64
 
       - name: Package OS image
-        run: |
-          VERSION="${GITHUB_REF_NAME}"
-          DATA_DIR="${HOME}/.local/share/shuru"
-          tar czf "shuru-os-${VERSION}-aarch64.tar.gz" \
-            -C "${DATA_DIR}" \
-            Image initramfs.cpio.gz rootfs.ext4
+        run: cargo run -p xtask -- package-release --artifact os-image --version "${GITHUB_REF_NAME}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -59,18 +58,17 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Resolve platform metadata
+        run: cargo run -p xtask -- platform-meta --platform macos-aarch64 --format env --version "${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+
       - name: Build CLI
         run: cargo build -p shuru-cli --release
 
       - name: Codesign
-        run: codesign --entitlements shuru.entitlements --force -s - target/release/shuru
+        run: codesign --entitlements "${SHURU_CODESIGN_ENTITLEMENTS}" --force -s - target/release/shuru
 
       - name: Package CLI binary
-        run: |
-          VERSION="${GITHUB_REF_NAME}"
-          tar czf "shuru-${VERSION}-darwin-aarch64.tar.gz" \
-            -C target/release \
-            shuru
+        run: cargo run -p xtask -- package-release --artifact cli --version "${GITHUB_REF_NAME}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -118,7 +116,8 @@ jobs:
       - name: Update formula
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          SHA256=$(sha256sum /tmp/artifact/shuru-${GITHUB_REF_NAME}-darwin-aarch64.tar.gz | awk '{print $1}')
+          TARBALL=$(find /tmp/artifact -maxdepth 1 -name 'shuru-*.tar.gz' | head -n1)
+          SHA256=$(sha256sum "${TARBALL}" | awk '{print $1}')
           sed -i "s/version \".*\"/version \"${VERSION}\"/" Formula/shuru.rb
           sed -i "s/sha256 \".*\"/sha256 \"${SHA256}\"/" Formula/shuru.rb
 

@@ -87,7 +87,6 @@ where
     where
         F: FnOnce(),
     {
-        // This is always passed Some, so it's safe to unwrap
         let closure = context.take().unwrap();
         closure();
     }
@@ -102,12 +101,9 @@ where
     }
 }
 
-/// The type of a dispatch queue.
 #[derive(Clone, Debug, Hash, PartialEq)]
 pub enum QueueAttribute {
-    /// The queue executes blocks serially in FIFO order.
     Serial,
-    /// The queue executes blocks concurrently.
     #[allow(dead_code)]
     Concurrent,
 }
@@ -121,32 +117,22 @@ impl QueueAttribute {
     }
 }
 
-/// A Grand Central Dispatch queue.
 #[derive(Debug)]
 pub struct Queue {
     pub(crate) ptr: dispatch_queue_t,
 }
 
 impl Queue {
-    /// Creates a new dispatch `Queue`.
     pub fn create(label: &str, attr: QueueAttribute) -> Self {
         let label = CString::new(label).unwrap();
         let queue = unsafe { dispatch_queue_create(label.as_ptr(), attr.as_raw()) };
         Queue { ptr: queue }
     }
 
-    /// Returns a reference usable as a `dispatch2::DispatchQueue`.
-    ///
-    /// # Safety
-    ///
-    /// `dispatch2::DispatchQueue` is an opaque `#[repr(C)]` type used behind references.
-    /// Our `dispatch_queue_t` pointer points to the same underlying dispatch queue object,
-    /// so we can reinterpret it as `&DispatchQueue`.
     pub(crate) unsafe fn as_dispatch2(&self) -> &dispatch2::DispatchQueue {
         &*(self.ptr as *const dispatch2::DispatchQueue)
     }
 
-    /// Submits a closure for execution on self and waits until it completes.
     #[allow(dead_code)]
     pub fn exec_sync<T, F>(&self, work: F) -> T
     where
@@ -166,12 +152,9 @@ impl Queue {
                 dispatch_sync_f(self.ptr, context, work);
             }
         }
-        // This was set so it's safe to unwrap
         result.unwrap()
     }
 
-    /// Submits a closure for asynchronous execution on self and returns
-    /// immediately.
     #[allow(dead_code)]
     pub fn exec_async<F>(&self, work: F)
     where
@@ -197,8 +180,6 @@ impl Queue {
         }
     }
 
-    /// Suspends the invocation of blocks on self and returns a `SuspendGuard`
-    /// that can be dropped to resume.
     #[allow(dead_code)]
     pub fn suspend(&self) -> SuspendGuard {
         SuspendGuard::new(self)
@@ -225,7 +206,6 @@ impl Drop for Queue {
     }
 }
 
-/// An RAII guard which will resume a suspended `Queue` when dropped.
 #[derive(Debug)]
 pub struct SuspendGuard {
     queue: Queue,
@@ -241,7 +221,6 @@ impl SuspendGuard {
         }
     }
 
-    /// Drops self, allowing the suspended `Queue` to resume.
     #[allow(dead_code)]
     pub fn resume(self) {}
 }

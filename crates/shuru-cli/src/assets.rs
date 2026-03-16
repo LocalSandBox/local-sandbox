@@ -6,25 +6,23 @@ use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
 use serde::Deserialize;
 use tar::Archive;
+use shuru_platform::{asset_paths, supported_runtime_platform};
 
 const GITHUB_REPO: &str = "superhq-ai/shuru";
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Check if OS image assets exist and match the expected version.
 pub fn assets_ready(data_dir: &str) -> bool {
-    let kernel = format!("{}/Image", data_dir);
-    let rootfs = format!("{}/rootfs.ext4", data_dir);
-    let initramfs = format!("{}/initramfs.cpio.gz", data_dir);
+    let paths = asset_paths(data_dir);
 
-    if !Path::new(&kernel).exists()
-        || !Path::new(&rootfs).exists()
-        || !Path::new(&initramfs).exists()
+    if !Path::new(&paths.kernel).exists()
+        || !Path::new(&paths.rootfs).exists()
+        || !Path::new(&paths.initramfs).exists()
     {
         return false;
     }
 
-    let version_file = format!("{}/VERSION", data_dir);
-    match fs::read_to_string(&version_file) {
+    match fs::read_to_string(&paths.version_file) {
         Ok(v) => v.trim() == CURRENT_VERSION,
         Err(_) => false,
     }
@@ -39,8 +37,9 @@ pub fn download_os_image(data_dir: &str) -> Result<()> {
 }
 
 fn download_os_image_version(data_dir: &str, version: &str) -> Result<()> {
-    let tag = format!("v{}", version);
-    let tarball_name = format!("shuru-os-{}-aarch64.tar.gz", tag);
+    let platform = supported_runtime_platform()?;
+    let tag = platform.release_tag(version);
+    let tarball_name = platform.os_image_tarball_name(version);
     let url = format!(
         "https://github.com/{}/releases/download/{}/{}",
         GITHUB_REPO, tag, tarball_name
@@ -73,8 +72,8 @@ fn download_os_image_version(data_dir: &str, version: &str) -> Result<()> {
     eprintln!(); // newline after progress
 
     // Write VERSION file
-    let version_file = format!("{}/VERSION", data_dir);
-    fs::write(&version_file, format!("{}\n", version))
+    let paths = asset_paths(data_dir);
+    fs::write(&paths.version_file, format!("{}\n", version))
         .context("failed to write VERSION file")?;
 
     eprintln!("shuru: OS image ready ({})", version);
@@ -125,7 +124,8 @@ pub fn upgrade(data_dir: &str) -> Result<()> {
     );
 
     // Update CLI binary
-    let cli_tarball = format!("shuru-v{}-darwin-aarch64.tar.gz", latest);
+    let platform = supported_runtime_platform()?;
+    let cli_tarball = platform.cli_tarball_name(latest);
     let cli_url = format!(
         "https://github.com/{}/releases/download/v{}/{}",
         GITHUB_REPO, latest, cli_tarball

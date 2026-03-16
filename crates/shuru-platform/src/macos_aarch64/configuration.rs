@@ -2,15 +2,15 @@ use objc2::rc::Retained;
 use objc2_foundation::NSArray;
 use objc2_virtualization::VZVirtualMachineConfiguration;
 
-use crate::bootloader::LinuxBootLoader;
-use crate::directory_sharing::VirtioFileSystemDevice;
-use crate::entropy::VirtioEntropyDevice;
-use crate::error::{Result, VzError};
-use crate::memory::VirtioMemoryBalloonDevice;
-use crate::network::VirtioNetworkDevice;
-use crate::serial::VirtioConsoleSerialPort;
-use crate::socket::VirtioSocketDevice;
-use crate::storage::StorageDevice;
+use super::bootloader::LinuxBootLoader;
+use super::directory_sharing::VirtioFileSystemDevice;
+use super::entropy::VirtioEntropyDevice;
+use super::error::{Result, VzError};
+use super::memory::VirtioMemoryBalloonDevice;
+use super::network::VirtioNetworkDevice;
+use super::serial::VirtioConsoleSerialPort;
+use super::socket::VirtioSocketDevice;
+use super::storage::StorageDevice;
 
 pub struct VirtualMachineConfiguration {
     pub(crate) inner: Retained<VZVirtualMachineConfiguration>,

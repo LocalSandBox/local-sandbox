@@ -1078,6 +1078,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "shuru-platform",
  "shuru-proto",
  "shuru-proxy",
  "shuru-vm",
@@ -1088,9 +1089,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "shuru-darwin"
+name = "shuru-guest"
+version = "0.3.0"
+dependencies = [
+ "libc",
+ "serde_json",
+ "shuru-proto",
+]
+
+[[package]]
+name = "shuru-platform"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "block2",
  "crossbeam-channel",
  "dispatch2",
@@ -1098,15 +1109,7 @@ dependencies = [
  "objc2",
  "objc2-foundation",
  "objc2-virtualization",
-]
-
-[[package]]
-name = "shuru-guest"
-version = "0.3.0"
-dependencies = [
- "libc",
- "serde_json",
- "shuru-proto",
+ "serde",
 ]
 
 [[package]]
@@ -1139,7 +1142,7 @@ name = "shuru-sdk"
 version = "0.3.0"
 dependencies = [
  "anyhow",
- "libc",
+ "shuru-platform",
  "shuru-proto",
  "shuru-proxy",
  "shuru-vm",
@@ -1155,7 +1158,7 @@ dependencies = [
  "crossbeam-channel",
  "serde",
  "serde_json",
- "shuru-darwin",
+ "shuru-platform",
  "shuru-proto",
  "tracing",
 ]
@@ -1641,6 +1644,15 @@ checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
 dependencies = [
  "libc",
  "rustix",
+]
+
+[[package]]
+name = "xtask"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "shuru-platform",
 ]
 
 [[package]]

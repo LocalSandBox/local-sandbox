@@ -2,12 +2,13 @@
 resolver = "2"
 members = [
     "crates/shuru-cli",
-    "crates/shuru-darwin",
+    "crates/shuru-platform",
     "crates/shuru-proto",
     "crates/shuru-proxy",
     "crates/shuru-sdk",
     "crates/shuru-vm",
     "crates/shuru-guest",
+    "xtask",
 ]
 
 [profile.release]

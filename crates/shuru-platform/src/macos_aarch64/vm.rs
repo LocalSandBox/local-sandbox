@@ -14,9 +14,9 @@ use objc2_virtualization::{
     VZVirtioSocketConnection, VZVirtioSocketDevice, VZVirtualMachine, VZVirtualMachineState,
 };
 
-use crate::configuration::VirtualMachineConfiguration;
-use crate::error::{Result, VzError};
-use crate::sys::queue::{Queue, QueueAttribute};
+use super::configuration::VirtualMachineConfiguration;
+use super::error::{Result, VzError};
+use super::sys::queue::{Queue, QueueAttribute};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmState {
@@ -31,7 +31,6 @@ pub enum VmState {
     Unknown = -1,
 }
 
-/// Wrapper asserting thread safety for types whose access is serialized via dispatch queue.
 #[derive(Debug)]
 struct ThreadSafe<T>(T);
 unsafe impl<T> Send for ThreadSafe<T> {}
@@ -39,13 +38,12 @@ unsafe impl<T> Sync for ThreadSafe<T> {}
 
 impl<T> std::ops::Deref for ThreadSafe<T> {
     type Target = T;
+
     fn deref(&self) -> &T {
         &self.0
     }
 }
 
-/// Heap-allocated context for the KVO observer.
-/// Must live on the heap so the pointer remains stable after VirtualMachine moves.
 #[derive(Debug)]
 struct ObserverContext {
     machine: ThreadSafe<Retained<VZVirtualMachine>>,
@@ -88,8 +86,7 @@ define_class!(
             if let Some(msg) = key_path {
                 let key = msg.to_string();
                 if key == "state" {
-                    let ctx: &ObserverContext =
-                        unsafe { &*(context as *const ObserverContext) };
+                    let ctx: &ObserverContext = unsafe { &*(context as *const ObserverContext) };
                     let _ = ctx.state_notifications.try_recv();
                     let _ = ctx.notifier.send(ctx.state());
                 }
@@ -135,9 +132,7 @@ impl VirtualMachine {
                 state_notifications: receiver,
             });
 
-            // Use the Box's stable heap address as KVO context
             let ctx_ptr: *const ObserverContext = &*ctx;
-
             let key = NSString::from_str("state");
             ctx.machine.addObserver_forKeyPath_options_context(
                 &observer,
@@ -169,18 +164,15 @@ impl VirtualMachine {
 
         let dispatch_block = RcBlock::new(move || {
             let inner_tx = tx.clone();
-            let completion_handler =
-                RcBlock::new(move |err: *mut objc2_foundation::NSError| {
-                    if err.is_null() {
-                        inner_tx.send(Ok(())).unwrap();
-                    } else {
-                        inner_tx
-                            .send(Err(unsafe {
-                                VzError::from_ns_error(&*err)
-                            }))
-                            .unwrap();
-                    }
-                });
+            let completion_handler = RcBlock::new(move |err: *mut objc2_foundation::NSError| {
+                if err.is_null() {
+                    inner_tx.send(Ok(())).unwrap();
+                } else {
+                    inner_tx
+                        .send(Err(unsafe { VzError::from_ns_error(&*err) }))
+                        .unwrap();
+                }
+            });
 
             unsafe {
                 machine.startWithCompletionHandler(&completion_handler);
@@ -200,18 +192,15 @@ impl VirtualMachine {
 
         let dispatch_block = RcBlock::new(move || {
             let inner_tx = tx.clone();
-            let completion_handler =
-                RcBlock::new(move |err: *mut objc2_foundation::NSError| {
-                    if err.is_null() {
-                        inner_tx.send(Ok(())).unwrap();
-                    } else {
-                        inner_tx
-                            .send(Err(unsafe {
-                                VzError::from_ns_error(&*err)
-                            }))
-                            .unwrap();
-                    }
-                });
+            let completion_handler = RcBlock::new(move |err: *mut objc2_foundation::NSError| {
+                if err.is_null() {
+                    inner_tx.send(Ok(())).unwrap();
+                } else {
+                    inner_tx
+                        .send(Err(unsafe { VzError::from_ns_error(&*err) }))
+                        .unwrap();
+                }
+            });
 
             unsafe {
                 machine.stopWithCompletionHandler(&completion_handler);
@@ -249,8 +238,6 @@ impl VirtualMachine {
             .exec_sync(move || unsafe { self.ctx.machine.canRequestStop() })
     }
 
-    /// Connects to a vsock port on the guest and returns a TcpStream.
-    /// Must dispatch on the VM's queue per Apple Virtualization framework requirements.
     pub fn connect_to_vsock_port(&self, port: u32) -> Result<TcpStream> {
         let (tx, rx) = std::sync::mpsc::channel::<Result<TcpStream>>();
         let machine = self.ctx.machine.0.clone();
@@ -258,18 +245,15 @@ impl VirtualMachine {
 
         let dispatch_block = RcBlock::new(move || {
             let devices = unsafe { machine.socketDevices() };
-            let count = devices.len();
-            if count == 0 {
+            if devices.len() == 0 {
                 tx.send(Err(VzError::new("No socket devices found on the VM")))
                     .ok();
                 return;
             }
 
             let device_obj = devices.objectAtIndex(0);
-            // Downcast VZSocketDevice to VZVirtioSocketDevice
-            let device: &VZVirtioSocketDevice = unsafe {
-                &*(&*device_obj as *const _ as *const VZVirtioSocketDevice)
-            };
+            let device: &VZVirtioSocketDevice =
+                unsafe { &*(&*device_obj as *const _ as *const VZVirtioSocketDevice) };
 
             let inner_tx = tx.clone();
             let completion_handler = RcBlock::new(
@@ -284,7 +268,6 @@ impl VirtualMachine {
                             .ok();
                     } else {
                         let fd = unsafe { (*conn).fileDescriptor() };
-                        // dup the fd so it survives after the connection object is released
                         let duped = unsafe { libc::dup(fd) };
                         if duped < 0 {
                             inner_tx

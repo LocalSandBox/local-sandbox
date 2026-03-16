@@ -8,10 +8,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use crossbeam_channel::Receiver;
-
-use shuru_darwin::terminal;
-use shuru_darwin::network::FileHandleNetworkAttachment;
-use shuru_darwin::*;
+use shuru_platform::{self, terminal, PlatformSharedDir, PlatformVm, PlatformVmConfig, VmState};
 
 use shuru_proto::{
     frame, ChmodRequest, CopyRequest, ExecRequest, ForwardRequest, ForwardResponse, FsOkResponse,
@@ -113,90 +110,35 @@ impl VmConfigBuilder {
         let kernel_path = self.kernel.context("kernel path is required")?;
         let rootfs_path = self.rootfs.context("rootfs path is required")?;
 
-        if !VirtualMachine::supported() {
-            bail!("Virtualization is not supported on this machine");
-        }
-
-        let boot_loader = LinuxBootLoader::new_with_kernel(&kernel_path);
-        if let Some(ref initrd) = self.initrd {
-            boot_loader.set_initrd(initrd);
-        }
-
-        let cmdline = if self.verbose {
-            "console=hvc0 root=/dev/vda rw"
-        } else {
-            "console=hvc0 root=/dev/vda rw quiet"
-        };
-        boot_loader.set_command_line(cmdline);
-
         let memory_bytes = self.memory_mb * 1024 * 1024;
-        let config = VirtualMachineConfiguration::new(&boot_loader, self.cpus, memory_bytes);
-
-        let dev_null; // keep the File alive so the fd stays valid
-        let serial_attachment = if self.console {
-            FileHandleSerialAttachment::new(
-                std::io::stdin().as_raw_fd(),
-                std::io::stdout().as_raw_fd(),
-            )
-        } else if self.verbose {
-            FileHandleSerialAttachment::new_write_only(std::io::stderr().as_raw_fd())
-        } else {
-            dev_null = std::fs::File::open("/dev/null")
-                .map_err(|e| anyhow::anyhow!("failed to open /dev/null: {}", e))?;
-            FileHandleSerialAttachment::new_write_only(dev_null.as_raw_fd())
-        };
-        let serial = VirtioConsoleSerialPort::new_with_attachment(&serial_attachment);
-        config.set_serial_ports(&[serial]);
-
-        let disk_attachment = DiskImageAttachment::new_with_options(
-            &rootfs_path,
-            false,
-            DiskImageCachingMode::Cached,
-            DiskImageSynchronizationMode::Fsync,
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to create disk attachment: {}", e))?;
-        let block_device = VirtioBlockDevice::new(&disk_attachment);
-        config.set_storage_devices(&[&block_device]);
-
-        if let Some(fd) = self.network_fd {
-            let net_attachment = FileHandleNetworkAttachment::new(fd);
-            let net_device = VirtioNetworkDevice::new_with_attachment(&net_attachment);
-            net_device.set_mac_address(&MACAddress::random_local());
-            config.set_network_devices(&[net_device]);
-        }
-
-        // Set up directory sharing devices (virtio-fs) and mount metadata
-        let mut fs_devices: Vec<VirtioFileSystemDevice> = Vec::new();
         let mut mount_requests: Vec<MountRequest> = Vec::new();
+        let mut shared_dirs = Vec::new();
 
         for (i, m) in self.mounts.iter().enumerate() {
             let tag = format!("mount{}", i);
-            // Host directory is always read-only from the VM side.
-            // Overlay mode uses tmpfs upper layer inside the guest.
-            let shared_dir = SharedDirectory::new(&m.host_path, true);
-            fs_devices.push(VirtioFileSystemDevice::new(&tag, &shared_dir));
+            shared_dirs.push(PlatformSharedDir {
+                host_path: m.host_path.clone(),
+                tag: tag.clone(),
+                read_only: true,
+            });
             mount_requests.push(MountRequest {
                 tag,
                 guest_path: m.guest_path.clone(),
             });
         }
 
-        if !fs_devices.is_empty() {
-            config.set_directory_sharing_devices(&fs_devices);
-        }
-
-        let socket_device = VirtioSocketDevice::new();
-        config.set_socket_devices(&[socket_device]);
-
-        config.set_entropy_devices(&[VirtioEntropyDevice::new()]);
-        config.set_memory_balloon_devices(&[VirtioMemoryBalloonDevice::new()]);
-
-        config
-            .validate()
-            .map_err(|e| anyhow::anyhow!("VM configuration invalid: {}", e))?;
-
         Ok(Sandbox {
-            vm: Arc::new(VirtualMachine::new(&config)),
+            vm: shuru_platform::create_vm(PlatformVmConfig {
+                kernel_path,
+                rootfs_path,
+                initrd_path: self.initrd,
+                cpus: self.cpus,
+                memory_bytes,
+                console: self.console,
+                verbose: self.verbose,
+                network_fd: self.network_fd,
+                shared_dirs,
+            })?,
             mounts: Mutex::new(mount_requests),
         })
     }
@@ -205,7 +147,7 @@ impl VmConfigBuilder {
 // --- Sandbox ---
 
 pub struct Sandbox {
-    vm: Arc<VirtualMachine>,
+    vm: Arc<dyn PlatformVm>,
     mounts: Mutex<Vec<MountRequest>>,
 }
 
@@ -215,15 +157,11 @@ impl Sandbox {
     }
 
     pub fn start(&self) -> Result<()> {
-        self.vm
-            .start()
-            .map_err(|e| anyhow::anyhow!("Failed to start VM: {}", e))
+        self.vm.start().context("Failed to start VM")
     }
 
     pub fn stop(&self) -> Result<()> {
-        self.vm
-            .stop()
-            .map_err(|e| anyhow::anyhow!("Failed to stop VM: {}", e))
+        self.vm.stop().context("Failed to stop VM")
     }
 
     pub fn state_channel(&self) -> Receiver<VmState> {
@@ -717,7 +655,9 @@ impl Sandbox {
                             let _ = tcp_stream.set_nonblocking(false);
                             let vm = Arc::clone(&vm);
                             std::thread::spawn(move || {
-                                if let Err(e) = handle_forward_connection(tcp_stream, &vm, guest_port) {
+                                if let Err(e) =
+                                    handle_forward_connection(tcp_stream, vm.as_ref(), guest_port)
+                                {
                                     tracing::debug!("port forward error: {}", e);
                                 }
                             });
@@ -795,7 +735,7 @@ impl Drop for PortForwardHandle {
 
 fn handle_forward_connection(
     tcp_stream: TcpStream,
-    vm: &VirtualMachine,
+    vm: &dyn PlatformVm,
     guest_port: u16,
 ) -> Result<()> {
     let mut vsock_stream = vm

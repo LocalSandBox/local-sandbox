@@ -17,9 +17,6 @@ pub struct FileHandleNetworkAttachment {
 }
 
 impl FileHandleNetworkAttachment {
-    /// Creates a network attachment from a connected datagram socket fd.
-    /// The fd should be one end of `socketpair(AF_UNIX, SOCK_DGRAM)`.
-    /// VZ takes ownership of this fd (closes on dealloc).
     pub fn new(fd: RawFd) -> Self {
         unsafe {
             let file_handle = NSFileHandle::initWithFileDescriptor_closeOnDealloc(

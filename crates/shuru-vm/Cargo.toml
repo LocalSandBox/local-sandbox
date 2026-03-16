@@ -7,7 +7,7 @@ license = "Apache-2.0"
 repository = "https://github.com/superhq-ai/shuru"
 
 [dependencies]
-shuru-darwin = { version = "0.1.0", path = "../shuru-darwin" }
+shuru-platform = { version = "0.1.0", path = "../shuru-platform" }
 shuru-proto = { version = "0.3.0", path = "../shuru-proto" }
 anyhow = "1"
 crossbeam-channel = "0.5"

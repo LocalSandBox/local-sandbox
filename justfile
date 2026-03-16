@@ -1,4 +1,5 @@
-guest_target := "aarch64-unknown-linux-musl"
+guest_target := `cargo run -q -p xtask -- platform-meta --platform macos-aarch64 --format env | sed -n 's/^SHURU_GUEST_TARGET=//p'`
+codesign_entitlements := `cargo run -q -p xtask -- platform-meta --platform macos-aarch64 --format env | sed -n 's/^SHURU_CODESIGN_ENTITLEMENTS=//p'`
 binary := "target/debug/shuru"
 
 # List available recipes
@@ -9,20 +10,24 @@ default:
 build-guest:
     cargo build -p shuru-guest --target {{ guest_target }} --release
 
+# Build the guest kernel image via xtask
+build-kernel:
+    cargo run -p xtask -- build-kernel --platform macos-aarch64
+
 # Build the CLI binary (debug)
 build-cli:
     cargo build -p shuru-cli
 
 # Codesign the CLI binary with virtualization entitlement
 codesign:
-    codesign --entitlements shuru.entitlements --force -s - {{ binary }}
+    codesign --entitlements {{ codesign_entitlements }} --force -s - {{ binary }}
 
 # Build everything: guest + CLI + codesign
 build: build-guest build-cli codesign
 
 # Prepare the rootfs, kernel, and initramfs (requires Docker)
 prepare-rootfs:
-    ./scripts/prepare-rootfs.sh
+    cargo run -p xtask -- prepare-rootfs --platform macos-aarch64
 
 # Run a command inside the VM
 run *args:
@@ -46,7 +51,7 @@ clippy:
 # Install the binary to ~/.local/bin with codesign
 install: build-guest
     cargo build -p shuru-cli --release
-    codesign --entitlements shuru.entitlements --force -s - target/release/shuru
+    codesign --entitlements {{ codesign_entitlements }} --force -s - target/release/shuru
     mkdir -p ~/.local/bin
     cp target/release/shuru ~/.local/bin/shuru
 

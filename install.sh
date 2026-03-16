@@ -14,10 +14,19 @@ if [ "$OS" != "Darwin" ]; then
     exit 1
 fi
 
-if [ "$ARCH" != "arm64" ]; then
-    echo "Error: shuru requires Apple Silicon (arm64). Detected: $ARCH" >&2
-    exit 1
-fi
+case "$OS:$ARCH" in
+    Darwin:arm64)
+        CLI_SUFFIX="darwin-aarch64"
+        ;;
+    Darwin:x86_64)
+        echo "Error: shuru does not support Intel macOS yet. Detected: $ARCH" >&2
+        exit 1
+        ;;
+    *)
+        echo "Error: shuru does not support this platform yet. Detected: $OS/$ARCH" >&2
+        exit 1
+        ;;
+esac
 
 ##### Fetch latest release tag
 
@@ -34,7 +43,7 @@ echo "Latest version: $VERSION"
 
 ##### Download and extract
 
-TARBALL="shuru-v${VERSION}-darwin-aarch64.tar.gz"
+TARBALL="shuru-v${VERSION}-${CLI_SUFFIX}.tar.gz"
 URL="https://github.com/${REPO}/releases/download/${TAG}/${TARBALL}"
 
 TMPDIR=$(mktemp -d)
