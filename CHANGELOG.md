@@ -1,5 +1,7 @@
 # Changelog
 
+> Historical note: JavaScript and TypeScript support now ships from [`bindings/nodejs`](bindings/nodejs) as `@superhq/shuru-nodejs`. Older `@superhq/shuru` entries below describe archived SDK releases.
+
 ## 0.4.1
 
 ### CLI (`shuru-cli` 0.4.1)

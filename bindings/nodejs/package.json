@@ -1,0 +1,89 @@
+{
+  "name": "@superhq/shuru-nodejs",
+  "version": "0.1.0",
+  "description": "Native Node.js bindings for Shuru microVM sandboxes",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/superhq-ai/shuru.git",
+    "directory": "bindings/nodejs"
+  },
+  "keywords": [
+    "shuru",
+    "napi-rs",
+    "node-addon",
+    "sandbox",
+    "microvm"
+  ],
+  "files": [
+    "README.md",
+    "index.d.ts",
+    "index.js"
+  ],
+  "napi": {
+    "binaryName": "shuru-nodejs",
+    "packageName": "@superhq/shuru-nodejs",
+    "targets": [
+      "aarch64-apple-darwin"
+    ]
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "scripts": {
+    "artifacts": "napi artifacts",
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "format": "run-p format:prettier format:rs format:toml",
+    "format:prettier": "prettier . -w",
+    "format:rs": "cargo fmt",
+    "format:toml": "taplo format",
+    "lint": "oxlint .",
+    "prepublishOnly": "napi prepublish -t npm",
+    "test": "napi build --platform && ava",
+    "test:signed-node": "./scripts/test-with-signed-node.sh",
+    "version": "napi version"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.2.0",
+    "@oxc-node/core": "^0.0.35",
+    "@taplo/cli": "^0.7.0",
+    "@types/node": "^22.15.30",
+    "ava": "^7.0.0",
+    "npm-run-all2": "^8.0.4",
+    "oxlint": "^1.14.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.2"
+  },
+  "ava": {
+    "files": [
+      "test/**/*.spec.ts"
+    ],
+    "extensions": {
+      "ts": "module"
+    },
+    "timeout": "1m",
+    "workerThreads": false,
+    "environmentVariables": {
+      "OXC_TSCONFIG_PATH": "./test/tsconfig.json"
+    },
+    "nodeArguments": [
+      "--import",
+      "@oxc-node/core/register"
+    ]
+  },
+  "prettier": {
+    "printWidth": 100,
+    "semi": false,
+    "trailingComma": "all",
+    "singleQuote": true,
+    "arrowParens": "always"
+  },
+  "packageManager": "yarn@4.12.0"
+}

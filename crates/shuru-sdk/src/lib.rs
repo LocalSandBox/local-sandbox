@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::info;
 
 // Re-exports
-pub use shuru_proto::{DirEntry, ReadDirResponse, StatResponse};
+pub use shuru_proto::{DirEntry, PortMapping, ReadDirResponse, StatResponse};
 pub use shuru_proxy::config::{NetworkConfig, ProxyConfig, SecretConfig};
 pub use shuru_vm::{default_data_dir, MountConfig};
 
@@ -153,6 +153,10 @@ enum SandboxCmd {
         path: String,
         reply: oneshot::Sender<Result<ReadDirResponse>>,
     },
+    Stat {
+        path: String,
+        reply: oneshot::Sender<Result<StatResponse>>,
+    },
     OpenShell {
         rows: u16,
         cols: u16,
@@ -189,17 +193,15 @@ impl AsyncSandbox {
 
         std::thread::Builder::new()
             .name("shuru-vm".into())
-            .spawn(move || {
-                match boot_vm(config) {
-                    Ok((sandbox, instance_dir, proxy_handle, fwd_handle)) => {
-                        if ready_tx.send(Ok(instance_dir.clone())).is_err() {
-                            return;
-                        }
-                        run_vm_loop(sandbox, &instance_dir, cmd_rx, proxy_handle, fwd_handle);
+            .spawn(move || match boot_vm(config) {
+                Ok((sandbox, instance_dir, proxy_handle, fwd_handle)) => {
+                    if ready_tx.send(Ok(instance_dir.clone())).is_err() {
+                        return;
                     }
-                    Err(e) => {
-                        let _ = ready_tx.send(Err(e));
-                    }
+                    run_vm_loop(sandbox, &instance_dir, cmd_rx, proxy_handle, fwd_handle);
+                }
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e));
                 }
             })?;
 
@@ -259,8 +261,7 @@ impl AsyncSandbox {
                             }
                         }
                         Ok(Some((shuru_proto::frame::EXIT, payload))) => {
-                            let code =
-                                shuru_proto::frame::parse_exit_code(&payload).unwrap_or(0);
+                            let code = shuru_proto::frame::parse_exit_code(&payload).unwrap_or(0);
                             let _ = event_tx.send(ShellEvent::Exit(code));
                             break;
                         }
@@ -279,7 +280,9 @@ impl AsyncSandbox {
             writer: ShellWriter {
                 writer: Arc::new(std::sync::Mutex::new(writer_stream)),
             },
-            reader: ShellReader { output_rx: event_rx },
+            reader: ShellReader {
+                output_rx: event_rx,
+            },
             _reader_thread: reader_thread,
         })
     }
@@ -314,6 +317,18 @@ impl AsyncSandbox {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.cmd_tx
             .send(SandboxCmd::ReadDir {
+                path: path.to_string(),
+                reply: reply_tx,
+            })
+            .map_err(|_| anyhow::anyhow!("VM thread exited"))?;
+        reply_rx.await?
+    }
+
+    /// Get file or directory metadata in the VM.
+    pub async fn stat(&self, path: &str) -> Result<StatResponse> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SandboxCmd::Stat {
                 path: path.to_string(),
                 reply: reply_tx,
             })
@@ -384,9 +399,7 @@ fn boot_vm(
     Option<shuru_proxy::ProxyHandle>,
     Option<shuru_vm::PortForwardHandle>,
 )> {
-    let data_dir = config
-        .data_dir
-        .unwrap_or_else(shuru_vm::default_data_dir);
+    let data_dir = config.data_dir.unwrap_or_else(shuru_vm::default_data_dir);
 
     // Resolve asset paths
     let kernel_path = format!("{}/Image", data_dir);
@@ -421,20 +434,14 @@ fn boot_vm(
     };
 
     // Create per-instance working copy (CoW via macOS clonefile)
-    let instance_dir = format!(
-        "{}/instances/sdk-{}",
-        data_dir,
-        std::process::id()
-    );
+    let instance_dir = format!("{}/instances/sdk-{}", data_dir, std::process::id());
     let _ = std::fs::remove_dir_all(&instance_dir);
     std::fs::create_dir_all(&instance_dir)?;
     let work_rootfs = format!("{}/rootfs.ext4", instance_dir);
     clone_file_cow(&source, &work_rootfs)?;
 
     // Extend disk to requested size
-    let f = std::fs::OpenOptions::new()
-        .write(true)
-        .open(&work_rootfs)?;
+    let f = std::fs::OpenOptions::new().write(true).open(&work_rootfs)?;
     let target = config.disk_size_mb * 1024 * 1024;
     let current = f.metadata()?.len();
     if target > current {
@@ -540,11 +547,18 @@ fn run_vm_loop(
             SandboxCmd::ReadFile { path, reply } => {
                 let _ = reply.send(sandbox.read_file(&path));
             }
-            SandboxCmd::WriteFile { path, content, reply } => {
+            SandboxCmd::WriteFile {
+                path,
+                content,
+                reply,
+            } => {
                 let _ = reply.send(sandbox.write_file(&path, &content));
             }
             SandboxCmd::ReadDir { path, reply } => {
                 let _ = reply.send(sandbox.read_dir(&path));
+            }
+            SandboxCmd::Stat { path, reply } => {
+                let _ = reply.send(sandbox.stat(&path));
             }
             SandboxCmd::OpenShell { rows, cols, reply } => {
                 let result = sandbox.open_shell(&["/bin/bash", "-l"], &env, rows, cols);

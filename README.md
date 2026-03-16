@@ -138,16 +138,16 @@ Shuru loads `shuru.json` from the current directory (or `--config PATH`). All fi
 
 The `network.allow` list restricts which hosts the guest can reach. Omit it to allow all hosts.
 
-## SDK
+## Node.js Binding
 
-Use shuru programmatically from TypeScript with the [`@superhq/shuru`](https://www.npmjs.com/package/@superhq/shuru) package.
+Use shuru programmatically from Node.js or TypeScript with the [`@superhq/shuru-nodejs`](https://www.npmjs.com/package/@superhq/shuru-nodejs) package.
 
 ```sh
-bun add @superhq/shuru
+npm install @superhq/shuru-nodejs
 ```
 
 ```ts
-import { Sandbox } from "@superhq/shuru";
+import { Sandbox } from "@superhq/shuru-nodejs";
 
 const sb = await Sandbox.start({ from: "python-env" });
 
@@ -157,7 +157,7 @@ console.log(result.stdout); // "2\n"
 await sb.checkpoint("after-run"); // saves disk state and stops the VM
 ```
 
-See the [SDK README](packages/sdk/README.md) for full API docs.
+See the [Node.js binding README](bindings/nodejs/README.md) for full API docs and runtime requirements.
 
 ## Agent Skill
 

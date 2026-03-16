@@ -4,7 +4,7 @@ import Nav from "../../components/landing/Nav.astro";
 import Footer from "../../components/landing/Footer.astro";
 import CodeBlock from "../../components/CodeBlock.astro";
 
-const primitivesCode = `import { Sandbox } from "@superhq/shuru"
+const primitivesCode = `import { Sandbox } from "@superhq/shuru-nodejs"
 
 const sb = await Sandbox.start()
 
@@ -32,7 +32,7 @@ await proc.kill()
 await sb.stop()`;
 
 const harnessCode = `import Anthropic from "@anthropic-ai/sdk"
-import { Sandbox } from "@superhq/shuru"
+import { Sandbox } from "@superhq/shuru-nodejs"
 
 const client = new Anthropic()
 const sb = await Sandbox.start()
@@ -96,7 +96,7 @@ $ curl https://api.openai.com/v1/chat/completions \\
 
 # the real key never enters the VM`;
 
-const checkpointCode = `import { Sandbox } from "@superhq/shuru"
+const checkpointCode = `import { Sandbox } from "@superhq/shuru-nodejs"
 
 // sandboxes start as bare Debian. install what you need, then save
 const sb = await Sandbox.start({ allowNet: true })
@@ -106,7 +106,7 @@ await sb.exec("git clone https://github.com/acme/api.git /app")
 await sb.exec("cd /app && npm install")
 await sb.checkpoint("ready") // saves disk state, stops the VM`;
 
-const fanoutCode = `import { Sandbox } from "@superhq/shuru"
+const fanoutCode = `import { Sandbox } from "@superhq/shuru-nodejs"
 
 // each issue gets its own VM forked from "ready"
 // node, claude code, and deps are already there. boots in ~1s
@@ -267,12 +267,12 @@ const results = await Promise.all(issues.map(async ({ branch, task }) => {
         <div class="border-t border-dashed border-border px-8 py-8 md:px-16 md:py-10">
           <div class="flex flex-col items-start gap-3 font-mono text-sm">
             <a
-              href="https://www.npmjs.com/package/@superhq/shuru"
+              href="https://www.npmjs.com/package/@superhq/shuru-nodejs"
               target="_blank"
               rel="noopener"
               class="text-muted transition-colors hover:text-amber"
             >
-              CLI and TypeScript SDK &rarr;
+              CLI and Node.js binding &rarr;
             </a>
             <a
               href="https://github.com/superhq-ai/shuru"

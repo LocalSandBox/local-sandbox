@@ -7,28 +7,6 @@ on:
     branches: [main]
 
 jobs:
-  sdk-unit:
-    name: SDK unit tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-      - run: bun install
-        working-directory: packages/sdk
-      - run: bun test test/unit/
-        working-directory: packages/sdk
-
-  sdk-lint:
-    name: SDK lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-      - run: bun install
-        working-directory: packages/sdk
-      - run: bunx --bun @biomejs/biome check src/
-        working-directory: packages/sdk
-
   rust-check:
     name: Rust check
     runs-on: macos-14

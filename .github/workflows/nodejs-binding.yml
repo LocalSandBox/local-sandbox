@@ -1,0 +1,74 @@
+name: Node.js Binding
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/nodejs-binding.yml"
+      - "bindings/nodejs/**"
+      - "crates/shuru-sdk/**"
+      - "crates/shuru-vm/**"
+      - "crates/shuru-proto/**"
+      - "crates/shuru-proxy/**"
+      - "crates/shuru-darwin/**"
+  pull_request:
+    paths:
+      - ".github/workflows/nodejs-binding.yml"
+      - "bindings/nodejs/**"
+      - "crates/shuru-sdk/**"
+      - "crates/shuru-vm/**"
+      - "crates/shuru-proto/**"
+      - "crates/shuru-proxy/**"
+      - "crates/shuru-darwin/**"
+
+jobs:
+  lint:
+    name: Lint and Check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bindings/nodejs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+          cache-dependency-path: bindings/nodejs/yarn.lock
+      - run: corepack enable
+      - uses: dtolnay/rust-toolchain@stable
+      - run: yarn install --immutable
+      - run: yarn lint
+      - run: cargo fmt --manifest-path Cargo.toml -- --check
+      - run: cargo check --manifest-path Cargo.toml
+
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+    defaults:
+      run:
+        working-directory: bindings/nodejs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+          cache-dependency-path: bindings/nodejs/yarn.lock
+      - run: corepack enable
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: yarn install --immutable
+      - run: yarn napi build --target ${{ matrix.target }} --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-nodejs-${{ matrix.target }}
+          path: bindings/nodejs/shuru-nodejs.*.node
+          if-no-files-found: error
