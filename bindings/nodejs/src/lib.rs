@@ -22,6 +22,8 @@ use shuru_sdk::{
 use shuru_vm::PortForwardHandle;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use tokio::sync::{oneshot, watch};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use uuid::Uuid;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::io::BufReader;
@@ -1149,6 +1151,24 @@ fn clone_file_cow(src: &str, dst: &str) -> anyhow::Result<()> {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn clone_file_cow_atomic(src: &str, dst: &str) -> anyhow::Result<()> {
+  let temp_path = format!("{dst}.tmp-{}", Uuid::new_v4());
+
+  let clone_result = clone_file_cow(src, &temp_path);
+  if let Err(error) = clone_result {
+    let _ = std::fs::remove_file(&temp_path);
+    return Err(error);
+  }
+
+  if let Err(error) = std::fs::rename(&temp_path, dst) {
+    let _ = std::fs::remove_file(&temp_path);
+    return Err(error).with_context(|| format!("rename({temp_path} -> {dst}) failed"));
+  }
+
+  Ok(())
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn boot_vm(
   config: SandboxConfig,
   instanceID: Option<String>,
@@ -1354,11 +1374,8 @@ fn run_vm_loop(
           let checkpoints_dir = format!("{}/checkpoints", shuru_vm::default_data_dir());
           std::fs::create_dir_all(&checkpoints_dir)?;
           let checkpoint_path = format!("{checkpoints_dir}/{name}.ext4");
-          if std::path::Path::new(&checkpoint_path).exists() {
-            std::fs::remove_file(&checkpoint_path)?;
-          }
           let work_rootfs = format!("{instance_dir}/rootfs.ext4");
-          clone_file_cow(&work_rootfs, &checkpoint_path)?;
+          clone_file_cow_atomic(&work_rootfs, &checkpoint_path)?;
           Ok(())
         })();
         let _ = reply.send(result);

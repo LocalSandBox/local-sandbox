@@ -23,6 +23,7 @@ shuru-proxy = { path = "../../crates/shuru-proxy" }
 shuru-sdk = { path = "../../crates/shuru-sdk" }
 shuru-vm = { path = "../../crates/shuru-vm" }
 tokio = { version = "1", features = ["sync"] }
+uuid = { version = "1", features = ["v4"] }
 
 [build-dependencies]
 napi-build = "2"
