@@ -12,7 +12,9 @@ use crate::config::ShuruConfig;
 
 pub(crate) struct PreparedVm {
     pub instance_dir: String,
+    pub source_rootfs: String,
     pub work_rootfs: String,
+    pub cas_index: Option<String>,
     pub kernel_path: String,
     pub initrd_path: Option<String>,
     pub cpus: usize,
@@ -33,6 +35,7 @@ pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &ShuruConfig, from: Option<&str>) -> 
     let memory = vm.memory.or(cfg.memory).unwrap_or(2048);
     let disk_size = vm.disk_size.or(cfg.disk_size).unwrap_or(4096);
     let allow_net = vm.allow_net || cfg.allow_net.unwrap_or(false);
+    let allow_host_writes = vm.allow_host_writes || cfg.allow_host_writes.unwrap_or(false);
     let verbose = vm.verbose;
 
     let proxy_config = if allow_net {
@@ -54,6 +57,12 @@ pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &ShuruConfig, from: Option<&str>) -> 
         // Merge --allow-domain flags
         for d in &vm.allow_host {
             proxy.network.allow.push(d.clone());
+        }
+
+        for s in &vm.expose_host {
+            let mapping = crate::config::parse_expose_host(s)
+                .with_context(|| format!("invalid --expose-host: '{}'", s))?;
+            proxy.expose_host.push(mapping);
         }
 
         Some(proxy)
@@ -87,6 +96,9 @@ pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &ShuruConfig, from: Option<&str>) -> 
         let mc = parse_mount_spec(s).with_context(|| format!("invalid mount spec: '{}'", s))?;
         mounts.push(mc);
     }
+    if !mounts.is_empty() {
+        validate_mounts(&mounts, allow_host_writes)?;
+    }
 
     let data_dir = shuru_vm::default_data_dir();
     let paths = asset_paths(&data_dir);
@@ -112,13 +124,20 @@ pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &ShuruConfig, from: Option<&str>) -> 
     }
 
     // Determine source for working copy: checkpoint or base rootfs
+    let mut cas_index = None;
     let source = match from {
         Some(name) => {
-            let path = format!("{}/{}.ext4", paths.checkpoints_dir, name);
-            if !std::path::Path::new(&path).exists() {
+            shuru_vm::validate_checkpoint_name(name).map_err(|e| anyhow::anyhow!(e))?;
+            let idx_path = format!("{}/{}.idx", paths.checkpoints_dir, name);
+            let ext4_path = format!("{}/{}.ext4", paths.checkpoints_dir, name);
+            if std::path::Path::new(&idx_path).exists() {
+                cas_index = Some(idx_path);
+                rootfs_path.clone()
+            } else if std::path::Path::new(&ext4_path).exists() {
+                ext4_path
+            } else {
                 bail!("Checkpoint '{}' not found", name);
             }
-            path
         }
         None => {
             if !std::path::Path::new(&rootfs_path).exists() {
@@ -136,10 +155,14 @@ pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &ShuruConfig, from: Option<&str>) -> 
     let _ = std::fs::remove_dir_all(&instance_dir);
     std::fs::create_dir_all(&instance_dir)?;
     let work_rootfs = format!("{instance_dir}/rootfs.ext4");
-    if verbose {
-        eprintln!("shuru: creating working copy...");
+    if cas_index.is_none() {
+        if verbose {
+            eprintln!("shuru: creating working copy...");
+        }
+        shuru_platform::copy_file_cow(&source, &work_rootfs)?;
+    } else {
+        std::fs::File::create(&work_rootfs)?;
     }
-    shuru_platform::copy_file_cow(&source, &work_rootfs)?;
 
     // Extend to requested disk size
     let f = std::fs::OpenOptions::new().write(true).open(&work_rootfs)?;
@@ -169,7 +192,9 @@ pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &ShuruConfig, from: Option<&str>) -> 
 
     Ok(PreparedVm {
         instance_dir,
+        source_rootfs: source,
         work_rootfs,
+        cas_index,
         kernel_path,
         initrd_path,
         cpus,
@@ -186,6 +211,7 @@ pub(crate) fn build_sandbox(
     prepared: &PreparedVm,
     console: bool,
     network_fd: Option<i32>,
+    nbd_uri: Option<&str>,
 ) -> Result<Sandbox> {
     let mut builder = Sandbox::builder()
         .kernel(&prepared.kernel_path)
@@ -199,6 +225,10 @@ pub(crate) fn build_sandbox(
         builder = builder.network_fd(fd);
     }
 
+    if let Some(uri) = nbd_uri {
+        builder = builder.nbd_uri(uri);
+    }
+
     if let Some(initrd) = &prepared.initrd_path {
         builder = builder.initrd(initrd);
     }
@@ -210,7 +240,37 @@ pub(crate) fn build_sandbox(
     builder.build()
 }
 
-pub(crate) fn run_command(prepared: &PreparedVm, command: &[String]) -> Result<i32> {
+pub(crate) struct RunResult {
+    pub exit_code: i32,
+    pub nbd_handle: Option<shuru_store::NbdHandle>,
+}
+
+pub(crate) fn start_nbd(prepared: &PreparedVm) -> Result<Option<shuru_store::NbdHandle>> {
+    if std::env::var("SHURU_STORAGE").unwrap_or_default() == "direct" {
+        return Ok(None);
+    }
+
+    let socket_path = format!("{}/nbd.sock", prepared.instance_dir);
+    let data_dir = shuru_vm::default_data_dir();
+    let cas_dir = format!("{}/cas", data_dir);
+    let index_path = if let Some(ref idx) = prepared.cas_index {
+        idx.clone()
+    } else {
+        let source_hash = blake3::hash(prepared.source_rootfs.as_bytes()).to_hex();
+        format!("{}/cas/indexes/{}.idx", data_dir, &source_hash[..16])
+    };
+    let target_size = prepared.disk_size * 1024 * 1024;
+
+    Ok(Some(shuru_store::start_cas_nbd_server(
+        &prepared.source_rootfs,
+        &cas_dir,
+        &index_path,
+        &socket_path,
+        target_size,
+    )?))
+}
+
+pub(crate) fn run_command(prepared: &PreparedVm, command: &[String]) -> Result<RunResult> {
     if prepared.verbose {
         eprintln!("shuru: kernel={}", prepared.kernel_path);
         eprintln!("shuru: rootfs={} (work copy)", prepared.work_rootfs);
@@ -234,7 +294,10 @@ pub(crate) fn run_command(prepared: &PreparedVm, command: &[String]) -> Result<i
         (None, None)
     };
 
-    let sandbox = build_sandbox(prepared, false, vm_fd)?;
+    let nbd_handle = start_nbd(prepared)?;
+    let nbd_uri = nbd_handle.as_ref().map(|handle| handle.uri());
+
+    let sandbox = build_sandbox(prepared, false, vm_fd, nbd_uri.as_deref())?;
     if prepared.verbose {
         eprintln!("shuru: VM created and validated successfully");
     }
@@ -285,13 +348,16 @@ pub(crate) fn run_command(prepared: &PreparedVm, command: &[String]) -> Result<i
 
     drop(proxy_handle);
     let _ = sandbox.stop();
-    Ok(exit_code)
+    Ok(RunResult {
+        exit_code,
+        nbd_handle,
+    })
 }
 
 fn parse_mount_spec(s: &str) -> Result<MountConfig> {
-    let parts: Vec<&str> = s.splitn(2, ':').collect();
+    let parts: Vec<&str> = s.splitn(3, ':').collect();
     if parts.len() < 2 {
-        bail!("expected HOST:GUEST format (e.g. ./src:/workspace)");
+        bail!("expected HOST:GUEST[:ro|rw] format (e.g. ./src:/workspace:rw)");
     }
 
     let host_path = std::fs::canonicalize(parts[0])
@@ -299,18 +365,69 @@ fn parse_mount_spec(s: &str) -> Result<MountConfig> {
         .to_string_lossy()
         .to_string();
 
-    let guest_path = parts[1].to_string();
-    if !guest_path.starts_with('/') {
+    parse_mount_parts(&host_path, parts[1], parts.get(2).copied())
+}
+
+fn parse_mount_parts(host: &str, guest: &str, mode: Option<&str>) -> Result<MountConfig> {
+    if !guest.starts_with('/') {
+        bail!("guest path must be absolute (start with /): '{}'", guest);
+    }
+    let read_only = match mode {
+        None | Some("ro") => true,
+        Some("rw") => false,
+        Some(other) => bail!("invalid mount mode '{}': expected 'ro' or 'rw'", other),
+    };
+
+    Ok(MountConfig {
+        host_path: host.to_string(),
+        guest_path: guest.to_string(),
+        read_only,
+    })
+}
+
+fn validate_mounts(mounts: &[MountConfig], allow_host_writes: bool) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to determine current working directory")?;
+    let cwd = std::fs::canonicalize(&cwd)
+        .context("failed to canonicalize current working directory")?;
+    validate_mounts_with_cwd(mounts, allow_host_writes, &cwd)
+}
+
+fn validate_mounts_with_cwd(
+    mounts: &[MountConfig],
+    allow_host_writes: bool,
+    cwd: &std::path::Path,
+) -> Result<()> {
+    if cwd == std::path::Path::new("/") {
         bail!(
-            "guest path must be absolute (start with /): '{}'",
-            guest_path
+            "cannot use mounts when the current working directory is '/'. Change to a project directory first."
         );
     }
 
-    Ok(MountConfig {
-        host_path,
-        guest_path,
-    })
+    for mount in mounts {
+        let host = std::path::Path::new(&mount.host_path);
+
+        if host == std::path::Path::new("/") {
+            bail!("mounting '/' as a host path is not allowed. Mount a specific subdirectory instead.");
+        }
+
+        if !host.starts_with(cwd) {
+            bail!(
+                "mount host path '{}' is outside the current working directory '{}'. Only paths within CWD can be mounted.",
+                mount.host_path,
+                cwd.display()
+            );
+        }
+
+        if !mount.read_only && !allow_host_writes {
+            bail!(
+                "read-write mount '{}:{}:rw' requires --allow-host-writes flag (or \"allow_host_writes\": true in config).",
+                mount.host_path,
+                mount.guest_path
+            );
+        }
+    }
+
+    Ok(())
 }
 
 /// Parse `NAME=VALUE@host1,host2` into (name, value, hosts).
@@ -352,7 +469,42 @@ fn parse_port_mapping(s: &str) -> Result<PortMapping> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_secret_flag;
+    use super::*;
+
+    #[test]
+    fn mount_defaults_to_read_only() {
+        let mount = parse_mount_parts("/some/host", "/workspace", None).expect("mount should parse");
+        assert!(mount.read_only);
+    }
+
+    #[test]
+    fn mount_rw_suffix_is_supported() {
+        let mount =
+            parse_mount_parts("/some/host", "/workspace", Some("rw")).expect("mount should parse");
+        assert!(!mount.read_only);
+    }
+
+    #[test]
+    fn mount_rejects_bad_mode() {
+        assert!(parse_mount_parts("/some/host", "/workspace", Some("xx")).is_err());
+    }
+
+    #[test]
+    fn mount_rejects_relative_guest_path() {
+        assert!(parse_mount_parts("/some/host", "workspace", None).is_err());
+    }
+
+    #[test]
+    fn rw_mount_requires_allow_flag() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let mounts = vec![MountConfig {
+            host_path: cwd.to_string_lossy().to_string(),
+            guest_path: "/workspace".to_string(),
+            read_only: false,
+        }];
+        let err = validate_mounts_with_cwd(&mounts, false, &cwd).expect_err("rw mount should fail");
+        assert!(err.to_string().contains("--allow-host-writes"));
+    }
 
     #[test]
     fn parses_literal_secret_flag() {

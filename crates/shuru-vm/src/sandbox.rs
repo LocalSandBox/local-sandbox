@@ -23,6 +23,7 @@ use shuru_proto::{
 pub struct MountConfig {
     pub host_path: String,
     pub guest_path: String,
+    pub read_only: bool,
 }
 
 // --- VmConfigBuilder ---
@@ -36,6 +37,7 @@ pub struct VmConfigBuilder {
     console: bool,
     verbose: bool,
     network_fd: Option<i32>,
+    nbd_uri: Option<String>,
     mounts: Vec<MountConfig>,
 }
 
@@ -50,6 +52,7 @@ impl VmConfigBuilder {
             console: true,
             verbose: false,
             network_fd: None,
+            nbd_uri: None,
             mounts: Vec::new(),
         }
     }
@@ -100,6 +103,11 @@ impl VmConfigBuilder {
         self
     }
 
+    pub fn nbd_uri(mut self, uri: impl Into<String>) -> Self {
+        self.nbd_uri = Some(uri.into());
+        self
+    }
+
     /// Add a host directory mount (virtio-fs).
     pub fn mount(mut self, config: MountConfig) -> Self {
         self.mounts.push(config);
@@ -119,11 +127,12 @@ impl VmConfigBuilder {
             shared_dirs.push(PlatformSharedDir {
                 host_path: m.host_path.clone(),
                 tag: tag.clone(),
-                read_only: true,
+                read_only: m.read_only,
             });
             mount_requests.push(MountRequest {
                 tag,
                 guest_path: m.guest_path.clone(),
+                read_only: m.read_only,
             });
         }
 
@@ -137,6 +146,7 @@ impl VmConfigBuilder {
                 console: self.console,
                 verbose: self.verbose,
                 network_fd: self.network_fd,
+                nbd_uri: self.nbd_uri,
                 shared_dirs,
             })?,
             mounts: Mutex::new(mount_requests),

@@ -9,11 +9,13 @@ pub(crate) struct ShuruConfig {
     pub memory: Option<u64>,
     pub disk_size: Option<u64>,
     pub allow_net: Option<bool>,
+    pub allow_host_writes: Option<bool>,
     pub ports: Option<Vec<String>>,
     pub mounts: Option<Vec<String>>,
     pub command: Option<Vec<String>>,
     pub secrets: Option<HashMap<String, SecretEntry>>,
     pub network: Option<NetworkEntry>,
+    pub expose_host: Option<Vec<String>>,
 }
 
 /// A secret to inject via the proxy.
@@ -57,7 +59,43 @@ impl ShuruConfig {
             }
         }
 
+        if let Some(ref mappings) = self.expose_host {
+            for mapping in mappings {
+                if let Ok(mapping) = parse_expose_host(mapping) {
+                    proxy.expose_host.push(mapping);
+                }
+            }
+        }
+
         proxy
+    }
+}
+
+pub(crate) fn parse_expose_host(s: &str) -> Result<shuru_proxy::config::ExposeHostMapping> {
+    let parts: Vec<&str> = s.split(':').collect();
+    match parts.len() {
+        1 => {
+            let port: u16 = parts[0]
+                .parse()
+                .map_err(|_| anyhow::anyhow!("invalid port: '{}'", parts[0]))?;
+            Ok(shuru_proxy::config::ExposeHostMapping {
+                host_port: port,
+                guest_port: port,
+            })
+        }
+        2 => {
+            let host_port: u16 = parts[0]
+                .parse()
+                .map_err(|_| anyhow::anyhow!("invalid host port: '{}'", parts[0]))?;
+            let guest_port: u16 = parts[1]
+                .parse()
+                .map_err(|_| anyhow::anyhow!("invalid guest port: '{}'", parts[1]))?;
+            Ok(shuru_proxy::config::ExposeHostMapping {
+                host_port,
+                guest_port,
+            })
+        }
+        _ => bail!("expected HOST_PORT:GUEST_PORT or PORT format"),
     }
 }
 
@@ -122,5 +160,22 @@ mod tests {
         .expect_err("legacy secret schema should fail");
 
         assert!(err.to_string().contains("unknown field `from`"));
+    }
+
+    #[test]
+    fn parses_expose_host_config_entries() {
+        let cfg: ShuruConfig = serde_json::from_str(
+            r#"{
+                "expose_host": ["3000:8080", "5432"]
+            }"#,
+        )
+        .expect("config should parse");
+
+        let proxy = cfg.to_proxy_config();
+        assert_eq!(proxy.expose_host.len(), 2);
+        assert_eq!(proxy.expose_host[0].host_port, 3000);
+        assert_eq!(proxy.expose_host[0].guest_port, 8080);
+        assert_eq!(proxy.expose_host[1].host_port, 5432);
+        assert_eq!(proxy.expose_host[1].guest_port, 5432);
     }
 }

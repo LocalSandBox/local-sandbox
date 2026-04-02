@@ -1,0 +1,17 @@
+[package]
+name = "shuru-store"
+version = "0.1.0"
+edition = "2021"
+description = "NBD-backed storage layer for shuru microVMs"
+license = "Apache-2.0"
+repository = "https://github.com/superhq-ai/shuru"
+
+[dev-dependencies]
+tempfile = "3"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync"] }
+anyhow = "1"
+tracing = "0.1"
+libc = "0.2"
+blake3 = "1"

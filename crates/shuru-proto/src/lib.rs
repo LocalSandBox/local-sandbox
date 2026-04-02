@@ -55,6 +55,10 @@ pub struct ForwardResponse {
 pub struct MountRequest {
     pub tag: String,
     pub guest_path: String,
+    /// When true (default), guest mounts via overlay (writes go to tmpfs).
+    /// When false, guest mounts VirtioFS directly (writes go to host).
+    #[serde(default = "default_true")]
+    pub read_only: bool,
 }
 
 /// Sent by the guest in response to a MountRequest.
@@ -183,3 +187,28 @@ pub struct WatchEvent {
 
 pub const VSOCK_PORT: u32 = 1024;
 pub const VSOCK_PORT_FORWARD: u32 = 1025;
+
+#[cfg(test)]
+mod tests {
+    use super::MountRequest;
+
+    #[test]
+    fn mount_request_defaults_to_read_only() {
+        let json = r#"{"tag":"mount0","guest_path":"/workspace"}"#;
+        let req: MountRequest = serde_json::from_str(json).expect("mount request should parse");
+        assert!(req.read_only);
+    }
+
+    #[test]
+    fn mount_request_round_trips_rw() {
+        let req = MountRequest {
+            tag: "mount0".into(),
+            guest_path: "/workspace".into(),
+            read_only: false,
+        };
+        let json = serde_json::to_string(&req).expect("mount request should serialize");
+        let req2: MountRequest =
+            serde_json::from_str(&json).expect("mount request should deserialize");
+        assert!(!req2.read_only);
+    }
+}

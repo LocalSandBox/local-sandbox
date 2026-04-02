@@ -51,7 +51,7 @@ fn main() -> Result<()> {
             } else if console {
                 run_console(&prepared)
             } else {
-                vm::run_command(&prepared, &command)
+                vm::run_command(&prepared, &command).map(|result| result.exit_code)
             };
 
             let _ = std::fs::remove_dir_all(&prepared.instance_dir);
@@ -141,7 +141,7 @@ fn run_console(prepared: &vm::PreparedVm) -> Result<i32> {
         prepared.cpus, prepared.memory, prepared.disk_size
     );
 
-    let sandbox = vm::build_sandbox(prepared, true, None)?;
+    let sandbox = vm::build_sandbox(prepared, true, None, None)?;
     eprintln!("shuru: VM created and validated successfully");
 
     let state_rx = sandbox.state_channel();

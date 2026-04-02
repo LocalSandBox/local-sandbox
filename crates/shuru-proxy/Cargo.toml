@@ -19,6 +19,8 @@ tokio-rustls = "0.26"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "logging", "tls12"] }
 rcgen = "0.13"
 webpki-roots = "1"
+boring = "4"
+tokio-boring = "4"
 simple-dns = "0.9"
 lru = "0.14"
 anyhow = "1"

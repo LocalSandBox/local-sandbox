@@ -37,6 +37,7 @@ jobs:
           cache-dependency-path: bindings/nodejs/yarn.lock
       - run: corepack enable
       - uses: dtolnay/rust-toolchain@stable
+      - run: cmake --version
       - run: yarn install --immutable
       - run: yarn lint
       - run: cargo fmt --manifest-path Cargo.toml -- --check
@@ -65,6 +66,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - run: cmake --version
       - run: yarn install --immutable
       - run: yarn napi build --target ${{ matrix.target }} --release
       - uses: actions/upload-artifact@v4

@@ -52,8 +52,8 @@ pub use serial::{FileHandleSerialAttachment, VirtioConsoleSerialPort};
 pub use socket::VirtioSocketDevice;
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 pub use storage::{
-    DiskImageAttachment, DiskImageCachingMode, DiskImageSynchronizationMode, StorageDevice,
-    VirtioBlockDevice,
+    DiskImageAttachment, DiskImageCachingMode, DiskImageSynchronizationMode, NbdAttachment,
+    StorageAttachment, StorageDevice, VirtioBlockDevice,
 };
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 pub use vm::{VirtualMachine, VmState};
@@ -136,13 +136,20 @@ pub fn create_vm(config: PlatformVmConfig) -> Result<Arc<dyn PlatformVm>> {
     let serial = VirtioConsoleSerialPort::new_with_attachment(&serial_attachment);
     vm_config.set_serial_ports(&[serial]);
 
-    let disk_attachment = DiskImageAttachment::new_with_options(
-        &config.rootfs_path,
-        false,
-        DiskImageCachingMode::Cached,
-        DiskImageSynchronizationMode::Fsync,
-    )?;
-    let block_device = VirtioBlockDevice::new(&disk_attachment);
+    let nbd_attachment;
+    let disk_attachment;
+    let block_device = if let Some(ref uri) = config.nbd_uri {
+        nbd_attachment = NbdAttachment::new(uri, 30.0, false)?;
+        VirtioBlockDevice::new(&nbd_attachment)
+    } else {
+        disk_attachment = DiskImageAttachment::new_with_options(
+            &config.rootfs_path,
+            false,
+            DiskImageCachingMode::Cached,
+            DiskImageSynchronizationMode::Fsync,
+        )?;
+        VirtioBlockDevice::new(&disk_attachment)
+    };
     vm_config.set_storage_devices(&[&block_device]);
 
     if let Some(fd) = config.network_fd {

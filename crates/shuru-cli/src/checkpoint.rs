@@ -24,21 +24,28 @@ pub(crate) fn create(
 
     let data_dir = shuru_vm::default_data_dir();
     let checkpoints_dir = format!("{}/checkpoints", data_dir);
-    let checkpoint_path = format!("{}/{}.ext4", checkpoints_dir, name);
-    if std::path::Path::new(&checkpoint_path).exists() {
+    shuru_vm::validate_checkpoint_name(&name).map_err(|e| anyhow::anyhow!(e))?;
+    if checkpoint_exists(&checkpoints_dir, &name) {
         bail!("checkpoint '{}' already exists, delete it first", name);
     }
 
     let prepared = vm::prepare_vm(vm_args, &cfg, from)?;
-    let exit_code = vm::run_command(&prepared, &command)?;
+    let result = vm::run_command(&prepared, &command)?;
 
     std::fs::create_dir_all(&checkpoints_dir)?;
     eprintln!("shuru: saving checkpoint '{}'...", name);
-    vm::clone_file(&prepared.work_rootfs, &checkpoint_path)?;
+    if let Some(ref nbd_handle) = result.nbd_handle {
+        let index_path = format!("{}/{}.idx", checkpoints_dir, name);
+        nbd_handle.save_checkpoint(&index_path)?;
+    } else {
+        let checkpoint_path = format!("{}/{}.ext4", checkpoints_dir, name);
+        vm::clone_file(&prepared.work_rootfs, &checkpoint_path)?;
+    }
     eprintln!("shuru: checkpoint '{}' saved", name);
 
+    drop(result.nbd_handle);
     let _ = std::fs::remove_dir_all(&prepared.instance_dir);
-    Ok(exit_code)
+    Ok(result.exit_code)
 }
 
 pub(crate) fn list() -> Result<()> {
@@ -54,20 +61,33 @@ pub(crate) fn list() -> Result<()> {
         Err(e) => bail!("Failed to read checkpoints directory: {}", e),
     };
 
-    let mut checkpoints: Vec<(String, u64, std::time::SystemTime)> = Vec::new();
+    let mut checkpoints: Vec<(String, u64, std::time::SystemTime, bool)> = Vec::new();
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("ext4") {
-            let name = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("?")
-                .to_string();
-            let meta = entry.metadata()?;
-            let disk_usage = meta.blocks() * 512;
-            checkpoints.push((name, disk_usage, meta.modified()?));
+        let ext = path.extension().and_then(|e| e.to_str());
+        let is_cas = ext == Some("idx");
+        if !is_cas && ext != Some("ext4") {
+            continue;
         }
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("?")
+            .to_string();
+        let meta = entry.metadata()?;
+        let disk_usage = if is_cas {
+            shuru_store::ChunkIndex::load(path.to_str().unwrap_or(""))
+                .map(|idx| {
+                    let non_zero = (0..idx.num_chunks())
+                        .filter(|&i| idx.get_hash(i).map(|h| h != "ZERO").unwrap_or(false))
+                        .count();
+                    (non_zero as u64) * 64 * 1024
+                })?
+        } else {
+            meta.blocks() * 512
+        };
+        checkpoints.push((name, disk_usage, meta.modified()?, is_cas));
     }
 
     if checkpoints.is_empty() {
@@ -75,11 +95,17 @@ pub(crate) fn list() -> Result<()> {
         return Ok(());
     }
 
-    checkpoints.sort_by_key(|(_, _, t)| *t);
+    checkpoints.sort_by_key(|(_, _, t, _)| *t);
 
     println!("{:<20} {:>10} {}", "NAME", "SIZE", "CREATED");
-    for (name, size, mtime) in &checkpoints {
-        let size_str = if *size >= 1024 * 1024 * 1024 {
+    for (name, size, mtime, is_cas) in &checkpoints {
+        let size_str = if *is_cas {
+            if *size >= 1024 * 1024 {
+                format!("{} MB (cas)", size / (1024 * 1024))
+            } else {
+                format!("{} KB (cas)", size / 1024)
+            }
+        } else if *size >= 1024 * 1024 * 1024 {
             format!("{:.1} GB", *size as f64 / (1024.0 * 1024.0 * 1024.0))
         } else {
             format!("{} MB", size / (1024 * 1024))
@@ -105,11 +131,24 @@ pub(crate) fn list() -> Result<()> {
 
 pub(crate) fn delete(name: &str) -> Result<()> {
     let data_dir = default_data_dir();
-    let checkpoint_path = format!("{}/checkpoints/{}.ext4", data_dir, name);
-    if !std::path::Path::new(&checkpoint_path).exists() {
+    shuru_vm::validate_checkpoint_name(name).map_err(|e| anyhow::anyhow!(e))?;
+
+    let idx_path = format!("{}/checkpoints/{}.idx", data_dir, name);
+    let ext4_path = format!("{}/checkpoints/{}.ext4", data_dir, name);
+
+    if std::path::Path::new(&idx_path).exists() {
+        std::fs::remove_file(&idx_path)?;
+    } else if std::path::Path::new(&ext4_path).exists() {
+        std::fs::remove_file(&ext4_path)?;
+    } else {
         bail!("Checkpoint '{}' not found", name);
     }
-    std::fs::remove_file(&checkpoint_path)?;
+
     eprintln!("shuru: checkpoint '{}' deleted", name);
     Ok(())
+}
+
+fn checkpoint_exists(checkpoints_dir: &str, name: &str) -> bool {
+    std::path::Path::new(&format!("{}/{}.idx", checkpoints_dir, name)).exists()
+        || std::path::Path::new(&format!("{}/{}.ext4", checkpoints_dir, name)).exists()
 }

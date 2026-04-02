@@ -3,6 +3,7 @@ use objc2::AnyThread;
 use objc2_foundation::{NSString, NSURL};
 use objc2_virtualization::{
     VZDiskImageCachingMode, VZDiskImageStorageDeviceAttachment, VZDiskImageSynchronizationMode,
+    VZDiskSynchronizationMode, VZNetworkBlockDeviceStorageDeviceAttachment,
     VZStorageDeviceAttachment, VZStorageDeviceConfiguration, VZVirtioBlockDeviceConfiguration,
 };
 
@@ -46,6 +47,10 @@ pub trait StorageDevice {
     fn as_storage_config(&self) -> Retained<VZStorageDeviceConfiguration>;
 }
 
+pub trait StorageAttachment {
+    fn as_vz_attachment(&self) -> Retained<VZStorageDeviceAttachment>;
+}
+
 pub struct DiskImageAttachment {
     inner: Retained<VZDiskImageStorageDeviceAttachment>,
 }
@@ -87,15 +92,54 @@ impl DiskImageAttachment {
     }
 }
 
+impl StorageAttachment for DiskImageAttachment {
+    fn as_vz_attachment(&self) -> Retained<VZStorageDeviceAttachment> {
+        unsafe { Retained::cast_unchecked(self.inner.clone()) }
+    }
+}
+
+pub struct NbdAttachment {
+    inner: Retained<VZNetworkBlockDeviceStorageDeviceAttachment>,
+}
+
+impl NbdAttachment {
+    pub fn new(uri: &str, timeout_secs: f64, read_only: bool) -> Result<Self> {
+        unsafe {
+            let ns_uri = NSString::from_str(uri);
+            let url = NSURL::URLWithString(&ns_uri)
+                .ok_or_else(|| VzError::new(format!("invalid NBD URI: {}", uri)))?;
+            let sync_mode = if read_only {
+                VZDiskSynchronizationMode::None
+            } else {
+                VZDiskSynchronizationMode::Full
+            };
+            let inner = VZNetworkBlockDeviceStorageDeviceAttachment::initWithURL_timeout_forcedReadOnly_synchronizationMode_error(
+                VZNetworkBlockDeviceStorageDeviceAttachment::alloc(),
+                &url,
+                timeout_secs,
+                read_only,
+                sync_mode,
+            )
+            .map_err(|e| VzError::from_ns_error(&e))?;
+            Ok(Self { inner })
+        }
+    }
+}
+
+impl StorageAttachment for NbdAttachment {
+    fn as_vz_attachment(&self) -> Retained<VZStorageDeviceAttachment> {
+        unsafe { Retained::cast_unchecked(self.inner.clone()) }
+    }
+}
+
 pub struct VirtioBlockDevice {
     inner: Retained<VZVirtioBlockDeviceConfiguration>,
 }
 
 impl VirtioBlockDevice {
-    pub fn new(attachment: &DiskImageAttachment) -> Self {
+    pub fn new(attachment: &dyn StorageAttachment) -> Self {
         unsafe {
-            let attachment_id: Retained<VZStorageDeviceAttachment> =
-                Retained::cast_unchecked(attachment.inner.clone());
+            let attachment_id = attachment.as_vz_attachment();
             let inner = VZVirtioBlockDeviceConfiguration::initWithAttachment(
                 VZVirtioBlockDeviceConfiguration::alloc(),
                 &attachment_id,

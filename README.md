@@ -7,6 +7,7 @@ Shuru boots lightweight Linux VMs using Apple's Virtualization.framework. Each s
 ## Requirements
 
 - macOS 14 (Sonoma) or later on Apple Silicon
+- `cmake` is required when building from source because `shuru-proxy` now links BoringSSL for upstream TLS
 
 ## Install
 

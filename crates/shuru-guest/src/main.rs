@@ -81,7 +81,13 @@ mod guest {
             };
         }
 
-        match mount_overlay(&req.tag, &req.guest_path) {
+        let result = if req.read_only {
+            mount_overlay(&req.tag, &req.guest_path)
+        } else {
+            mount_direct(&req.tag, &req.guest_path)
+        };
+
+        match result {
             Ok(()) => MountResponse {
                 tag: req.tag.clone(),
                 ok: true,
@@ -128,6 +134,18 @@ mod guest {
         }
 
         eprintln!("shuru-guest: mounted {} -> {} (overlay)", tag, guest_path);
+        Ok(())
+    }
+
+    fn mount_direct(tag: &str, guest_path: &str) -> Result<(), String> {
+        if !mount_fs(tag, guest_path, "virtiofs", None) {
+            return Err(format!(
+                "failed to mount virtiofs device '{}' at {}",
+                tag, guest_path
+            ));
+        }
+
+        eprintln!("shuru-guest: mounted {} -> {} (direct rw)", tag, guest_path);
         Ok(())
     }
 

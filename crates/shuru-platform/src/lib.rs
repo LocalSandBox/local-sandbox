@@ -194,6 +194,7 @@ pub struct PlatformVmConfig {
     pub console: bool,
     pub verbose: bool,
     pub network_fd: Option<i32>,
+    pub nbd_uri: Option<String>,
     pub shared_dirs: Vec<PlatformSharedDir>,
 }
 

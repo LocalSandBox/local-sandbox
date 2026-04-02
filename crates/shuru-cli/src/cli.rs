@@ -30,12 +30,16 @@ pub(crate) struct VmArgs {
     #[arg(long)]
     pub allow_net: bool,
 
+    /// Allow mounts to write to host filesystem (required for :rw mounts)
+    #[arg(long)]
+    pub allow_host_writes: bool,
+
     /// Forward a host port to a guest port (HOST:GUEST, e.g. 8080:80)
     #[arg(short = 'p', long = "port", value_name = "HOST:GUEST")]
     pub port: Vec<String>,
 
-    /// Mount a host directory into the VM (HOST:GUEST)
-    #[arg(long = "mount", value_name = "HOST:GUEST")]
+    /// Mount a host directory into the VM (HOST:GUEST[:ro|:rw], default ro)
+    #[arg(long = "mount", value_name = "HOST:GUEST[:ro|:rw]")]
     pub mount: Vec<String>,
 
     /// Inject a secret via proxy (NAME=VALUE@host1,host2)
@@ -45,6 +49,10 @@ pub(crate) struct VmArgs {
     /// Restrict network to specific hosts (repeatable)
     #[arg(long = "allow-host", value_name = "PATTERN")]
     pub allow_host: Vec<String>,
+
+    /// Expose a host port to the guest via host.shuru.internal (HOST:GUEST or PORT)
+    #[arg(long = "expose-host", value_name = "HOST:GUEST", hide = true)]
+    pub expose_host: Vec<String>,
 
     /// Path to config file (default: ./shuru.json)
     #[arg(long)]

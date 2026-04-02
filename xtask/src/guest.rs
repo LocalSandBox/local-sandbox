@@ -91,12 +91,20 @@ fn docker_guest_builder(
     _platform: &PlatformSpec,
     guest_target: &str,
 ) -> Option<DockerGuestBuilder> {
-    if is_macos() && guest_target == "x86_64-unknown-linux-musl" {
-        return Some(DockerGuestBuilder {
-            image: "messense/rust-musl-cross:x86_64-musl",
-            linker_env_name: "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER",
-            linker_bin: "x86_64-unknown-linux-musl-gcc",
-        });
+    if is_macos() {
+        return match guest_target {
+            "x86_64-unknown-linux-musl" => Some(DockerGuestBuilder {
+                image: "messense/rust-musl-cross:x86_64-musl",
+                linker_env_name: "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER",
+                linker_bin: "x86_64-unknown-linux-musl-gcc",
+            }),
+            "aarch64-unknown-linux-musl" => Some(DockerGuestBuilder {
+                image: "messense/rust-musl-cross:aarch64-musl",
+                linker_env_name: "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER",
+                linker_bin: "aarch64-unknown-linux-musl-gcc",
+            }),
+            _ => None,
+        };
     }
 
     None
