@@ -68,22 +68,29 @@ jobs:
           - platform: macos-aarch64
             runner: macos-14
           - platform: macos-x86_64
-            runner: macos-13
+            runner: macos-14
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
 
       - name: Resolve platform metadata
         run: cargo run -p xtask -- platform-meta --platform "${{ matrix.platform }}" --format env --version "${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
 
       - name: Build CLI
-        run: cargo build -p lsb-cli --release
+        run: cargo build -p lsb-cli --release --target "${LSB_HOST_TARGET}"
 
       - name: Codesign
-        run: codesign --entitlements "${LSB_CODESIGN_ENTITLEMENTS}" --force -s - target/release/lsb
+        run: codesign --entitlements "${LSB_CODESIGN_ENTITLEMENTS}" --force -s - "target/${LSB_HOST_TARGET}/release/lsb"
+
+      - name: Stage CLI artifact
+        run: |
+          mkdir -p target/release
+          cp "target/${LSB_HOST_TARGET}/release/lsb" target/release/lsb
 
       - name: Package CLI binary
         run: cargo run -p xtask -- package-release --platform "${{ matrix.platform }}" --artifact cli --version "${GITHUB_REF_NAME}"
