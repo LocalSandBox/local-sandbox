@@ -138,6 +138,12 @@ echo "nameserver 8.8.8.8" > "$MOUNT_DIR/etc/resolv.conf"
 echo "==> Debian rootfs populated successfully"
 "#;
 
+fn should_use_docker_rootfs() -> bool {
+    env_value("LSB_FORCE_DOCKER_ROOTFS")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or_else(is_macos)
+}
+
 pub fn prepare_rootfs(args: &[String]) -> Result<()> {
     let platform = resolve_platform(args)?;
     prepare_rootfs_for_platform(platform)
@@ -231,11 +237,11 @@ pub fn prepare_rootfs_for_platform(platform: &PlatformSpec) -> Result<()> {
             "create rootfs image file",
         )?;
 
-        if is_macos() {
+        if should_use_docker_rootfs() {
             println!();
-            println!("==> macOS detected. Using Docker for ext4 formatting and Debian bootstrap.");
+            println!("==> Using Docker for ext4 formatting and Debian bootstrap.");
             println!();
-            ensure_docker_available("Docker is required on macOS to prepare the rootfs.")?;
+            ensure_docker_available("Docker is required to prepare the rootfs.")?;
             run_command(
                 Command::new("docker")
                     .arg("run")
