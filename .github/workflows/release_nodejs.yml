@@ -37,12 +37,10 @@ jobs:
       run:
         working-directory: bindings/nodejs
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: yarn
-          cache-dependency-path: bindings/nodejs/yarn.lock
       - run: corepack enable
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -50,7 +48,7 @@ jobs:
       - run: cmake --version
       - run: yarn install --immutable
       - run: yarn napi build --target ${{ matrix.target }} --platform --release --js index.js --dts index.d.ts
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: bindings-nodejs-${{ matrix.target }}
           path: |
@@ -71,18 +69,16 @@ jobs:
       run:
         working-directory: bindings/nodejs
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org/
-          cache: yarn
-          cache-dependency-path: bindings/nodejs/yarn.lock
       - run: corepack enable
       - run: yarn install --immutable
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: bindings/nodejs/artifacts
 
