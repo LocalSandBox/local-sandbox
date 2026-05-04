@@ -1,6 +1,6 @@
 {
   "name": "@local-sandbox/lsb-nodejs-darwin-arm64",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Native binary for @local-sandbox/lsb-nodejs on macOS arm64",
   "license": "Apache-2.0",
   "os": [
@@ -15,7 +15,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/LocalSandBox/local-sandbox.git",
+    "url": "git+https://github.com/LocalSandBox/local-sandbox.git",
     "directory": "bindings/nodejs"
   },
   "engines": {
