@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -14,6 +14,7 @@ const require = createRequire(import.meta.url)
 const testDir = dirname(fileURLToPath(import.meta.url))
 const projectRoot = join(testDir, '..')
 const entrypointPath = join(projectRoot, 'index.js')
+const packageVersion = (require(join(projectRoot, 'package.json')) as { version: string }).version
 const defaultRuntimeDataDir = join(process.env.HOME ?? '/tmp', '.local', 'share', 'lsb')
 
 const localBindingCandidatesByPlatform: Partial<
@@ -65,6 +66,13 @@ function resolveRuntimeDataDir() {
 
 function hasRuntimeAssets(dataDir: string) {
   return existsSync(join(dataDir, 'Image')) && existsSync(join(dataDir, 'rootfs.ext4'))
+}
+
+function writeFakeRuntimeAssets(dataDir: string) {
+  writeFileSync(join(dataDir, 'Image'), 'kernel')
+  writeFileSync(join(dataDir, 'rootfs.ext4'), 'rootfs')
+  writeFileSync(join(dataDir, 'initramfs.cpio.gz'), 'initramfs')
+  writeFileSync(join(dataDir, 'VERSION'), `${packageVersion}\n`)
 }
 
 function resolveNodeBinaryForEntitlementCheck() {
@@ -200,9 +208,10 @@ test('exports Sandbox class and the expected core methods from the built entrypo
     return
   }
 
-  const { Sandbox } = entrypoint
+  const { Sandbox, initSandbox } = entrypoint
 
   t.is(typeof Sandbox, 'function')
+  t.is(typeof initSandbox, 'function')
   t.is(typeof Sandbox.start, 'function')
   t.is(typeof Sandbox.prototype.exec, 'function')
   t.is(typeof Sandbox.prototype.execShell, 'function')
@@ -229,7 +238,7 @@ test('unsupported platforms fail with a clear unsupported error', async (t) => {
     return
   }
 
-  const { Sandbox } = entrypoint
+  const { Sandbox, initSandbox } = entrypoint
 
   if (isSupportedRuntimePlatform()) {
     t.log('supported runtime platform')
@@ -239,6 +248,39 @@ test('unsupported platforms fail with a clear unsupported error', async (t) => {
 
   const error = await t.throwsAsync(() => Sandbox.start())
   t.regex(error?.message ?? '', /only macOS on x86_64 and Apple Silicon|darwin\/(arm64|x64)/i)
+
+  const initError = await t.throwsAsync(() => initSandbox())
+  t.regex(initError?.message ?? '', /only macOS on x86_64 and Apple Silicon|darwin\/(arm64|x64)/i)
+})
+
+test('supported builds can initialize against already-present runtime assets', async (t) => {
+  const entrypoint = useBuiltEntrypoint(t)
+  if (!entrypoint) {
+    t.log('entrypoint not found')
+    return
+  }
+
+  const { initSandbox } = entrypoint
+
+  if (!isSupportedRuntimePlatform()) {
+    t.log('not supported runtime platform')
+    t.pass()
+    return
+  }
+
+  const dataDir = mkdtempSync(join(tmpdir(), 'lsb-nodejs-init-ready-'))
+  t.teardown(() => {
+    rmSync(dataDir, { recursive: true, force: true })
+  })
+  writeFakeRuntimeAssets(dataDir)
+
+  const result = await initSandbox({ dataDir })
+
+  t.is(result.dataDir, dataDir)
+  t.is(result.version, packageVersion)
+  t.false(result.downloaded)
+  t.is(result.paths.kernel, join(dataDir, 'Image'))
+  t.is(result.paths.rootfs, join(dataDir, 'rootfs.ext4'))
 })
 
 test('supported builds validate startup inputs through the Rust SDK path', async (t) => {

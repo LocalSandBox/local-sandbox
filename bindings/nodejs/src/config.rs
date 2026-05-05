@@ -6,8 +6,8 @@ use napi::bindgen_prelude::Either;
 
 #[cfg(lsb_nodejs_supported)]
 use crate::types::{
-  DirEntry, ExecResult, ExposeHostConfig, MountConfig, PortMappingConfig, SecretConfig,
-  StartOptions, StatResult,
+  DirEntry, ExecResult, ExposeHostConfig, MountConfig, PortMappingConfig, SandboxAssetPaths,
+  SandboxInitOptions, SandboxInitResult, SecretConfig, StartOptions, StatResult,
 };
 
 // Conversion layer between JS options and the Rust SDK. Keeping validation here
@@ -86,6 +86,14 @@ pub(crate) fn build_sandbox_config(opts: StartOptions) -> anyhow::Result<lsb_sdk
   }
 
   Ok(config)
+}
+
+#[cfg(lsb_nodejs_supported)]
+pub(crate) fn build_init_options(opts: SandboxInitOptions) -> lsb_sdk::SandboxInitOptions {
+  lsb_sdk::SandboxInitOptions {
+    data_dir: opts.dataDir,
+    force: opts.force.unwrap_or(false),
+  }
 }
 
 #[cfg(lsb_nodejs_supported)]
@@ -205,5 +213,23 @@ pub(crate) fn map_stat_result(stat: lsb_sdk::StatResponse) -> StatResult {
     isDir: stat.is_dir,
     isFile: stat.is_file,
     isSymlink: stat.is_symlink,
+  }
+}
+
+#[cfg(lsb_nodejs_supported)]
+pub(crate) fn map_init_result(result: lsb_sdk::SandboxInitResult) -> SandboxInitResult {
+  SandboxInitResult {
+    dataDir: result.data_dir,
+    version: result.version,
+    downloaded: result.downloaded,
+    paths: SandboxAssetPaths {
+      dataDir: result.paths.data_dir,
+      versionFile: result.paths.version_file,
+      kernel: result.paths.kernel,
+      rootfs: result.paths.rootfs,
+      initramfs: result.paths.initramfs,
+      checkpointsDir: result.paths.checkpoints_dir,
+      instancesDir: result.paths.instances_dir,
+    },
   }
 }

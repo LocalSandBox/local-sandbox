@@ -1,6 +1,6 @@
 [package]
 name = "lsb-cli"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 
 [[bin]]
@@ -12,6 +12,7 @@ lsb-platform = { path = "../lsb-platform" }
 lsb-vm = { path = "../lsb-vm" }
 lsb-proto = { path = "../lsb-proto" }
 lsb-proxy = { path = "../lsb-proxy" }
+lsb-sdk = { path = "../lsb-sdk" }
 lsb-store = { path = "../lsb-store" }
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"

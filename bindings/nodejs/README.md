@@ -27,11 +27,9 @@ corepack yarn install
 
 - Node.js 18+
 - macOS 14+ on Apple Silicon or Intel x86_64
-- [lsb CLI](https://github.com/LocalSandBox/local-sandbox.git) installed
-- `Sandbox.start()` expects the lsb runtime data directory to already exist. In the default
-  location, `~/.local/share/lsb/Image` must be present before booting a sandbox. This VM image
-  is not bundled with `@local-sandbox/lsb-nodejs` and needs to be downloaded manually as part of your
-  lsb runtime setup.
+- Runtime assets initialized with `initSandbox()` or `lsb init`. `Sandbox.start()` still expects
+  the lsb runtime data directory to already contain `Image`, `rootfs.ext4`, and
+  `initramfs.cpio.gz`; it does not download assets implicitly.
 - On macOS, the `node` executable loading this SDK must be code signed with the
   `com.apple.security.virtualization` entitlement. For a project-local workflow, sign a copied
   Node binary with [`../../lsb.entitlements`](../../lsb.entitlements), or use
@@ -42,9 +40,11 @@ corepack yarn install
 ### Start a sandbox and run commands
 
 ```ts
-import { Sandbox } from '@local-sandbox/lsb-nodejs'
+import { Sandbox, initSandbox } from '@local-sandbox/lsb-nodejs'
 
 const dataDir = `${process.env.HOME}/.local/share/lsb`
+await initSandbox({ dataDir })
+
 const sandbox = await Sandbox.start({
   dataDir,
   cpus: 2,
@@ -61,6 +61,15 @@ const content = await sandbox.readFile('/tmp/demo.txt')
 console.log(content.toString())
 
 await sandbox.stop()
+```
+
+### Initialize runtime assets
+
+```ts
+import { initSandbox } from '@local-sandbox/lsb-nodejs'
+
+const init = await initSandbox()
+console.log(init.dataDir, init.version, init.downloaded)
 ```
 
 ### Pass argv directly or run through a shell

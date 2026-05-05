@@ -1,17 +1,20 @@
 [package]
 name = "lsb-sdk"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Async Rust SDK for lsb microVMs"
 license = "Apache-2.0"
 repository = "https://github.com/LocalSandBox/local-sandbox.git"
 
 [dependencies]
-lsb-platform = { version = "0.2.0", path = "../lsb-platform" }
-lsb-vm = { version = "0.2.0", path = "../lsb-vm" }
-lsb-proto = { version = "0.2.0", path = "../lsb-proto" }
-lsb-proxy = { version = "0.2.0", path = "../lsb-proxy" }
+lsb-platform = { version = "0.3.0", path = "../lsb-platform" }
+lsb-vm = { version = "0.3.0", path = "../lsb-vm" }
+lsb-proto = { version = "0.3.0", path = "../lsb-proto" }
+lsb-proxy = { version = "0.3.0", path = "../lsb-proxy" }
 tokio = { version = "1", features = ["sync"] }
 anyhow = "1"
+flate2 = "1"
+tar = "0.4"
 tracing = "0.1"
 serde_json = "1"
+ureq = "3"

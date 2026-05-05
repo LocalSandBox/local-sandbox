@@ -90,6 +90,50 @@ pub struct StartOptions {
   pub network: Option<NetworkConfig>,
 }
 
+/// Options used when initializing sandbox runtime assets.
+#[allow(non_snake_case)]
+#[napi(object)]
+pub struct SandboxInitOptions {
+  /// Runtime data directory. Defaults to `~/.local/share/lsb`.
+  pub dataDir: Option<String>,
+  /// Re-download assets even when the expected files and VERSION marker already exist.
+  pub force: Option<bool>,
+}
+
+/// Runtime asset paths derived from a sandbox data directory.
+#[allow(non_snake_case)]
+#[napi(object)]
+pub struct SandboxAssetPaths {
+  /// Runtime data directory.
+  pub dataDir: String,
+  /// VERSION marker path.
+  pub versionFile: String,
+  /// Linux kernel image path.
+  pub kernel: String,
+  /// Writable root filesystem base image path.
+  pub rootfs: String,
+  /// Initramfs image path.
+  pub initramfs: String,
+  /// Checkpoint storage directory.
+  pub checkpointsDir: String,
+  /// Per-sandbox instance directory root.
+  pub instancesDir: String,
+}
+
+/// Result returned after initializing or checking sandbox runtime assets.
+#[allow(non_snake_case)]
+#[napi(object)]
+pub struct SandboxInitResult {
+  /// Runtime data directory that was checked or initialized.
+  pub dataDir: String,
+  /// Runtime asset version now expected in the data directory.
+  pub version: String,
+  /// True when this call downloaded and extracted assets.
+  pub downloaded: bool,
+  /// Concrete runtime asset paths.
+  pub paths: SandboxAssetPaths,
+}
+
 /// Per-command execution options.
 #[allow(non_snake_case)]
 #[napi(object)]
@@ -209,6 +253,15 @@ impl Default for StartOptions {
       ports: None,
       mounts: None,
       network: None,
+    }
+  }
+}
+
+impl Default for SandboxInitOptions {
+  fn default() -> Self {
+    Self {
+      dataDir: None,
+      force: None,
     }
   }
 }

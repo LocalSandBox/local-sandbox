@@ -10,11 +10,44 @@ mod sandbox;
 mod streams;
 mod types;
 
+use napi::Result;
+use napi_derive::napi;
+
+#[cfg(lsb_nodejs_supported)]
+use crate::config::{build_init_options, map_init_result};
+#[cfg(lsb_nodejs_supported)]
+use crate::error::to_napi_error;
+#[cfg(not(lsb_nodejs_supported))]
+use crate::error::unsupported_platform_error;
+
 pub use process::SpawnedProcess;
 pub use sandbox::Sandbox;
 pub use streams::{ByteStream, WatchStream};
 pub use types::{
   CopyOptions, DirEntry, ExecOptions, ExecResult, ExposeHostConfig, FileChangeEvent, MkdirOptions,
-  MountConfig, NetworkConfig, PortMappingConfig, RemoveOptions, SecretConfig, SpawnOptions,
-  StartOptions, StatResult, WatchOptions,
+  MountConfig, NetworkConfig, PortMappingConfig, RemoveOptions, SandboxAssetPaths,
+  SandboxInitOptions, SandboxInitResult, SecretConfig, SpawnOptions, StartOptions, StatResult,
+  WatchOptions,
 };
+
+/// Download or verify sandbox runtime assets such as kernel, rootfs, and initramfs.
+///
+/// Usage: `await initSandbox({ dataDir, force: false })`
+#[napi]
+pub async fn init_sandbox(opts: Option<SandboxInitOptions>) -> Result<SandboxInitResult> {
+  #[cfg(lsb_nodejs_supported)]
+  {
+    let options = build_init_options(opts.unwrap_or_default());
+    let result = tokio::task::spawn_blocking(move || lsb_sdk::init_sandbox(options))
+      .await
+      .map_err(to_napi_error)?
+      .map_err(to_napi_error)?;
+    return Ok(map_init_result(result));
+  }
+
+  #[cfg(not(lsb_nodejs_supported))]
+  {
+    let _ = opts;
+    Err(unsupported_platform_error())
+  }
+}

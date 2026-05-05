@@ -1,37 +1,22 @@
 use std::fs;
 use std::io::{self, Read, Write};
-use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
-use lsb_platform::{asset_paths, supported_runtime_platform};
+use lsb_platform::supported_runtime_platform;
+use lsb_sdk::SandboxInitOptions;
 use serde::Deserialize;
 use tar::Archive;
 
 const GITHUB_REPO: &str = "LocalSandBox/local-sandbox";
-pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const CURRENT_VERSION: &str = lsb_sdk::CURRENT_VERSION;
 
 /// Check if OS image assets exist and match the expected version.
 pub fn assets_ready(data_dir: &str) -> bool {
-    let paths = asset_paths(data_dir);
-
-    if !Path::new(&paths.kernel).exists()
-        || !Path::new(&paths.rootfs).exists()
-        || !Path::new(&paths.initramfs).exists()
-    {
-        return false;
-    }
-
-    match fs::read_to_string(&paths.version_file) {
-        Ok(v) => v.trim() == CURRENT_VERSION,
-        Err(_) => false,
-    }
+    lsb_sdk::assets_ready(data_dir)
 }
 
-/// Download and extract OS image assets from GitHub Releases.
-///
-/// Streams directly: HTTP → gzip decompress → tar extract → disk.
-/// No temp files needed.
+/// Download and extract OS image assets from GitHub Releases via the SDK.
 pub fn download_os_image(data_dir: &str) -> Result<()> {
     download_os_image_version(data_dir, CURRENT_VERSION)
 }
@@ -39,42 +24,15 @@ pub fn download_os_image(data_dir: &str) -> Result<()> {
 fn download_os_image_version(data_dir: &str, version: &str) -> Result<()> {
     let platform = supported_runtime_platform()?;
     let tag = platform.release_tag(version);
-    let tarball_name = platform.os_image_tarball_name(version);
-    let url = format!(
-        "https://github.com/{}/releases/download/{}/{}",
-        GITHUB_REPO, tag, tarball_name
-    );
-
-    fs::create_dir_all(data_dir)
-        .with_context(|| format!("failed to create data directory: {}", data_dir))?;
 
     eprintln!("lsb: downloading OS image ({})...", tag);
-    eprintln!("lsb: {}", url);
-
-    let response = ureq::get(&url)
-        .call()
-        .with_context(|| format!("download failed — is version {} released?", tag))?;
-
-    let total_bytes = response
-        .headers()
-        .get("content-length")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok());
-
-    let reader = ProgressReader::new(response.into_body().into_reader(), total_bytes);
-    let decoder = GzDecoder::new(reader);
-    let mut archive = Archive::new(decoder);
-
-    archive
-        .unpack(data_dir)
-        .context("failed to extract OS image")?;
-
-    eprintln!(); // newline after progress
-
-    // Write VERSION file
-    let paths = asset_paths(data_dir);
-    fs::write(&paths.version_file, format!("{}\n", version))
-        .context("failed to write VERSION file")?;
+    lsb_sdk::init_sandbox_version(
+        SandboxInitOptions {
+            data_dir: Some(data_dir.to_string()),
+            force: true,
+        },
+        version,
+    )?;
 
     eprintln!("lsb: OS image ready ({})", version);
     Ok(())
