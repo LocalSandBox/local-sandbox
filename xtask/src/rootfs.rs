@@ -166,7 +166,7 @@ install_officeparser() {
     chroot "${install_rootfs_dir}" /usr/bin/npm list -g "officeparser@${OFFICEPARSER_VERSION}" > /dev/null
     test -x "${install_rootfs_dir}/usr/local/bin/officeparser"
     ln -sf "/usr/local/bin/officeparser" "${install_rootfs_dir}/usr/bin/officeparser"
-    chroot "${install_rootfs_dir}" /usr/bin/officeparser --help > /dev/null
+    chroot "${install_rootfs_dir}" /usr/bin/officeparser > /dev/null
 }
 
 install_rootfs_toolchains() {
@@ -391,7 +391,9 @@ pub fn prepare_rootfs_for_platform(platform: &PlatformSpec) -> Result<()> {
                         "CONFLUENCE_CLI_VERSION={DEFAULT_CONFLUENCE_CLI_VERSION}"
                     ))
                     .arg("-e")
-                    .arg(format!("OFFICEPARSER_VERSION={DEFAULT_OFFICEPARSER_VERSION}"))
+                    .arg(format!(
+                        "OFFICEPARSER_VERSION={DEFAULT_OFFICEPARSER_VERSION}"
+                    ))
                     .arg("-v")
                     .arg(format!("{}:/rootfs.ext4", rootfs_img.display()))
                     .arg("-v")
@@ -419,7 +421,9 @@ pub fn prepare_rootfs_for_platform(platform: &PlatformSpec) -> Result<()> {
                     .arg(format!(
                         "CONFLUENCE_CLI_VERSION={DEFAULT_CONFLUENCE_CLI_VERSION}"
                     ))
-                    .arg(format!("OFFICEPARSER_VERSION={DEFAULT_OFFICEPARSER_VERSION}"))
+                    .arg(format!(
+                        "OFFICEPARSER_VERSION={DEFAULT_OFFICEPARSER_VERSION}"
+                    ))
                     .arg(format!("GUEST_BINARY={}", guest_binary.display()))
                     .arg("/bin/sh")
                     .arg("-c")
