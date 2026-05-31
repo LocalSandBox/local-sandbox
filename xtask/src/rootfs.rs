@@ -19,7 +19,7 @@ const DEFAULT_OFFICEPARSER_VERSION: &str = "7.1.0";
 const DEFAULT_XLSX_VERSION: &str = "0.18.5";
 const DEFAULT_DOCX_VERSION: &str = "9.7.1";
 const DEFAULT_NODE_VERSION: &str = "v24.16.0";
-const DEFAULT_ROOTFS_SIZE_MB: u64 = 1024;
+const DEFAULT_ROOTFS_SIZE_MB: u64 = 2048;
 const DEFAULT_CODESIGN_ENTITLEMENTS: &str = "lsb.entitlements";
 const INITRAMFS_DOCKER_SCRIPT: &str = r#"set -e
 apt-get update -qq > /dev/null 2>&1
