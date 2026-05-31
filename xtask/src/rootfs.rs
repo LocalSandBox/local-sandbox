@@ -16,6 +16,8 @@ const DEFAULT_DEBIAN_RELEASE: &str = "trixie";
 const DEFAULT_CONFLUENCE_CLI_VERSION: &str = "2.8.0";
 const DEFAULT_PCHURI_JIRA_CLI_VERSION: &str = "2.8.0";
 const DEFAULT_OFFICEPARSER_VERSION: &str = "7.1.0";
+const DEFAULT_XLSX_VERSION: &str = "0.18.5";
+const DEFAULT_DOCX_VERSION: &str = "9.7.1";
 const DEFAULT_NODE_VERSION: &str = "v24.16.0";
 const DEFAULT_ROOTFS_SIZE_MB: u64 = 1024;
 const DEFAULT_CODESIGN_ENTITLEMENTS: &str = "lsb.entitlements";
@@ -169,12 +171,24 @@ install_officeparser() {
     chroot "${install_rootfs_dir}" /usr/bin/officeparser > /dev/null
 }
 
+install_document_node_packages() {
+    install_rootfs_dir="$1"
+    echo "==> Installing xlsx ${XLSX_VERSION}..."
+    chroot "${install_rootfs_dir}" /usr/bin/npm install -g "xlsx@${XLSX_VERSION}"
+    chroot "${install_rootfs_dir}" /usr/bin/npm list -g "xlsx@${XLSX_VERSION}" > /dev/null
+
+    echo "==> Installing docx ${DOCX_VERSION}..."
+    chroot "${install_rootfs_dir}" /usr/bin/npm install -g "docx@${DOCX_VERSION}"
+    chroot "${install_rootfs_dir}" /usr/bin/npm list -g "docx@${DOCX_VERSION}" > /dev/null
+}
+
 install_rootfs_toolchains() {
     install_rootfs_dir="$1"
     install_nodejs "${install_rootfs_dir}"
     install_google_workspace_cli "${install_rootfs_dir}"
     install_atlassian_node_clis "${install_rootfs_dir}"
     install_officeparser "${install_rootfs_dir}"
+    install_document_node_packages "${install_rootfs_dir}"
 }
 
 install_rootfs_toolchains "${ROOTFS_DIR}"
@@ -394,6 +408,10 @@ pub fn prepare_rootfs_for_platform(platform: &PlatformSpec) -> Result<()> {
                     .arg(format!(
                         "OFFICEPARSER_VERSION={DEFAULT_OFFICEPARSER_VERSION}"
                     ))
+                    .arg("-e")
+                    .arg(format!("XLSX_VERSION={DEFAULT_XLSX_VERSION}"))
+                    .arg("-e")
+                    .arg(format!("DOCX_VERSION={DEFAULT_DOCX_VERSION}"))
                     .arg("-v")
                     .arg(format!("{}:/rootfs.ext4", rootfs_img.display()))
                     .arg("-v")
@@ -424,6 +442,8 @@ pub fn prepare_rootfs_for_platform(platform: &PlatformSpec) -> Result<()> {
                     .arg(format!(
                         "OFFICEPARSER_VERSION={DEFAULT_OFFICEPARSER_VERSION}"
                     ))
+                    .arg(format!("XLSX_VERSION={DEFAULT_XLSX_VERSION}"))
+                    .arg(format!("DOCX_VERSION={DEFAULT_DOCX_VERSION}"))
                     .arg(format!("GUEST_BINARY={}", guest_binary.display()))
                     .arg("/bin/sh")
                     .arg("-c")
