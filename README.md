@@ -41,6 +41,12 @@ lsb run --allow-net --allow-host api.openai.com --allow-host registry.npmjs.org
 lsb run --cpus 4 --memory 4096 --disk-size 8192 -- make -j4
 ```
 
+With `--allow-net`, the guest resolves DNS through the host-side proxy at
+`10.0.0.1`. Leave `/etc/resolv.conf` pointed at that proxy; the proxy performs
+lookups with the host system resolver, including VPN or split-DNS rules.
+Directly configuring corporate DNS servers inside the guest bypasses the proxy
+and can fail because the guest has no general UDP or host VPN route access.
+
 ### Directory mounts
 
 Share host directories into the VM using VirtioFS. The host directory is read-only; guest writes go to a tmpfs overlay layer (discarded when the VM exits).

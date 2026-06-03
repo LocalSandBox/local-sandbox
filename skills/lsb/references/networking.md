@@ -6,12 +6,25 @@ Networking is **off by default**. Pass `--allow-net` to enable it.
 
 All guest network traffic goes through a userspace proxy on the host (no NAT, no direct internet access). The proxy:
 
-- Resolves DNS on the host and relays responses
+- Resolves DNS on the host using the host system resolver and relays responses
 - Tunnels TCP connections (HTTP and HTTPS) to the real internet
 - Optionally performs MITM on HTTPS to inject secrets (only when `secrets` are configured)
 - Enforces domain allowlists when `network.allow` is set
 
 ICMP (ping) is not supported — only TCP traffic is proxied.
+
+When networking is enabled, the guest should resolve DNS through the proxy
+gateway:
+
+```conf
+nameserver 10.0.0.1
+```
+
+Do not replace the guest resolver with a host or corporate DNS server address.
+The guest is isolated behind the userspace proxy and does not have general UDP
+or VPN route access to those servers. Sending DNS directly to another resolver
+can fail with `Network is unreachable`; let `10.0.0.1` forward the lookup from
+the host instead.
 
 ## Enabling Network Access
 
