@@ -131,6 +131,12 @@ install_nodejs() {
     chroot "${install_rootfs_dir}" /usr/bin/npm --version > /dev/null
 }
 
+configure_node_extra_ca_certs() {
+    install_rootfs_dir="$1"
+    mkdir -p "${install_rootfs_dir}/root"
+    printf '%s\n' 'export NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/lsb-proxy.crt' >> "${install_rootfs_dir}/root/.bashrc"
+}
+
 install_google_workspace_cli() {
     install_rootfs_dir="$1"
     echo "==> Installing @googleworkspace/cli..."
@@ -185,6 +191,7 @@ install_document_node_packages() {
 install_rootfs_toolchains() {
     install_rootfs_dir="$1"
     install_nodejs "${install_rootfs_dir}"
+    configure_node_extra_ca_certs "${install_rootfs_dir}"
     install_google_workspace_cli "${install_rootfs_dir}"
     install_atlassian_node_clis "${install_rootfs_dir}"
     install_officeparser "${install_rootfs_dir}"
