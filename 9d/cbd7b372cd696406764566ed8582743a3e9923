@@ -1,0 +1,20 @@
+AGENTS.md
+  s_80cf1f83c08a44::t_2ca6d689781ba4 1-4,6-15,18-20,22-24,26-28,30-32
+  s_80cf1f83c08a44::t_50f2e744888ee0 5,16-17,21,25,29,33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "9dcbd7b372cd696406764566ed8582743a3e9923",
+  "prompts": {},
+  "sessions": {
+    "s_80cf1f83c08a44": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2322-3a68-71b0-a331-02c07e665631",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
