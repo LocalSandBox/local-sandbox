@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
+
 use super::argv::QemuCommand;
 use super::lossy_excerpt;
 
@@ -97,7 +99,7 @@ impl QemuSupervisorConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct QemuExitStatus {
     pub code: Option<i32>,
     pub success: bool,
@@ -409,7 +411,9 @@ impl QemuSupervisor {
 
         self.validate_start_inputs()?;
         self.prepare_artifacts()?;
+        self.write_argv_artifact()?;
         self.state = QemuProcessState::Starting;
+        self.write_status_artifact()?;
 
         let stdout = create_artifact_file(&self.config.artifacts.stdout, "create stdout log")?;
         let stderr = create_artifact_file(&self.config.artifacts.stderr, "create stderr log")?;
@@ -436,6 +440,7 @@ impl QemuSupervisor {
                 let _ = child.kill();
                 let _ = child.wait();
                 self.state = QemuProcessState::Failed;
+                let _ = self.write_status_artifact();
                 return Err(err);
             }
         };
@@ -445,10 +450,12 @@ impl QemuSupervisor {
             self.child = None;
             self.exit_status = Some(status.clone());
             self.state = QemuProcessState::Failed;
+            let _ = self.write_status_artifact();
             return Err(startup_exit_error(status, &self.config.artifacts.stderr));
         }
 
         self.state = QemuProcessState::Running;
+        self.write_status_artifact()?;
         Ok(())
     }
 
@@ -462,14 +469,17 @@ impl QemuSupervisor {
                 self.exit_status = Some(status);
                 self.child = None;
                 self.state = QemuProcessState::Exited;
+                self.write_status_artifact()?;
                 Ok(self.state)
             }
             Ok(None) => {
                 self.state = QemuProcessState::Running;
+                self.write_status_artifact()?;
                 Ok(self.state)
             }
             Err(err) => {
                 self.state = QemuProcessState::Failed;
+                let _ = self.write_status_artifact();
                 Err(QemuProcessError::CleanupFailed {
                     operation: "poll",
                     detail: err.to_string(),
@@ -487,6 +497,7 @@ impl QemuSupervisor {
         loop {
             if let Some(status) = self.poll_exit()? {
                 self.state = QemuProcessState::Exited;
+                self.write_status_artifact()?;
                 return Ok(status);
             }
             if Instant::now() >= deadline {
@@ -504,6 +515,7 @@ impl QemuSupervisor {
         self.kill_child("terminate")?;
         let status = self.wait(self.config.terminate_timeout)?;
         self.state = QemuProcessState::Terminated;
+        self.write_status_artifact()?;
         Ok(Some(status))
     }
 
@@ -569,6 +581,41 @@ impl QemuSupervisor {
         })
     }
 
+    fn write_argv_artifact(&self) -> Result<(), QemuProcessError> {
+        let contents = format!("{}\n", self.config.command.sanitized_display());
+        fs::write(&self.config.artifacts.argv, contents)
+            .map_err(|err| artifact_error(&self.config.artifacts.argv, "write redacted argv", err))
+    }
+
+    fn write_status_artifact(&self) -> Result<(), QemuProcessError> {
+        let artifact = QemuStatusArtifact {
+            state: self.state.as_str(),
+            pid: self.pid,
+            exit_status: self.exit_status.as_ref(),
+            diagnostic_label: self.config.command.diagnostic_label(),
+            artifacts: QemuStatusArtifactFiles {
+                argv: file_name(&self.config.artifacts.argv),
+                stdout: file_name(&self.config.artifacts.stdout),
+                stderr: file_name(&self.config.artifacts.stderr),
+                status: file_name(&self.config.artifacts.status),
+            },
+            environment: QemuEnvironmentArtifact {
+                inherit_parent: self.config.environment.inherit_parent,
+                override_count: self.config.environment.variables.len(),
+            },
+        };
+        let contents = serde_json::to_string_pretty(&artifact).map_err(|err| {
+            QemuProcessError::ArtifactIo {
+                path: self.config.artifacts.status.clone(),
+                operation: "serialize status",
+                detail: err.to_string(),
+            }
+        })?;
+        fs::write(&self.config.artifacts.status, format!("{contents}\n")).map_err(|err| {
+            artifact_error(&self.config.artifacts.status, "write lifecycle status", err)
+        })
+    }
+
     fn wait_for_startup_exit(&mut self) -> Result<Option<QemuExitStatus>, QemuProcessError> {
         let deadline = Instant::now() + self.config.startup_timeout;
         loop {
@@ -614,6 +661,30 @@ impl QemuSupervisor {
             detail: err.to_string(),
         })
     }
+}
+
+#[derive(Debug, Serialize)]
+struct QemuStatusArtifact<'a> {
+    state: &'static str,
+    pid: Option<u32>,
+    exit_status: Option<&'a QemuExitStatus>,
+    diagnostic_label: Option<&'a str>,
+    artifacts: QemuStatusArtifactFiles,
+    environment: QemuEnvironmentArtifact,
+}
+
+#[derive(Debug, Serialize)]
+struct QemuStatusArtifactFiles {
+    argv: String,
+    stdout: String,
+    stderr: String,
+    status: String,
+}
+
+#[derive(Debug, Serialize)]
+struct QemuEnvironmentArtifact {
+    inherit_parent: bool,
+    override_count: usize,
 }
 
 #[cfg(target_os = "windows")]
@@ -793,6 +864,12 @@ fn artifact_error(path: &PathBuf, operation: &'static str, err: io::Error) -> Qe
             detail: err.to_string(),
         }
     }
+}
+
+fn file_name(path: &PathBuf) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "<unknown>".to_string())
 }
 
 fn spawn_error(path: &PathBuf, err: io::Error) -> QemuProcessError {

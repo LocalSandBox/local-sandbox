@@ -928,6 +928,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-virtualization",
  "serde",
+ "serde_json",
  "windows-sys 0.61.2",
 ]
 
