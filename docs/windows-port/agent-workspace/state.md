@@ -16,7 +16,7 @@ Update this file at the end of every agent run. Keep it factual. Do not use it f
 - Issue: TBD
 - Agent: Codex
 - Start commit: `f0413a9`
-- End commit: M04 handoff commit on `codex/windows-m04-qemu-lifecycle`
+- End commit: M04 hardware validation commit on `codex/windows-m04-qemu-lifecycle`
 
 ## Milestone status table
 
@@ -77,6 +77,8 @@ Append newest entries at the top.
 
 | Date | Milestone | Platform | Command / test | Result | Notes |
 |---|---|---|---|---|---|
+| 2026-07-03 | M04 | Windows self-hosted | `./scripts/win-gh-test check` | Pass | Run `28656615634`; manual hardware workflow check lane passed on pushed branch. |
+| 2026-07-03 | M04 | Windows self-hosted | `./scripts/win-gh-test unit` | Pass | Run `28656682126`; unit lane passed, including Windows-only Job Object cleanup test. |
 | 2026-07-03 | M04 | macOS | `cargo fmt --all -- --check` | Pass | Formatting verified after lifecycle code and tests. |
 | 2026-07-03 | M04 | macOS | `cargo check --workspace` | Pass | Full workspace compile check passed. |
 | 2026-07-03 | M04 | macOS | `cargo test --workspace` | Pass | 83 passed, 1 ignored real-QEMU preflight hook. M04 fake-process tests do not require QEMU or guest assets. |
