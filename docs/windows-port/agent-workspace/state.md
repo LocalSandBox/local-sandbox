@@ -82,6 +82,8 @@ Append newest entries at the top.
 
 | Date | Milestone | Platform | Command / test | Result | Notes |
 |---|---|---|---|---|---|
+| 2026-07-03 | M04 follow-up review fixes | Windows self-hosted | `./scripts/win-gh-test check` | Pass | Run `28669548173`; hardware workflow check lane passed on pushed branch after single-use supervisor and shutdown-deferral docs. |
+| 2026-07-03 | M04 follow-up review fixes | Windows self-hosted | `./scripts/win-gh-test unit` + direct watch | Pass | Triggered run `28669605850`; helper initially matched prior check run, then `gh run watch 28669605850 --exit-status` passed. |
 | 2026-07-03 | M04 review fixes | Windows self-hosted | `./scripts/win-gh-test check` | Pass | Run `28658439977`; hardware workflow check lane passed on pushed branch after review fixes. |
 | 2026-07-03 | M04 review fixes | Windows self-hosted | `./scripts/win-gh-test unit` | Pass | Run `28658499031`; hardware workflow unit lane passed, covering Windows-only lifecycle cleanup tests. |
 | 2026-07-03 | M04 review fixes | macOS | `cargo fmt --all -- --check` | Pass | Formatting verified after startup cleanup, environment, and regression-test updates. |
