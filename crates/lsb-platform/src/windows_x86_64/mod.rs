@@ -1,3 +1,8 @@
+#![cfg_attr(
+    not(all(target_os = "windows", target_arch = "x86_64")),
+    allow(dead_code, unused_imports)
+)]
+
 mod backend;
 mod config;
 mod errors;

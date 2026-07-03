@@ -1,5 +1,3 @@
-use std::os::unix::fs::MetadataExt;
-
 use anyhow::{bail, Result};
 
 use lsb_vm::default_data_dir;
@@ -84,7 +82,7 @@ pub(crate) fn list() -> Result<()> {
                 (non_zero as u64) * 64 * 1024
             })?
         } else {
-            meta.blocks() * 512
+            checkpoint_disk_usage(&meta)
         };
         checkpoints.push((name, disk_usage, meta.modified()?, is_cas));
     }
@@ -150,4 +148,16 @@ pub(crate) fn delete(name: &str) -> Result<()> {
 fn checkpoint_exists(checkpoints_dir: &str, name: &str) -> bool {
     std::path::Path::new(&format!("{}/{}.idx", checkpoints_dir, name)).exists()
         || std::path::Path::new(&format!("{}/{}.ext4", checkpoints_dir, name)).exists()
+}
+
+#[cfg(unix)]
+fn checkpoint_disk_usage(meta: &std::fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+
+    meta.blocks() * 512
+}
+
+#[cfg(not(unix))]
+fn checkpoint_disk_usage(meta: &std::fs::Metadata) -> u64 {
+    meta.len()
 }

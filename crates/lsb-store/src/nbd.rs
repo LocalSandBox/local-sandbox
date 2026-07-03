@@ -1,8 +1,14 @@
+#[cfg(unix)]
 use std::io::{Read, Write};
 use std::sync::Arc;
 
+#[cfg(unix)]
 use anyhow::{bail, Context};
+#[cfg(unix)]
 use tracing::{debug, warn};
+
+#[cfg(unix)]
+type NbdStream = std::os::unix::net::UnixStream;
 
 pub trait NbdBackend: Send + Sync {
     fn size(&self) -> u64;
@@ -73,19 +79,15 @@ const NBD_OK: u32 = 0;
 const NBD_EIO: u32 = 5;
 const NBD_EINVAL: u32 = 22;
 
-pub fn handle_client(
-    mut stream: std::os::unix::net::UnixStream,
-    backend: Arc<dyn NbdBackend>,
-) -> anyhow::Result<()> {
+#[cfg(unix)]
+pub fn handle_client(mut stream: NbdStream, backend: Arc<dyn NbdBackend>) -> anyhow::Result<()> {
     handshake(&mut stream, backend.as_ref())?;
     transmission(&mut stream, backend.as_ref())?;
     Ok(())
 }
 
-fn handshake(
-    stream: &mut std::os::unix::net::UnixStream,
-    backend: &dyn NbdBackend,
-) -> anyhow::Result<()> {
+#[cfg(unix)]
+fn handshake(stream: &mut NbdStream, backend: &dyn NbdBackend) -> anyhow::Result<()> {
     stream.write_all(&NBDMAGIC.to_be_bytes())?;
     stream.write_all(&IHAVEOPT.to_be_bytes())?;
     let server_flags = NBD_FLAG_FIXED_NEWSTYLE | NBD_FLAG_NO_ZEROES;
@@ -178,11 +180,13 @@ fn handshake(
     }
 }
 
+#[cfg(unix)]
 struct InfoRequest {
     export_name: String,
     requested_infos: Vec<u16>,
 }
 
+#[cfg(unix)]
 fn parse_info_request(data: &[u8]) -> anyhow::Result<InfoRequest> {
     if data.len() < 6 {
         bail!(
@@ -226,8 +230,9 @@ fn parse_info_request(data: &[u8]) -> anyhow::Result<InfoRequest> {
     })
 }
 
+#[cfg(unix)]
 fn send_info_replies(
-    stream: &mut std::os::unix::net::UnixStream,
+    stream: &mut NbdStream,
     option: u32,
     size: u64,
     requested_infos: &[u16],
@@ -246,11 +251,8 @@ fn send_info_replies(
     Ok(())
 }
 
-fn send_export_info(
-    stream: &mut std::os::unix::net::UnixStream,
-    option: u32,
-    size: u64,
-) -> std::io::Result<()> {
+#[cfg(unix)]
+fn send_export_info(stream: &mut NbdStream, option: u32, size: u64) -> std::io::Result<()> {
     let trans_flags = NBD_FLAG_HAS_FLAGS | NBD_FLAG_SEND_FLUSH;
     let mut info = Vec::with_capacity(12);
     info.extend_from_slice(&NBD_INFO_EXPORT.to_be_bytes());
@@ -259,8 +261,9 @@ fn send_export_info(
     send_option_reply(stream, option, NBD_REP_INFO, &info)
 }
 
+#[cfg(unix)]
 fn send_option_reply(
-    stream: &mut std::os::unix::net::UnixStream,
+    stream: &mut NbdStream,
     option: u32,
     reply_type: u32,
     data: &[u8],
@@ -275,10 +278,8 @@ fn send_option_reply(
     Ok(())
 }
 
-fn transmission(
-    stream: &mut std::os::unix::net::UnixStream,
-    backend: &dyn NbdBackend,
-) -> anyhow::Result<()> {
+#[cfg(unix)]
+fn transmission(stream: &mut NbdStream, backend: &dyn NbdBackend) -> anyhow::Result<()> {
     let mut req_header = [0u8; 28];
 
     loop {
@@ -366,8 +367,9 @@ fn transmission(
     }
 }
 
+#[cfg(unix)]
 fn send_reply(
-    stream: &mut std::os::unix::net::UnixStream,
+    stream: &mut NbdStream,
     error: u32,
     handle: &[u8],
     data: Option<&[u8]>,

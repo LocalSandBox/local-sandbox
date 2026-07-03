@@ -7,6 +7,9 @@ license = "Apache-2.0"
 repository = "https://github.com/LocalSandBox/local-sandbox.git"
 
 [dependencies]
+anyhow = "1"
+
+[target.'cfg(unix)'.dependencies]
 smoltcp = { version = "0.12", default-features = false, features = [
     "alloc",
     "medium-ethernet",
@@ -23,6 +26,5 @@ boring = "4"
 tokio-boring = "4"
 simple-dns = "0.9"
 lru = "0.14"
-anyhow = "1"
 tracing = "0.1"
 libc = "0.2"

@@ -11,11 +11,16 @@ pub use base::{
 pub use cas::{CasBackend, ChunkIndex, ChunkStore, LocalChunkStore};
 pub use nbd::NbdBackend;
 
+#[cfg(unix)]
 use std::os::unix::net::UnixListener;
+#[cfg(unix)]
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+#[cfg(unix)]
+use anyhow::Context;
+use anyhow::Result;
+#[cfg(unix)]
 use tracing::{debug, info, warn};
 
 pub struct NbdHandle {
@@ -47,6 +52,7 @@ impl Drop for NbdHandle {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
+        #[cfg(unix)]
         let _ = std::os::unix::net::UnixStream::connect(&self.socket_path);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -55,6 +61,7 @@ impl Drop for NbdHandle {
     }
 }
 
+#[cfg(unix)]
 fn start_nbd_with_backend(
     backend: Arc<dyn NbdBackend>,
     socket_path: &str,
@@ -103,6 +110,7 @@ fn start_nbd_with_backend(
     })
 }
 
+#[cfg(unix)]
 pub fn start_cas_nbd_server(
     rootfs_path: &str,
     cas_dir: &str,
@@ -144,4 +152,17 @@ pub fn start_cas_nbd_server(
 
     let cas = Arc::new(backend);
     start_nbd_with_backend(cas.clone(), socket_path, Some(cas))
+}
+
+#[cfg(not(unix))]
+pub fn start_cas_nbd_server(
+    _rootfs_path: &str,
+    _cas_dir: &str,
+    _index_path: &str,
+    _socket_path: &str,
+    _disk_size: u64,
+) -> Result<NbdHandle> {
+    Err(anyhow::anyhow!(
+        "Windows support is in progress: NBD/CAS storage transport is not implemented yet (M13 checkpoint/store MVP); M01 only provides compile stubs"
+    ))
 }

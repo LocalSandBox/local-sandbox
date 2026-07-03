@@ -85,8 +85,7 @@ fn main() -> Result<()> {
                 let Some(pid) = name.to_str().and_then(|s| s.parse::<i32>().ok()) else {
                     continue;
                 };
-                // Check if the process is still running
-                let alive = unsafe { libc::kill(pid, 0) } == 0;
+                let alive = process_alive(pid)?;
                 if !alive {
                     std::fs::remove_dir_all(entry.path())?;
                     removed += 1;
@@ -121,6 +120,18 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(unix)]
+fn process_alive(pid: i32) -> Result<bool> {
+    Ok(unsafe { libc::kill(pid, 0) } == 0)
+}
+
+#[cfg(not(unix))]
+fn process_alive(_pid: i32) -> Result<bool> {
+    anyhow::bail!(
+        "Windows support is in progress: orphaned instance pruning is not implemented yet; M01 only provides compile stubs"
+    )
 }
 
 /// Run the VM in raw serial console mode (for debugging).
