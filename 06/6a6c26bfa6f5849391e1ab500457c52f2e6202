@@ -1,0 +1,23 @@
+crates/lsb-store/src/lib.rs
+  s_d2c60d9a2d8d32::t_85cd4e8358f73d 176-179
+crates/lsb-store/src/nbd.rs
+  s_d2c60d9a2d8d32::t_0ba951b8488600 3,57,59,61,63,65,67,69,71,73,75,77,79,81,83,85,87,89,91,93,95,97,99,101,103,105,417
+crates/lsb-proxy/src/lib.rs
+  s_d2c60d9a2d8d32::t_0ba951b8488600 182-185
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "066a6c26bfa6f5849391e1ab500457c52f2e6202",
+  "prompts": {},
+  "sessions": {
+    "s_d2c60d9a2d8d32": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f273d-5fce-7860-ad60-0b36e56efba6",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
