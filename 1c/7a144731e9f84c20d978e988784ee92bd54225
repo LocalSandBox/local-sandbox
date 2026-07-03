@@ -1,0 +1,41 @@
+crates/lsb-platform/src/windows_x86_64/mod.rs
+  s_d2c60d9a2d8d32::t_b5b4b3dd93a8e8 1-5
+crates/lsb-store/Cargo.toml
+  s_d2c60d9a2d8d32::t_c6be20a5c21bd4 20-22
+crates/lsb-cli/Cargo.toml
+  s_d2c60d9a2d8d32::t_0edcd8d80753c5 27-29
+crates/lsb-store/src/backend.rs
+  s_d2c60d9a2d8d32::t_c6be20a5c21bd4 2,4-5,34-63,68-97,102-123
+crates/lsb-store/src/nbd.rs
+  s_d2c60d9a2d8d32::t_1bc17ea6e71faf 183,189,370,372
+  s_d2c60d9a2d8d32::t_c6be20a5c21bd4 1,5,7,10-12,82-83,89-90,233,235,254-255,264,266,281-282
+crates/lsb-proxy/src/lib.rs
+  s_d2c60d9a2d8d32::t_8d02ca1854c397 2,4,6,8,10,12,17,19,22,24,26,28,30,33-38,41,43,46,52,67-68,103-110,115-116,166-173
+  s_d2c60d9a2d8d32::t_0e6eeecd6c3ad9 174
+crates/lsb-cli/src/checkpoint.rs
+  s_d2c60d9a2d8d32::t_0edcd8d80753c5 85,152-163
+crates/lsb-proxy/Cargo.toml
+  s_d2c60d9a2d8d32::t_8d02ca1854c397 10-12
+crates/lsb-cli/src/main.rs
+  s_d2c60d9a2d8d32::t_0edcd8d80753c5 88,125-135
+  s_d2c60d9a2d8d32::t_f6b2ef9ddefdd8 136
+crates/lsb-store/src/lib.rs
+  s_d2c60d9a2d8d32::t_c6be20a5c21bd4 14,16,20-23,55,64,113,156-167
+  s_d2c60d9a2d8d32::t_2b64ca015d772c 168
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1c7a144731e9f84c20d978e988784ee92bd54225",
+  "prompts": {},
+  "sessions": {
+    "s_d2c60d9a2d8d32": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f273d-5fce-7860-ad60-0b36e56efba6",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
