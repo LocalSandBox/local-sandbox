@@ -7,6 +7,7 @@ use std::process::Command;
 
 use serde::Serialize;
 
+pub(crate) mod config;
 pub(crate) mod discovery;
 pub(crate) mod preflight;
 pub(crate) mod version;
