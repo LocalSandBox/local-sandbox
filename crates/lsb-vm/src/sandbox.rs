@@ -25,6 +25,13 @@ use lsb_proto::{
     WriteFileRequest, WriteFileResponse, VSOCK_PORT, VSOCK_PORT_FORWARD,
 };
 
+#[cfg(not(target_os = "macos"))]
+fn unsupported_runtime(capability: &str, milestone: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Windows support is in progress: {capability} is not implemented yet ({milestone}); M01 only provides compile stubs"
+    )
+}
+
 // --- Mount types ---
 
 const MS_RDONLY: u64 = 1;
@@ -702,9 +709,10 @@ impl Sandbox {
     /// transport and PTY work; M01 only guarantees compile-time scaffolding.
     #[cfg(not(target_os = "macos"))]
     pub fn shell(&self, _argv: &[impl AsRef<str>], _env: &HashMap<String, String>) -> Result<i32> {
-        bail!(
-            "Windows support is in progress: interactive shell is not implemented yet (M06 virtio-serial control transport and M08 exec); M01 only provides compile stubs"
-        )
+        Err(unsupported_runtime(
+            "interactive shell",
+            "M06 virtio-serial control transport and M08 exec",
+        ))
     }
 
     /// Start port forwarding proxies. Returns a handle that stops all
@@ -771,9 +779,10 @@ impl Sandbox {
     /// transport is implemented, fail before opening any host listener.
     #[cfg(not(target_os = "macos"))]
     pub fn start_port_forwarding(&self, _forwards: &[PortMapping]) -> Result<PortForwardHandle> {
-        bail!(
-            "Windows support is in progress: port forwarding is not implemented yet (M11 port forwarding); M01 only provides compile stubs and no listener was opened"
-        )
+        Err(unsupported_runtime(
+            "port forwarding",
+            "M11 port forwarding; no listener was opened",
+        ))
     }
 
     #[cfg(target_os = "macos")]
@@ -813,9 +822,10 @@ impl Sandbox {
 
     #[cfg(not(target_os = "macos"))]
     fn connect_vsock(&self) -> Result<TcpStream> {
-        bail!(
-            "Windows support is in progress: guest control transport is not implemented yet (M06 virtio-serial control transport); M01 only provides compile stubs"
-        )
+        Err(unsupported_runtime(
+            "guest control transport",
+            "M06 virtio-serial control transport",
+        ))
     }
 }
 
