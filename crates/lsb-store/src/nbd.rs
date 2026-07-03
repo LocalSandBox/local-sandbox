@@ -1,5 +1,6 @@
 #[cfg(unix)]
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::sync::Arc;
 
 #[cfg(unix)]
@@ -53,30 +54,55 @@ impl NbdBackend for crate::cas::CasBackend {
     }
 }
 
+#[cfg(unix)]
 const NBDMAGIC: u64 = 0x4e42444d41474943;
+#[cfg(unix)]
 const IHAVEOPT: u64 = 0x49484156454F5054;
+#[cfg(unix)]
 const REPLY_MAGIC: u64 = 0x3e889045565a9;
+#[cfg(unix)]
 const NBD_FLAG_FIXED_NEWSTYLE: u16 = 1 << 0;
+#[cfg(unix)]
 const NBD_FLAG_NO_ZEROES: u16 = 1 << 1;
+#[cfg(unix)]
 const NBD_FLAG_C_NO_ZEROES: u32 = 1 << 1;
+#[cfg(unix)]
 const NBD_FLAG_HAS_FLAGS: u16 = 1 << 0;
+#[cfg(unix)]
 const NBD_FLAG_SEND_FLUSH: u16 = 1 << 2;
+#[cfg(unix)]
 const NBD_OPT_EXPORT_NAME: u32 = 1;
+#[cfg(unix)]
 const NBD_OPT_ABORT: u32 = 2;
+#[cfg(unix)]
 const NBD_OPT_INFO: u32 = 6;
+#[cfg(unix)]
 const NBD_OPT_GO: u32 = 7;
+#[cfg(unix)]
 const NBD_REP_ACK: u32 = 1;
+#[cfg(unix)]
 const NBD_REP_INFO: u32 = 3;
+#[cfg(unix)]
 const NBD_REP_ERR_UNSUP: u32 = (1 << 31) | 1;
+#[cfg(unix)]
 const NBD_INFO_EXPORT: u16 = 0;
+#[cfg(unix)]
 const NBD_INFO_BLOCK_SIZE: u16 = 3;
+#[cfg(unix)]
 const NBD_CMD_READ: u16 = 0;
+#[cfg(unix)]
 const NBD_CMD_WRITE: u16 = 1;
+#[cfg(unix)]
 const NBD_CMD_DISC: u16 = 2;
+#[cfg(unix)]
 const NBD_CMD_FLUSH: u16 = 3;
+#[cfg(unix)]
 const NBD_SIMPLE_REPLY_MAGIC: u32 = 0x67446698;
+#[cfg(unix)]
 const NBD_OK: u32 = 0;
+#[cfg(unix)]
 const NBD_EIO: u32 = 5;
+#[cfg(unix)]
 const NBD_EINVAL: u32 = 22;
 
 #[cfg(unix)]
@@ -386,9 +412,9 @@ fn send_reply(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::FlatFileBackend;
     use std::io::Write;
+    use std::sync::Arc;
 
     fn create_test_backend() -> (tempfile::NamedTempFile, Arc<FlatFileBackend>) {
         let mut tmp = tempfile::NamedTempFile::new().expect("temp file");

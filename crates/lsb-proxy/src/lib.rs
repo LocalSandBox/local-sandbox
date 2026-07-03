@@ -179,9 +179,10 @@ mod non_unix_tests {
 
     #[test]
     fn socketpair_stub_reports_windows_proxy_milestone() {
-        let message = create_socketpair()
-            .expect_err("socketpair should be unsupported")
-            .to_string();
+        let message = match create_socketpair() {
+            Ok(_) => panic!("socketpair should be unsupported"),
+            Err(error) => error.to_string(),
+        };
 
         assert!(message.contains("proxy networking"));
         assert!(message.contains("M12"));

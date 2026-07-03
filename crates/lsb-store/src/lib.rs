@@ -173,9 +173,10 @@ mod non_unix_tests {
 
     #[test]
     fn nbd_stub_reports_windows_checkpoint_milestone() {
-        let message = start_cas_nbd_server("rootfs.ext4", "cas", "index.idx", "nbd.sock", 0)
-            .expect_err("NBD should be unsupported")
-            .to_string();
+        let message = match start_cas_nbd_server("rootfs.ext4", "cas", "index.idx", "nbd.sock", 0) {
+            Ok(_) => panic!("NBD should be unsupported"),
+            Err(error) => error.to_string(),
+        };
 
         assert!(message.contains("NBD/CAS storage transport"));
         assert!(message.contains("M13"));
