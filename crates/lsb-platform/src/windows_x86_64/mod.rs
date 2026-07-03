@@ -1,3 +1,9 @@
+mod backend;
+mod config;
+mod errors;
+
+pub(crate) use backend::create_vm;
+
 use crate::{PlatformSpec, PlatformStatus};
 
 pub const SPEC: PlatformSpec = PlatformSpec {

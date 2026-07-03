@@ -169,13 +169,26 @@ pub use macos_aarch64::VmState;
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 pub use macos_x86_64::VmState;
 
+#[cfg(not(target_os = "macos"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmState {
+    Stopped = 0,
+    Running = 1,
+    Paused = 2,
+    Error = 3,
+    Starting = 4,
+    Pausing = 5,
+    Resuming = 6,
+    Stopping = 7,
+    Unknown = -1,
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use macos_aarch64::terminal;
 
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 pub use macos_x86_64::terminal;
 
-#[cfg(target_os = "macos")]
 #[derive(Debug, Clone)]
 pub struct PlatformSharedDir {
     pub host_path: String,
@@ -183,7 +196,6 @@ pub struct PlatformSharedDir {
     pub read_only: bool,
 }
 
-#[cfg(target_os = "macos")]
 #[derive(Debug, Clone)]
 pub struct PlatformVmConfig {
     pub kernel_path: String,
@@ -198,7 +210,6 @@ pub struct PlatformVmConfig {
     pub shared_dirs: Vec<PlatformSharedDir>,
 }
 
-#[cfg(target_os = "macos")]
 pub trait PlatformVm: Send + Sync {
     fn start(&self) -> Result<()>;
     fn stop(&self) -> Result<()>;
@@ -216,6 +227,11 @@ pub fn copy_file_cow(src: &str, dst: &str) -> Result<()> {
     macos_x86_64::copy_file_cow(src, dst)
 }
 
+#[cfg(not(target_os = "macos"))]
+pub fn copy_file_cow(src: &str, dst: &str) -> Result<()> {
+    std::fs::copy(src, dst).map(|_| ()).map_err(Into::into)
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub fn create_vm(config: PlatformVmConfig) -> Result<Arc<dyn PlatformVm>> {
     macos_aarch64::create_vm(config)
@@ -224,6 +240,24 @@ pub fn create_vm(config: PlatformVmConfig) -> Result<Arc<dyn PlatformVm>> {
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 pub fn create_vm(config: PlatformVmConfig) -> Result<Arc<dyn PlatformVm>> {
     macos_x86_64::create_vm(config)
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub fn create_vm(config: PlatformVmConfig) -> Result<Arc<dyn PlatformVm>> {
+    windows_x86_64::create_vm(config)
+}
+
+#[cfg(not(any(
+    target_os = "macos",
+    all(target_os = "windows", target_arch = "x86_64")
+)))]
+pub fn create_vm(_config: PlatformVmConfig) -> Result<Arc<dyn PlatformVm>> {
+    let platform = host_platform()
+        .map(|platform| platform.id)
+        .unwrap_or("unknown host target");
+    Err(anyhow!(
+        "LocalSandbox runtime is not implemented for {platform}; M01 only provides Windows x86_64 compile stubs"
+    ))
 }
 
 #[cfg(test)]
