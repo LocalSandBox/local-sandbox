@@ -1,0 +1,21 @@
+docs/windows-port/agent-workspace/milestones/01-windows-compile-stubs.md
+  s_d2c60d9a2d8d32::t_0be5e916296956 82-84
+docs/windows-port/agent-workspace/state.md
+  s_d2c60d9a2d8d32::t_0be5e916296956 19,52,79-81
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "958562e42832cadcdaca28b21f9e8b1eb65d0fa2",
+  "prompts": {},
+  "sessions": {
+    "s_d2c60d9a2d8d32": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f273d-5fce-7860-ad60-0b36e56efba6",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
