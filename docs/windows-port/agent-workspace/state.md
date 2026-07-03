@@ -73,6 +73,8 @@ Append newest entries at the top.
 
 | Date | Milestone | Platform | Command / test | Result | Notes |
 |---|---|---|---|---|---|
+| 2026-07-03 | M03 | Windows self-hosted | `./scripts/win-gh-test check` | Pass | Run `28655108246`; manual hardware workflow check lane passed. |
+| 2026-07-03 | M03 | Windows self-hosted | `./scripts/win-gh-test unit` | Pass | Run `28655161915`; unit lane passed. The helper dispatched the run; it was watched directly by run ID because the helper matched the earlier same-SHA check run. |
 | 2026-07-03 | M03 | macOS | `cargo fmt --all -- --check` | Pass | Formatting verified after code and docs updates. |
 | 2026-07-03 | M03 | macOS | `cargo check --workspace` | Pass | Full workspace compile check passed. |
 | 2026-07-03 | M03 | macOS | `cargo test --workspace` | Pass | 77 passed, 1 ignored real-QEMU preflight hook. New argv golden tests are target-independent and do not start QEMU. |

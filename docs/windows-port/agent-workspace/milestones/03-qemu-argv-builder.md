@@ -72,7 +72,7 @@ Complete the checklist in `../security-checklist.md`. Record any new risk in `..
 
 - Branch/PR: `codex/windows-m03-qemu-argv-builder`
 - Summary: Added private Windows QEMU config and argv builder modules under `lsb-platform::windows_x86_64::qemu`. The builder returns a program path plus structured `Vec<OsString>` argv for WHPX direct Linux boot, virtio-blk root disk, serial output, optional virtio-serial control pipe placeholder, optional private QMP pipe, and explicit `-nic none`. Added redacted diagnostic rendering. No QEMU process is spawned and no Windows runtime support is claimed.
-- Tests run: `cargo fmt --all -- --check`; `cargo check --workspace`; `cargo test -p lsb-platform`; `cargo test --workspace`; `cargo check -p lsb-platform --target x86_64-pc-windows-msvc`. `cargo check --workspace --target x86_64-pc-windows-msvc` was attempted from macOS and remains blocked by external Windows/MSVC C/assembler tooling for transitive crates.
+- Tests run: `cargo fmt --all -- --check`; `cargo check --workspace`; `cargo test -p lsb-platform`; `cargo test --workspace`; `cargo check -p lsb-platform --target x86_64-pc-windows-msvc`; `./scripts/win-gh-test check` run `28655108246`; `./scripts/win-gh-test unit` run `28655161915`. `cargo check --workspace --target x86_64-pc-windows-msvc` was attempted from macOS and remains blocked by external Windows/MSVC C/assembler tooling for transitive crates.
 - Debug artifacts: None.
 - New decisions: None.
 - New risks: None.
