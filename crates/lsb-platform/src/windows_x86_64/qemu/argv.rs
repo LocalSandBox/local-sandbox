@@ -395,3 +395,279 @@ fn render_diagnostic_arg(value: &str) -> String {
         value.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::windows_x86_64::qemu::config::{
+        QemuControlChannelConfig, QemuQmpEndpoint, QemuRootMode,
+    };
+
+    fn base_config() -> QemuBootConfig {
+        QemuBootConfig::direct_linux_boot(
+            r"C:\qemu\qemu-system-x86_64.exe",
+            r"C:\lsb\Image",
+            r"C:\lsb\initramfs.cpio.gz",
+            r"C:\lsb\instances\abc\root.qcow2",
+            r"C:\lsb\instances\abc\serial.log",
+            2048,
+            2,
+        )
+    }
+
+    fn build(config: QemuBootConfig) -> QemuCommand {
+        QemuArgvBuilder::new(config)
+            .build()
+            .expect("config should build argv")
+    }
+
+    fn os_vec(values: &[&str]) -> Vec<OsString> {
+        values.iter().map(OsString::from).collect()
+    }
+
+    fn argv_as_strings(command: &QemuCommand) -> Vec<String> {
+        command
+            .argv
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn minimal_whpx_direct_linux_boot_argv_matches_golden() {
+        let command = build(base_config());
+
+        assert_eq!(
+            command.argv,
+            os_vec(&[
+                "-nodefaults",
+                "-machine",
+                "q35,accel=whpx",
+                "-cpu",
+                "max",
+                "-smp",
+                "2",
+                "-m",
+                "2048M",
+                "-no-reboot",
+                "-display",
+                "none",
+                "-monitor",
+                "none",
+                "-kernel",
+                r"C:\lsb\Image",
+                "-initrd",
+                r"C:\lsb\initramfs.cpio.gz",
+                "-append",
+                "console=ttyS0 root=/dev/vda rw panic=-1",
+                "-drive",
+                r"if=none,id=root,file=C:\lsb\instances\abc\root.qcow2,format=qcow2",
+                "-device",
+                "virtio-blk-pci,drive=root",
+                "-serial",
+                r"file:C:\lsb\instances\abc\serial.log",
+                "-nic",
+                "none",
+            ])
+        );
+    }
+
+    #[test]
+    fn virtio_serial_control_and_qmp_argv_matches_golden() {
+        let mut config = base_config();
+        config.control_channel = Some(QemuControlChannelConfig::named_pipe("lsb-abc-control"));
+        config.qmp = Some(QemuQmpEndpoint::named_pipe("lsb-abc-qmp"));
+
+        let command = build(config);
+
+        assert_eq!(
+            command.argv,
+            os_vec(&[
+                "-nodefaults",
+                "-machine",
+                "q35,accel=whpx",
+                "-cpu",
+                "max",
+                "-smp",
+                "2",
+                "-m",
+                "2048M",
+                "-no-reboot",
+                "-display",
+                "none",
+                "-monitor",
+                "none",
+                "-kernel",
+                r"C:\lsb\Image",
+                "-initrd",
+                r"C:\lsb\initramfs.cpio.gz",
+                "-append",
+                "console=ttyS0 root=/dev/vda rw panic=-1 lsb.transport=virtio-serial",
+                "-drive",
+                r"if=none,id=root,file=C:\lsb\instances\abc\root.qcow2,format=qcow2",
+                "-device",
+                "virtio-blk-pci,drive=root",
+                "-serial",
+                r"file:C:\lsb\instances\abc\serial.log",
+                "-device",
+                "virtio-serial-pci,id=lsbserial0",
+                "-chardev",
+                "pipe,id=lsbctl,path=lsb-abc-control",
+                "-device",
+                "virtserialport,chardev=lsbctl,name=org.localsandbox.control",
+                "-qmp",
+                "pipe:lsb-abc-qmp,server=on,wait=off",
+                "-nic",
+                "none",
+            ])
+        );
+    }
+
+    #[test]
+    fn windows_paths_with_spaces_preserve_argument_boundaries_and_escape_drive_commas() {
+        let config = QemuBootConfig::direct_linux_boot(
+            r"C:\Program Files\QEMU\qemu-system-x86_64.exe",
+            r"C:\Users\me\AppData\Local\Local Sandbox\Image",
+            r"C:\Users\me\AppData\Local\Local Sandbox\initramfs.cpio.gz",
+            r"C:\Users\me\AppData\Local\Local Sandbox\instances\abc\root,one.qcow2",
+            r"C:\Users\me\AppData\Local\Local Sandbox\instances\abc\serial log.txt",
+            1024,
+            1,
+        );
+
+        let command = build(config);
+
+        assert_eq!(
+            command.program,
+            PathBuf::from(r"C:\Program Files\QEMU\qemu-system-x86_64.exe")
+        );
+        assert!(command.argv.contains(&OsString::from(
+            r"C:\Users\me\AppData\Local\Local Sandbox\Image"
+        )));
+        assert!(command.argv.contains(&OsString::from(
+            r"if=none,id=root,file=C:\Users\me\AppData\Local\Local Sandbox\instances\abc\root,,one.qcow2,format=qcow2"
+        )));
+        assert!(command.argv.contains(&OsString::from(
+            r"file:C:\Users\me\AppData\Local\Local Sandbox\instances\abc\serial log.txt"
+        )));
+    }
+
+    #[test]
+    fn production_argv_uses_whpx_without_tcg_fallback() {
+        let command = build(base_config());
+        let argv = argv_as_strings(&command);
+
+        assert!(argv.iter().any(|arg| arg == "q35,accel=whpx"));
+        assert!(!argv.iter().any(|arg| arg.contains("tcg")));
+        assert!(!argv.iter().any(|arg| arg.contains("whpx:tcg")));
+    }
+
+    #[test]
+    fn default_argv_has_no_guest_network_or_host_forwarding() {
+        let command = build(base_config());
+        let argv = argv_as_strings(&command);
+
+        assert!(argv.windows(2).any(|pair| pair == ["-nic", "none"]));
+        assert!(!argv.iter().any(|arg| arg == "-netdev"));
+        assert!(!argv.iter().any(|arg| arg.contains("hostfwd")));
+        assert!(!argv.iter().any(|arg| arg.contains("virtio-net")));
+    }
+
+    #[test]
+    fn qmp_endpoint_is_private_pipe_only_in_generated_argv() {
+        let mut config = base_config();
+        config.qmp = Some(QemuQmpEndpoint::named_pipe("lsb-abc-qmp"));
+
+        let command = build(config);
+        let argv = argv_as_strings(&command);
+        let qmp_arg = argv
+            .windows(2)
+            .find(|pair| pair[0] == "-qmp")
+            .map(|pair| pair[1].clone())
+            .expect("qmp arg should be present");
+
+        assert_eq!(qmp_arg, "pipe:lsb-abc-qmp,server=on,wait=off");
+        assert!(!qmp_arg.contains("tcp:"));
+        assert!(!qmp_arg.contains("0.0.0.0"));
+    }
+
+    #[test]
+    fn sanitized_display_redacts_paths_and_pipe_names() {
+        let mut config = QemuBootConfig::direct_linux_boot(
+            r"C:\TOPSECRET\qemu-system-x86_64.exe",
+            r"C:\TOPSECRET\Image",
+            r"C:\TOPSECRET\initramfs.cpio.gz",
+            r"C:\TOPSECRET\root.qcow2",
+            r"C:\TOPSECRET\serial.log",
+            2048,
+            2,
+        );
+        config.control_channel = Some(QemuControlChannelConfig::named_pipe(
+            "lsb-TOPSECRET-control",
+        ));
+        config.qmp = Some(QemuQmpEndpoint::named_pipe("lsb-TOPSECRET-qmp"));
+        config.diagnostic_label = Some("sandbox-abc".to_string());
+
+        let command = build(config);
+        let display = command.sanitized_display();
+
+        assert_eq!(command.diagnostic_label(), Some("sandbox-abc"));
+        assert!(!display.contains("TOPSECRET"));
+        assert!(display.contains("<qemu-system-x86_64.exe>"));
+        assert!(display.contains("-kernel <kernel>"));
+        assert!(display.contains("file=<root-disk>"));
+        assert!(display.contains("file:<serial-log>"));
+        assert!(display.contains("path=<control-pipe>"));
+        assert!(display.contains("pipe:<qmp-pipe>,server=on,wait=off"));
+        assert!(command.sanitized_argv().contains(&"<initrd>".to_string()));
+    }
+
+    #[test]
+    fn argument_order_is_deterministic() {
+        let mut config = base_config();
+        config.control_channel = Some(QemuControlChannelConfig::named_pipe("lsb-abc-control"));
+        config.qmp = Some(QemuQmpEndpoint::named_pipe("lsb-abc-qmp"));
+
+        let first = build(config.clone());
+        let second = build(config);
+
+        assert_eq!(first.argv, second.argv);
+        assert_eq!(first.sanitized_argv(), second.sanitized_argv());
+    }
+
+    #[test]
+    fn missing_required_inputs_are_reported_before_argv_is_returned() {
+        let mut config = base_config();
+        config.qemu_executable = PathBuf::new();
+
+        let err = QemuArgvBuilder::new(config)
+            .build()
+            .expect_err("empty QEMU executable path should fail");
+
+        assert_eq!(
+            err,
+            QemuArgvError::MissingRequiredInput {
+                field: "qemu_executable"
+            }
+        );
+    }
+
+    #[test]
+    fn invalid_kernel_append_values_are_rejected() {
+        let mut config = base_config();
+        config.kernel_append.root_mode = QemuRootMode::ReadOnly;
+        config.kernel_append.root_device = "/dev/vda root=/dev/sda".to_string();
+
+        let err = QemuArgvBuilder::new(config)
+            .build()
+            .expect_err("whitespace in kernel root device should fail");
+
+        assert_eq!(
+            err,
+            QemuArgvError::InvalidKernelAppend {
+                field: "kernel_append.root_device",
+                reason: "must not contain whitespace"
+            }
+        );
+    }
+}
