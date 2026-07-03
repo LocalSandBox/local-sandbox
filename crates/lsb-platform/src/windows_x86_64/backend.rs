@@ -1,19 +1,20 @@
 use std::net::TcpStream;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 
 use crate::{PlatformVm, PlatformVmConfig, VmState};
 
 use super::config::WindowsVmConfig;
 use super::errors::unsupported;
+use super::qemu::boot::{launch_windows_qemu_boot, WindowsQemuBoot, WindowsQemuBootConfig};
 
-#[derive(Debug)]
 struct WindowsVm {
-    _config: WindowsVmConfig,
-    _state_tx: Sender<VmState>,
+    config: WindowsVmConfig,
+    state_tx: Sender<VmState>,
     state_rx: Receiver<VmState>,
+    boot: Mutex<Option<WindowsQemuBoot>>,
 }
 
 impl WindowsVm {
@@ -21,23 +22,115 @@ impl WindowsVm {
         let (state_tx, state_rx) = unbounded();
         let _ = state_tx.send(VmState::Stopped);
         Self {
-            _config: WindowsVmConfig::from_platform_config(&config),
-            _state_tx: state_tx,
+            config: WindowsVmConfig::from_platform_config(&config),
+            state_tx,
             state_rx,
+            boot: Mutex::new(None),
         }
+    }
+
+    fn direct_boot_config(&self) -> Result<WindowsQemuBootConfig> {
+        self.ensure_m05_supported_config()?;
+        let initrd_path = self.config.initrd_path.clone().ok_or_else(|| {
+            anyhow!(
+                "Windows direct QEMU boot requires initramfs.cpio.gz for M05 diagnostics; \
+                 run `lsb init` or provide an initrd path"
+            )
+        })?;
+        let mut config = WindowsQemuBootConfig::new(
+            &self.config.kernel_path,
+            initrd_path,
+            &self.config.rootfs_path,
+            self.config.memory_bytes,
+            self.config.cpus,
+        );
+        config.diagnostic_label = Some("windows-direct-linux-boot".to_string());
+        Ok(config)
+    }
+
+    fn ensure_m05_supported_config(&self) -> Result<()> {
+        if self.config.network_requested {
+            return Err(unsupported(
+                "proxy networking",
+                "M12 network policy and proxy integration; no QEMU NIC is created in M05",
+            ));
+        }
+        if self.config.nbd_requested {
+            return Err(unsupported(
+                "NBD/CAS root storage",
+                "M13 checkpoint/store MVP; M05 boots the prepared rootfs image directly",
+            ));
+        }
+        if self.config.shared_dir_count > 0 {
+            return Err(unsupported(
+                "directory mounts",
+                "M10 mount MVP semantics; M05 does not expose host directories",
+            ));
+        }
+        Ok(())
+    }
+
+    fn send_state(&self, state: VmState) {
+        let _ = self.state_tx.send(state);
     }
 }
 
 impl PlatformVm for WindowsVm {
     fn start(&self) -> Result<()> {
-        Err(unsupported(
-            "VM startup",
-            "M04 QEMU process lifecycle and M05 direct Linux boot",
-        ))
+        let mut boot = self
+            .boot
+            .lock()
+            .map_err(|_| anyhow!("Windows QEMU boot state lock poisoned"))?;
+        if boot.is_some() {
+            return Err(anyhow!(
+                "Windows QEMU direct boot is already running; stop the VM before starting it again"
+            ));
+        }
+
+        self.send_state(VmState::Starting);
+        let config = match self.direct_boot_config() {
+            Ok(config) => config,
+            Err(err) => {
+                self.send_state(VmState::Error);
+                return Err(err);
+            }
+        };
+
+        match launch_windows_qemu_boot(config) {
+            Ok(running_boot) => {
+                *boot = Some(running_boot);
+                self.send_state(VmState::Running);
+                Ok(())
+            }
+            Err(err) => {
+                self.send_state(VmState::Error);
+                Err(anyhow!("Windows QEMU direct boot failed: {err}"))
+            }
+        }
     }
 
     fn stop(&self) -> Result<()> {
-        Err(unsupported("VM shutdown", "M04 QEMU process lifecycle"))
+        let mut boot = self
+            .boot
+            .lock()
+            .map_err(|_| anyhow!("Windows QEMU boot state lock poisoned"))?;
+        let Some(running_boot) = boot.as_mut() else {
+            self.send_state(VmState::Stopped);
+            return Ok(());
+        };
+
+        self.send_state(VmState::Stopping);
+        match running_boot.stop() {
+            Ok(_) => {
+                *boot = None;
+                self.send_state(VmState::Stopped);
+                Ok(())
+            }
+            Err(err) => {
+                self.send_state(VmState::Error);
+                Err(anyhow!("Windows QEMU direct boot stop failed: {err}"))
+            }
+        }
     }
 
     fn state_channel(&self) -> Receiver<VmState> {
@@ -47,7 +140,7 @@ impl PlatformVm for WindowsVm {
     fn connect_to_vsock_port(&self, _port: u32) -> Result<TcpStream> {
         Err(unsupported(
             "guest control transport",
-            "M06 virtio-serial control transport",
+            "M06 virtio-serial control transport; M05 captures serial logs only",
         ))
     }
 }
@@ -72,28 +165,68 @@ mod tests {
             verbose: false,
             network_fd: None,
             nbd_uri: None,
-            shared_dirs: vec![PlatformSharedDir {
-                host_path: "host".into(),
-                tag: "mount0".into(),
-                read_only: true,
-            }],
+            shared_dirs: Vec::new(),
         }
     }
 
     #[test]
-    fn windows_stub_vm_reports_startup_capability_error() {
-        let vm = create_vm(test_config()).expect("stub vm should be constructible");
-        let err = vm.start().expect_err("startup should be unsupported");
+    fn windows_vm_reports_missing_asset_error_before_preflight() {
+        let root = std::env::temp_dir().join(format!(
+            "lsb-windows-backend-missing-asset-{}",
+            std::process::id()
+        ));
+        let mut config = test_config();
+        config.kernel_path = root.join("instance").join("Image").display().to_string();
+        config.initrd_path = Some(
+            root.join("instance")
+                .join("initramfs.cpio.gz")
+                .display()
+                .to_string(),
+        );
+        config.rootfs_path = root
+            .join("instance")
+            .join("rootfs.ext4")
+            .display()
+            .to_string();
+        let vm = create_vm(config).expect("vm should be constructible");
+
+        let err = vm.start().expect_err("missing kernel should not boot");
         let message = err.to_string();
 
-        assert!(message.contains("Windows support is in progress"));
-        assert!(message.contains("VM startup"));
-        assert!(message.contains("M04"));
+        assert!(message.contains("kernel Image"));
+        assert!(message.contains("serial.log"));
+        assert!(message.contains("qemu.stderr.log"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn windows_stub_vm_exposes_initial_stopped_state() {
         let vm = create_vm(test_config()).expect("stub vm should be constructible");
         assert_eq!(vm.state_channel().try_recv().ok(), Some(VmState::Stopped));
+    }
+
+    #[test]
+    fn windows_vm_rejects_mounts_before_qemu_boot() {
+        let mut config = test_config();
+        config.shared_dirs = vec![PlatformSharedDir {
+            host_path: "host".into(),
+            tag: "mount0".into(),
+            read_only: true,
+        }];
+        let vm = create_vm(config).expect("vm should be constructible");
+
+        let err = vm.start().expect_err("mounts should be unsupported in M05");
+        let message = err.to_string();
+
+        assert!(message.contains("directory mounts"));
+        assert!(message.contains("M10"));
+    }
+
+    #[test]
+    fn windows_vm_stop_without_start_is_idempotent() {
+        let vm = create_vm(test_config()).expect("vm should be constructible");
+
+        vm.stop().expect("stop without a boot should be harmless");
     }
 }
