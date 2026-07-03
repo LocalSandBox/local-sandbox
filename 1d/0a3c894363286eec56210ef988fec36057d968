@@ -1,0 +1,27 @@
+docs/windows-port/agent-workspace/diagnostics.md
+  s_3c7d6513200d61::t_59c501a8f2eaf3 49-57
+docs/windows-port/agent-workspace/milestones/02-qemu-discovery-preflight.md
+  s_3c7d6513200d61::t_2e6e1b7d292c1b 3,45-48,72-90
+docs/windows-port/agent-workspace/validation.md
+  s_3c7d6513200d61::t_59c501a8f2eaf3 100,103-106
+  s_3c7d6513200d61::t_e0fa269f990a8c 107
+docs/windows-port/agent-workspace/state.md
+  s_3c7d6513200d61::t_902293050798fb 19
+  s_3c7d6513200d61::t_a868647510f554 7,26-27,45-46,48,56-57,64-65,73-78,97,100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1d0a3c894363286eec56210ef988fec36057d968",
+  "prompts": {},
+  "sessions": {
+    "s_3c7d6513200d61": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2764-29f8-7203-bdc0-db8cc03640e0",
+        "model": "gpt-5.5"
+      },
+      "human_author": null
+    }
+  }
+}
