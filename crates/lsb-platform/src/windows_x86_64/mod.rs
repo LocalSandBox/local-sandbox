@@ -6,6 +6,7 @@
 mod backend;
 mod config;
 mod errors;
+mod qemu;
 
 pub(crate) use backend::create_vm;
 
