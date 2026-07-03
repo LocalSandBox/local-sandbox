@@ -1,6 +1,6 @@
 # M01: Windows Compile Stubs
 
-Status: Not started
+Status: Done
 Depends on: See `00-index.md`
 RFC sections: See `traceability.md`
 
@@ -42,10 +42,10 @@ The specific tests should match the implementation, but this milestone must incl
 
 ## Acceptance criteria
 
-- [ ] Windows `cargo check` succeeds for the targeted crates or produces only documented external dependency limitations.
-- [ ] macOS cfg paths remain intact.
-- [ ] Runtime Windows execution fails with a precise `not implemented` or `unsupported feature` error, not a compile-time rejection.
-- [ ] New tests cover cfg/platform selection where practical.
+- [x] Windows `cargo check` succeeds for the targeted crates or produces only documented external dependency limitations.
+- [x] macOS cfg paths remain intact.
+- [x] Runtime Windows execution fails with a precise `not implemented` or `unsupported feature` error, not a compile-time rejection.
+- [x] New tests cover cfg/platform selection where practical.
 
 ## Coding-agent prompt
 
@@ -68,10 +68,25 @@ Complete the checklist in `../security-checklist.md`. Record any new risk in `..
 
 ## Handoff
 
-- Branch/PR: TBD
-- Summary: TBD
-- Tests run: TBD
-- Debug artifacts: TBD
-- New decisions: TBD
-- New risks: TBD
-- Next milestone: TBD
+- Branch/PR: `codex/windows-m01-compile-stubs`
+- Summary: Added Windows x86_64 compile scaffolding under `lsb-platform`, removed the `lsb-vm` non-macOS compile rejection, added explicit Windows unsupported errors for runtime stubs, and cfg-gated Unix-only proxy/store/CLI paths. No QEMU discovery, startup, WHPX preflight, transport, networking, mounts, checkpoints, or Node packaging was implemented.
+- Tests run:
+  - `cargo fmt --all -- --check` - pass
+  - `cargo check --workspace` - pass
+  - `cargo test -p lsb-platform` - pass, 8 tests
+  - `cargo test -p lsb-vm` - pass, 2 tests
+  - `cargo test -p lsb-store` - pass, 5 tests
+  - `cargo test -p lsb-proxy` - pass, 11 tests
+  - `cargo check -p lsb-platform -p lsb-vm -p lsb-proxy -p lsb-proto --target x86_64-pc-windows-msvc` - pass
+  - `cargo check --workspace --target x86_64-pc-windows-msvc` - blocked on macOS host by external Windows C/assembler tooling for transitive crates (`ring` missing Windows/MSVC headers such as `assert.h`; `blake3` missing `ml64.exe`)
+- Debug artifacts: None.
+- New decisions: None.
+- New risks: None.
+- Security review:
+  - No-network default preserved: yes
+  - Secret redaction verified: n/a
+  - Host file exposure reviewed: yes
+  - Control/QMP endpoint privacy reviewed: n/a
+  - Process cleanup reviewed: n/a
+  - New risks added to risk-register.md: no
+- Next milestone: M02 QEMU discovery and preflight.
