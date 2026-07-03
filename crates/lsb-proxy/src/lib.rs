@@ -172,3 +172,18 @@ pub fn start(_host_fd: PlatformNetworkFd, _config: ProxyConfig) -> anyhow::Resul
         "Windows support is in progress: proxy networking is not implemented yet (M12 network policy and proxy integration); M01 only provides compile stubs"
     ))
 }
+
+#[cfg(all(test, not(unix)))]
+mod non_unix_tests {
+    use super::*;
+
+    #[test]
+    fn socketpair_stub_reports_windows_proxy_milestone() {
+        let message = create_socketpair()
+            .expect_err("socketpair should be unsupported")
+            .to_string();
+
+        assert!(message.contains("proxy networking"));
+        assert!(message.contains("M12"));
+    }
+}

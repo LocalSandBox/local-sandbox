@@ -166,3 +166,18 @@ pub fn start_cas_nbd_server(
         "Windows support is in progress: NBD/CAS storage transport is not implemented yet (M13 checkpoint/store MVP); M01 only provides compile stubs"
     ))
 }
+
+#[cfg(all(test, not(unix)))]
+mod non_unix_tests {
+    use super::*;
+
+    #[test]
+    fn nbd_stub_reports_windows_checkpoint_milestone() {
+        let message = start_cas_nbd_server("rootfs.ext4", "cas", "index.idx", "nbd.sock", 0)
+            .expect_err("NBD should be unsupported")
+            .to_string();
+
+        assert!(message.contains("NBD/CAS storage transport"));
+        assert!(message.contains("M13"));
+    }
+}

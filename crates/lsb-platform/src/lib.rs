@@ -310,6 +310,20 @@ mod tests {
     }
 
     #[test]
+    fn windows_x86_64_is_registered_as_planned_m01_target() {
+        let spec = platform_by_id("windows-x86_64").expect("platform should exist");
+        assert_eq!(spec.status, PlatformStatus::Planned);
+        assert_eq!(spec.target_os, "windows");
+        assert_eq!(spec.target_arch, "x86_64");
+        assert_eq!(spec.host_target, "x86_64-pc-windows-msvc");
+        assert_eq!(spec.guest_target, "x86_64-unknown-linux-musl");
+        assert_eq!(
+            spec.cli_tarball_name("0.5.2"),
+            "lsb-v0.5.2-windows-x86_64.tar.gz"
+        );
+    }
+
+    #[test]
     fn x86_64_platforms_use_x86_64_guest_target() {
         for platform_id in ["macos-x86_64", "linux-x86_64", "windows-x86_64"] {
             let spec = platform_by_id(platform_id).expect("platform should exist");
