@@ -1,0 +1,21 @@
+docs/windows-port/agent-workspace/state.md
+  s_3c7d6513200d61::t_0d288711af7594 6-7,15,18-19,26,54
+docs/windows-port/agent-workspace/milestones/02-qemu-discovery-preflight.md
+  s_3c7d6513200d61::t_0d288711af7594 3,71-72
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "48f0f366dcc4998afd5d822fc7a7d5cfb4343c63",
+  "prompts": {},
+  "sessions": {
+    "s_3c7d6513200d61": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2764-29f8-7203-bdc0-db8cc03640e0",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
