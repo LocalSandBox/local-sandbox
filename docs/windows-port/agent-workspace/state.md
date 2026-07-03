@@ -1,6 +1,6 @@
 # Windows Port State
 
-Last updated: 2026-07-02
+Last updated: 2026-07-03
 Owner: TBD
 RFC: `docs/windows-port/rfc-qemu-whpx.md`
 Current milestone: M01 - Windows compile stubs
@@ -45,11 +45,11 @@ Status values: `Not started`, `In progress`, `Blocked`, `Review`, `Done`, `Defer
 - No Windows backend exists yet.
 - `lsb-vm` currently needs non-macOS compile handling.
 - QEMU path/version/WHPX availability are not yet detected.
-- Windows runner is not yet configured.
+- Windows hardware workflow exists; physical runner availability has not been verified from this workspace.
 
 ## Recently completed work
 
-None yet.
+- 2026-07-03: Added macOS helper for manually dispatching Windows hardware workflow, added Windows smoke/e2e script entrypoints, and documented runner trigger usage.
 
 ## Active implementation notes
 
@@ -64,6 +64,7 @@ Append newest entries at the top.
 
 | Date | Milestone | Platform | Command / test | Result | Notes |
 |---|---|---|---|---|---|
+| 2026-07-03 | M15 | macOS | Documentation/script update only | Not run | Hardware workflow not dispatched because changes were not committed/pushed. |
 | 2026-07-02 | Bootstrap | n/a | n/a | n/a | Workspace created. |
 
 ## Open follow-ups
@@ -71,4 +72,4 @@ Append newest entries at the top.
 - [ ] Confirm final location of Windows backend module under `lsb-platform`.
 - [ ] Decide exact hidden/debug flag name for TCG once CLI command parsing is inspected.
 - [ ] Decide exact QEMU minimum version after M02 preflight experimentation.
-- [ ] Decide self-hosted runner labels once runner is provisioned.
+- [ ] Confirm whether the self-hosted runner should keep default `self-hosted, Windows, X64` labels or add custom `whpx` / `local-sandbox` labels.

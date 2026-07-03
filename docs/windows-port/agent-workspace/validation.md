@@ -24,10 +24,10 @@ This document defines the test and CI expectations for the Windows QEMU + WHPX p
 
 ### Self-hosted runner
 
-Expected labels, to be finalized after runner setup:
+The manual hardware workflow uses the default self-hosted Windows labels:
 
 ```yaml
-runs-on: [self-hosted, windows, x64, whpx, local-sandbox]
+runs-on: [self-hosted, Windows, X64]
 ```
 
 Required runner properties:
@@ -37,6 +37,13 @@ Required runner properties:
 - QEMU installed and discoverable or configured via `LSB_QEMU`.
 - LocalSandbox guest assets available or built during job.
 - Non-admin execution path preferred for MVP tests.
+
+Hardware workflow:
+
+- Workflow: `.github/workflows/windows-lsb-hardware.yml`
+- Trigger: manual `workflow_dispatch` only.
+- macOS/Linux helper: `./scripts/win-gh-test check|unit|smoke|e2e`
+- Do not add automatic `pull_request` triggers for the self-hosted Windows hardware runner.
 
 ## Milestone validation gates
 
@@ -76,7 +83,18 @@ Never capture secret values or unredacted environment dumps.
 
 ## Manual validation commands
 
-Exact commands should be filled in by milestones as code lands. Initial placeholders:
+Use the manual GitHub workflow for tests that require self-hosted Windows hardware:
+
+```bash
+./scripts/win-gh-test check
+./scripts/win-gh-test unit
+./scripts/win-gh-test smoke
+./scripts/win-gh-test e2e
+```
+
+The helper requires a clean committed working tree because GitHub Actions can only test pushed commits.
+
+Windows-side commands should be filled in by milestones as code lands. Initial placeholders:
 
 ```powershell
 # Check QEMU discovery once M02 exists

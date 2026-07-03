@@ -24,6 +24,14 @@ Use `cargo fmt` for Rust. Keep crate names lowercase with hyphens, and modules, 
 
 Place Rust unit tests near the implementation in `mod tests` blocks. Use targeted commands such as `cargo test -p lsb-proxy dns` while developing, then run `cargo test --workspace` before submitting broad changes. Node tests live in `bindings/nodejs/test/**/*.spec.ts`. VM smoke tests may require initialized runtime assets and a codesigned Node binary; use `corepack yarn test:signed-node` for real VM startup.
 
+Windows hardware testing:
+
+- Use `./scripts/win-gh-test check` after platform or portability changes.
+- Use `./scripts/win-gh-test unit` before opening a PR that touches Windows code.
+- Use `./scripts/win-gh-test smoke` after QEMU, WHPX, VM lifecycle, transport, or guest-control changes.
+- The script requires a clean committed working tree because GitHub Actions can only test pushed commits.
+- Do not add automatic `pull_request` triggers for the self-hosted Windows hardware runner.
+
 ## Commit & Pull Request Guidelines
 
 Recent history follows conventional commit prefixes such as `fix(dns): ...`, `feat(storage): ...`, `ci: ...`, and `chore(release): ...`. Keep subjects imperative and scoped when practical. Pull requests should include the problem summary, implementation approach, validation commands, linked issues, and screenshots or logs for user-visible changes.

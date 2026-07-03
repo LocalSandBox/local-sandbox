@@ -107,24 +107,12 @@ jobs:
       - name: Windows smoke tests
         if: ${{ inputs.test_set == 'smoke' }}
         run: |
-          cargo test --workspace --locked
-
-          if (Test-Path .\tools\windows-smoke.ps1) {
-            .\tools\windows-smoke.ps1
-          } else {
-            Write-Warning "tools/windows-smoke.ps1 does not exist yet; running compile/unit layer only."
-          }
+          .\scripts\windows-smoke.ps1
 
       - name: Windows e2e tests
         if: ${{ inputs.test_set == 'e2e' }}
         run: |
-          cargo test --workspace --locked
-
-          if (Test-Path .\tools\windows-e2e.ps1) {
-            .\tools\windows-e2e.ps1
-          } else {
-            Write-Warning "tools/windows-e2e.ps1 does not exist yet; running compile/unit layer only."
-          }
+          .\scripts\windows-e2e.ps1
 
       - name: Upload diagnostic logs
         if: always()

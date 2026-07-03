@@ -23,6 +23,15 @@ When these disagree, stop and record the conflict in `state.md`. Do not silently
 - Do not bind QMP, control pipes, debug sockets, or port-forward listeners on non-loopback addresses unless an approved decision says otherwise.
 - Keep platform-specific implementation details below platform/backend crates. `lsb-vm`, `lsb-sdk`, CLI, and Node surfaces should stay platform-neutral.
 
+## Windows hardware testing
+
+- Use `./scripts/win-gh-test check` after platform or portability changes.
+- Use `./scripts/win-gh-test unit` before opening a PR that touches Windows code.
+- Use `./scripts/win-gh-test smoke` after QEMU, WHPX, VM lifecycle, transport, or guest-control changes.
+- Use `./scripts/win-gh-test e2e` only when the Windows backend and test assets are ready for the broader hardware suite.
+- The script requires a clean committed working tree because GitHub Actions can only test pushed commits.
+- Do not add automatic `pull_request` triggers for the self-hosted Windows hardware runner.
+
 ## Required updates at the end of every milestone
 
 Update all relevant files:
