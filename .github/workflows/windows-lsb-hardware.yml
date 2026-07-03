@@ -1,0 +1,103 @@
+name: windows-lsb-hardware
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_set:
+        description: "Which Windows test set to run"
+        required: true
+        default: "check"
+        type: choice
+        options:
+          - check
+          - unit
+          - smoke
+          - e2e
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-lsb-hardware
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Windows native LSB tests
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 90
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          clean: true
+          fetch-depth: 1
+
+      - name: Configure PATH
+        run: |
+          "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "C:\Program Files\qemu" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Show environment
+        run: |
+          hostname
+          whoami
+          pwd
+
+          git --version
+          rustc --version
+          cargo --version
+          rustup show
+
+          qemu-system-x86_64 --version
+          node --version
+          npm --version
+
+      - name: Cargo check
+        if: ${{ inputs.test_set == 'check' }}
+        run: |
+          cargo check --workspace --locked
+
+      - name: Cargo unit tests
+        if: ${{ inputs.test_set == 'unit' }}
+        run: |
+          cargo test --workspace --locked
+
+      - name: Windows smoke tests
+        if: ${{ inputs.test_set == 'smoke' }}
+        run: |
+          cargo test --workspace --locked
+
+          if (Test-Path .\tools\windows-smoke.ps1) {
+            .\tools\windows-smoke.ps1
+          } else {
+            Write-Warning "tools/windows-smoke.ps1 does not exist yet; running compile/unit layer only."
+          }
+
+      - name: Windows e2e tests
+        if: ${{ inputs.test_set == 'e2e' }}
+        run: |
+          cargo test --workspace --locked
+
+          if (Test-Path .\tools\windows-e2e.ps1) {
+            .\tools\windows-e2e.ps1
+          } else {
+            Write-Warning "tools/windows-e2e.ps1 does not exist yet; running compile/unit layer only."
+          }
+
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-lsb-diagnostics
+          path: |
+            target/**/*.log
+            crates/**/target/**/*.log
+            C:\actions-runner\_diag\*.log
+          if-no-files-found: ignore
