@@ -1,0 +1,23 @@
+crates/lsb-platform/src/windows_x86_64/backend.rs
+  s_8e61ef9c9e812b::t_8a67d0230864ec 173-193,196-200
+  s_8e61ef9c9e812b::t_7af69f7fdf19e8 4,107,131
+  s_8e61ef9c9e812b::t_1135a26a560e79 2,11,14-15,17,25-26,28,31-75,80-106,108-109,113-130,132-133,143,168,208-231
+crates/lsb-platform/src/windows_x86_64/errors.rs
+  s_8e61ef9c9e812b::t_1135a26a560e79 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "36107f8c2e1def0ba406e9ba7c3b27fecc146440",
+  "prompts": {},
+  "sessions": {
+    "s_8e61ef9c9e812b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f28a9-5b53-7311-86c2-682bf0789f83",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
