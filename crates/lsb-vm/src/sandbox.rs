@@ -1,14 +1,22 @@
 use std::collections::HashMap;
-use std::io::{BufReader, BufWriter, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+#[cfg(target_os = "macos")]
+use std::io::{BufReader, BufWriter};
+use std::io::{Read, Write};
+use std::net::TcpStream;
+#[cfg(target_os = "macos")]
+use std::net::{Shutdown, TcpListener};
+#[cfg(target_os = "macos")]
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "macos")]
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use crossbeam_channel::Receiver;
-use lsb_platform::{self, terminal, PlatformSharedDir, PlatformVm, PlatformVmConfig, VmState};
+#[cfg(target_os = "macos")]
+use lsb_platform::terminal;
+use lsb_platform::{self, PlatformSharedDir, PlatformVm, PlatformVmConfig, VmState};
 
 use lsb_proto::{
     frame, ChmodRequest, CopyRequest, ExecRequest, ForwardRequest, ForwardResponse, FsOkResponse,
@@ -580,6 +588,7 @@ impl Sandbox {
     /// Puts the host terminal in raw mode, relays I/O bidirectionally over
     /// vsock, and handles SIGWINCH for window resize.
     /// Returns the guest process exit code.
+    #[cfg(target_os = "macos")]
     pub fn shell(&self, argv: &[impl AsRef<str>], env: &HashMap<String, String>) -> Result<i32> {
         let stdin_fd = std::io::stdin().as_raw_fd();
         let (rows, cols) = terminal::terminal_size(stdin_fd);
@@ -689,8 +698,18 @@ impl Sandbox {
         Ok(code)
     }
 
+    /// Interactive shell support on Windows depends on the future control
+    /// transport and PTY work; M01 only guarantees compile-time scaffolding.
+    #[cfg(not(target_os = "macos"))]
+    pub fn shell(&self, _argv: &[impl AsRef<str>], _env: &HashMap<String, String>) -> Result<i32> {
+        bail!(
+            "Windows support is in progress: interactive shell is not implemented yet (M06 virtio-serial control transport and M08 exec); M01 only provides compile stubs"
+        )
+    }
+
     /// Start port forwarding proxies. Returns a handle that stops all
     /// listeners when dropped.
+    #[cfg(target_os = "macos")]
     pub fn start_port_forwarding(&self, forwards: &[PortMapping]) -> Result<PortForwardHandle> {
         let stop = Arc::new(AtomicBool::new(false));
         let mut listeners = Vec::new();
@@ -748,6 +767,16 @@ impl Sandbox {
         })
     }
 
+    /// Windows port forwarding must preserve no-network-by-default. Until the
+    /// transport is implemented, fail before opening any host listener.
+    #[cfg(not(target_os = "macos"))]
+    pub fn start_port_forwarding(&self, _forwards: &[PortMapping]) -> Result<PortForwardHandle> {
+        bail!(
+            "Windows support is in progress: port forwarding is not implemented yet (M11 port forwarding); M01 only provides compile stubs and no listener was opened"
+        )
+    }
+
+    #[cfg(target_os = "macos")]
     fn connect_vsock(&self) -> Result<TcpStream> {
         let state_rx = self.vm.state_channel();
         for attempt in 1..=50 {
@@ -781,6 +810,13 @@ impl Sandbox {
         }
         unreachable!()
     }
+
+    #[cfg(not(target_os = "macos"))]
+    fn connect_vsock(&self) -> Result<TcpStream> {
+        bail!(
+            "Windows support is in progress: guest control transport is not implemented yet (M06 virtio-serial control transport); M01 only provides compile stubs"
+        )
+    }
 }
 
 // --- Port forwarding ---
@@ -801,6 +837,7 @@ impl Drop for PortForwardHandle {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn handle_forward_connection(
     tcp_stream: TcpStream,
     vm: &dyn PlatformVm,
@@ -834,6 +871,7 @@ fn handle_forward_connection(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 fn relay(a: TcpStream, b: TcpStream) {
     let mut a_read = a.try_clone().expect("clone tcp stream");
     let mut b_write = b.try_clone().expect("clone vsock stream");

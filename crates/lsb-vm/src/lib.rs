@@ -1,10 +1,5 @@
 #![forbid(unsafe_code)]
 
-#[cfg(not(target_os = "macos"))]
-compile_error!(
-    "lsb-vm currently only supports macOS hosts. Future platform slots exist in lsb-platform, but their runtimes are not implemented yet."
-);
-
 mod sandbox;
 
 pub use lsb_platform::VmState;
