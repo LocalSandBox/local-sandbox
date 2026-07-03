@@ -463,16 +463,7 @@ impl QemuSupervisor {
     }
 
     pub(crate) fn start(&mut self) -> Result<(), QemuProcessError> {
-        if self.child.is_some() {
-            return Err(QemuProcessError::AlreadyStarted { state: self.state });
-        }
-        if !matches!(
-            self.state,
-            QemuProcessState::NotStarted
-                | QemuProcessState::Failed
-                | QemuProcessState::Exited
-                | QemuProcessState::Terminated
-        ) {
+        if self.child.is_some() || self.state != QemuProcessState::NotStarted {
             return Err(QemuProcessError::AlreadyStarted { state: self.state });
         }
 
@@ -571,6 +562,8 @@ impl QemuSupervisor {
             return Ok(self.exit_status.clone());
         }
 
+        // M04 has no QMP/control channel yet, so termination is forced cleanup.
+        // M05/MQMP should insert graceful QEMU shutdown before this fallback.
         let terminate_result = self.request_child_termination("terminate");
         let wait_result = self.wait_for_exit_without_status(self.config.terminate_timeout);
 
@@ -1232,6 +1225,11 @@ mod tests {
                 let _ = std::io::stderr().flush();
                 std::process::exit(17);
             }
+            "exit-after-startup" => {
+                println!("fake qemu will exit after startup window");
+                let _ = std::io::stdout().flush();
+                std::thread::sleep(Duration::from_millis(500));
+            }
             "block-status" => {
                 let status_path =
                     PathBuf::from(env::var_os(FAKE_STATUS_PATH_ENV).expect("status path env"));
@@ -1494,6 +1492,61 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(artifact_dir);
+    }
+
+    #[test]
+    fn supervisor_is_single_use_after_terminal_states() {
+        let failed_artifact_dir = temp_artifact_dir("single-use-failed");
+        let mut failed = fake_supervisor("exit-whpx", failed_artifact_dir.clone());
+        failed.config.startup_timeout = Duration::from_secs(2);
+        failed
+            .start()
+            .expect_err("fake WHPX startup failure should be reported");
+        assert_eq!(failed.state(), QemuProcessState::Failed);
+        assert_eq!(
+            failed
+                .start()
+                .expect_err("failed supervisor should be single-use")
+                .kind(),
+            QemuProcessErrorKind::AlreadyStarted
+        );
+
+        let exited_artifact_dir = temp_artifact_dir("single-use-exited");
+        let mut exited = fake_supervisor("exit-after-startup", exited_artifact_dir.clone());
+        exited.config.startup_timeout = Duration::from_millis(50);
+        exited
+            .start()
+            .expect("fake process should survive startup window");
+        exited
+            .wait(Duration::from_secs(2))
+            .expect("fake process should exit");
+        assert_eq!(exited.state(), QemuProcessState::Exited);
+        assert_eq!(
+            exited
+                .start()
+                .expect_err("exited supervisor should be single-use")
+                .kind(),
+            QemuProcessErrorKind::AlreadyStarted
+        );
+
+        let terminated_artifact_dir = temp_artifact_dir("single-use-terminated");
+        let mut terminated = fake_supervisor("log", terminated_artifact_dir.clone());
+        terminated.start().expect("fake process should start");
+        terminated
+            .terminate()
+            .expect("fake process should terminate");
+        assert_eq!(terminated.state(), QemuProcessState::Terminated);
+        assert_eq!(
+            terminated
+                .start()
+                .expect_err("terminated supervisor should be single-use")
+                .kind(),
+            QemuProcessErrorKind::AlreadyStarted
+        );
+
+        let _ = fs::remove_dir_all(failed_artifact_dir);
+        let _ = fs::remove_dir_all(exited_artifact_dir);
+        let _ = fs::remove_dir_all(terminated_artifact_dir);
     }
 
     #[test]
