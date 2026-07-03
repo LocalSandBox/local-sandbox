@@ -3,8 +3,8 @@
 Last updated: 2026-07-03
 Owner: TBD
 RFC: `docs/windows-port/rfc-qemu-whpx.md`
-Current milestone: M01 - Windows compile stubs
-Overall status: Done
+Current milestone: M02 - QEMU discovery and WHPX preflight
+Overall status: In progress
 
 ## How to update this file
 
@@ -12,18 +12,18 @@ Update this file at the end of every agent run. Keep it factual. Do not use it f
 
 ## Current branch / issue
 
-- Branch: `codex/windows-m01-compile-stubs`
+- Branch: `codex/windows-m02-qemu-discovery-preflight`
 - Issue: TBD
 - Agent: Codex
-- Start commit: `3501c2b`
-- End commit: `066a6c2` (validated M01 code)
+- Start commit: `958562e`
+- End commit: TBD
 
 ## Milestone status table
 
 | Milestone | Status | Owner | Branch/PR | Notes |
 |---|---|---|---|---|
 | M01 Windows compile stubs | Done | Codex | `codex/windows-m01-compile-stubs` | Windows x86_64 compile stubs are in place; runtime remains unsupported. |
-| M02 QEMU discovery and preflight | Not started | TBD | TBD | Windows platform module now exists for discovery/preflight work. |
+| M02 QEMU discovery and preflight | In progress | Codex | `codex/windows-m02-qemu-discovery-preflight` | Implementing QEMU path/version discovery and WHPX preflight scaffolding. |
 | M03 QEMU argv builder | Blocked by M02 | TBD | TBD | Requires discovered/preflighted QEMU config shape. |
 | M04 QEMU process lifecycle | Blocked by M03 | TBD | TBD | Requires argv builder. |
 | M05 Direct Linux boot and serial logs | Blocked by M04 | TBD | TBD | Requires process supervision. |
@@ -51,6 +51,7 @@ Status values: `Not started`, `In progress`, `Blocked`, `Review`, `Done`, `Defer
 - 2026-07-03: Completed M01 compile scaffolding. Added `lsb-platform::windows_x86_64` backend/config/error stubs, removed the `lsb-vm` non-macOS compile rejection, added Windows runtime capability errors, cfg-gated Unix-only proxy/store/CLI paths, and added stub coverage tests.
 - 2026-07-03: Ran Windows hardware workflow through `./scripts/win-gh-test`. `check` passed on run `28651692448`. Initial `unit` run `28651764230` failed because Windows-only stub tests used `expect_err` with non-`Debug` handle types; fixed in `066a6c2`, then `unit` passed on run `28651905208`.
 - 2026-07-03: Added macOS helper for manually dispatching Windows hardware workflow, added Windows smoke/e2e script entrypoints, and documented runner trigger usage.
+- 2026-07-03: Started M02 on `codex/windows-m02-qemu-discovery-preflight` from `958562e`; scope is QEMU discovery, version probing, WHPX preflight diagnostics, and fake-runner unit tests only.
 
 ## Active implementation notes
 

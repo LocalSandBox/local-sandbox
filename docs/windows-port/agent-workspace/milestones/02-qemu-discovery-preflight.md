@@ -1,6 +1,6 @@
 # M02: QEMU Discovery and WHPX Preflight
 
-Status: Not started
+Status: In progress
 Depends on: See `00-index.md`
 RFC sections: See `traceability.md`
 
@@ -68,8 +68,8 @@ Complete the checklist in `../security-checklist.md`. Record any new risk in `..
 
 ## Handoff
 
-- Branch/PR: TBD
-- Summary: TBD
+- Branch/PR: `codex/windows-m02-qemu-discovery-preflight`
+- Summary: In progress.
 - Tests run: TBD
 - Debug artifacts: TBD
 - New decisions: TBD
