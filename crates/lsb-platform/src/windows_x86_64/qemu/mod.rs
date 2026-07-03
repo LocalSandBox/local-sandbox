@@ -8,6 +8,7 @@ use std::process::Command;
 use serde::Serialize;
 
 pub(crate) mod argv;
+pub(crate) mod boot;
 pub(crate) mod config;
 pub(crate) mod discovery;
 pub(crate) mod preflight;
