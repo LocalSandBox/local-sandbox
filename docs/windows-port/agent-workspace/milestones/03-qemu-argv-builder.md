@@ -1,6 +1,6 @@
 # M03: QEMU Argv Builder
 
-Status: In progress
+Status: Done
 Depends on: See `00-index.md`
 RFC sections: See `traceability.md`
 
@@ -43,11 +43,11 @@ The specific tests should match the implementation, but this milestone must incl
 
 ## Acceptance criteria
 
-- [ ] Golden tests for minimal boot argv.
-- [ ] Golden tests for virtio-serial + QMP argv.
-- [ ] Golden test proving no network device by default.
-- [ ] Path quoting/escaping tests for Windows paths.
-- [ ] Redacted argv test.
+- [x] Golden tests for minimal boot argv.
+- [x] Golden tests for virtio-serial + QMP argv.
+- [x] Golden test proving no network device by default.
+- [x] Path quoting/escaping tests for Windows paths.
+- [x] Redacted argv test.
 
 ## Coding-agent prompt
 
@@ -71,9 +71,10 @@ Complete the checklist in `../security-checklist.md`. Record any new risk in `..
 ## Handoff
 
 - Branch/PR: `codex/windows-m03-qemu-argv-builder`
-- Summary: TBD
-- Tests run: TBD
-- Debug artifacts: TBD
-- New decisions: TBD
-- New risks: TBD
-- Next milestone: TBD
+- Summary: Added private Windows QEMU config and argv builder modules under `lsb-platform::windows_x86_64::qemu`. The builder returns a program path plus structured `Vec<OsString>` argv for WHPX direct Linux boot, virtio-blk root disk, serial output, optional virtio-serial control pipe placeholder, optional private QMP pipe, and explicit `-nic none`. Added redacted diagnostic rendering. No QEMU process is spawned and no Windows runtime support is claimed.
+- Tests run: `cargo fmt --all -- --check`; `cargo check --workspace`; `cargo test -p lsb-platform`; `cargo test --workspace`; `cargo check -p lsb-platform --target x86_64-pc-windows-msvc`. `cargo check --workspace --target x86_64-pc-windows-msvc` was attempted from macOS and remains blocked by external Windows/MSVC C/assembler tooling for transitive crates.
+- Debug artifacts: None.
+- New decisions: None.
+- New risks: None.
+- Security review: no-network default preserved: yes; secret redaction verified: yes for diagnostics; host file exposure reviewed: n/a, argv paths only; control/QMP endpoint privacy reviewed: yes, QMP supports private named pipe only; process cleanup reviewed: n/a, no process lifecycle; new risks added to risk-register.md: no.
+- Next milestone: M04 QEMU process lifecycle.

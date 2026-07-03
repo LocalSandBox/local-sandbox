@@ -4,7 +4,7 @@ Last updated: 2026-07-03
 Owner: TBD
 RFC: `docs/windows-port/rfc-qemu-whpx.md`
 Current milestone: M03 - QEMU argv builder
-Overall status: In progress
+Overall status: Done
 
 ## How to update this file
 
@@ -16,7 +16,7 @@ Update this file at the end of every agent run. Keep it factual. Do not use it f
 - Issue: TBD
 - Agent: Codex
 - Start commit: `1d0a3c8`
-- End commit: TBD
+- End commit: M03 handoff commit on `codex/windows-m03-qemu-argv-builder`
 
 ## Milestone status table
 
@@ -24,7 +24,7 @@ Update this file at the end of every agent run. Keep it factual. Do not use it f
 |---|---|---|---|---|
 | M01 Windows compile stubs | Done | Codex | `codex/windows-m01-compile-stubs` | Windows x86_64 compile stubs are in place; runtime remains unsupported. |
 | M02 QEMU discovery and preflight | Done | Codex | `codex/windows-m02-qemu-discovery-preflight` | Private QEMU discovery/version/WHPX preflight scaffolding and fake-runner tests are in place. |
-| M03 QEMU argv builder | In progress | Codex | `codex/windows-m03-qemu-argv-builder` | Building typed deterministic QEMU argv construction under the private Windows QEMU backend module. |
+| M03 QEMU argv builder | Done | Codex | `codex/windows-m03-qemu-argv-builder` | Typed deterministic QEMU argv construction, sanitized diagnostics, and golden tests are in place. |
 | M04 QEMU process lifecycle | Blocked by M03 | TBD | TBD | Requires argv builder. |
 | M05 Direct Linux boot and serial logs | Blocked by M04 | TBD | TBD | Requires process supervision. |
 | M06 Virtio-serial control transport | Blocked by M05 | TBD | TBD | Requires bootable guest and QEMU chardev. |
@@ -42,9 +42,9 @@ Status values: `Not started`, `In progress`, `Blocked`, `Review`, `Done`, `Defer
 
 ## Current known blockers
 
-- Windows VM startup remains a stub; QEMU argv building, process lifecycle, guest boot, transport, networking, mounts, and checkpoints are not implemented.
+- Windows VM startup remains a stub; QEMU process lifecycle, guest boot, transport, networking, mounts, and checkpoints are not implemented.
 - M02 safe WHPX preflight does not launch a VM. It proves the selected QEMU binary reports WHPX in `-accel help`, but firmware/Windows Hypervisor Platform runtime readiness is finally proven by later boot smoke tests.
-- Full `cargo check --workspace --target x86_64-pc-windows-msvc` from this macOS host is blocked by external Windows C/assembler tooling for transitive crates (`ring` needs Windows/MSVC headers such as `assert.h`; `blake3` needs `ml64.exe`). Run the full check on a Windows/MSVC runner.
+- Full `cargo check --workspace --target x86_64-pc-windows-msvc` from this macOS host is blocked by external Windows C/assembler tooling for transitive crates (`ring` needs Windows/MSVC headers such as `assert.h`; `blake3` needs `ml64.exe`). The changed `lsb-platform` crate passes a targeted Windows compile check; run the full workspace check on a Windows/MSVC runner.
 - The current safe host probe verifies target OS/arch and can report a supplied Windows major version. The standard host implementation does not yet query the native Windows build number without adding Windows API or registry probing.
 
 ## Recently completed work
@@ -56,6 +56,7 @@ Status values: `Not started`, `In progress`, `Blocked`, `Review`, `Done`, `Defer
 - 2026-07-03: Completed M02 QEMU discovery/preflight scaffolding under `lsb-platform::windows_x86_64::qemu`. Added env/config/PATH discovery, `--version` parsing, `--help` suitability checks, WHPX `-accel help` inspection, structured actionable errors, and fake host/runner unit tests. No VM boot, argv builder, QEMU process lifecycle, or TCG fallback was implemented.
 - 2026-07-03: Ran Windows hardware workflow through `./scripts/win-gh-test`. `check` passed on run `28653449586`; `unit` passed on run `28653507512`.
 - 2026-07-03: Started M03 on `codex/windows-m03-qemu-argv-builder` from `1d0a3c8`; scope is typed deterministic QEMU argv construction only, with no QEMU spawn, process lifecycle, boot, virtio-serial connection, networking, mounts, or checkpoint implementation.
+- 2026-07-03: Completed M03 QEMU argv builder. Added typed QEMU boot/machine/disk/kernel/serial/control/QMP config and `QemuArgvBuilder` under `lsb-platform::windows_x86_64::qemu`. Generated argv uses WHPX-only `q35,accel=whpx`, direct Linux boot, virtio-blk root disk, serial output, optional virtio-serial control pipe placeholder, optional private QMP pipe, and explicit `-nic none`. Added sanitized command diagnostics that redact executable, asset paths, serial log path, control pipe name, and QMP pipe name. No QEMU process is started.
 
 ## Active implementation notes
 
@@ -64,6 +65,7 @@ Status values: `Not started`, `In progress`, `Blocked`, `Review`, `Done`, `Defer
 - 2026-07-03: Windows proxy networking (`M12`), NBD/CAS storage transport (`M13`), port forwarding (`M11`), shell/exec control transport (`M06`/`M08`), and prune process-liveness checks fail closed instead of opening listeners/devices or guessing behavior.
 - 2026-07-03: M02 introduced private QEMU modules at `crates/lsb-platform/src/windows_x86_64/qemu/{discovery.rs,version.rs,preflight.rs}`. The module has a scoped `dead_code` allowance because M02 prepares the reusable preflight API before M04 wires VM startup/process lifecycle.
 - 2026-07-03: Real QEMU preflight hook is `windows_x86_64::qemu::tests::real_qemu_preflight_when_explicitly_enabled`; run it only with `LSB_TEST_REAL_QEMU=1` and `LSB_QEMU` pointing at `qemu-system-x86_64.exe`.
+- 2026-07-03: M03 added `crates/lsb-platform/src/windows_x86_64/qemu/{config.rs,argv.rs}`. The builder returns a program `PathBuf` plus `Vec<OsString>` argv and a separate redacted diagnostic display. Paths with spaces are preserved as single argv entries; root disk paths embedded in QEMU option syntax escape commas by doubling them. QMP is represented only as a named pipe endpoint and remains QEMU-management-only.
 
 ## Test evidence log
 
@@ -71,6 +73,12 @@ Append newest entries at the top.
 
 | Date | Milestone | Platform | Command / test | Result | Notes |
 |---|---|---|---|---|---|
+| 2026-07-03 | M03 | macOS | `cargo fmt --all -- --check` | Pass | Formatting verified after code and docs updates. |
+| 2026-07-03 | M03 | macOS | `cargo check --workspace` | Pass | Full workspace compile check passed. |
+| 2026-07-03 | M03 | macOS | `cargo test --workspace` | Pass | 77 passed, 1 ignored real-QEMU preflight hook. New argv golden tests are target-independent and do not start QEMU. |
+| 2026-07-03 | M03 | macOS | `cargo test -p lsb-platform` | Pass | 35 passed, 1 ignored; focused run for QEMU argv/preflight module tests. |
+| 2026-07-03 | M03 | macOS cross-check | `cargo check -p lsb-platform --target x86_64-pc-windows-msvc` | Pass | Targeted Windows compile check for the changed crate. |
+| 2026-07-03 | M03 | macOS cross-check | `cargo check --workspace --target x86_64-pc-windows-msvc` | Blocked | External toolchain limitation on macOS host: `ring` failed on missing Windows/MSVC `assert.h`; `blake3` failed on missing `ml64.exe`. Run full workspace target check on a Windows/MSVC runner. |
 | 2026-07-03 | M02 | macOS | `cargo fmt --all -- --check` | Pass | Formatting verified after code and docs-adjacent edits. |
 | 2026-07-03 | M02 | macOS | `cargo check --workspace` | Pass | Full workspace compile check passed. |
 | 2026-07-03 | M02 | macOS | `cargo test --workspace` | Pass | 67 passed, 1 ignored real-QEMU preflight hook. |
@@ -96,6 +104,8 @@ Append newest entries at the top.
 - [x] Confirm final location of Windows backend module under `lsb-platform`.
 - [ ] Run full `cargo check --workspace --target x86_64-pc-windows-msvc` on a Windows/MSVC runner.
 - [ ] Wire M02 `QemuPreflight` into the future Windows diagnostic/start path without booting a VM before M04/M05.
+- [ ] Wire M03 `QemuArgvBuilder` into M04 process lifecycle without changing public CLI/SDK/Node APIs or claiming boot support.
+- [ ] Persist a redacted `qemu.argv.json` or equivalent diagnostics artifact once M04 creates per-instance diagnostics directories.
 - [ ] Decide exact hidden/debug flag name for TCG once CLI command parsing is inspected.
 - [ ] Decide exact QEMU minimum version after M02 preflight experimentation.
 - [ ] Decide whether native Windows build-number probing should use a Windows API, registry query, or remain deferred until a CLI diagnostics command exists.
