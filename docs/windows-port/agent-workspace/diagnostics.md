@@ -46,6 +46,15 @@ Result: ready
 
 Failures should name the first blocking condition and include next steps.
 
+M02 implementation note: the safe preflight runs `qemu-system-x86_64.exe --version`,
+`qemu-system-x86_64.exe --help`, and `qemu-system-x86_64.exe -accel help`.
+`-accel help` proves that the selected QEMU binary reports WHPX support, but it
+does not prove firmware virtualization or the Windows Hypervisor Platform feature
+will initialize successfully at VM launch. Later boot smoke tests must close that
+gap. The standard M02 host probe can also leave Windows build/version
+unverified; callers should surface that as uncertainty rather than claiming a
+confirmed Windows 11 build.
+
 ## Debug artifact directory
 
 Use a per-run directory, for example:

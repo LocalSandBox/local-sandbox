@@ -1,6 +1,6 @@
 # M02: QEMU Discovery and WHPX Preflight
 
-Status: In progress
+Status: Done
 Depends on: See `00-index.md`
 RFC sections: See `traceability.md`
 
@@ -42,10 +42,10 @@ The specific tests should match the implementation, but this milestone must incl
 
 ## Acceptance criteria
 
-- [ ] Unit tests for discovery precedence.
-- [ ] Diagnostics are specific for missing QEMU, unsupported version, non-Windows-11, WHPX unavailable.
-- [ ] Redacted output avoids environment dumps.
-- [ ] Manual/self-hosted evidence recorded in `state.md` if available.
+- [x] Unit tests for discovery precedence.
+- [x] Diagnostics are specific for missing QEMU, unsupported version, non-Windows-11, WHPX unavailable.
+- [x] Redacted output avoids environment dumps.
+- [x] Manual/self-hosted evidence recorded in `state.md` if available.
 
 ## Coding-agent prompt
 
@@ -69,9 +69,22 @@ Complete the checklist in `../security-checklist.md`. Record any new risk in `..
 ## Handoff
 
 - Branch/PR: `codex/windows-m02-qemu-discovery-preflight`
-- Summary: In progress.
-- Tests run: TBD
-- Debug artifacts: TBD
-- New decisions: TBD
-- New risks: TBD
-- Next milestone: TBD
+- Summary: Added private Windows QEMU discovery and preflight scaffolding under `lsb-platform`. Discovery checks `LSB_QEMU`, an optional internal config hook, then `PATH`; version probing runs `--version`; suitability probing runs `--help`; WHPX probing runs `-accel help`. The implementation returns structured actionable errors and includes fake host/runner tests plus an ignored real-QEMU hook. No VM boot, QEMU argv builder, process lifecycle, or TCG production fallback was added.
+- Tests run:
+  - `cargo fmt --all -- --check` - pass
+  - `cargo check --workspace` - pass
+  - `cargo test --workspace` - pass, 67 passed and 1 ignored real-QEMU hook
+  - `cargo check -p lsb-platform --target x86_64-pc-windows-msvc` - pass
+  - `./scripts/win-gh-test check` - pass, run `28653449586`
+  - `./scripts/win-gh-test unit` - pass, run `28653507512`
+- Debug artifacts: none local. Windows workflow diagnostic artifact upload step completed in runs `28653449586` and `28653507512`.
+- New decisions: none.
+- New risks: none.
+- Security review:
+  - No-network default preserved: yes, no QEMU argv/network code was added.
+  - Secret redaction verified: yes, diagnostics avoid environment dumps and PATH value dumps; tests assert PATH entries are not included in missing-QEMU output.
+  - Host file exposure reviewed: n/a, only executable path metadata is checked.
+  - Control/QMP endpoint privacy reviewed: n/a, no control or QMP endpoints are created.
+  - Process cleanup reviewed: n/a, only short-lived version/help/accelerator probes are modeled; no VM process is started.
+  - New risks added to risk-register.md: no.
+- Next milestone: M03 QEMU argv builder.

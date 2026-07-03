@@ -97,8 +97,13 @@ The helper requires a clean committed working tree because GitHub Actions can on
 Windows-side commands should be filled in by milestones as code lands. Initial placeholders:
 
 ```powershell
-# Check QEMU discovery once M02 exists
+# Check QEMU discovery once an lsb doctor command exists
 lsb doctor windows
+
+# M02 real-QEMU preflight hook; requires Windows 11 x86_64, QEMU, and explicit opt-in
+$env:LSB_QEMU="C:\Program Files\qemu\qemu-system-x86_64.exe"
+$env:LSB_TEST_REAL_QEMU="1"
+cargo test -p lsb-platform real_qemu_preflight_when_explicitly_enabled -- --ignored --nocapture
 
 # Run boot smoke once M05 exists
 cargo test -p lsb-platform windows_qemu_boot_smoke -- --ignored --nocapture
