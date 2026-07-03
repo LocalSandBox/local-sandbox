@@ -1,0 +1,29 @@
+crates/lsb-platform/Cargo.toml
+  s_45200ed8c39536::t_24f490ae73217d 35-42
+crates/lsb-platform/src/lib.rs
+  s_45200ed8c39536::t_24f490ae73217d 5
+  s_45200ed8c39536::t_8e471c5ac7736b 1-4
+crates/lsb-platform/src/windows_x86_64/qemu/process.rs
+  s_45200ed8c39536::t_24f490ae73217d 152-168,212-226,294-318,365,376,426,430-441,606-608,619-675,678-710,712-758,761
+  s_45200ed8c39536::t_8e471c5ac7736b 676-677,711
+  s_45200ed8c39536::t_e928408fb67ca5 759-760
+  s_45200ed8c39536::t_09f2a02993ebeb 762
+Cargo.lock
+  s_45200ed8c39536::t_c4e62b568810b3 931
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "faa087d92af171efb398872f5a97718e11033fff",
+  "prompts": {},
+  "sessions": {
+    "s_45200ed8c39536": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f279a-580a-7142-891b-1fd9c6490e80",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
