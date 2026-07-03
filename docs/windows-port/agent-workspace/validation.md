@@ -111,3 +111,17 @@ cargo test -p lsb-platform windows_qemu_boot_smoke -- --ignored --nocapture
 # Run all Windows integration tests once M15 exists
 cargo test --workspace --features windows-integration -- --ignored --nocapture
 ```
+
+M05 boot smoke requires disposable boot assets. On the self-hosted runner,
+`scripts/windows-smoke.ps1` runs real QEMU preflight and runs the direct boot
+smoke only when all of these are set:
+
+```powershell
+$env:LSB_WINDOWS_BOOT_KERNEL="C:\path\to\Image"
+$env:LSB_WINDOWS_BOOT_INITRD="C:\path\to\initramfs.cpio.gz"
+$env:LSB_WINDOWS_BOOT_ROOTFS="C:\path\to\disposable\rootfs.ext4"
+$env:LSB_WINDOWS_BOOT_ARTIFACT_DIR="C:\path\to\diagnostics" # optional
+```
+
+If the asset variables are absent, the smoke lane must print an explicit skip
+message and must not claim direct boot validation.

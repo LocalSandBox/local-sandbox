@@ -57,18 +57,55 @@ confirmed Windows 11 build.
 
 ## Debug artifact directory
 
-Use a per-run directory, for example:
+M05 uses the prepared rootfs image parent as the default instance directory and
+writes QEMU boot artifacts under:
 
 ```text
-<local-sandbox-data>\debug\windows-qemu\<timestamp>-<sandbox-id>\
+<instance-dir>\diagnostics\
   qemu.argv.redacted.txt
   qemu.stderr.log
   qemu.stdout.log
   serial.log
-  qmp.log
-  host.log
-  guest-protocol.log.redacted
   preflight.json
+  qemu.status.json
+  boot.status.json
 ```
 
-The exact location may change, but it must use Windows-safe paths and owner-only access where possible.
+For normal CLI/SDK startup, `<instance-dir>` is the existing per-run instance
+directory containing the writable `rootfs.ext4` work copy. The M05 direct boot
+smoke test can override the diagnostics directory with
+`LSB_WINDOWS_BOOT_ARTIFACT_DIR`.
+
+`boot.status.json` records the M05 success definition:
+`qemu_process_alive_after_boot_observation_window`. This is not a guest-ready
+handshake. Until M06/M07 add virtio-serial control and readiness, a successful
+M05 boot observation means QEMU launched with WHPX and stayed alive for the
+observation window while serial/QEMU logs were captured.
+
+M05 boot error categories include:
+
+- `asset_missing`
+- `unsupported_config`
+- `invalid_config`
+- `artifact_io`
+- `preflight`
+- `argv`
+- `process_start`
+- `process_status`
+- `guest_boot_exited`
+- `stop_failed`
+
+Manual Windows boot smoke:
+
+```powershell
+$env:LSB_QEMU="C:\Program Files\qemu\qemu-system-x86_64.exe"
+$env:LSB_WINDOWS_BOOT_KERNEL="C:\path\to\Image"
+$env:LSB_WINDOWS_BOOT_INITRD="C:\path\to\initramfs.cpio.gz"
+$env:LSB_WINDOWS_BOOT_ROOTFS="C:\path\to\disposable\rootfs.ext4"
+$env:LSB_WINDOWS_BOOT_ARTIFACT_DIR="C:\path\to\diagnostics" # optional
+cargo test -p lsb-platform windows_qemu_boot_smoke -- --ignored --nocapture
+```
+
+The rootfs path must be disposable because M05 attaches it as a writable raw
+virtio block device. Long-term qcow2 overlay/checkpoint handling remains a later
+store/checkpoint milestone.

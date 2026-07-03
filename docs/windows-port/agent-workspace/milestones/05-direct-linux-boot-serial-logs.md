@@ -1,6 +1,6 @@
 # M05: Direct Linux Boot and Serial Logs
 
-Status: In progress
+Status: Review
 Depends on: See `00-index.md`
 RFC sections: See `traceability.md`
 
@@ -42,10 +42,10 @@ The specific tests should match the implementation, but this milestone must incl
 
 ## Acceptance criteria
 
-- [ ] Self-hosted Windows boot smoke reaches guest init/agent or fails with serial evidence.
-- [ ] WHPX missing fails before QEMU production launch.
-- [ ] Serial logs are captured in a known debug artifact location.
-- [ ] macOS boot path unchanged.
+- [ ] Self-hosted Windows boot smoke reaches guest init/agent or fails with serial evidence. Deferred pending disposable boot assets on the self-hosted runner; the ignored smoke hook is in place and the smoke lane skips explicitly when asset env vars are absent.
+- [x] WHPX missing fails before QEMU production launch.
+- [x] Serial logs are captured in a known debug artifact location.
+- [x] macOS boot path unchanged.
 
 ## Coding-agent prompt
 
@@ -69,9 +69,10 @@ Complete the checklist in `../security-checklist.md`. Record any new risk in `..
 ## Handoff
 
 - Branch/PR: `codex/windows-m05-direct-linux-boot-serial-logs`
-- Summary: TBD
-- Tests run: TBD
-- Debug artifacts: TBD
-- New decisions: TBD
-- New risks: TBD
-- Next milestone: TBD
+- Summary: Added a private Windows QEMU direct boot orchestration module and wired `PlatformVm::start()` to run QEMU discovery/preflight, build direct Linux boot argv through the existing builder, launch through the existing supervisor/Job Object path, capture stdout/stderr/serial/preflight/status artifacts, and treat QEMU staying alive through the observation window as the M05-only boot result. Later control, readiness, exec, mounts, networking, and checkpoints remain unsupported with explicit errors.
+- Tests run: See `../state.md` for the final validation log. Local validation passed `cargo fmt --all -- --check`, `cargo check --workspace`, `cargo test --workspace`, `cargo test -p lsb-platform`, and `cargo check -p lsb-platform --target x86_64-pc-windows-msvc`. Full macOS-hosted workspace Windows target check remains blocked by external MSVC C/assembler tooling. Windows self-hosted `check`, `unit`, and `smoke` lanes passed; the smoke lane ran real QEMU/WHPX preflight and skipped direct boot because disposable boot asset env vars were not configured.
+- Debug artifacts: M05 writes `qemu.argv.redacted.txt`, `qemu.stdout.log`, `qemu.stderr.log`, `qemu.status.json`, `serial.log`, `preflight.json`, and `boot.status.json` under `<instance-dir>/diagnostics`, or under `LSB_WINDOWS_BOOT_ARTIFACT_DIR` for the ignored smoke test.
+- New decisions: None.
+- New risks: None.
+- Security review: no-network default preserved: yes, QEMU argv still includes `-nic none` and no network device is added; secret redaction verified: yes, argv/status artifacts are redacted and QEMU does not inherit parent env by default; host file exposure reviewed: yes, M05 uses only kernel/initrd/rootfs asset paths and diagnostics, with rootfs documented as a disposable writable raw image; control/QMP endpoint privacy reviewed: yes, no new QMP or control endpoint is created by the wired boot path; process cleanup reviewed: yes, start/stop use the existing supervisor and Windows Job Object cleanup; new risks added to risk-register.md: no.
+- Next milestone: M06 virtio-serial control transport, after provisioning a disposable-assets Windows boot smoke run for M05 evidence.
