@@ -128,10 +128,12 @@ M05/M07 boot and readiness error categories include:
 - `serial_output_missing`
 - `stop_failed`
 
-Readiness timeout and protocol errors include the elapsed time, control-channel
-state, serial tail, QEMU stderr tail, and paths to the redacted argv/status
-artifacts. Invalid ready frames report frame type and payload length, not raw
-payload contents.
+Readiness timeout and QEMU-exited-before-ready errors include elapsed time,
+control-channel state, serial tail, QEMU stderr tail, and paths to the redacted
+argv/status artifacts. If QEMU exits while the host is opening the control pipe,
+the failure is reported as `guest_ready_process_exited` rather than a generic
+control-open timeout. Invalid ready frames report frame type and payload length,
+not raw payload contents; protocol/transport errors do not dump raw payloads.
 
 Manual Windows boot smoke:
 

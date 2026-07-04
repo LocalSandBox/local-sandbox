@@ -16,7 +16,7 @@ Update this file at the end of every agent run. Keep it factual. Do not use it f
 - Issue: TBD
 - Agent: Codex
 - Start commit: `b062c7d`
-- End commit: final M07 docs commit on this branch
+- End commit: `c0b8a3a`
 
 ## Milestone status table
 
@@ -101,6 +101,7 @@ Append newest entries at the top.
 
 | Date | Milestone | Platform | Command / test | Result | Notes |
 |---|---|---|---|---|---|
+| 2026-07-04 | M07 review fixes | macOS | `cargo fmt --all -- --check`; `cargo test -p lsb-platform windows_x86_64::qemu::boot -- --nocapture`; `cargo check --workspace`; `cargo test -p lsb-platform`; `cargo check -p lsb-platform --tests --target x86_64-pc-windows-msvc` | Pass | Addressed review finding that QEMU exit during control-pipe open could be reported as `control_open`. Added a fake regression test that maps control-open failure after terminal QEMU status to `guest_ready_process_exited` with control-state, stderr, and serial context. Narrowed diagnostics wording and recorded the M08 single-owner/muxed control-stream follow-up. |
 | 2026-07-04 | M07 | Windows self-hosted | `./scripts/win-gh-test smoke` | Pass | Run `28703154530`, Windows smoke/e2e job `85125213672`, commit `f4b7420`, artifact `windows-lsb-diagnostics` ID `8080915182`. The smoke boot reached protocol readiness: `boot.status.json` in `lsb-assets-work/28703154530-1` recorded `state: "guest_ready"`, success definition `localsandbox_guest_ready_frame_received_over_control_transport`, elapsed readiness `1727` ms, protocol version `1`, transport `virtio_serial`, guest version `0.3.12`, and empty capabilities. The redacted argv still used `-nic none`. The workflow prepared boot assets on a cache miss, then the smoke step passed; Windows e2e remained skipped for this milestone. |
 | 2026-07-04 | M07 | Windows self-hosted | `./scripts/win-gh-test unit` | Pass | Run `28703121030`, Windows check/unit job `85124342646`, commit `f4b7420`. The self-hosted unit lane completed successfully, covering the Windows-target fake readiness tests without requiring a real QEMU boot. |
 | 2026-07-04 | M07 | macOS | `cargo fmt --all -- --check`; `cargo check --workspace`; `cargo test -p lsb-proto`; `cargo test -p lsb-guest`; `cargo test -p lsb-platform`; `cargo test -p lsb-vm`; `cargo check -p lsb-platform --tests --target x86_64-pc-windows-msvc`; `cargo test --workspace`; `cargo check --workspace --target x86_64-pc-windows-msvc` | Pass / blocked | Format, workspace check, focused proto/guest/platform/vm tests, targeted Windows `lsb-platform` test compile, and full workspace tests passed. `cargo test -p lsb-platform` covered ready success, timeout without ready, invalid frame type, protocol version mismatch, unsupported capabilities, early QEMU exit, and boot-status success artifact handling. Full workspace Windows target check remains blocked on this macOS host by external MSVC C/assembler tooling: `ring` cannot find Windows/MSVC `assert.h`, and `blake3` cannot find `ml64.exe`. |
@@ -181,6 +182,7 @@ Append newest entries at the top.
 - [x] Use M05 per-instance artifact layout to decide whether `qemu.argv.redacted.txt` should become structured JSON or remain a redacted text command display.
 - [x] Manually dispatch `./scripts/win-gh-test smoke` and confirm the workflow-provisioned disposable boot assets run `windows_qemu_boot_smoke` instead of skipping.
 - [x] Replace M06 serial-marker boot success with the M07 LocalSandbox `GuestReady` protocol handshake over the established virtio-serial control stream.
+- [ ] M08 must define a single-owner or muxed control-stream lifecycle before exec so future command sessions cannot create competing readers over cloned control handles.
 - [ ] Decide exact hidden/debug flag name for TCG once CLI command parsing is inspected.
 - [ ] Decide exact QEMU minimum version after M02 preflight experimentation.
 - [ ] Decide whether native Windows build-number probing should use a Windows API, registry query, or remain deferred until a CLI diagnostics command exists.

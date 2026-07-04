@@ -31,6 +31,7 @@ const SERIAL_OBSERVED_SUCCESS_DEFINITION: &str =
     "qemu_process_alive_after_boot_observation_window_with_serial_output";
 const GUEST_READY_SUCCESS_DEFINITION: &str =
     "localsandbox_guest_ready_frame_received_over_control_transport";
+const CONTROL_STATE_OPENING_FOR_READY: &str = "opening_control_channel_for_guest_ready";
 const CONTROL_STATE_WAITING_FOR_READY: &str = "control_channel_open_waiting_for_guest_ready";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,6 +267,7 @@ pub(crate) enum QemuBootError {
         exit_status: Option<QemuExitStatus>,
         artifacts: QemuBootArtifacts,
         elapsed: Duration,
+        control_state: &'static str,
         stderr_excerpt: String,
         serial_excerpt: String,
     },
@@ -443,6 +445,7 @@ impl fmt::Display for QemuBootError {
                 state,
                 exit_status,
                 elapsed,
+                control_state,
                 stderr_excerpt,
                 serial_excerpt,
                 ..
@@ -455,7 +458,7 @@ impl fmt::Display for QemuBootError {
                     .map(ToString::to_string)
                     .unwrap_or_else(|| "unknown".to_string()),
                 elapsed.as_millis(),
-                CONTROL_STATE_WAITING_FOR_READY,
+                control_state,
                 empty_as_placeholder(stderr_excerpt),
                 empty_as_placeholder(serial_excerpt),
                 self.artifact_sentence()
@@ -663,16 +666,19 @@ pub(crate) fn launch_windows_qemu_boot(
     })?;
 
     let control_stream = if let Some(endpoint) = &config.control_endpoint {
+        let control_open_started_at = Instant::now();
         match endpoint.open() {
             Ok(stream) => Some(stream),
             Err(source) => {
-                let error = QemuBootError::ControlOpen {
+                let error = map_control_open_error(
                     source,
-                    artifacts: artifacts.clone(),
-                };
+                    &mut supervisor,
+                    &artifacts,
+                    control_open_started_at.elapsed(),
+                );
                 record_failure(
                     &artifacts,
-                    config.boot_observation_timeout,
+                    config.guest_ready_timeout,
                     observation_goal,
                     &error,
                 );
@@ -777,6 +783,55 @@ fn run_preflight() -> Result<QemuPreflightReport, QemuPreflightError> {
     let host = StdQemuDiscoveryHost;
     let runner = StdQemuCommandRunner;
     QemuPreflight::new(QemuDiscovery::new(&host), &runner).run()
+}
+
+fn map_control_open_error(
+    source: VirtioSerialControlError,
+    supervisor: &mut QemuSupervisor,
+    artifacts: &QemuBootArtifacts,
+    elapsed: Duration,
+) -> QemuBootError {
+    match supervisor.try_status() {
+        Ok(
+            state @ (QemuProcessState::Exited
+            | QemuProcessState::Failed
+            | QemuProcessState::Terminated),
+        ) => guest_ready_process_exited_error(
+            state,
+            supervisor,
+            artifacts,
+            elapsed,
+            CONTROL_STATE_OPENING_FOR_READY,
+        ),
+        Ok(
+            QemuProcessState::Running | QemuProcessState::Starting | QemuProcessState::NotStarted,
+        ) => QemuBootError::ControlOpen {
+            source,
+            artifacts: artifacts.clone(),
+        },
+        Err(source) => QemuBootError::ProcessStatus {
+            source,
+            artifacts: artifacts.clone(),
+        },
+    }
+}
+
+fn guest_ready_process_exited_error(
+    state: QemuProcessState,
+    supervisor: &QemuSupervisor,
+    artifacts: &QemuBootArtifacts,
+    elapsed: Duration,
+    control_state: &'static str,
+) -> QemuBootError {
+    QemuBootError::GuestReadyProcessExited {
+        state,
+        exit_status: supervisor.exit_status().cloned(),
+        artifacts: artifacts.clone(),
+        elapsed,
+        control_state,
+        stderr_excerpt: read_excerpt(&artifacts.process.stderr),
+        serial_excerpt: read_excerpt(&artifacts.serial),
+    }
 }
 
 fn resolve_artifacts(config: &WindowsQemuBootConfig) -> Result<QemuBootArtifacts, QemuBootError> {
@@ -1014,14 +1069,13 @@ where
                 | QemuProcessState::Failed
                 | QemuProcessState::Terminated),
             ) => {
-                return Err(QemuBootError::GuestReadyProcessExited {
+                return Err(guest_ready_process_exited_error(
                     state,
-                    exit_status: supervisor.exit_status().cloned(),
-                    artifacts: artifacts.clone(),
-                    elapsed: started_at.elapsed(),
-                    stderr_excerpt: read_excerpt(&artifacts.process.stderr),
-                    serial_excerpt: read_excerpt(&artifacts.serial),
-                });
+                    supervisor,
+                    artifacts,
+                    started_at.elapsed(),
+                    CONTROL_STATE_WAITING_FOR_READY,
+                ));
             }
             Ok(QemuProcessState::NotStarted) => {
                 return Err(QemuBootError::ProcessStatus {
@@ -1796,6 +1850,59 @@ mod tests {
         assert_eq!(err.kind(), QemuBootErrorKind::GuestReadyProcessExited);
         assert!(err.to_string().contains("exited before"));
         assert!(err.to_string().contains("guest-ready handshake"));
+
+        let _ = supervisor.terminate();
+        let _ = fs::remove_dir_all(artifact_dir);
+    }
+
+    #[test]
+    fn control_open_failure_after_qemu_exit_reports_guest_ready_process_exit() {
+        let artifact_dir = temp_dir("control-open-early-exit");
+        let artifacts = QemuBootArtifacts::new(&artifact_dir);
+        prepare_artifacts(&artifacts).expect("artifacts should prepare");
+        fs::write(
+            &artifacts.serial,
+            "guest serial before control pipe opened\n",
+        )
+        .expect("serial fixture should write");
+        let mut supervisor = fake_supervisor("exit-after-start", artifact_dir.clone());
+        supervisor.start().expect("fake supervisor should start");
+        let control_open_started_at = Instant::now();
+        let deadline = Instant::now() + Duration::from_secs(2);
+
+        loop {
+            match supervisor.try_status() {
+                Ok(
+                    QemuProcessState::Exited
+                    | QemuProcessState::Failed
+                    | QemuProcessState::Terminated,
+                ) => break,
+                Ok(QemuProcessState::Running | QemuProcessState::Starting)
+                    if Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Ok(state) => panic!("fake supervisor reached unexpected state {state:?}"),
+                Err(err) => panic!("fake supervisor status failed: {err}"),
+            }
+        }
+
+        let err = map_control_open_error(
+            VirtioSerialControlError::ConnectTimeout {
+                timeout: Duration::from_millis(25),
+                last_error: Some("pipe not found".to_string()),
+            },
+            &mut supervisor,
+            &artifacts,
+            control_open_started_at.elapsed(),
+        );
+
+        assert_eq!(err.kind(), QemuBootErrorKind::GuestReadyProcessExited);
+        let message = err.to_string();
+        assert!(message.contains("exited before"));
+        assert!(message.contains(CONTROL_STATE_OPENING_FOR_READY));
+        assert!(message.contains("fake boot child exiting after startup"));
+        assert!(message.contains("guest serial before control pipe opened"));
 
         let _ = supervisor.terminate();
         let _ = fs::remove_dir_all(artifact_dir);
