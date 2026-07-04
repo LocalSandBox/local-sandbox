@@ -19,6 +19,18 @@ mod control_transport {
         }
     }
 
+    pub(crate) fn ready_message_for_transport(
+        transport: GuestControlTransport,
+    ) -> Option<lsb_proto::GuestReady> {
+        match transport {
+            GuestControlTransport::Vsock => None,
+            GuestControlTransport::VirtioSerial => Some(lsb_proto::GuestReady::new(
+                lsb_proto::GuestTransport::VirtioSerial,
+                env!("CARGO_PKG_VERSION"),
+            )),
+        }
+    }
+
     pub(crate) fn discover_virtio_serial_device(
         dev_root: &Path,
         sys_class_root: &Path,
@@ -70,6 +82,18 @@ mod control_transport {
                 from_kernel_cmdline("console=ttyS0 root=/dev/vda rw lsb.transport=virtio-serial"),
                 GuestControlTransport::VirtioSerial
             );
+        }
+
+        #[test]
+        fn ready_message_is_only_emitted_for_virtio_serial() {
+            assert!(ready_message_for_transport(GuestControlTransport::Vsock).is_none());
+
+            let ready = ready_message_for_transport(GuestControlTransport::VirtioSerial)
+                .expect("virtio-serial should emit guest ready");
+            assert_eq!(ready.protocol_version, lsb_proto::PROTOCOL_VERSION);
+            assert_eq!(ready.transport, lsb_proto::GuestTransport::VirtioSerial);
+            assert_eq!(ready.guest_version, env!("CARGO_PKG_VERSION"));
+            assert!(ready.capabilities.is_empty());
         }
 
         #[test]
@@ -500,10 +524,13 @@ mod guest {
     fn handle_vsock_connection(fd: RawFd) {
         // SAFETY: fd is a valid socket from accept().
         let stream = unsafe { std::net::TcpStream::from_raw_fd(fd) };
-        handle_control_stream(stream);
+        handle_control_stream(
+            stream,
+            control_transport::ready_message_for_transport(GuestControlTransport::Vsock),
+        );
     }
 
-    fn handle_control_stream<S>(stream: S)
+    fn handle_control_stream<S>(stream: S, ready_message: Option<lsb_proto::GuestReady>)
     where
         S: ControlStream,
     {
@@ -516,6 +543,17 @@ mod guest {
             }
         };
         let mut writer = stream;
+
+        if let Some(ready) = ready_message {
+            if let Err(err) = frame::send_json(&mut writer, frame::GUEST_READY, &ready) {
+                eprintln!("lsb-guest: failed to send guest ready handshake: {}", err);
+                return;
+            }
+            eprintln!(
+                "lsb-guest: sent guest ready handshake over {:?} with protocol version {}",
+                ready.transport, ready.protocol_version
+            );
+        }
 
         loop {
             let (msg_type, payload) = match frame::read_frame(&mut reader) {
@@ -1577,7 +1615,10 @@ mod guest {
 
         loop {
             let stream = open_virtio_serial_control_stream();
-            handle_control_stream(stream);
+            handle_control_stream(
+                stream,
+                control_transport::ready_message_for_transport(GuestControlTransport::VirtioSerial),
+            );
             eprintln!("lsb-guest: virtio-serial control stream closed; reopening");
             reap_zombies();
         }
