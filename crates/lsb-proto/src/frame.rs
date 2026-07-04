@@ -10,6 +10,7 @@ pub const RESIZE: u8 = 0x04;
 pub const EXIT: u8 = 0x05;
 pub const ERROR: u8 = 0x06;
 pub const KILL: u8 = 0x07;
+pub const GUEST_READY: u8 = 0x08;
 
 // Exec handshake
 pub const EXEC_REQ: u8 = 0x10;

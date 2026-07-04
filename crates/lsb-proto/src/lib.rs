@@ -8,6 +8,38 @@ use std::collections::HashMap;
 /// Max frame size: 1 MB.
 pub mod frame;
 
+pub const PROTOCOL_VERSION: u16 = 1;
+
+// --- Guest lifecycle protocol ---
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GuestTransport {
+    Vsock,
+    VirtioSerial,
+}
+
+/// Sent by the guest after minimal agent initialization is complete.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GuestReady {
+    pub protocol_version: u16,
+    pub transport: GuestTransport,
+    pub guest_version: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+impl GuestReady {
+    pub fn new(transport: GuestTransport, guest_version: impl Into<String>) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            transport,
+            guest_version: guest_version.into(),
+            capabilities: Vec::new(),
+        }
+    }
+}
+
 // --- Exec protocol ---
 
 #[derive(Serialize, Deserialize)]
@@ -195,7 +227,43 @@ pub const VIRTIO_SERIAL_CONTROL_PORT_NAME: &str = "org.localsandbox.control";
 
 #[cfg(test)]
 mod tests {
-    use super::MountRequest;
+    use std::io::Cursor;
+
+    use super::{GuestReady, GuestTransport, MountRequest, PROTOCOL_VERSION};
+    use crate::frame;
+
+    #[test]
+    fn guest_ready_round_trips_with_empty_capabilities() {
+        let ready = GuestReady::new(GuestTransport::VirtioSerial, "0.5.2-test");
+
+        let json = serde_json::to_string(&ready).expect("guest ready should serialize");
+        let decoded: GuestReady =
+            serde_json::from_str(&json).expect("guest ready should deserialize");
+
+        assert_eq!(decoded.protocol_version, PROTOCOL_VERSION);
+        assert_eq!(decoded.transport, GuestTransport::VirtioSerial);
+        assert_eq!(decoded.guest_version, "0.5.2-test");
+        assert!(decoded.capabilities.is_empty());
+    }
+
+    #[test]
+    fn guest_ready_frame_round_trips() {
+        let ready = GuestReady::new(GuestTransport::VirtioSerial, "0.5.2-test");
+        let mut stream = Cursor::new(Vec::new());
+
+        frame::send_json(&mut stream, frame::GUEST_READY, &ready)
+            .expect("guest ready frame should write");
+        stream.set_position(0);
+
+        let (msg_type, payload) = frame::read_frame(&mut stream)
+            .expect("guest ready frame should read")
+            .expect("guest ready frame should be present");
+        let decoded: GuestReady =
+            serde_json::from_slice(&payload).expect("guest ready payload should decode");
+
+        assert_eq!(msg_type, frame::GUEST_READY);
+        assert_eq!(decoded, ready);
+    }
 
     #[test]
     fn mount_request_round_trips_overlay() {
