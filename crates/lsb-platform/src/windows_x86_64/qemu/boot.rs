@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
+use crate::windows_x86_64::control::{VirtioSerialControlEndpoint, VirtioSerialControlError};
+
 use super::argv::{QemuArgvBuilder, QemuArgvError};
 use super::config::QemuBootConfig as QemuArgvBootConfig;
 use super::discovery::{QemuDiscovery, StdQemuDiscoveryHost};
@@ -33,6 +35,7 @@ pub(crate) struct WindowsQemuBootConfig {
     pub diagnostic_label: Option<String>,
     pub artifact_directory: Option<PathBuf>,
     pub boot_observation_timeout: Duration,
+    pub control_endpoint: Option<VirtioSerialControlEndpoint>,
 }
 
 impl WindowsQemuBootConfig {
@@ -52,6 +55,7 @@ impl WindowsQemuBootConfig {
             diagnostic_label: None,
             artifact_directory: None,
             boot_observation_timeout: DEFAULT_BOOT_OBSERVATION_TIMEOUT,
+            control_endpoint: None,
         }
     }
 }
@@ -95,6 +99,7 @@ pub(crate) struct WindowsQemuBoot {
     supervisor: QemuSupervisor,
     artifacts: QemuBootArtifacts,
     observation_timeout: Duration,
+    control_endpoint: Option<VirtioSerialControlEndpoint>,
 }
 
 impl WindowsQemuBoot {
@@ -108,6 +113,20 @@ impl WindowsQemuBoot {
 
     pub(crate) fn observation_timeout(&self) -> Duration {
         self.observation_timeout
+    }
+
+    pub(crate) fn control_endpoint(&self) -> Option<&VirtioSerialControlEndpoint> {
+        self.control_endpoint.as_ref()
+    }
+
+    pub(crate) fn open_control(
+        &self,
+    ) -> Result<crate::PlatformControlStream, VirtioSerialControlError> {
+        let endpoint = self
+            .control_endpoint
+            .as_ref()
+            .ok_or(VirtioSerialControlError::EndpointUnavailable)?;
+        endpoint.open()
     }
 
     pub(crate) fn stop(&mut self) -> Result<Option<QemuExitStatus>, QemuBootError> {
@@ -396,6 +415,9 @@ pub(crate) fn launch_windows_qemu_boot(
         memory_mib,
         vcpu_count,
     );
+    if let Some(endpoint) = &config.control_endpoint {
+        argv_config.control_channel = Some(endpoint.qemu_config());
+    }
     argv_config.diagnostic_label = config.diagnostic_label.clone();
 
     let command = QemuArgvBuilder::new(argv_config)
@@ -438,6 +460,7 @@ pub(crate) fn launch_windows_qemu_boot(
         supervisor,
         artifacts,
         observation_timeout: config.boot_observation_timeout,
+        control_endpoint: config.control_endpoint,
     })
 }
 

@@ -77,6 +77,7 @@ impl VirtioSerialControlEndpoint {
 pub(crate) enum VirtioSerialControlError {
     InvalidPipeName { pipe_name: String, reason: String },
     RandomUnavailable { detail: String },
+    EndpointUnavailable,
     HostPipeUnsupported,
     ConnectTimeout {
         timeout: Duration,
@@ -93,6 +94,9 @@ impl VirtioSerialControlError {
             }
             Self::RandomUnavailable { .. } => {
                 "Retry on a host with an available OS random source; LocalSandbox uses random control pipe names to avoid local collisions and guessing."
+            }
+            Self::EndpointUnavailable => {
+                "Start the Windows QEMU VM with M06 control transport enabled before opening the guest control channel."
             }
             Self::HostPipeUnsupported => {
                 "Run the Windows QEMU backend on Windows; non-Windows hosts can only run unit tests for this transport."
@@ -119,6 +123,11 @@ impl fmt::Display for VirtioSerialControlError {
             Self::RandomUnavailable { detail } => write!(
                 f,
                 "failed to generate a private Windows virtio-serial control pipe name: {detail}. {}",
+                self.remediation()
+            ),
+            Self::EndpointUnavailable => write!(
+                f,
+                "Windows virtio-serial control endpoint is not configured for this VM. {}",
                 self.remediation()
             ),
             Self::HostPipeUnsupported => write!(

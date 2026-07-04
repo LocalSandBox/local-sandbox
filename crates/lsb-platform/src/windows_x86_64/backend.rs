@@ -1,4 +1,5 @@
 use std::net::TcpStream;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
@@ -7,6 +8,7 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 use crate::{PlatformControlStream, PlatformVm, PlatformVmConfig, VmState};
 
 use super::config::WindowsVmConfig;
+use super::control::VirtioSerialControlEndpoint;
 use super::errors::unsupported;
 use super::qemu::boot::{launch_windows_qemu_boot, WindowsQemuBoot, WindowsQemuBootConfig};
 
@@ -44,6 +46,9 @@ impl WindowsVm {
             self.config.memory_bytes,
             self.config.cpus,
         );
+        config.control_endpoint = Some(VirtioSerialControlEndpoint::for_instance(
+            &instance_dir_for_rootfs(&self.config.rootfs_path)?,
+        )?);
         config.diagnostic_label = Some("windows-direct-linux-boot".to_string());
         Ok(config)
     }
@@ -138,10 +143,22 @@ impl PlatformVm for WindowsVm {
     }
 
     fn connect_control(&self) -> Result<PlatformControlStream> {
-        Err(unsupported(
-            "guest control transport",
-            "M06 virtio-serial control transport is being wired after QEMU direct boot",
-        ))
+        let boot = self
+            .boot
+            .lock()
+            .map_err(|_| anyhow!("Windows QEMU boot state lock poisoned"))?;
+        let Some(running_boot) = boot.as_ref() else {
+            return Err(anyhow!(
+                "Windows virtio-serial control transport is unavailable because the VM is not running; start the VM before opening guest control"
+            ));
+        };
+
+        running_boot.open_control().map_err(|err| {
+            anyhow!(
+                "Windows virtio-serial control transport is unavailable: {err}. Captured artifacts: {}",
+                running_boot.artifacts().summary()
+            )
+        })
     }
 
     fn connect_to_vsock_port(&self, _port: u32) -> Result<TcpStream> {
@@ -154,6 +171,18 @@ impl PlatformVm for WindowsVm {
 
 pub(crate) fn create_vm(config: PlatformVmConfig) -> Result<Arc<dyn PlatformVm>> {
     Ok(Arc::new(WindowsVm::new(config)))
+}
+
+fn instance_dir_for_rootfs(rootfs_path: &str) -> Result<PathBuf> {
+    let path = Path::new(rootfs_path);
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            anyhow!(
+                "Windows virtio-serial control transport requires the rootfs path to live under a per-instance directory"
+            )
+        })
 }
 
 #[cfg(test)]
@@ -235,5 +264,23 @@ mod tests {
         let vm = create_vm(test_config()).expect("vm should be constructible");
 
         vm.stop().expect("stop without a boot should be harmless");
+    }
+
+    #[test]
+    fn direct_boot_config_enables_private_control_endpoint() {
+        let mut config = test_config();
+        config.rootfs_path = "/tmp/lsb/instances/12345/rootfs.ext4".to_string();
+        let vm = WindowsVm::new(config);
+
+        let boot_config = vm
+            .direct_boot_config()
+            .expect("supported config should build");
+        let endpoint = boot_config
+            .control_endpoint
+            .expect("M06 boot should configure control endpoint");
+
+        assert_eq!(endpoint.port_name(), lsb_proto::VIRTIO_SERIAL_CONTROL_PORT_NAME);
+        assert!(endpoint.pipe_name().starts_with("lsb-12345-"));
+        assert!(endpoint.pipe_name().ends_with("-control"));
     }
 }
