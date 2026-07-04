@@ -1,0 +1,19 @@
+crates/lsb-platform/src/windows_x86_64/qemu/boot.rs
+  s_3e9dd14c1056d7::t_2d3610b28a8436 968-969,973,977-990
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d71e01745be99f4bfb785457141070a6d7525607",
+  "prompts": {},
+  "sessions": {
+    "s_3e9dd14c1056d7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2c4a-9cc5-7dd2-bda8-3a2c381848a2",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
