@@ -69,10 +69,10 @@ Complete the checklist in `../security-checklist.md`. Record any new risk in `..
 
 - Branch/PR: `codex/windows-m09-copy-in-copy-out`
 - Summary: Added Windows copy transfer data-plane helpers without live shared mounts. Host copy-in validates and plans recursive files/directories, rejects symlinks/junctions/reparse points, and streams file contents into isolated guest paths. Copy-out validates guest paths and Windows destinations, rejects traversal and unsafe names, uses temp paths plus rename, and requires explicit overwrite for existing host destinations. File contents move over the existing guest file protocol with optional chunked `file_range_io` ranges.
-- Tests run: `cargo fmt --all -- --check`; `cargo check --workspace`; `cargo check -p lsb-platform -p lsb-vm --target x86_64-pc-windows-msvc`; `git diff --check`; `cargo test -p lsb-proto file_range -- --nocapture`; `cargo test -p lsb-guest file_range -- --nocapture`; `cargo test -p lsb-platform windows_x86_64::fs -- --nocapture`; `cargo test -p lsb-vm file_response_reader_skips_guest_ready_frames -- --nocapture`; `cargo test --workspace`.
-- Debug artifacts: none locally. Added ignored `windows_qemu_copy_transfer_smoke` for self-hosted Windows WHPX validation.
+- Tests run: `cargo fmt --all -- --check`; `cargo check --workspace`; `cargo check -p lsb-platform -p lsb-vm --target x86_64-pc-windows-msvc`; `git diff --check`; `cargo test -p lsb-proto file_range -- --nocapture`; `cargo test -p lsb-guest file_range -- --nocapture`; `cargo test -p lsb-platform windows_x86_64::fs -- --nocapture`; `cargo test -p lsb-vm file_response_reader_skips_guest_ready_frames -- --nocapture`; `cargo test --workspace`; `./scripts/win-gh-test unit` run `28709993970`; `./scripts/win-gh-test smoke` run `28710026075`.
+- Debug artifacts: self-hosted Windows runs uploaded `windows-lsb-diagnostics`; smoke run `28710026075` also uploaded `windows-boot-assets`.
 - New decisions: none; implementation follows D009/D010/D011.
-- New risks: none added. Known limitation: conservative symlink/junction/reparse rejection and no live shared mount semantics.
+- New risks: none added. Known limitations: conservative symlink/junction/reparse rejection, no live shared mount semantics, no Windows mount parity with macOS VirtioFS, and Windows streaming/muxed control sessions remain deferred.
 - Next milestone: M10 Mount MVP semantics can build on M09 copy-in at sandbox start and explicit copy-out/export at sandbox end or on demand.
 
 Security review:
