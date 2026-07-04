@@ -26,7 +26,11 @@ use lsb_platform::terminal;
 use lsb_platform::windows_x86_64::fs::{
     join_guest_child, plan_copy_in, validate_copy_out_destination, validate_guest_absolute_path,
     validate_guest_path_component, validate_windows_host_path_lexical, CaseFoldSet,
-    CopyInEntryKind, CopyPathOperation,
+    CopyInEntryKind, CopyInPlan, CopyPathOperation,
+};
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use lsb_platform::windows_x86_64::fs::{
+    plan_windows_mounts, WindowsMountImport, WindowsMountMode, WindowsMountSpec,
 };
 use lsb_platform::PlatformControlStream;
 use lsb_platform::{self, PlatformSharedDir, PlatformVm, PlatformVmConfig, VmState};
@@ -182,7 +186,7 @@ impl VmConfigBuilder {
         let rootfs_path = self.rootfs.context("rootfs path is required")?;
 
         let memory_bytes = self.memory_mb * 1024 * 1024;
-        let (shared_dirs, mount_requests) = build_mount_plan(&self.mounts);
+        let mount_plan = build_mount_plan(&self.mounts)?;
 
         Ok(Sandbox {
             vm: lsb_platform::create_vm(PlatformVmConfig {
@@ -195,9 +199,11 @@ impl VmConfigBuilder {
                 verbose: self.verbose,
                 network_fd: self.network_fd,
                 nbd_uri: self.nbd_uri,
-                shared_dirs,
+                shared_dirs: mount_plan.shared_dirs,
             })?,
-            mounts: Mutex::new(mount_requests),
+            mounts: Mutex::new(mount_plan.mount_requests),
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            windows_mounts: Mutex::new(mount_plan.windows_imports),
             #[cfg(not(target_os = "macos"))]
             control_session: Mutex::new(()),
         })
@@ -209,11 +215,33 @@ impl VmConfigBuilder {
 pub struct Sandbox {
     vm: Arc<dyn PlatformVm>,
     mounts: Mutex<Vec<MountRequest>>,
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    windows_mounts: Mutex<Vec<WindowsMountImport>>,
     #[cfg(not(target_os = "macos"))]
     control_session: Mutex<()>,
 }
 
-fn build_mount_plan(mounts: &[MountConfig]) -> (Vec<PlatformSharedDir>, Vec<MountRequest>) {
+struct SandboxMountPlan {
+    shared_dirs: Vec<PlatformSharedDir>,
+    mount_requests: Vec<MountRequest>,
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    windows_imports: Vec<WindowsMountImport>,
+}
+
+fn build_mount_plan(mounts: &[MountConfig]) -> Result<SandboxMountPlan> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        build_windows_mount_plan(mounts)
+    }
+
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    {
+        Ok(build_shared_directory_mount_plan(mounts))
+    }
+}
+
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+fn build_shared_directory_mount_plan(mounts: &[MountConfig]) -> SandboxMountPlan {
     let mut mount_requests = Vec::new();
     let mut shared_dirs = Vec::new();
 
@@ -253,7 +281,49 @@ fn build_mount_plan(mounts: &[MountConfig]) -> (Vec<PlatformSharedDir>, Vec<Moun
         }
     }
 
-    (shared_dirs, mount_requests)
+    SandboxMountPlan {
+        shared_dirs,
+        mount_requests,
+    }
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn build_windows_mount_plan(mounts: &[MountConfig]) -> Result<SandboxMountPlan> {
+    let specs = mounts
+        .iter()
+        .enumerate()
+        .map(|(i, mount)| {
+            let tag = format!("mount{}", i);
+            match mount {
+                MountConfig::Overlay {
+                    host_path,
+                    guest_path,
+                } => WindowsMountSpec {
+                    tag,
+                    host_path: PathBuf::from(host_path),
+                    guest_path: guest_path.clone(),
+                    mode: WindowsMountMode::Overlay,
+                },
+                MountConfig::Direct {
+                    host_path,
+                    guest_path,
+                    flags,
+                } => WindowsMountSpec {
+                    tag,
+                    host_path: PathBuf::from(host_path),
+                    guest_path: guest_path.clone(),
+                    mode: WindowsMountMode::Direct { flags: *flags },
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    let plan = plan_windows_mounts(&specs).context("planning Windows mount imports")?;
+
+    Ok(SandboxMountPlan {
+        shared_dirs: Vec::new(),
+        mount_requests: plan.mount_requests,
+        windows_imports: plan.imports,
+    })
 }
 
 impl Sandbox {
@@ -262,7 +332,15 @@ impl Sandbox {
     }
 
     pub fn start(&self) -> Result<()> {
-        self.vm.start().context("Failed to start VM")
+        self.vm.start().context("Failed to start VM")?;
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        if let Err(error) = self.initialize_windows_mounts() {
+            let _ = self.vm.stop();
+            return Err(error).context("Failed to initialize Windows mounts");
+        }
+
+        Ok(())
     }
 
     pub fn stop(&self) -> Result<()> {
@@ -619,9 +697,13 @@ impl Sandbox {
     pub fn copy_from_host(&self, source: impl AsRef<Path>, guest_destination: &str) -> Result<()> {
         self.ensure_file_range_io("copy-in")?;
         let plan = plan_copy_in(source.as_ref(), guest_destination)?;
+        self.copy_from_host_plan(&plan)
+    }
 
-        for entry in plan.entries {
-            match entry.kind {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn copy_from_host_plan(&self, plan: &CopyInPlan) -> Result<()> {
+        for entry in &plan.entries {
+            match &entry.kind {
                 CopyInEntryKind::Directory => {
                     self.mkdir(&entry.guest_path, true).with_context(|| {
                         format!("copy-in create guest dir '{}'", entry.guest_path)
@@ -1166,6 +1248,7 @@ impl Sandbox {
             .with_context(|| format!("cloning guest control stream for {operation}"))?;
         let mut reader = stream;
 
+        #[cfg(target_os = "macos")]
         self.send_mount_requests(&mut writer, &mut reader)?;
         f(&mut writer, &mut reader)
     }
@@ -1227,6 +1310,34 @@ impl Sandbox {
             .with_context(|| format!("opening Windows virtio-serial {operation} control stream"))?;
         let _ = stream.set_nodelay_if_tcp(true);
         Ok(stream)
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn initialize_windows_mounts(&self) -> Result<()> {
+        let imports = std::mem::take(
+            &mut *self
+                .windows_mounts
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Windows mount import lock poisoned"))?,
+        );
+        if imports.is_empty() {
+            return Ok(());
+        }
+
+        self.ensure_file_range_io("Windows mount import")?;
+        for import in &imports {
+            self.copy_from_host_plan(&import.copy_plan)
+                .with_context(|| {
+                    format!(
+                        "copying Windows mount '{}' into guest staging path '{}'",
+                        import.tag, import.guest_source
+                    )
+                })?;
+        }
+
+        self.with_guest_control_session("mount init", |writer, reader| {
+            self.send_mount_requests(writer, reader)
+        })
     }
 }
 
@@ -1536,14 +1647,14 @@ mod tests {
             guest_path: "/workspace".into(),
         }];
 
-        let (shared_dirs, mount_requests) = build_mount_plan(&mounts);
+        let mount_plan = build_mount_plan(&mounts).expect("mount plan should build");
 
-        assert_eq!(shared_dirs.len(), 1);
-        assert_eq!(shared_dirs[0].host_path, "/host");
-        assert_eq!(shared_dirs[0].tag, "mount0");
-        assert!(shared_dirs[0].read_only);
+        assert_eq!(mount_plan.shared_dirs.len(), 1);
+        assert_eq!(mount_plan.shared_dirs[0].host_path, "/host");
+        assert_eq!(mount_plan.shared_dirs[0].tag, "mount0");
+        assert!(mount_plan.shared_dirs[0].read_only);
 
-        match &mount_requests[0] {
+        match &mount_plan.mount_requests[0] {
             MountRequest::Overlay { source, target } => {
                 assert_eq!(source, "mount0");
                 assert_eq!(target, "/workspace");
@@ -1567,12 +1678,12 @@ mod tests {
             },
         ];
 
-        let (shared_dirs, mount_requests) = build_mount_plan(&mounts);
+        let mount_plan = build_mount_plan(&mounts).expect("mount plan should build");
 
-        assert!(!shared_dirs[0].read_only);
-        assert!(shared_dirs[1].read_only);
+        assert!(!mount_plan.shared_dirs[0].read_only);
+        assert!(mount_plan.shared_dirs[1].read_only);
 
-        match &mount_requests[0] {
+        match &mount_plan.mount_requests[0] {
             MountRequest::Direct {
                 source,
                 target,
@@ -1585,7 +1696,7 @@ mod tests {
             MountRequest::Overlay { .. } => panic!("expected direct request"),
         }
 
-        match &mount_requests[1] {
+        match &mount_plan.mount_requests[1] {
             MountRequest::Direct {
                 source,
                 target,
