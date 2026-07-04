@@ -1,0 +1,25 @@
+crates/lsb-platform/src/windows_x86_64/qemu/argv.rs
+  s_8e61ef9c9e812b::t_25083212eeb9dc 447,511
+  s_8e61ef9c9e812b::t_6eeaef6bed2368 587-594
+  s_8e61ef9c9e812b::t_52dd53a0b5bf13 586
+crates/lsb-platform/src/windows_x86_64/qemu/config.rs
+  s_8e61ef9c9e812b::t_6834d904306577 3
+.github/workflows/windows-lsb-hardware.yml
+  s_8e61ef9c9e812b::t_fc39ce7e2da582 231-245,254,351-379,388
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a21f97cc7b7391df189bc8e07234a0a0ebf22fce",
+  "prompts": {},
+  "sessions": {
+    "s_8e61ef9c9e812b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f28a9-5b53-7311-86c2-682bf0789f83",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
