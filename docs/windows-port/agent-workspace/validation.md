@@ -69,7 +69,7 @@ Hardware workflow:
 | M05 | WHPX boot smoke: QEMU starts with provisioned boot assets, serial/QEMU artifact files are captured, and QEMU stays alive through the M05 observation window with non-empty serial evidence such as kernel, `/init`, rootfs mount, or `lsb-guest` startup lines. Empty serial output must fail with actionable serial/stderr artifacts. The guest-ready handshake remains M06/M07 work. |
 | M06 | Host can open virtio-serial transport; guest selects virtio-serial and opens the configured control port. |
 | M07 | LocalSandbox `GuestReady` frame is received over the established virtio-serial control stream before VM startup succeeds; fake/unit tests cover timeout, invalid frame, protocol-version mismatch, unsupported capabilities, and early QEMU exit without requiring real QEMU. |
-| M08 | `exec` command returns stdout/stderr/exit status; kill/timeout behavior tested. |
+| M08 | Non-interactive `exec` command returns stdout/stderr/exit status over the existing LocalSandbox protocol; Windows streaming `spawn`/kill returns an explicit unsupported error until muxing exists. |
 | M09 | Copy-in/copy-out tests for files, dirs, empty dirs, large files, path traversal rejection. |
 | M10 | Mount MVP conformance tests for read-only source semantics and isolated writes. |
 | M11 | Host-to-guest port forwarding works without guest NIC. |
@@ -121,6 +121,9 @@ cargo test -p lsb-platform real_qemu_preflight_when_explicitly_enabled -- --igno
 # Run boot smoke once M05 exists
 cargo test -p lsb-platform windows_qemu_boot_smoke -- --ignored --nocapture
 
+# Run guest exec smoke once M08 exists
+cargo test -p lsb-vm windows_qemu_exec_smoke -- --ignored --nocapture
+
 # Run all Windows integration tests once M15 exists
 cargo test --workspace --features windows-integration -- --ignored --nocapture
 ```
@@ -135,6 +138,14 @@ $env:LSB_WINDOWS_BOOT_INITRD="C:\path\to\initramfs.cpio.gz"
 $env:LSB_WINDOWS_BOOT_ROOTFS="C:\path\to\disposable\rootfs.ext4"
 $env:LSB_WINDOWS_BOOT_ARTIFACT_DIR="C:\path\to\diagnostics" # optional
 $env:LSB_WINDOWS_GUEST_READY_SECS="30" # optional M07 readiness timeout override
+```
+
+M08 exec smoke uses the same asset variables and should be run after the boot
+smoke on a Windows 11 x86_64 WHPX runner:
+
+```powershell
+cargo test -p lsb-platform windows_qemu_boot_smoke -- --ignored --nocapture
+cargo test -p lsb-vm windows_qemu_exec_smoke -- --ignored --nocapture
 ```
 
 If the asset variables are absent, the smoke lane must print an explicit skip

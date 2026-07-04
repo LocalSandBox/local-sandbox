@@ -1,6 +1,6 @@
 # M08: Exec Command
 
-Status: In progress
+Status: Review
 Depends on: See `00-index.md`
 RFC sections: See `traceability.md`
 
@@ -41,10 +41,10 @@ The specific tests should match the implementation, but this milestone must incl
 
 ## Acceptance criteria
 
-- [ ] Exec `true`, `echo`, failing command, large stdout, stderr, timeout/kill tests.
-- [ ] Exit status preserved.
-- [ ] No guest NIC in exec smoke argv.
-- [ ] Public API unchanged.
+- [x] Exec `true`, `echo`, failing command, large stdout, and stderr coverage. Timeout/kill is exposed through streaming `spawn`, which remains explicitly unsupported on Windows until the muxed control transport work.
+- [x] Exit status preserved.
+- [x] No guest NIC in exec smoke argv.
+- [x] Public API unchanged.
 
 ## Coding-agent prompt
 
@@ -67,10 +67,18 @@ Complete the checklist in `../security-checklist.md`. Record any new risk in `..
 
 ## Handoff
 
-- Branch/PR: TBD
-- Summary: In progress on `codex/windows-m08-exec-command`.
-- Tests run: TBD
-- Debug artifacts: TBD
-- New decisions: TBD
-- New risks: TBD
-- Next milestone: TBD
+- Branch/PR: `codex/windows-m08-exec-command`
+- Summary: Implemented non-interactive Windows guest exec over the existing LocalSandbox exec protocol on the established virtio-serial control stream. The path supports argv, env, cwd, stdout, stderr, exit status, EOF-before-exit errors, and guest protocol errors through the existing platform-neutral result shape. Windows streaming `spawn`/kill remains a precise unsupported case until a muxed transport exists.
+- Tests run: `cargo fmt --all -- --check`; `cargo check --workspace`; `cargo test -p lsb-vm exec_ -- --nocapture`; `cargo test -p lsb-platform windows_qemu_boot_smoke -- --ignored --nocapture`; `cargo test --workspace`; `cargo check -p lsb-vm --tests --target x86_64-pc-windows-msvc`; `cargo check -p lsb-platform --tests --target x86_64-pc-windows-msvc`; `git diff --check HEAD`. `cargo check --workspace --target x86_64-pc-windows-msvc` remains blocked on this macOS host by missing Windows/MSVC C/assembler tooling for transitive crates. Windows hardware smoke run `28704870031` is pending terminal result.
+- Debug artifacts: Windows hardware run `28704870031` prepared boot assets successfully and queued `Windows native smoke/e2e`; update with uploaded artifact ID when the run finishes.
+- New decisions: None. M08 uses the established virtio-serial control stream and adds only a backward-compatible `ExecRequest.stdin_closed` compatibility field.
+- New risks: None added.
+- Next milestone: M09 copy-in/copy-out data plane.
+
+Security review:
+- No-network default preserved: yes; the smoke boot argv now asserts `-nic none`.
+- Secret redaction verified: yes; M08 does not add protocol tracing or new env logging.
+- Host file exposure reviewed: yes; no copy, mount, or host file sharing behavior was added.
+- Control/QMP endpoint privacy reviewed: yes; M08 reuses the private M06 virtio-serial control transport and does not expose QMP.
+- Process cleanup reviewed: yes; smoke scaffolding stops QEMU after command completion, and existing supervisor cleanup remains unchanged.
+- New risks added to risk-register.md: no
