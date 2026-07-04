@@ -122,7 +122,7 @@ impl CaseFoldSet {
         operation: CopyPathOperation,
         parent: &str,
     ) -> Result<(), CopyPathError> {
-        let key = component.to_ascii_lowercase();
+        let key = windows_copy_case_key(component);
         if !self.seen.insert(key) {
             return Err(CopyPathError::new(
                 operation,
@@ -135,6 +135,14 @@ impl CaseFoldSet {
         }
         Ok(())
     }
+}
+
+/// Best-effort Unicode fold for Windows MVP copy collision checks.
+///
+/// This catches common non-ASCII case pairs that ASCII folding misses, but it
+/// does not attempt NTFS upcase-table matching or Unicode normalization.
+fn windows_copy_case_key(component: &str) -> String {
+    component.chars().flat_map(|ch| ch.to_lowercase()).collect()
 }
 
 pub fn plan_copy_in(source: &Path, guest_root: &str) -> Result<CopyInPlan, CopyPathError> {
@@ -750,6 +758,41 @@ mod tests {
             .expect_err("case collision should fail");
 
         assert!(err.reason().contains("case-insensitive"));
+    }
+
+    #[test]
+    fn case_fold_set_rejects_non_ascii_case_collisions() {
+        let mut set = CaseFoldSet::default();
+        set.insert(
+            "Ångström.txt",
+            CopyPathOperation::CopyOutGuestEntry,
+            "/workspace",
+        )
+        .expect("first entry should insert");
+
+        let err = set
+            .insert(
+                "ångström.txt",
+                CopyPathOperation::CopyOutGuestEntry,
+                "/workspace",
+            )
+            .expect_err("non-ASCII case collision should fail");
+
+        assert!(err.reason().contains("case-insensitive"));
+    }
+
+    #[test]
+    fn case_fold_set_does_not_normalize_unicode_equivalence() {
+        let mut set = CaseFoldSet::default();
+        set.insert("é.txt", CopyPathOperation::CopyOutGuestEntry, "/workspace")
+            .expect("first entry should insert");
+
+        set.insert(
+            "e\u{301}.txt",
+            CopyPathOperation::CopyOutGuestEntry,
+            "/workspace",
+        )
+        .expect("Windows MVP copy folding does not perform Unicode normalization");
     }
 
     #[test]

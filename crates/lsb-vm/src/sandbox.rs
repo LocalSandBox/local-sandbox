@@ -403,15 +403,11 @@ impl Sandbox {
                 len: Some(len),
             };
             let chunk = self.send_read_file_request(&req)?;
-            if chunk.is_empty() && len > 0 {
-                bail!(
-                    "guest returned empty read_file chunk before EOF for '{}'",
-                    path
-                );
-            }
-            offset += chunk.len() as u64;
+            let chunk_len = validate_read_chunk("read_file", path, offset, len, &chunk, size)?;
+            offset += chunk_len;
             out.extend_from_slice(&chunk);
         }
+        validate_chunked_transfer_complete("read_file", path, offset, size)?;
         Ok(out)
     }
 
@@ -772,16 +768,12 @@ impl Sandbox {
                 len: Some(len),
             };
             let chunk = self.send_read_file_request(&req)?;
-            if chunk.is_empty() && len > 0 {
-                bail!(
-                    "guest returned empty copy-out chunk before EOF for '{}'",
-                    guest_path
-                );
-            }
+            let chunk_len = validate_read_chunk("copy-out", guest_path, offset, len, &chunk, size)?;
             file.write_all(&chunk)
                 .with_context(|| format!("writing copy-out file '{}'", destination.display()))?;
-            offset += chunk.len() as u64;
+            offset += chunk_len;
         }
+        validate_chunked_transfer_complete("copy-out", guest_path, offset, size)?;
         file.sync_all()
             .with_context(|| format!("syncing copy-out file '{}'", destination.display()))?;
         Ok(())
@@ -1330,6 +1322,14 @@ fn replace_with_temp_path(temp_path: &Path, destination: &Path, overwrite: bool)
                 destination.display()
             );
         }
+        let temp_metadata = fs::symlink_metadata(temp_path)
+            .with_context(|| format!("inspecting copy-out temp path '{}'", temp_path.display()))?;
+        if metadata_is_symlink_or_reparse(&temp_metadata) {
+            bail!(
+                "copy-out temp path '{}' is a symlink or reparse point; refusing to publish it",
+                temp_path.display()
+            );
+        }
         let metadata = fs::symlink_metadata(destination).with_context(|| {
             format!(
                 "inspecting copy-out destination '{}'",
@@ -1342,7 +1342,23 @@ fn replace_with_temp_path(temp_path: &Path, destination: &Path, overwrite: bool)
                 destination.display()
             );
         }
-        if metadata.is_dir() {
+        let temp_is_dir = temp_metadata.is_dir();
+        let destination_is_dir = metadata.is_dir();
+        if temp_is_dir != destination_is_dir {
+            let temp_kind = if temp_is_dir { "directory" } else { "file" };
+            let destination_kind = if destination_is_dir {
+                "directory"
+            } else {
+                "file"
+            };
+            bail!(
+                "copy-out destination '{}' is an existing {}; refusing to replace it with a {}",
+                destination.display(),
+                destination_kind,
+                temp_kind
+            );
+        }
+        if temp_is_dir {
             fs::remove_dir_all(destination).with_context(|| {
                 format!(
                     "removing existing copy-out directory '{}'",
@@ -1366,6 +1382,62 @@ fn replace_with_temp_path(temp_path: &Path, destination: &Path, overwrite: bool)
             destination.display()
         )
     })
+}
+
+fn validate_read_chunk(
+    operation: &str,
+    path: &str,
+    offset: u64,
+    requested_len: u64,
+    chunk: &[u8],
+    expected_size: u64,
+) -> Result<u64> {
+    let chunk_len = u64::try_from(chunk.len())
+        .map_err(|_| anyhow::anyhow!("{operation} chunk for '{path}' is too large"))?;
+    if chunk_len == 0 && requested_len > 0 {
+        bail!(
+            "guest returned empty {operation} chunk before EOF for '{}'",
+            path
+        );
+    }
+    if chunk_len > requested_len {
+        bail!(
+            "guest returned {} bytes for {operation} chunk at offset {} in '{}', exceeding requested length {}",
+            chunk_len,
+            offset,
+            path,
+            requested_len
+        );
+    }
+    let end = offset
+        .checked_add(chunk_len)
+        .ok_or_else(|| anyhow::anyhow!("{operation} chunk offset overflow for '{path}'"))?;
+    if end > expected_size {
+        bail!(
+            "guest returned {operation} chunk ending at byte {} for '{}', exceeding advertised size {}",
+            end,
+            path,
+            expected_size
+        );
+    }
+    Ok(chunk_len)
+}
+
+fn validate_chunked_transfer_complete(
+    operation: &str,
+    path: &str,
+    transferred: u64,
+    expected_size: u64,
+) -> Result<()> {
+    if transferred != expected_size {
+        bail!(
+            "{operation} transferred {} bytes for '{}', but guest stat advertised {} bytes",
+            transferred,
+            path,
+            expected_size
+        );
+    }
+    Ok(())
 }
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -1665,6 +1737,104 @@ mod tests {
     }
 
     #[test]
+    fn chunk_validation_rejects_oversized_guest_response() {
+        let err = validate_read_chunk("read_file", "/tmp/file", 0, 4, b"12345", 4)
+            .expect_err("oversized chunk should fail");
+
+        assert!(err.to_string().contains("exceeding requested length"));
+    }
+
+    #[test]
+    fn chunk_validation_rejects_guest_response_beyond_stat_size() {
+        let err = validate_read_chunk("copy-out", "/tmp/file", 3, 4, b"1234", 6)
+            .expect_err("chunk beyond advertised size should fail");
+
+        assert!(err.to_string().contains("exceeding advertised size"));
+    }
+
+    #[test]
+    fn chunk_validation_requires_exact_advertised_byte_count() {
+        let err = validate_chunked_transfer_complete("copy-out", "/tmp/file", 3, 4)
+            .expect_err("incomplete transfer should fail");
+
+        assert!(err.to_string().contains("advertised 4 bytes"));
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn copy_out_overwrite_rejects_file_to_directory_replacement() {
+        let root = copy_overwrite_test_dir("file-to-dir");
+        let temp_file = root.join("temp-file");
+        let destination = root.join("destination");
+        std::fs::write(&temp_file, b"new").expect("temp file");
+        std::fs::create_dir(&destination).expect("destination dir");
+        std::fs::write(destination.join("kept.txt"), b"old").expect("existing child");
+
+        let err = replace_with_temp_path(&temp_file, &destination, true)
+            .expect_err("file must not replace directory");
+
+        assert!(err.to_string().contains("refusing to replace"));
+        assert!(destination.is_dir());
+        assert_eq!(
+            std::fs::read(destination.join("kept.txt")).expect("existing child should remain"),
+            b"old"
+        );
+        assert_eq!(
+            std::fs::read(&temp_file).expect("temp file should remain for cleanup"),
+            b"new"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn copy_out_overwrite_rejects_directory_to_file_replacement() {
+        let root = copy_overwrite_test_dir("dir-to-file");
+        let temp_dir = root.join("temp-dir");
+        let destination = root.join("destination.txt");
+        std::fs::create_dir(&temp_dir).expect("temp dir");
+        std::fs::write(temp_dir.join("new.txt"), b"new").expect("temp child");
+        std::fs::write(&destination, b"old").expect("destination file");
+
+        let err = replace_with_temp_path(&temp_dir, &destination, true)
+            .expect_err("directory must not replace file");
+
+        assert!(err.to_string().contains("refusing to replace"));
+        assert_eq!(
+            std::fs::read(&destination).expect("destination file should remain"),
+            b"old"
+        );
+        assert_eq!(
+            std::fs::read(temp_dir.join("new.txt")).expect("temp dir should remain for cleanup"),
+            b"new"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn copy_out_overwrite_replaces_same_kind_file() {
+        let root = copy_overwrite_test_dir("file-to-file");
+        let temp_file = root.join("temp-file");
+        let destination = root.join("destination.txt");
+        std::fs::write(&temp_file, b"new").expect("temp file");
+        std::fs::write(&destination, b"old").expect("destination file");
+
+        replace_with_temp_path(&temp_file, &destination, true)
+            .expect("file should replace file with explicit overwrite");
+
+        assert_eq!(
+            std::fs::read(&destination).expect("destination should contain new data"),
+            b"new"
+        );
+        assert!(!temp_file.exists());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn exec_response_errors_when_guest_closes_before_exit() {
         let mut reader = exec_response_stream(&[(frame::STDOUT, b"partial")]);
         let mut stdout = Vec::new();
@@ -1685,6 +1855,18 @@ mod tests {
         }
         stream.set_position(0);
         stream
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn copy_overwrite_test_dir(label: &str) -> PathBuf {
+        let nonce = COPY_OUT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "lsb-copy-overwrite-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("test root");
+        root
     }
 
     #[test]
