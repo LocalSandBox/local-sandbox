@@ -10,7 +10,13 @@ The repository workflow currently targets the default self-hosted Windows labels
 self-hosted, Windows, X64
 ```
 
-Update `.github/workflows/windows-lsb-hardware.yml` and `validation.md` together if the runner is later moved to custom labels such as `whpx` or `local-sandbox`.
+Update `.github/workflows/windows-lsb-hardware.yml` and `validation.md`
+together if the runner is later moved to custom labels such as `whpx` or
+`local-sandbox`. The smoke/e2e boot asset cache optimization assumes these
+labels resolve to exactly one persistent runner. If more Windows runners are
+added, give this machine a dedicated label or remove the local-cache skip path;
+otherwise the probe job can hit one machine's `C:\lsb-assets` cache while the
+final smoke/e2e job lands on another machine.
 
 ## Runner requirements
 
@@ -64,18 +70,27 @@ The hardware workflow accepts one required `test_set` input:
 - `e2e`: runs `scripts/windows-e2e.ps1`.
 
 The `check` and `unit` lanes run only on the self-hosted Windows runner and do
-not prepare boot assets. The `smoke` and `e2e` lanes first run a GitHub-hosted
-Linux job that prepares the `windows-x86_64` LocalSandbox boot assets with
-`LSB_FORCE_DOCKER_ROOTFS=1`, uploads them as a short-lived artifact for the same
-workflow run, and uses an exact GitHub cache key derived from the source files
-that affect the boot assets. The cache intentionally has no broad restore keys.
+not prepare boot assets. The `smoke` and `e2e` lanes first run a lightweight
+Windows cache probe. The probe computes the `windows-x86_64` boot asset key with
+`cargo run --quiet -p xtask -- boot-asset-key --platform windows-x86_64`, then
+validates `C:\lsb-assets\by-key\<asset-key>\asset-manifest.json` and the cached
+`Image`, `initramfs.cpio.gz`, and `rootfs.ext4`.
 
-On the self-hosted Windows runner, the workflow downloads that artifact and runs
-`scripts/prepare-windows-boot-assets.ps1`. The script verifies
-`asset-manifest.json`, stores pristine assets under
-`C:\lsb-assets\by-key\<asset-key>\`, copies only the pristine `rootfs.ext4` to a
-per-run disposable path under `C:\lsb-assets\work\<run-id>-<attempt>\`, and
-writes the boot asset environment variables consumed by the smoke test.
+On a Windows cache hit, the GitHub-hosted Linux preparation job is skipped. The
+final Windows smoke/e2e job reuses the pristine cached assets, copies only
+`rootfs.ext4` to the per-run disposable path under
+`C:\lsb-assets\work\<run-id>-<attempt>\`, and writes the boot asset environment
+variables consumed by the test.
+
+On a Windows cache miss, the workflow runs the GitHub-hosted Linux
+`prepare-boot-assets` job. That job prepares the `windows-x86_64` LocalSandbox
+boot assets with `LSB_FORCE_DOCKER_ROOTFS=1`, uses the same exact boot asset key
+for the GitHub cache, and uploads `Image`, `initramfs.cpio.gz`, `rootfs.ext4`,
+and `asset-manifest.json` as a short-lived same-run artifact. The final Windows
+job downloads that artifact, verifies the manifest, hydrates
+`C:\lsb-assets\by-key\<asset-key>\`, creates the disposable `rootfs.ext4` copy,
+and then runs the requested smoke/e2e suite. The GitHub cache intentionally has
+no broad restore keys.
 
 Coding agents on macOS should trigger the workflow through the repository helper:
 
@@ -92,7 +107,7 @@ The helper requires GitHub CLI (`gh`), an authenticated GitHub session, and a cl
 
 The workflow delegates long-running Windows hardware suites to PowerShell scripts in `scripts/`:
 
-- `scripts/prepare-windows-boot-assets.ps1`: validates the boot asset artifact manifest, maintains the `C:\lsb-assets` persistent cache, creates the disposable rootfs work copy, and exports `LSB_WINDOWS_BOOT_KERNEL`, `LSB_WINDOWS_BOOT_INITRD`, `LSB_WINDOWS_BOOT_ROOTFS`, and `LSB_WINDOWS_BOOT_ARTIFACT_DIR` through `GITHUB_ENV`.
+- `scripts/prepare-windows-boot-assets.ps1`: validates either a downloaded boot asset artifact or a local `C:\lsb-assets\by-key\<asset-key>\` cache entry, maintains the persistent cache, creates the disposable rootfs work copy, and exports `LSB_WINDOWS_BOOT_KERNEL`, `LSB_WINDOWS_BOOT_INITRD`, `LSB_WINDOWS_BOOT_ROOTFS`, and `LSB_WINDOWS_BOOT_ARTIFACT_DIR` through `GITHUB_ENV`.
 - `scripts/windows-smoke.ps1`: current smoke entrypoint; it verifies the CLI starts, runs real QEMU/WHPX preflight, and runs the direct boot smoke when the workflow-provisioned boot asset variables are present.
 - `scripts/windows-e2e.ps1`: current e2e entrypoint; today it runs `cargo test --workspace --locked` and is the place to expand the full hardware integration suite.
 
@@ -103,6 +118,7 @@ The workflow delegates long-running Windows hardware suites to PowerShell script
 - Do not add automatic `pull_request` triggers to `.github/workflows/windows-lsb-hardware.yml`.
 - Upload redacted artifacts only.
 - Periodically clean LocalSandbox debug/temp directories and stale `C:\lsb-assets\work\*` directories. Keep `C:\lsb-assets\by-key\*` entries that are still useful for exact-key smoke/e2e runs.
+- The current key namespace is `boot-assets-v2-windows-x86_64-*`. Old `boot-assets-v1-*` entries may be removed after at least one successful v2 smoke/e2e miss path warms the cache.
 - Ensure QEMU processes are not left running after failed jobs.
 
 ## Artifact retention

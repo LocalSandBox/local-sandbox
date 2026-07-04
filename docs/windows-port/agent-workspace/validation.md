@@ -36,6 +36,7 @@ Required runner properties:
 - Hyper-V / Windows Hypervisor Platform enabled.
 - QEMU installed and discoverable or configured via `LSB_QEMU`.
 - `C:\lsb-assets` writable by the runner account for the persistent boot asset cache.
+- The smoke/e2e cache optimization assumes the workflow labels resolve to one persistent Windows runner. If multiple runners share these labels, use a dedicated label for this runner or disable the local-cache skip path.
 - Non-admin execution path preferred for MVP tests.
 
 Hardware workflow:
@@ -45,14 +46,17 @@ Hardware workflow:
 - macOS/Linux helper: `./scripts/win-gh-test check|unit|smoke|e2e`
 - Do not add automatic `pull_request` triggers for the self-hosted Windows hardware runner.
 - `check` and `unit` run on the self-hosted Windows runner without boot asset preparation.
-- `smoke` and `e2e` depend on a GitHub-hosted Linux `prepare-boot-assets` job.
-  That job prepares `windows-x86_64` boot assets with
-  `LSB_FORCE_DOCKER_ROOTFS=1`, uses an exact source-derived GitHub cache key
-  with no broad restore keys, and uploads `Image`, `initramfs.cpio.gz`,
-  `rootfs.ext4`, and `asset-manifest.json` as a same-run artifact.
-- The Windows smoke/e2e job downloads the artifact, verifies the manifest,
-  maintains `C:\lsb-assets\by-key\<asset-key>\`, and boots only a disposable
-  per-run copy of `rootfs.ext4` from `C:\lsb-assets\work\<run-id>-<attempt>\`.
+- `smoke` and `e2e` first run a Windows cache probe. On a valid
+  `C:\lsb-assets\by-key\<asset-key>\` hit, the GitHub-hosted Linux
+  `prepare-boot-assets` job and full artifact download are skipped.
+- On a Windows cache miss, the Linux job prepares `windows-x86_64` boot assets
+  with `LSB_FORCE_DOCKER_ROOTFS=1`, uses the exact source-derived boot asset key
+  as the GitHub cache key with no broad restore keys, and uploads `Image`,
+  `initramfs.cpio.gz`, `rootfs.ext4`, and `asset-manifest.json` as a same-run
+  artifact.
+- The final Windows smoke/e2e job either prepares from the validated local
+  cache or downloads the artifact on miss. QEMU boots only a disposable per-run
+  copy of `rootfs.ext4` from `C:\lsb-assets\work\<run-id>-<attempt>\`.
 
 ## Milestone validation gates
 

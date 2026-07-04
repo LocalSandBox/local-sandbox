@@ -22,14 +22,86 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  windows-boot-cache-probe:
+    name: Probe Windows boot asset cache
+    if: ${{ inputs.test_set == 'smoke' || inputs.test_set == 'e2e' }}
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+
+    outputs:
+      asset_key: ${{ steps.boot-assets.outputs.asset_key }}
+      cache_hit: ${{ steps.boot-assets.outputs.cache_hit }}
+
+    env:
+      # Stores downloaded crates globally across all workflow runs.
+      CARGO_HOME: "C:\\cargo_cache"
+      # Isolates build artifacts per repository to avoid concurrent write locks.
+      CARGO_TARGET_DIR: "C:\\target_cache\\${{ github.repository }}"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          clean: false
+          fetch-depth: 1
+
+      - name: Configure PATH
+        run: |
+          $nativeToolDirs = @(
+            "$env:USERPROFILE\.cargo\bin",
+            "C:\Program Files\CMake\bin",
+            "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin",
+            "C:\Program Files\NASM",
+            "C:\Program Files\LLVM\bin"
+          )
+
+          foreach ($dir in $nativeToolDirs) {
+            if (Test-Path $dir) {
+              $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            } else {
+              Write-Warning "Native tool directory does not exist: $dir"
+            }
+          }
+
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Resolve and probe boot asset cache
+        id: boot-assets
+        run: |
+          $assetKey = (cargo run --quiet -p xtask -- boot-asset-key --platform windows-x86_64).Trim()
+          if (-not $assetKey) {
+            throw "Failed to resolve Windows boot asset key."
+          }
+
+          $cacheHit = "false"
+          try {
+            .\scripts\prepare-windows-boot-assets.ps1 -AssetKey $assetKey -UseCachedOnly -ProbeOnly
+            $cacheHit = "true"
+          } catch {
+            Write-Host "Boot asset cache miss for $assetKey. $($_.Exception.Message)"
+          }
+
+          "asset_key=$assetKey" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "cache_hit=$cacheHit" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Boot asset key: $assetKey"
+          Write-Host "Boot asset cache hit: $cacheHit"
+
   prepare-boot-assets:
     name: Prepare Windows boot assets
-    if: ${{ inputs.test_set == 'smoke' || inputs.test_set == 'e2e' }}
+    if: ${{ (inputs.test_set == 'smoke' || inputs.test_set == 'e2e') && needs.windows-boot-cache-probe.outputs.cache_hit != 'true' }}
+    needs: windows-boot-cache-probe
     runs-on: ubuntu-24.04
     timeout-minutes: 120
 
     env:
       BOOT_ASSET_PLATFORM: windows-x86_64
+      BOOT_ASSET_KEY: ${{ needs.windows-boot-cache-probe.outputs.asset_key }}
       BOOT_ASSET_DIR: target/windows-boot-assets/windows-x86_64
       LSB_DATA_DIR: /tmp/lsb-windows-boot-assets
       LSB_FORCE_DOCKER_ROOTFS: "1"
@@ -45,7 +117,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.BOOT_ASSET_DIR }}
-          key: boot-assets-v1-windows-x86_64-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/lsb-guest/**', 'crates/lsb-proto/**', 'xtask/src/rootfs.rs', 'xtask/src/kernel.rs', 'xtask/src/guest.rs', 'xtask/src/context.rs', 'xtask/src/args.rs', 'xtask/src/release.rs', 'kernel/lsb_x86_64_defconfig', 'crates/lsb-platform/src/windows_x86_64/mod.rs') }}
+          key: ${{ env.BOOT_ASSET_KEY }}
 
       - name: Install Rust toolchain
         if: ${{ steps.boot-assets-cache.outputs.cache-hit != 'true' }}
@@ -79,8 +151,6 @@ jobs:
           cargo run -p xtask -- prepare-rootfs --platform "${BOOT_ASSET_PLATFORM}"
 
       - name: Stage boot assets and manifest
-        env:
-          BOOT_ASSET_KEY: boot-assets-v1-windows-x86_64-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/lsb-guest/**', 'crates/lsb-proto/**', 'xtask/src/rootfs.rs', 'xtask/src/kernel.rs', 'xtask/src/guest.rs', 'xtask/src/context.rs', 'xtask/src/args.rs', 'xtask/src/release.rs', 'kernel/lsb_x86_64_defconfig', 'crates/lsb-platform/src/windows_x86_64/mod.rs') }}
         run: |
           set -euo pipefail
           mkdir -p "${BOOT_ASSET_DIR}"
@@ -256,8 +326,8 @@ jobs:
 
   windows-smoke-e2e:
     name: Windows native smoke/e2e
-    if: ${{ inputs.test_set == 'smoke' || inputs.test_set == 'e2e' }}
-    needs: prepare-boot-assets
+    if: ${{ always() && (inputs.test_set == 'smoke' || inputs.test_set == 'e2e') && needs.windows-boot-cache-probe.result == 'success' && (needs.windows-boot-cache-probe.outputs.cache_hit == 'true' || needs.prepare-boot-assets.result == 'success') }}
+    needs: [windows-boot-cache-probe, prepare-boot-assets]
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 90
 
@@ -328,13 +398,20 @@ jobs:
           node --version
           npm --version
 
+      - name: Prepare cached boot assets
+        if: ${{ needs.windows-boot-cache-probe.outputs.cache_hit == 'true' }}
+        run: |
+          .\scripts\prepare-windows-boot-assets.ps1 -AssetKey "${{ needs.windows-boot-cache-probe.outputs.asset_key }}" -UseCachedOnly
+
       - name: Download boot assets
+        if: ${{ needs.windows-boot-cache-probe.outputs.cache_hit != 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: windows-boot-assets
           path: ${{ runner.temp }}\windows-boot-assets
 
       - name: Prepare local boot asset cache
+        if: ${{ needs.windows-boot-cache-probe.outputs.cache_hit != 'true' }}
         run: |
           .\scripts\prepare-windows-boot-assets.ps1 -ArtifactDir "${{ runner.temp }}\windows-boot-assets"
 

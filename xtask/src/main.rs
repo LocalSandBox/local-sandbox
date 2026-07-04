@@ -1,4 +1,5 @@
 mod args;
+mod boot_asset;
 mod context;
 mod guest;
 mod kernel;
@@ -19,6 +20,7 @@ fn main() -> Result<()> {
     let rest: Vec<String> = args.collect();
     match command.as_str() {
         "platform-meta" => release::platform_meta(&rest),
+        "boot-asset-key" => boot_asset::print_boot_asset_key(&rest),
         "build-guest" => guest::build_guest(&rest),
         "build-kernel" => kernel::build_kernel(&rest),
         "prepare-rootfs" => rootfs::prepare_rootfs(&rest),
@@ -33,6 +35,9 @@ fn main() -> Result<()> {
 fn print_usage() {
     eprintln!("usage:");
     eprintln!("  cargo run -p xtask -- platform-meta [--platform <id>] [--format json|env] [--version <v>]");
+    eprintln!(
+        "  cargo run -p xtask -- boot-asset-key [--platform windows-x86_64] [--format plain|env]"
+    );
     eprintln!("  cargo run -p xtask -- build-guest [--platform <id>]");
     eprintln!("  cargo run -p xtask -- build-kernel [--platform <id>]");
     eprintln!("  cargo run -p xtask -- prepare-rootfs [--platform <id>]");

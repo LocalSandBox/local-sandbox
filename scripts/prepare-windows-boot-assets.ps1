@@ -1,12 +1,18 @@
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory = $true)]
   [string]$ArtifactDir,
+
+  [string]$AssetKey,
+
+  [switch]$UseCachedOnly,
+
+  [switch]$ProbeOnly,
 
   [string]$CacheRoot = "C:\lsb-assets"
 )
 
 $ErrorActionPreference = "Stop"
+$RequiredAssets = @("Image", "initramfs.cpio.gz", "rootfs.ext4")
 
 function Get-Sha256Hex {
   param(
@@ -15,6 +21,21 @@ function Get-Sha256Hex {
   )
 
   return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+}
+
+function Assert-SafeAssetKey {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Value
+  )
+
+  if (-not $Value) {
+    throw "Boot asset key must not be empty."
+  }
+
+  if ($Value -notmatch '^[A-Za-z0-9._-]+$') {
+    throw "Boot asset key contains characters that are unsafe for a Windows cache path: $Value"
+  }
 }
 
 function Assert-AssetFile {
@@ -60,6 +81,75 @@ function Get-ManifestEntry {
   return $matches[0]
 }
 
+function Read-AssetManifest {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$ManifestPath
+  )
+
+  if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+    throw "Boot asset manifest is missing: $ManifestPath"
+  }
+
+  return Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+}
+
+function Assert-AssetManifest {
+  param(
+    [Parameter(Mandatory = $true)]
+    [object]$Manifest,
+
+    [string]$ExpectedAssetKey
+  )
+
+  $schemaVersion = [int]($Manifest.schema_version)
+  if ($schemaVersion -ne 1) {
+    throw "Unsupported boot asset manifest schema version: $($Manifest.schema_version)"
+  }
+
+  $manifestAssetKey = [string]$Manifest.asset_key
+  Assert-SafeAssetKey -Value $manifestAssetKey
+
+  if ($ExpectedAssetKey -and $manifestAssetKey -ne $ExpectedAssetKey) {
+    throw "Boot asset manifest key mismatch. Expected $ExpectedAssetKey, got $manifestAssetKey."
+  }
+
+  $platform = [string]$Manifest.platform
+  if ($platform -ne "windows-x86_64") {
+    throw "Boot asset platform must be windows-x86_64, got $($Manifest.platform)."
+  }
+
+  $manifestFiles = @($Manifest.files)
+  $entriesByName = @{}
+
+  foreach ($assetName in $RequiredAssets) {
+    $entry = Get-ManifestEntry -Entries $manifestFiles -Name $assetName
+    $entryName = [string]$entry.name
+    if ($entryName -match '[\\/]') {
+      throw "Boot asset file entry must be a file name, got $($entry.name)."
+    }
+
+    $entriesByName[$assetName] = $entry
+  }
+
+  return $entriesByName
+}
+
+function Assert-AssetFiles {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$AssetRoot,
+
+    [Parameter(Mandatory = $true)]
+    [hashtable]$EntriesByName
+  )
+
+  foreach ($assetName in $RequiredAssets) {
+    $assetPath = Join-Path $AssetRoot $assetName
+    Assert-AssetFile -Path $assetPath -Entry $EntriesByName[$assetName]
+  }
+}
+
 function Export-GitHubEnv {
   param(
     [Parameter(Mandatory = $true)]
@@ -76,97 +166,113 @@ function Export-GitHubEnv {
   "$Name=$Value" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 }
 
-$artifactRoot = (Resolve-Path -LiteralPath $ArtifactDir).Path
-$manifestPath = Join-Path $artifactRoot "asset-manifest.json"
-if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
-  throw "Boot asset manifest is missing: $manifestPath"
-}
+function New-DisposableRootfs {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$CacheDir,
 
-$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-$schemaVersion = [int]($manifest.schema_version)
-if ($schemaVersion -ne 1) {
-  throw "Unsupported boot asset manifest schema version: $($manifest.schema_version)"
-}
+    [Parameter(Mandatory = $true)]
+    [hashtable]$EntriesByName
+  )
 
-$assetKey = [string]$manifest.asset_key
-if (-not $assetKey) {
-  throw "Boot asset manifest is missing asset_key."
-}
+  $runId = if ($env:GITHUB_RUN_ID) { $env:GITHUB_RUN_ID } else { "local" }
+  $attempt = if ($env:GITHUB_RUN_ATTEMPT) { $env:GITHUB_RUN_ATTEMPT } else { "0" }
+  $workDir = Join-Path (Join-Path $CacheRoot "work") "$runId-$attempt"
+  $diagnosticDir = Join-Path $workDir "diagnostics"
+  New-Item -ItemType Directory -Force -Path $diagnosticDir | Out-Null
 
-if ($assetKey -notmatch '^[A-Za-z0-9._-]+$') {
-  throw "Boot asset key contains characters that are unsafe for a Windows cache path: $assetKey"
-}
-
-$platform = [string]$manifest.platform
-if ($platform -ne "windows-x86_64") {
-  throw "Boot asset platform must be windows-x86_64, got $($manifest.platform)."
-}
-
-$manifestFiles = @($manifest.files)
-$requiredAssets = @("Image", "initramfs.cpio.gz", "rootfs.ext4")
-$entriesByName = @{}
-
-foreach ($assetName in $requiredAssets) {
-  $entry = Get-ManifestEntry -Entries $manifestFiles -Name $assetName
-  $entryName = [string]$entry.name
-  if ($entryName -match '[\\/]') {
-    throw "Boot asset file entry must be a file name, got $($entry.name)."
+  $disposableRootfs = Join-Path $workDir "rootfs.ext4"
+  if (Test-Path -LiteralPath $disposableRootfs) {
+    Remove-Item -LiteralPath $disposableRootfs -Force
   }
 
-  $sourcePath = Join-Path $artifactRoot $assetName
-  Assert-AssetFile -Path $sourcePath -Entry $entry
-  $entriesByName[$assetName] = $entry
+  $cachedRootfs = Join-Path $CacheDir "rootfs.ext4"
+  Copy-Item -LiteralPath $cachedRootfs -Destination $disposableRootfs -Force
+  Assert-AssetFile -Path $disposableRootfs -Entry ($EntriesByName["rootfs.ext4"])
+
+  Export-GitHubEnv -Name "LSB_WINDOWS_BOOT_KERNEL" -Value (Join-Path $CacheDir "Image")
+  Export-GitHubEnv -Name "LSB_WINDOWS_BOOT_INITRD" -Value (Join-Path $CacheDir "initramfs.cpio.gz")
+  Export-GitHubEnv -Name "LSB_WINDOWS_BOOT_ROOTFS" -Value $disposableRootfs
+  Export-GitHubEnv -Name "LSB_WINDOWS_BOOT_ARTIFACT_DIR" -Value $diagnosticDir
+
+  Write-Host "Disposable rootfs: $disposableRootfs"
+  Write-Host "Diagnostics: $diagnosticDir"
 }
 
-$cacheDir = Join-Path (Join-Path $CacheRoot "by-key") $assetKey
-New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+if ($ArtifactDir -and $AssetKey) {
+  throw "Pass either -ArtifactDir or -AssetKey, not both."
+}
 
-foreach ($assetName in $requiredAssets) {
-  $entry = $entriesByName[$assetName]
-  $sourcePath = Join-Path $artifactRoot $assetName
-  $cachedPath = Join-Path $cacheDir $assetName
-  $cacheValid = $false
+if (-not $ArtifactDir -and -not $AssetKey) {
+  throw "Pass -ArtifactDir for an artifact miss path or -AssetKey -UseCachedOnly for a local cache hit path."
+}
 
-  if (Test-Path -LiteralPath $cachedPath -PathType Leaf) {
-    try {
+if ($AssetKey -and -not $UseCachedOnly) {
+  throw "Pass -UseCachedOnly when preparing assets by -AssetKey."
+}
+
+if ($ArtifactDir -and ($UseCachedOnly -or $ProbeOnly)) {
+  throw "-UseCachedOnly and -ProbeOnly are only valid with -AssetKey."
+}
+
+if ($ProbeOnly -and -not $UseCachedOnly) {
+  throw "-ProbeOnly requires -UseCachedOnly."
+}
+
+$cacheRootByKey = Join-Path $CacheRoot "by-key"
+
+if ($ArtifactDir) {
+  $artifactRoot = (Resolve-Path -LiteralPath $ArtifactDir).Path
+  $manifestPath = Join-Path $artifactRoot "asset-manifest.json"
+  $manifest = Read-AssetManifest -ManifestPath $manifestPath
+  $entriesByName = Assert-AssetManifest -Manifest $manifest
+  $assetKey = [string]$manifest.asset_key
+
+  Assert-AssetFiles -AssetRoot $artifactRoot -EntriesByName $entriesByName
+
+  $cacheDir = Join-Path $cacheRootByKey $assetKey
+  New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+
+  foreach ($assetName in $RequiredAssets) {
+    $entry = $entriesByName[$assetName]
+    $sourcePath = Join-Path $artifactRoot $assetName
+    $cachedPath = Join-Path $cacheDir $assetName
+    $cacheValid = $false
+
+    if (Test-Path -LiteralPath $cachedPath -PathType Leaf) {
+      try {
+        Assert-AssetFile -Path $cachedPath -Entry $entry
+        $cacheValid = $true
+      } catch {
+        Write-Warning "Replacing invalid cached boot asset $cachedPath. $($_.Exception.Message)"
+      }
+    }
+
+    if ($cacheValid) {
+      Write-Host "Boot asset cache hit: $cachedPath"
+    } else {
+      Copy-Item -LiteralPath $sourcePath -Destination $cachedPath -Force
       Assert-AssetFile -Path $cachedPath -Entry $entry
-      $cacheValid = $true
-    } catch {
-      Write-Warning "Replacing invalid cached boot asset $cachedPath. $($_.Exception.Message)"
+      Write-Host "Cached boot asset: $cachedPath"
     }
   }
 
-  if ($cacheValid) {
-    Write-Host "Boot asset cache hit: $cachedPath"
-  } else {
-    Copy-Item -LiteralPath $sourcePath -Destination $cachedPath -Force
-    Assert-AssetFile -Path $cachedPath -Entry $entry
-    Write-Host "Cached boot asset: $cachedPath"
-  }
+  Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $cacheDir "asset-manifest.json") -Force
+} else {
+  Assert-SafeAssetKey -Value $AssetKey
+  $assetKey = $AssetKey
+  $cacheDir = Join-Path $cacheRootByKey $assetKey
+  $manifestPath = Join-Path $cacheDir "asset-manifest.json"
+  $manifest = Read-AssetManifest -ManifestPath $manifestPath
+  $entriesByName = Assert-AssetManifest -Manifest $manifest -ExpectedAssetKey $assetKey
+  Assert-AssetFiles -AssetRoot $cacheDir -EntriesByName $entriesByName
 }
 
-Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $cacheDir "asset-manifest.json") -Force
-
-$runId = if ($env:GITHUB_RUN_ID) { $env:GITHUB_RUN_ID } else { "local" }
-$attempt = if ($env:GITHUB_RUN_ATTEMPT) { $env:GITHUB_RUN_ATTEMPT } else { "0" }
-$workDir = Join-Path (Join-Path $CacheRoot "work") "$runId-$attempt"
-$diagnosticDir = Join-Path $workDir "diagnostics"
-New-Item -ItemType Directory -Force -Path $diagnosticDir | Out-Null
-
-$disposableRootfs = Join-Path $workDir "rootfs.ext4"
-if (Test-Path -LiteralPath $disposableRootfs) {
-  Remove-Item -LiteralPath $disposableRootfs -Force
+if ($ProbeOnly) {
+  Write-Host "Boot asset cache probe hit: $cacheDir"
+  return
 }
 
-$cachedRootfs = Join-Path $cacheDir "rootfs.ext4"
-Copy-Item -LiteralPath $cachedRootfs -Destination $disposableRootfs -Force
-Assert-AssetFile -Path $disposableRootfs -Entry ($entriesByName["rootfs.ext4"])
-
-Export-GitHubEnv -Name "LSB_WINDOWS_BOOT_KERNEL" -Value (Join-Path $cacheDir "Image")
-Export-GitHubEnv -Name "LSB_WINDOWS_BOOT_INITRD" -Value (Join-Path $cacheDir "initramfs.cpio.gz")
-Export-GitHubEnv -Name "LSB_WINDOWS_BOOT_ROOTFS" -Value $disposableRootfs
-Export-GitHubEnv -Name "LSB_WINDOWS_BOOT_ARTIFACT_DIR" -Value $diagnosticDir
+New-DisposableRootfs -CacheDir $cacheDir -EntriesByName $entriesByName
 
 Write-Host "Prepared Windows boot assets for $assetKey"
-Write-Host "Disposable rootfs: $disposableRootfs"
-Write-Host "Diagnostics: $diagnosticDir"
