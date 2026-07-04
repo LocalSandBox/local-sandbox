@@ -1,6 +1,6 @@
 # M10: Mount MVP Semantics
 
-Status: In progress
+Status: Done
 Depends on: See `00-index.md`
 RFC sections: See `traceability.md`
 
@@ -41,10 +41,10 @@ The specific tests should match the implementation, but this milestone must incl
 
 ## Acceptance criteria
 
-- [ ] Mount request from CLI/SDK succeeds with copy/import semantics.
-- [ ] Guest writes do not alter host source.
-- [ ] Explicit export behavior tested.
-- [ ] `:rw` mount returns Windows capability error.
+- [x] Mount request from CLI/SDK succeeds with copy/import semantics.
+- [x] Guest writes do not alter host source.
+- [x] Explicit export behavior tested.
+- [x] `:rw` mount returns Windows capability error.
 
 ## Coding-agent prompt
 
@@ -68,9 +68,9 @@ Complete the checklist in `../security-checklist.md`. Record any new risk in `..
 ## Handoff
 
 - Branch/PR: `codex/windows-m10-mount-mvp`
-- Summary: TBD
-- Tests run: TBD
-- Debug artifacts: TBD
-- New decisions: TBD
-- New risks: TBD
-- Next milestone: TBD
+- Summary: Windows mount MVP maps overlay host-directory mounts to staged guest imports using the M09 copy-in data plane, then mounts the imported guest snapshot as the overlay lowerdir. Guest writes stay in guest-local overlay storage and do not mutate the host source. Direct writable/live host mounts fail closed with Windows-specific unsupported errors. macOS VirtioFS behavior and public CLI/SDK/Node API shape were left unchanged.
+- Tests run: `cargo fmt --all -- --check`; `cargo check --workspace`; `cargo test -p lsb-platform windows_x86_64::fs -- --nocapture`; `cargo test -p lsb-vm -- --nocapture`; `cargo test -p lsb-guest -- --nocapture`; targeted Windows test compiles for `lsb-platform`/`lsb-vm`; `cargo test --workspace`; `./scripts/win-gh-test unit` run `28714105683`; `./scripts/win-gh-test smoke` run `28714141992`.
+- Debug artifacts: Windows smoke run `28714141992`, job `85153326347`, uploaded `windows-lsb-diagnostics` artifact ID `8084000670`.
+- New decisions: None. The implementation follows the RFC and existing decisions for copy/import mount semantics and explicit export.
+- New risks: None added. Remaining limitations are intentional MVP boundaries: no VirtioFS/9p/vfat, no live sharing, no direct writable host mounts, no file watching, conservative symlink/reparse/special-file behavior.
+- Next milestone: M11 Port forwarding.

@@ -4,7 +4,7 @@ Last updated: 2026-07-04
 Owner: TBD
 RFC: `docs/windows-port/rfc-qemu-whpx.md`
 Current milestone: M10 - Mount MVP semantics
-Overall status: M10 in progress; implementing copy/import mount semantics on top of M09 transfer primitives
+Overall status: M10 complete; Windows mount MVP uses staged copy/import semantics on top of M09 transfer primitives
 
 ## How to update this file
 
@@ -16,7 +16,7 @@ Update this file at the end of every agent run. Keep it factual. Do not use it f
 - Issue: TBD
 - Agent: Codex
 - Start commit: `5bf405b`
-- End commit: TBD
+- End commit: `a5d3667` (validated code head; final state update is docs-only)
 
 ## Milestone status table
 
@@ -31,10 +31,10 @@ Update this file at the end of every agent run. Keep it factual. Do not use it f
 | M07 Guest ready handshake | Done | Codex | `codex/windows-m07-guest-ready-handshake` | Protocol-level `GuestReady` over the established virtio-serial control stream is implemented and validated by fake/unit tests plus self-hosted WHPX smoke. |
 | M08 Exec command | Done | Codex | `codex/windows-m08-exec-command` | Non-interactive exec over the established virtio-serial control stream is implemented and validated by fake/unit tests plus self-hosted WHPX smoke. |
 | M09 Copy-in/copy-out data plane | Done | Codex | `codex/windows-m09-copy-in-copy-out` | Safe Windows copy-in/copy-out data-plane helpers, chunked guest file transfer, and WHPX copy smoke validation are in place. |
-| M10 Mount MVP semantics | In progress | Codex | `codex/windows-m10-mount-mvp` | Implement copy/import mount semantics on top of M09 transfer primitives; no live host sharing or direct writable host mounts. |
+| M10 Mount MVP semantics | Done | Codex | `codex/windows-m10-mount-mvp` | Staged copy/import mount MVP is implemented and validated; no live host sharing or direct writable host mounts. |
 | M11 Port forwarding | Not started | TBD | TBD | Later milestone; preserve no-network default. |
 | M12 Network policy and proxy integration | Blocked by M11 | TBD | TBD | Strict egress; no QEMU NAT by default. |
-| M13 Checkpoint/store MVP | Blocked by M10 | TBD | TBD | Simple disk artifact path first. |
+| M13 Checkpoint/store MVP | Not started | TBD | TBD | Simple disk artifact path first. |
 | M14 Node packaging | Blocked by core CLI smoke | TBD | TBD | Windows package after Rust backend. |
 | M15 CI and diagnostics hardening | Runs throughout, final gate after M14 | TBD | TBD | Self-hosted Windows 11 WHPX runner. |
 
@@ -42,15 +42,16 @@ Status values: `Not started`, `In progress`, `Blocked`, `Review`, `Done`, `Defer
 
 ## Current known blockers
 
-- Windows VM startup now attempts direct Linux boot with the M06 virtio-serial control chardev enabled. It runs QEMU discovery/preflight, builds WHPX direct-boot argv, launches through the existing QEMU supervisor, connects the QEMU-created control pipe during boot, captures serial/stdout/stderr/preflight/status artifacts, and returns success only after receiving a valid LocalSandbox `GuestReady` protocol frame over the established control stream. Non-interactive exec is implemented for Windows through the platform-neutral `Sandbox::exec` / SDK `exec` path. M09 added guest file transfer primitives over the same serialized virtio-serial control path plus Windows-only `lsb-vm::Sandbox::copy_from_host` / `copy_to_host` helpers for later mount/export workflows. Networking, mounts, checkpoints, and Node packaging remain unsupported.
+- Windows VM startup now attempts direct Linux boot with the M06 virtio-serial control chardev enabled. It runs QEMU discovery/preflight, builds WHPX direct-boot argv, launches through the existing QEMU supervisor, connects the QEMU-created control pipe during boot, captures serial/stdout/stderr/preflight/status artifacts, and returns success only after receiving a valid LocalSandbox `GuestReady` protocol frame over the established control stream. Non-interactive exec is implemented for Windows through the platform-neutral `Sandbox::exec` / SDK `exec` path. M09 added guest file transfer primitives over the same serialized virtio-serial control path plus Windows-only `lsb-vm::Sandbox::copy_from_host` / `copy_to_host` helpers. M10 uses those helpers for staged copy/import overlay mounts: host directory sources are snapshotted into guest staging, guest writes stay isolated in the guest overlay, and explicit export uses the existing copy-out path. Networking, checkpoints, and Node packaging remain unsupported.
 - QEMU 11.0.50 on the self-hosted Windows WHPX runner blocks boot until a host client connects to the `-chardev pipe` endpoint. M06 now connects the pipe immediately after QEMU process start and stores the established stream on the running boot object; later `PlatformVm::connect_control()` clones that stream. See D021.
-- Streaming `spawn`, interactive shell, watch, muxing, port forwarding, networking, mounts, checkpoints, and Node packaging remain later milestones. Windows streaming exec stdin/kill returns a precise unsupported error until a muxed transport exists; non-interactive exec closes guest stdin explicitly through the backward-compatible `ExecRequest.stdin_closed` field. `lsb-guest` emits `GuestReady` only on the Windows virtio-serial transport path; existing macOS/vsock behavior remains unchanged.
+- Streaming `spawn`, interactive shell, watch, muxing, port forwarding, networking, checkpoints, and Node packaging remain later milestones. Windows streaming exec stdin/kill returns a precise unsupported error until a muxed transport exists; non-interactive exec closes guest stdin explicitly through the backward-compatible `ExecRequest.stdin_closed` field. `lsb-guest` emits `GuestReady` only on the Windows virtio-serial transport path; existing macOS/vsock behavior remains unchanged.
 - Full `cargo check --workspace --target x86_64-pc-windows-msvc` from this macOS host is blocked by external Windows C/assembler tooling for transitive crates (`ring` needs Windows/MSVC headers such as `assert.h`; `blake3` needs `ml64.exe`). The changed `lsb-platform` and `lsb-vm` crates pass targeted Windows test compile checks; run the full workspace check on a Windows/MSVC runner.
 - The current safe host probe verifies target OS/arch and can report a supplied Windows major version. The standard host implementation does not yet query the native Windows build number without adding Windows API or registry probing.
 
 ## Recently completed work
 
 - 2026-07-04: Started M10 on `codex/windows-m10-mount-mvp` from `5bf405b`; scope is Windows mount MVP semantics only. The implementation must reuse the M09 copy-in/copy-out data plane where possible, preserve host-read-only and isolated guest-write semantics, reject direct `:rw` host mounts with clear capability errors, keep macOS VirtioFS behavior unchanged, and avoid live shared mount claims.
+- 2026-07-04: Completed M10 mount MVP semantics. Added Windows mount planning/validation under `lsb-platform::windows_x86_64::fs`, integrated staged import into Windows `Sandbox::start`, taught the guest overlay mount path to use an imported absolute lower directory, and added a hardware smoke covering host snapshot visibility, isolated guest writes, explicit copy-out export, no live sync, and direct `:rw` mount rejection. macOS VirtioFS behavior and public CLI/SDK/Node API shape remain unchanged.
 - 2026-07-03: Completed M01 compile scaffolding. Added `lsb-platform::windows_x86_64` backend/config/error stubs, removed the `lsb-vm` non-macOS compile rejection, added Windows runtime capability errors, cfg-gated Unix-only proxy/store/CLI paths, and added stub coverage tests.
 - 2026-07-03: Ran Windows hardware workflow through `./scripts/win-gh-test`. `check` passed on run `28651692448`. Initial `unit` run `28651764230` failed because Windows-only stub tests used `expect_err` with non-`Debug` handle types; fixed in `066a6c2`, then `unit` passed on run `28651905208`.
 - 2026-07-03: Added macOS helper for manually dispatching Windows hardware workflow, added Windows smoke/e2e script entrypoints, and documented runner trigger usage.
@@ -75,6 +76,7 @@ Status values: `Not started`, `In progress`, `Blocked`, `Review`, `Done`, `Defer
 
 ## Active implementation notes
 
+- 2026-07-04: M10 mount support is snapshot/import only. The Windows backend does not attach QEMU shared-directory devices for mounts, does not use VirtioFS/9p/vfat, does not implement live file watching or bidirectional synchronization, and rejects direct writable host mounts. Host source validation reuses the M09 Windows path policy, including canonicalization where possible, traversal protection, missing-source/type checks, conservative reparse/symlink handling, and case-insensitive collision checks.
 - 2026-07-04: M07 readiness is defined as a valid LocalSandbox `GuestReady` frame received over the established Windows virtio-serial control stream. `boot.status.json` records `state: "guest_ready"`, `success_definition: "localsandbox_guest_ready_frame_received_over_control_transport"`, elapsed readiness time, and the ready payload metadata. M09 allows the `file_range_io` readiness capability for chunked file transfers and still rejects unknown capabilities.
 - 2026-07-04: Started M06 on `codex/windows-m06-virtio-serial-control`; scope is the Windows virtio-serial host endpoint, QEMU control chardev wiring, a platform-neutral host control stream abstraction, guest virtio-serial port discovery/opening, and focused tests/docs. Guest ready handshake, exec/file API parity, muxing, mounts, networking, checkpoints, and Node packaging remain later milestones unless already supported by existing code paths.
 - 2026-07-04: Implemented M06 review slice. Added `PlatformControlStream` and `PlatformVm::connect_control`, a Windows `VirtioSerialControlEndpoint` with random per-instance QEMU pipe names and bounded open retry/error mapping, Windows backend lifecycle wiring that adds the control chardev to direct-boot argv, shared `lsb-proto` virtio-serial port-name constant, guest `lsb.transport=virtio-serial` selection with `/dev/virtio-ports` then `/sys/class/virtio-ports` discovery, and in-memory frame/endpoint/discovery tests. The host endpoint is tied to the running QEMU boot object; stream cleanup is by handle drop and QEMU cleanup remains owned by the existing supervisor/Job Object path.
@@ -109,6 +111,9 @@ Append newest entries at the top.
 
 | Date | Milestone | Platform | Command / test | Result | Notes |
 |---|---|---|---|---|---|
+| 2026-07-04 | M10 | Windows self-hosted | `./scripts/win-gh-test smoke` + direct `gh run watch 28714141992 --exit-status` | Pass | Run `28714141992`, Windows smoke/e2e job `85153326347`, commit `a5d3667`, artifact `windows-lsb-diagnostics` ID `8084000670`. Boot asset cache missed, so the workflow prepared fresh assets, then the smoke lane completed real QEMU preflight, `windows_qemu_boot_smoke`, `windows_qemu_exec_smoke`, `windows_qemu_copy_transfer_smoke`, and `windows_qemu_mount_mvp_smoke`; Windows e2e remained skipped. The mount smoke verified guest read access to a staged host snapshot, guest writes did not mutate the host source, post-start host writes were not visible as live sync, explicit copy-out export worked, and direct writable host mounts failed closed. |
+| 2026-07-04 | M10 | Windows self-hosted | `./scripts/win-gh-test unit` | Pass | Run `28714105683`, Windows check/unit job passed at commit `a5d3667`. Earlier run `28713782675` caught legacy non-Windows mount-plan test assumptions and an overly shallow error assertion; commit `a5d3667` cfg-gated the legacy VirtioFS assertions and surfaced the Windows mount planning reason in the top-level error. |
+| 2026-07-04 | M10 | macOS | `cargo fmt --all -- --check`; `cargo check --workspace`; `cargo test -p lsb-platform windows_x86_64::fs -- --nocapture`; `cargo test -p lsb-vm -- --nocapture`; `cargo test -p lsb-guest -- --nocapture`; `cargo check -p lsb-vm --tests --target x86_64-pc-windows-msvc`; `cargo check -p lsb-platform -p lsb-vm --tests --target x86_64-pc-windows-msvc`; `cargo test --workspace` | Pass | Local validation for the M10 mount MVP. Added coverage for Windows overlay planning, reserved/traversal guest targets, duplicate targets, direct mount rejection, missing/file/UNC/unsafe host sources via reused M09 copy-in validation, guest imported-lower overlay handling, Windows build-plan behavior, and the ignored WHPX mount MVP smoke hook. `cargo check -p lsb-guest --target x86_64-unknown-linux-gnu` was not run because that Rust target is not installed locally. |
 | 2026-07-04 | M09 review follow-up | Windows self-hosted | `./scripts/win-gh-test smoke` + direct `gh run watch 28710991403 --exit-status` | Pass | Run `28710991403`, Windows smoke/e2e job `85144450148`, commit `db601e7`, artifact `windows-lsb-diagnostics`. The helper initially matched the completed unit run with the same head SHA, so the new smoke run was watched directly. Cached boot assets were used; the smoke lane completed the real QEMU preflight, `windows_qemu_boot_smoke`, `windows_qemu_exec_smoke`, and `windows_qemu_copy_transfer_smoke`; Windows e2e remained skipped. |
 | 2026-07-04 | M09 review follow-up | Windows self-hosted | `./scripts/win-gh-test unit` | Pass | Run `28710951842`, Windows check/unit job `85144294278`, commit `db601e7`, artifact `windows-lsb-diagnostics`. This ran the new Windows-only same-kind overwrite tests on the self-hosted runner. |
 | 2026-07-04 | M09 review follow-up | macOS | `cargo fmt --all -- --check`; `cargo check --workspace`; `cargo test -p lsb-platform windows_x86_64::fs -- --nocapture`; `cargo test -p lsb-vm chunk_validation -- --nocapture`; `cargo test -p lsb-vm -- --nocapture`; `cargo check -p lsb-vm --tests --target x86_64-pc-windows-msvc`; `cargo check -p lsb-platform --tests --target x86_64-pc-windows-msvc`; `cargo test --workspace -- --nocapture`; `git diff --check` | Pass | Local validation for review fixes. Added tests for oversized guest chunks, copy-out chunk overrun beyond stat size, exact final byte count, file-to-directory and directory-to-file overwrite rejection, same-kind file overwrite, non-ASCII case collision rejection, and the documented no-normalization limitation. |
@@ -202,7 +207,7 @@ Append newest entries at the top.
 - [x] M08 must define a single-owner or muxed control-stream lifecycle before exec so future command sessions cannot create competing readers over cloned control handles.
 - [ ] M11 or an earlier mux-specific slice must replace the M08/M09 single-owner control guard before enabling Windows streaming `spawn`, shell, watch, or port forwarding.
 - [x] Run `windows_qemu_copy_transfer_smoke` on the self-hosted Windows 11 WHPX runner with disposable boot assets and record the result.
-- [ ] M10 should wire mount MVP setup/teardown through the M09 copy-in/copy-out helpers without adding direct writable host mounts.
+- [x] M10 should wire mount MVP setup/teardown through the M09 copy-in/copy-out helpers without adding direct writable host mounts.
 - [ ] Live sharing remains deferred; any later VirtioFS/9p/SMB/custom-sync design must preserve the M09 read-only-host-source and explicit-export semantics.
 - [ ] Decide exact hidden/debug flag name for TCG once CLI command parsing is inspected.
 - [ ] Decide exact QEMU minimum version after M02 preflight experimentation.
