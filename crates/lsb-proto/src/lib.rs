@@ -9,6 +9,8 @@ use std::collections::HashMap;
 pub mod frame;
 
 pub const PROTOCOL_VERSION: u16 = 1;
+pub const CAP_FILE_RANGE_IO: &str = "file_range_io";
+pub const FILE_TRANSFER_CHUNK_SIZE: usize = 512 * 1024;
 
 // --- Guest lifecycle protocol ---
 
@@ -113,12 +115,20 @@ pub struct MountResponse {
 #[derive(Serialize, Deserialize)]
 pub struct ReadFileRequest {
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub len: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct WriteFileRequest {
     pub path: String,
     pub len: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncate: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -232,7 +242,10 @@ mod tests {
     use std::collections::HashMap;
     use std::io::Cursor;
 
-    use super::{ExecRequest, GuestReady, GuestTransport, MountRequest, PROTOCOL_VERSION};
+    use super::{
+        ExecRequest, GuestReady, GuestTransport, MountRequest, ReadFileRequest, WriteFileRequest,
+        PROTOCOL_VERSION,
+    };
     use crate::frame;
 
     #[test]
@@ -313,5 +326,49 @@ mod tests {
         assert_eq!(request.argv, ["/bin/true"]);
         assert_eq!(request.env, HashMap::new());
         assert_eq!(request.stdin_closed, None);
+    }
+
+    #[test]
+    fn file_range_requests_omit_optional_fields_when_absent() {
+        let read = ReadFileRequest {
+            path: "/tmp/file".to_string(),
+            offset: None,
+            len: None,
+        };
+        let write = WriteFileRequest {
+            path: "/tmp/file".to_string(),
+            len: 5,
+            offset: None,
+            truncate: None,
+        };
+
+        let read_json = serde_json::to_string(&read).expect("read request should serialize");
+        let write_json = serde_json::to_string(&write).expect("write request should serialize");
+
+        assert_eq!(read_json, r#"{"path":"/tmp/file"}"#);
+        assert_eq!(write_json, r#"{"path":"/tmp/file","len":5}"#);
+    }
+
+    #[test]
+    fn file_range_requests_round_trip_offsets() {
+        let read = ReadFileRequest {
+            path: "/tmp/file".to_string(),
+            offset: Some(1024),
+            len: Some(4096),
+        };
+        let write = WriteFileRequest {
+            path: "/tmp/file".to_string(),
+            len: 4096,
+            offset: Some(1024),
+            truncate: Some(false),
+        };
+
+        let read_json = serde_json::to_string(&read).expect("read request should serialize");
+        let write_json = serde_json::to_string(&write).expect("write request should serialize");
+
+        assert!(read_json.contains(r#""offset":1024"#));
+        assert!(read_json.contains(r#""len":4096"#));
+        assert!(write_json.contains(r#""offset":1024"#));
+        assert!(write_json.contains(r#""truncate":false"#));
     }
 }

@@ -509,7 +509,7 @@ impl fmt::Display for QemuBootError {
                 ..
             } => write!(
                 f,
-                "the Windows guest advertised unsupported runtime capabilities during readiness: {}. The current Windows backend accepts the base guest-ready handshake and enables M08 exec from the host side, but additional advertised capabilities require later mux/file/mount/network/checkpoint milestones. serial excerpt: {}.{}",
+                "the Windows guest advertised unsupported runtime capabilities during readiness: {}. The current Windows backend accepts the base guest-ready handshake, M08 exec, and the M09 file_range_io capability; unknown capabilities require later mux/mount/network/checkpoint milestones. serial excerpt: {}.{}",
                 capability_summary(capabilities),
                 empty_as_placeholder(serial_excerpt),
                 self.artifact_sentence()
@@ -1164,10 +1164,9 @@ fn read_guest_ready_frame(
         });
     }
 
-    if !ready.capabilities.is_empty() {
-        return Err(GuestReadyFrameError::UnsupportedCapabilities(
-            ready.capabilities,
-        ));
+    let unsupported = unsupported_guest_capabilities(&ready.capabilities);
+    if !unsupported.is_empty() {
+        return Err(GuestReadyFrameError::UnsupportedCapabilities(unsupported));
     }
 
     Ok(ready)
@@ -1415,6 +1414,14 @@ fn capability_summary(capabilities: &[String]) -> String {
     labels.join(", ")
 }
 
+fn unsupported_guest_capabilities(capabilities: &[String]) -> Vec<String> {
+    capabilities
+        .iter()
+        .filter(|capability| capability.as_str() != lsb_proto::CAP_FILE_RANGE_IO)
+        .cloned()
+        .collect()
+}
+
 fn sanitize_capability_label(value: &str) -> String {
     let mut label = value
         .chars()
@@ -1603,7 +1610,10 @@ mod tests {
         let artifact_dir = temp_dir("ready-status");
         let artifacts = QemuBootArtifacts::new(&artifact_dir);
         fs::create_dir_all(&artifact_dir).expect("artifact dir should be writable");
-        let ready = GuestReady::new(GuestTransport::VirtioSerial, "guest-test");
+        let mut ready = GuestReady::new(GuestTransport::VirtioSerial, "guest-test");
+        ready
+            .capabilities
+            .push(lsb_proto::CAP_FILE_RANGE_IO.to_string());
 
         write_boot_status_file(
             &artifacts,
@@ -1624,7 +1634,7 @@ mod tests {
         assert!(status.contains("\"protocol_version\": 1"));
         assert!(status.contains("\"transport\": \"virtio_serial\""));
         assert!(status.contains("\"guest_version\": \"guest-test\""));
-        assert!(status.contains("\"capabilities\": []"));
+        assert!(status.contains(lsb_proto::CAP_FILE_RANGE_IO));
 
         let _ = fs::remove_dir_all(artifact_dir);
     }
@@ -1640,6 +1650,14 @@ mod tests {
     fn unsupported_capability_ready_frame() -> Cursor<Vec<u8>> {
         let mut ready = GuestReady::new(GuestTransport::VirtioSerial, "guest-test");
         ready.capabilities.push("exec".to_string());
+        guest_ready_frame(&ready)
+    }
+
+    fn supported_file_range_ready_frame() -> Cursor<Vec<u8>> {
+        let mut ready = GuestReady::new(GuestTransport::VirtioSerial, "guest-test");
+        ready
+            .capabilities
+            .push(lsb_proto::CAP_FILE_RANGE_IO.to_string());
         guest_ready_frame(&ready)
     }
 
@@ -1702,6 +1720,34 @@ mod tests {
 
         assert_eq!(result.message, ready);
         assert!(result.elapsed < Duration::from_secs(1));
+
+        supervisor
+            .terminate()
+            .expect("fake supervisor should terminate");
+        let _ = fs::remove_dir_all(artifact_dir);
+    }
+
+    #[test]
+    fn wait_for_guest_ready_accepts_file_range_capability() {
+        let artifact_dir = temp_dir("ready-file-range-capability");
+        let artifacts = QemuBootArtifacts::new(&artifact_dir);
+        prepare_artifacts(&artifacts).expect("artifacts should prepare");
+        let mut supervisor = fake_supervisor("sleep", artifact_dir.clone());
+        supervisor.start().expect("fake supervisor should start");
+
+        let result = wait_for_guest_ready(
+            &mut supervisor,
+            &artifacts,
+            Duration::from_secs(1),
+            supported_file_range_ready_frame(),
+            GuestTransport::VirtioSerial,
+        )
+        .expect("file-range capability should be accepted");
+
+        assert_eq!(
+            result.message.capabilities,
+            [lsb_proto::CAP_FILE_RANGE_IO.to_string()]
+        );
 
         supervisor
             .terminate()
@@ -1970,10 +2016,9 @@ mod tests {
                 .expect("boot smoke should record guest ready");
             assert_eq!(ready.protocol_version, lsb_proto::PROTOCOL_VERSION);
             assert_eq!(ready.transport, GuestTransport::VirtioSerial);
-            assert!(
-                ready.capabilities.is_empty(),
-                "guest ready currently keeps capabilities empty; M08 exec is host-driven: {:?}",
-                ready.capabilities
+            assert_eq!(
+                ready.capabilities,
+                [lsb_proto::CAP_FILE_RANGE_IO.to_string()]
             );
             let status = fs::read_to_string(&boot.artifacts().boot_status)
                 .expect("boot status should be readable");

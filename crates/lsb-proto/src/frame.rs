@@ -46,7 +46,8 @@ pub const RENAME_REQ: u8 = 0x48;
 pub const COPY_REQ: u8 = 0x4A;
 pub const CHMOD_REQ: u8 = 0x4C;
 
-const MAX_FRAME: u32 = 1 << 20; // 1 MB
+pub const MAX_FRAME_LEN: u32 = 1 << 20; // 1 MB
+pub const MAX_FRAME_PAYLOAD: usize = MAX_FRAME_LEN as usize - 1;
 
 /// Write a binary frame: `[u32 BE length][u8 type][payload]`.
 ///
@@ -73,7 +74,7 @@ pub fn read_frame(r: &mut impl Read) -> io::Result<Option<(u8, Vec<u8>)>> {
         Err(e) => return Err(e),
     }
     let len = u32::from_be_bytes(len_buf);
-    if len == 0 || len > MAX_FRAME {
+    if len == 0 || len > MAX_FRAME_LEN {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("frame length out of range: {}", len),
@@ -103,7 +104,7 @@ pub fn try_parse(buf: &[u8]) -> Option<(u8, usize, usize)> {
         return None;
     }
     let len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
-    if len == 0 || len > MAX_FRAME {
+    if len == 0 || len > MAX_FRAME_LEN {
         return None;
     }
     let total = 4 + len as usize;
@@ -174,6 +175,8 @@ mod tests {
         let mut stream = Cursor::new(Vec::new());
         let request = crate::ReadFileRequest {
             path: "/tmp/example".to_string(),
+            offset: None,
+            len: None,
         };
 
         send_json(&mut stream, READ_FILE_REQ, &request).expect("json frame should write");

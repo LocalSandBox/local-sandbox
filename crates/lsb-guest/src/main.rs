@@ -24,10 +24,16 @@ mod control_transport {
     ) -> Option<lsb_proto::GuestReady> {
         match transport {
             GuestControlTransport::Vsock => None,
-            GuestControlTransport::VirtioSerial => Some(lsb_proto::GuestReady::new(
-                lsb_proto::GuestTransport::VirtioSerial,
-                env!("CARGO_PKG_VERSION"),
-            )),
+            GuestControlTransport::VirtioSerial => {
+                let mut ready = lsb_proto::GuestReady::new(
+                    lsb_proto::GuestTransport::VirtioSerial,
+                    env!("CARGO_PKG_VERSION"),
+                );
+                ready
+                    .capabilities
+                    .push(lsb_proto::CAP_FILE_RANGE_IO.to_string());
+                Some(ready)
+            }
         }
     }
 
@@ -93,7 +99,7 @@ mod control_transport {
             assert_eq!(ready.protocol_version, lsb_proto::PROTOCOL_VERSION);
             assert_eq!(ready.transport, lsb_proto::GuestTransport::VirtioSerial);
             assert_eq!(ready.guest_version, env!("CARGO_PKG_VERSION"));
-            assert!(ready.capabilities.is_empty());
+            assert_eq!(ready.capabilities, [lsb_proto::CAP_FILE_RANGE_IO]);
         }
 
         #[test]
@@ -164,6 +170,144 @@ mod control_transport {
     }
 }
 
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+mod file_transfer {
+    use lsb_proto::{ReadFileRequest, WriteFileRequest};
+
+    pub(crate) fn read_file_range(req: &ReadFileRequest) -> std::io::Result<Vec<u8>> {
+        use std::io::{Read, Seek, SeekFrom};
+
+        let len = req
+            .len
+            .unwrap_or(lsb_proto::FILE_TRANSFER_CHUNK_SIZE as u64);
+        if len > lsb_proto::FILE_TRANSFER_CHUNK_SIZE as u64 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "read range len {} exceeds max chunk {}",
+                    len,
+                    lsb_proto::FILE_TRANSFER_CHUNK_SIZE
+                ),
+            ));
+        }
+
+        let mut file = std::fs::File::open(&req.path)?;
+        file.seek(SeekFrom::Start(req.offset.unwrap_or(0)))?;
+
+        let mut data = Vec::with_capacity(len as usize);
+        let mut limited = file.take(len);
+        limited.read_to_end(&mut data)?;
+        Ok(data)
+    }
+
+    pub(crate) fn write_file_range(req: &WriteFileRequest, data: &[u8]) -> std::io::Result<()> {
+        use std::io::{Seek, SeekFrom, Write};
+
+        if data.len() > lsb_proto::FILE_TRANSFER_CHUNK_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "write range len {} exceeds max chunk {}",
+                    data.len(),
+                    lsb_proto::FILE_TRANSFER_CHUNK_SIZE
+                ),
+            ));
+        }
+
+        if let Some(parent) = std::path::Path::new(&req.path).parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).write(true);
+        if req.truncate.unwrap_or(false) {
+            options.truncate(true);
+        }
+        let mut file = options.open(&req.path)?;
+        file.seek(SeekFrom::Start(req.offset.unwrap_or(0)))?;
+        file.write_all(data)?;
+        file.sync_all()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::path::PathBuf;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        #[test]
+        fn file_range_write_truncates_then_writes_at_offsets() {
+            let root = temp_dir("write-range");
+            let path = root.join("out.txt");
+            let path_string = path.display().to_string();
+
+            let first = WriteFileRequest {
+                path: path_string.clone(),
+                len: 5,
+                offset: Some(0),
+                truncate: Some(true),
+            };
+            write_file_range(&first, b"hello").expect("first chunk should write");
+
+            let second = WriteFileRequest {
+                path: path_string.clone(),
+                len: 6,
+                offset: Some(5),
+                truncate: Some(false),
+            };
+            write_file_range(&second, b" world").expect("second chunk should write");
+
+            let content = std::fs::read(&path).expect("written file should read");
+            assert_eq!(content, b"hello world");
+
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn file_range_read_returns_requested_slice() {
+            let root = temp_dir("read-range");
+            let path = root.join("input.txt");
+            std::fs::create_dir_all(&root).expect("fixture root");
+            std::fs::write(&path, b"abcdef").expect("fixture file");
+
+            let req = ReadFileRequest {
+                path: path.display().to_string(),
+                offset: Some(2),
+                len: Some(3),
+            };
+
+            let content = read_file_range(&req).expect("range should read");
+            assert_eq!(content, b"cde");
+
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn file_range_read_rejects_oversized_chunk() {
+            let req = ReadFileRequest {
+                path: "/tmp/missing".to_string(),
+                offset: Some(0),
+                len: Some(lsb_proto::FILE_TRANSFER_CHUNK_SIZE as u64 + 1),
+            };
+
+            let err = read_file_range(&req).expect_err("oversized chunk should fail first");
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        }
+
+        fn temp_dir(label: &str) -> PathBuf {
+            let nonce = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "lsb-guest-file-{label}-{}-{nonce}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            root
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod guest {
     use std::fs::{File, OpenOptions};
@@ -175,6 +319,7 @@ mod guest {
     use std::time::Duration;
 
     use super::control_transport::{self, GuestControlTransport};
+    use super::file_transfer;
     use lsb_proto::frame;
     use lsb_proto::{
         ChmodRequest, CopyRequest, DirEntry, ExecRequest, ForwardRequest, ForwardResponse,
@@ -718,7 +863,13 @@ mod guest {
     }
 
     fn handle_read_file(req: &ReadFileRequest, writer: &mut impl Write) {
-        match std::fs::read(&req.path) {
+        let result = if req.offset.is_some() || req.len.is_some() {
+            file_transfer::read_file_range(req)
+        } else {
+            std::fs::read(&req.path)
+        };
+
+        match result {
             Ok(data) => {
                 let _ = frame::write_frame(writer, frame::READ_FILE_RESP, &data);
             }
@@ -755,11 +906,16 @@ mod guest {
             return;
         }
 
-        if let Some(parent) = std::path::Path::new(&req.path).parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
+        let result = if req.offset.is_some() || req.truncate.is_some() {
+            file_transfer::write_file_range(req, &data)
+        } else {
+            if let Some(parent) = std::path::Path::new(&req.path).parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            std::fs::write(&req.path, &data)
+        };
 
-        match std::fs::write(&req.path, &data) {
+        match result {
             Ok(()) => {
                 unsafe {
                     libc::sync();

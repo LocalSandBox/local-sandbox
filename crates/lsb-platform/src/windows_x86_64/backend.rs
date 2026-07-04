@@ -142,6 +142,18 @@ impl PlatformVm for WindowsVm {
         self.state_rx.clone()
     }
 
+    fn guest_capabilities(&self) -> Vec<String> {
+        self.boot
+            .lock()
+            .ok()
+            .and_then(|boot| {
+                boot.as_ref()
+                    .and_then(|running_boot| running_boot.guest_ready())
+                    .map(|ready| ready.capabilities.clone())
+            })
+            .unwrap_or_default()
+    }
+
     fn connect_control(&self) -> Result<PlatformControlStream> {
         let boot = self
             .boot

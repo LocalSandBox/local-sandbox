@@ -286,6 +286,9 @@ pub trait PlatformVm: Send + Sync {
     fn start(&self) -> Result<()>;
     fn stop(&self) -> Result<()>;
     fn state_channel(&self) -> crossbeam_channel::Receiver<VmState>;
+    fn guest_capabilities(&self) -> Vec<String> {
+        Vec::new()
+    }
     fn connect_control(&self) -> Result<PlatformControlStream>;
     fn connect_to_vsock_port(&self, port: u32) -> Result<TcpStream>;
 }

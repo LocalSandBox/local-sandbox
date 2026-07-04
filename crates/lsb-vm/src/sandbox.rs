@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use std::fs;
 #[cfg(target_os = "macos")]
 use std::io::{BufReader, BufWriter};
 use std::io::{Read, Write};
@@ -7,6 +9,10 @@ use std::net::TcpStream;
 use std::net::{Shutdown, TcpListener};
 #[cfg(target_os = "macos")]
 use std::os::fd::AsRawFd;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use std::path::{Path, PathBuf};
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "macos")]
@@ -16,6 +22,12 @@ use anyhow::{bail, Context, Result};
 use crossbeam_channel::Receiver;
 #[cfg(target_os = "macos")]
 use lsb_platform::terminal;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use lsb_platform::windows_x86_64::fs::{
+    join_guest_child, plan_copy_in, validate_copy_out_destination, validate_guest_absolute_path,
+    validate_guest_path_component, validate_windows_host_path_lexical, CaseFoldSet,
+    CopyInEntryKind, CopyPathOperation,
+};
 use lsb_platform::PlatformControlStream;
 use lsb_platform::{self, PlatformSharedDir, PlatformVm, PlatformVmConfig, VmState};
 
@@ -23,6 +35,7 @@ use lsb_proto::{
     frame, ChmodRequest, CopyRequest, ExecRequest, FsOkResponse, MkdirRequest, MountRequest,
     MountResponse, PortMapping, ReadDirRequest, ReadDirResponse, ReadFileRequest, RemoveRequest,
     RenameRequest, StatRequest, StatResponse, WatchRequest, WriteFileRequest, WriteFileResponse,
+    CAP_FILE_RANGE_IO, FILE_TRANSFER_CHUNK_SIZE,
 };
 #[cfg(target_os = "macos")]
 use lsb_proto::{ForwardRequest, ForwardResponse, VSOCK_PORT, VSOCK_PORT_FORWARD};
@@ -39,7 +52,7 @@ impl std::fmt::Display for UnsupportedWindowsRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Windows support is in progress: {} is not implemented yet ({}); current Windows runtime support includes VM startup through the M07 guest-ready handshake and non-interactive exec through M08",
+            "Windows support is in progress: {} is not implemented yet ({}); current Windows runtime support includes VM startup through the M07 guest-ready handshake, non-interactive exec through M08, and guest file copy transfer primitives through M09",
             self.capability, self.milestone
         )
     }
@@ -60,6 +73,8 @@ fn unsupported_runtime(capability: &'static str, milestone: &'static str) -> any
 // --- Mount types ---
 
 const MS_RDONLY: u64 = 1;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+static COPY_OUT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 pub enum MountConfig {
@@ -264,9 +279,14 @@ impl Sandbox {
         let mounts = std::mem::take(&mut *self.mounts.lock().unwrap());
         for req in &mounts {
             frame::send_json(writer, frame::MOUNT_REQ, &req).context("sending mount request")?;
-            let (_msg_type, payload) = frame::read_frame(reader)
-                .context("reading mount response")?
-                .context("guest closed connection during mount init")?;
+            let (msg_type, payload) =
+                read_response_frame(reader, "mount init").context("reading mount response")?;
+            if msg_type == frame::ERROR {
+                bail!("{}", String::from_utf8_lossy(&payload));
+            }
+            if msg_type != frame::MOUNT_RESP {
+                bail!("unexpected frame type 0x{msg_type:02x} in mount response");
+            }
             let resp: MountResponse = match serde_json::from_slice(&payload) {
                 Ok(r) => r,
                 Err(_) => {
@@ -321,108 +341,185 @@ impl Sandbox {
         stdout: &mut impl Write,
         stderr: &mut impl Write,
     ) -> Result<i32> {
-        #[cfg(not(target_os = "macos"))]
-        let _control_guard = self
-            .control_session
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Windows guest control session lock poisoned"))?;
-
-        let stream = self.connect_exec_control()?;
-        let mut writer = stream.try_clone()?;
-        let mut reader = stream;
-
-        self.send_mount_requests(&mut writer, &mut reader)?;
-
-        let req = build_exec_request(argv, env, cwd, None, Some(true));
-        send_exec_request(&mut writer, &req)?;
-        collect_exec_response(&mut reader, stdout, stderr)
+        self.with_guest_control_session("exec", |writer, reader| {
+            let req = build_exec_request(argv, env, cwd, None, Some(true));
+            send_exec_request(writer, &req)?;
+            collect_exec_response(reader, stdout, stderr)
+        })
     }
 
     pub fn read_file(&self, path: &str) -> Result<Vec<u8>> {
-        let stream = self.connect_vsock()?;
-        let mut writer = stream.try_clone()?;
-        let mut reader = stream;
+        if self.supports_file_range_io() {
+            let stat = self.stat(path)?;
+            if stat.is_file && stat.size > FILE_TRANSFER_CHUNK_SIZE as u64 {
+                return self.read_file_chunked(path, stat.size);
+            }
+        }
 
-        self.send_mount_requests(&mut writer, &mut reader)?;
+        self.read_file_single(path)
+    }
 
+    fn read_file_single(&self, path: &str) -> Result<Vec<u8>> {
         let req = ReadFileRequest {
             path: path.to_string(),
+            offset: None,
+            len: None,
         };
-        frame::send_json(&mut writer, frame::READ_FILE_REQ, &req)?;
 
-        match frame::read_frame(&mut reader).context("reading read_file response")? {
-            Some((frame::READ_FILE_RESP, payload)) => Ok(payload),
-            Some((frame::ERROR, payload)) => {
-                bail!("{}", String::from_utf8_lossy(&payload));
+        self.send_read_file_request(&req)
+    }
+
+    fn send_read_file_request(&self, req: &ReadFileRequest) -> Result<Vec<u8>> {
+        self.with_guest_control_session("read_file", |writer, reader| {
+            frame::send_json(writer, frame::READ_FILE_REQ, req)?;
+
+            let (msg_type, payload) =
+                read_response_frame(reader, "read_file").context("reading read_file response")?;
+            match msg_type {
+                frame::READ_FILE_RESP => Ok(payload),
+                frame::ERROR => {
+                    bail!("{}", String::from_utf8_lossy(&payload));
+                }
+                other => {
+                    bail!(
+                        "unexpected frame type 0x{:02x} in read_file response",
+                        other
+                    );
+                }
             }
-            Some((other, _)) => {
+        })
+    }
+
+    fn read_file_chunked(&self, path: &str, size: u64) -> Result<Vec<u8>> {
+        let capacity = usize::try_from(size)
+            .map_err(|_| anyhow::anyhow!("read_file '{}' is too large to buffer", path))?;
+        let mut out = Vec::with_capacity(capacity);
+        let mut offset = 0u64;
+        while offset < size {
+            let len = std::cmp::min(FILE_TRANSFER_CHUNK_SIZE as u64, size - offset);
+            let req = ReadFileRequest {
+                path: path.to_string(),
+                offset: Some(offset),
+                len: Some(len),
+            };
+            let chunk = self.send_read_file_request(&req)?;
+            if chunk.is_empty() && len > 0 {
                 bail!(
-                    "unexpected frame type 0x{:02x} in read_file response",
-                    other
+                    "guest returned empty read_file chunk before EOF for '{}'",
+                    path
                 );
             }
-            None => bail!("guest closed connection during read_file"),
+            offset += chunk.len() as u64;
+            out.extend_from_slice(&chunk);
         }
+        Ok(out)
     }
 
     pub fn write_file(&self, path: &str, content: &[u8]) -> Result<()> {
-        let stream = self.connect_vsock()?;
-        let mut writer = stream.try_clone()?;
-        let mut reader = stream;
-
-        self.send_mount_requests(&mut writer, &mut reader)?;
+        if content.len() > frame::MAX_FRAME_PAYLOAD {
+            self.ensure_file_range_io("write_file")?;
+            return self.write_file_chunked(path, content);
+        }
 
         let req = WriteFileRequest {
             path: path.to_string(),
             len: content.len() as u64,
+            offset: None,
+            truncate: None,
         };
-        frame::send_json(&mut writer, frame::WRITE_FILE_REQ, &req)?;
-        frame::write_frame(&mut writer, frame::WRITE_FILE_DATA, content)?;
 
-        let (_msg_type, payload) = frame::read_frame(&mut reader)
-            .context("reading write_file response")?
-            .context("guest closed connection during write_file")?;
+        self.send_write_file_request(&req, content)
+    }
 
-        let resp: WriteFileResponse =
-            serde_json::from_slice(&payload).context("parsing write_file response")?;
+    fn write_file_chunked(&self, path: &str, content: &[u8]) -> Result<()> {
+        if content.is_empty() {
+            let req = WriteFileRequest {
+                path: path.to_string(),
+                len: 0,
+                offset: Some(0),
+                truncate: Some(true),
+            };
+            return self.send_write_file_request(&req, &[]);
+        }
 
-        if !resp.ok {
-            bail!(
-                "write_file failed: {}",
-                resp.error.unwrap_or_else(|| "unknown error".into())
-            );
+        let mut offset = 0usize;
+        while offset < content.len() {
+            let end = std::cmp::min(offset + FILE_TRANSFER_CHUNK_SIZE, content.len());
+            let chunk = &content[offset..end];
+            let req = WriteFileRequest {
+                path: path.to_string(),
+                len: chunk.len() as u64,
+                offset: Some(offset as u64),
+                truncate: Some(offset == 0),
+            };
+            self.send_write_file_request(&req, chunk)?;
+            offset = end;
         }
 
         Ok(())
     }
 
-    /// Send a request and expect FS_OK_RESP or ERROR. Used by void fs ops.
-    fn void_fs_op(&self, req_frame: u8, req: &impl serde::Serialize) -> Result<()> {
-        let stream = self.connect_vsock()?;
-        let mut writer = stream.try_clone()?;
-        let mut reader = stream;
+    fn send_write_file_request(&self, req: &WriteFileRequest, content: &[u8]) -> Result<()> {
+        if content.len() > frame::MAX_FRAME_PAYLOAD {
+            bail!(
+                "write_file chunk for '{}' is {} bytes, exceeding protocol payload limit {}",
+                req.path,
+                content.len(),
+                frame::MAX_FRAME_PAYLOAD
+            );
+        }
 
-        self.send_mount_requests(&mut writer, &mut reader)?;
+        self.with_guest_control_session("write_file", |writer, reader| {
+            frame::send_json(writer, frame::WRITE_FILE_REQ, req)?;
+            frame::write_frame(writer, frame::WRITE_FILE_DATA, content)?;
 
-        frame::send_json(&mut writer, req_frame, req)?;
-
-        match frame::read_frame(&mut reader).context("reading fs op response")? {
-            Some((frame::FS_OK_RESP, payload)) => {
-                let resp: FsOkResponse =
-                    serde_json::from_slice(&payload).context("parsing fs ok response")?;
-                if !resp.ok {
-                    bail!("{}", resp.error.unwrap_or_else(|| "unknown error".into()));
-                }
-                Ok(())
-            }
-            Some((frame::ERROR, payload)) => {
+            let (msg_type, payload) =
+                read_response_frame(reader, "write_file").context("reading write_file response")?;
+            if msg_type == frame::ERROR {
                 bail!("{}", String::from_utf8_lossy(&payload));
             }
-            Some((other, _)) => {
-                bail!("unexpected frame type 0x{:02x}", other);
+            if msg_type != frame::WRITE_FILE_RESP {
+                bail!("unexpected frame type 0x{msg_type:02x} in write_file response");
             }
-            None => bail!("guest closed connection"),
-        }
+
+            let resp: WriteFileResponse =
+                serde_json::from_slice(&payload).context("parsing write_file response")?;
+
+            if !resp.ok {
+                bail!(
+                    "write_file failed: {}",
+                    resp.error.unwrap_or_else(|| "unknown error".into())
+                );
+            }
+
+            Ok(())
+        })
+    }
+
+    /// Send a request and expect FS_OK_RESP or ERROR. Used by void fs ops.
+    fn void_fs_op(&self, req_frame: u8, req: &impl serde::Serialize) -> Result<()> {
+        self.with_guest_control_session("filesystem operation", |writer, reader| {
+            frame::send_json(writer, req_frame, req)?;
+
+            match read_response_frame(reader, "filesystem operation")
+                .context("reading fs op response")?
+            {
+                (frame::FS_OK_RESP, payload) => {
+                    let resp: FsOkResponse =
+                        serde_json::from_slice(&payload).context("parsing fs ok response")?;
+                    if !resp.ok {
+                        bail!("{}", resp.error.unwrap_or_else(|| "unknown error".into()));
+                    }
+                    Ok(())
+                }
+                (frame::ERROR, payload) => {
+                    bail!("{}", String::from_utf8_lossy(&payload));
+                }
+                (other, _) => {
+                    bail!("unexpected frame type 0x{:02x}", other);
+                }
+            }
+        })
     }
 
     pub fn mkdir(&self, path: &str, recursive: bool) -> Result<()> {
@@ -436,55 +533,49 @@ impl Sandbox {
     }
 
     pub fn read_dir(&self, path: &str) -> Result<ReadDirResponse> {
-        let stream = self.connect_vsock()?;
-        let mut writer = stream.try_clone()?;
-        let mut reader = stream;
-
-        self.send_mount_requests(&mut writer, &mut reader)?;
-
         let req = ReadDirRequest {
             path: path.to_string(),
         };
-        frame::send_json(&mut writer, frame::READ_DIR_REQ, &req)?;
+        self.with_guest_control_session("read_dir", |writer, reader| {
+            frame::send_json(writer, frame::READ_DIR_REQ, &req)?;
 
-        match frame::read_frame(&mut reader).context("reading read_dir response")? {
-            Some((frame::READ_DIR_RESP, payload)) => {
-                Ok(serde_json::from_slice(&payload).context("parsing read_dir response")?)
+            let (msg_type, payload) =
+                read_response_frame(reader, "read_dir").context("reading read_dir response")?;
+            match msg_type {
+                frame::READ_DIR_RESP => {
+                    Ok(serde_json::from_slice(&payload).context("parsing read_dir response")?)
+                }
+                frame::ERROR => {
+                    bail!("{}", String::from_utf8_lossy(&payload));
+                }
+                other => {
+                    bail!("unexpected frame type 0x{:02x} in read_dir response", other);
+                }
             }
-            Some((frame::ERROR, payload)) => {
-                bail!("{}", String::from_utf8_lossy(&payload));
-            }
-            Some((other, _)) => {
-                bail!("unexpected frame type 0x{:02x} in read_dir response", other);
-            }
-            None => bail!("guest closed connection during read_dir"),
-        }
+        })
     }
 
     pub fn stat(&self, path: &str) -> Result<StatResponse> {
-        let stream = self.connect_vsock()?;
-        let mut writer = stream.try_clone()?;
-        let mut reader = stream;
-
-        self.send_mount_requests(&mut writer, &mut reader)?;
-
         let req = StatRequest {
             path: path.to_string(),
         };
-        frame::send_json(&mut writer, frame::STAT_REQ, &req)?;
+        self.with_guest_control_session("stat", |writer, reader| {
+            frame::send_json(writer, frame::STAT_REQ, &req)?;
 
-        match frame::read_frame(&mut reader).context("reading stat response")? {
-            Some((frame::STAT_RESP, payload)) => {
-                Ok(serde_json::from_slice(&payload).context("parsing stat response")?)
+            let (msg_type, payload) =
+                read_response_frame(reader, "stat").context("reading stat response")?;
+            match msg_type {
+                frame::STAT_RESP => {
+                    Ok(serde_json::from_slice(&payload).context("parsing stat response")?)
+                }
+                frame::ERROR => {
+                    bail!("{}", String::from_utf8_lossy(&payload));
+                }
+                other => {
+                    bail!("unexpected frame type 0x{:02x} in stat response", other);
+                }
             }
-            Some((frame::ERROR, payload)) => {
-                bail!("{}", String::from_utf8_lossy(&payload));
-            }
-            Some((other, _)) => {
-                bail!("unexpected frame type 0x{:02x} in stat response", other);
-            }
-            None => bail!("guest closed connection during stat"),
-        }
+        })
     }
 
     pub fn remove(&self, path: &str, recursive: bool) -> Result<()> {
@@ -526,6 +617,248 @@ impl Sandbox {
                 mode,
             },
         )
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    pub fn copy_from_host(&self, source: impl AsRef<Path>, guest_destination: &str) -> Result<()> {
+        self.ensure_file_range_io("copy-in")?;
+        let plan = plan_copy_in(source.as_ref(), guest_destination)?;
+
+        for entry in plan.entries {
+            match entry.kind {
+                CopyInEntryKind::Directory => {
+                    self.mkdir(&entry.guest_path, true).with_context(|| {
+                        format!("copy-in create guest dir '{}'", entry.guest_path)
+                    })?;
+                }
+                CopyInEntryKind::File { .. } => {
+                    self.copy_host_file_to_guest(&entry.host_path, &entry.guest_path)
+                        .with_context(|| format!("copy-in file to '{}'", entry.guest_path))?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    pub fn copy_to_host(
+        &self,
+        guest_source: &str,
+        host_destination: impl AsRef<Path>,
+        overwrite: bool,
+    ) -> Result<()> {
+        self.ensure_file_range_io("copy-out")?;
+        validate_guest_absolute_path(guest_source, CopyPathOperation::CopyOutGuestSource)?;
+        let destination = validate_copy_out_destination(host_destination.as_ref(), overwrite)?;
+        let stat = self.stat(guest_source)?;
+        if stat.is_symlink {
+            bail!("copy-out guest source '{}' is a symlink; symlink export is unsupported in the Windows MVP", guest_source);
+        }
+
+        if stat.is_file {
+            self.copy_guest_file_to_host_atomic(
+                guest_source,
+                stat.size,
+                &destination.path,
+                overwrite,
+            )
+        } else if stat.is_dir {
+            self.copy_guest_dir_to_host_atomic(guest_source, &destination.path, overwrite)
+        } else {
+            bail!(
+                "copy-out guest source '{}' is not a regular file or directory",
+                guest_source
+            );
+        }
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn copy_host_file_to_guest(&self, host_path: &Path, guest_path: &str) -> Result<()> {
+        let mut file = fs::File::open(host_path)
+            .with_context(|| format!("opening copy-in source '{}'", host_path.display()))?;
+        let mut buffer = vec![0u8; FILE_TRANSFER_CHUNK_SIZE];
+        let mut offset = 0u64;
+        let mut first = true;
+
+        loop {
+            let len = file
+                .read(&mut buffer)
+                .with_context(|| format!("reading copy-in source '{}'", host_path.display()))?;
+            if len == 0 {
+                if first {
+                    self.write_guest_file_range(guest_path, 0, true, &[])?;
+                }
+                break;
+            }
+            self.write_guest_file_range(guest_path, offset, first, &buffer[..len])?;
+            offset += len as u64;
+            first = false;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn write_guest_file_range(
+        &self,
+        guest_path: &str,
+        offset: u64,
+        truncate: bool,
+        content: &[u8],
+    ) -> Result<()> {
+        let req = WriteFileRequest {
+            path: guest_path.to_string(),
+            len: content.len() as u64,
+            offset: Some(offset),
+            truncate: Some(truncate),
+        };
+        self.send_write_file_request(&req, content)
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn copy_guest_file_to_host_atomic(
+        &self,
+        guest_path: &str,
+        size: u64,
+        destination: &Path,
+        overwrite: bool,
+    ) -> Result<()> {
+        let temp_path = temp_sibling_path(destination, "file")?;
+        let result = self
+            .copy_guest_file_to_host_path(guest_path, size, &temp_path)
+            .and_then(|_| {
+                replace_with_temp_path(&temp_path, destination, overwrite).with_context(|| {
+                    format!("publishing copy-out file '{}'", destination.display())
+                })
+            });
+        if result.is_err() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        result
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn copy_guest_file_to_host_path(
+        &self,
+        guest_path: &str,
+        size: u64,
+        destination: &Path,
+    ) -> Result<()> {
+        if destination.exists() {
+            bail!(
+                "copy-out destination '{}' already exists while exporting guest file '{}'",
+                destination.display(),
+                guest_path
+            );
+        }
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("creating copy-out parent directory '{}'", parent.display())
+            })?;
+        }
+
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination)
+            .with_context(|| format!("creating copy-out temp file '{}'", destination.display()))?;
+        let mut offset = 0u64;
+        while offset < size {
+            let len = std::cmp::min(FILE_TRANSFER_CHUNK_SIZE as u64, size - offset);
+            let req = ReadFileRequest {
+                path: guest_path.to_string(),
+                offset: Some(offset),
+                len: Some(len),
+            };
+            let chunk = self.send_read_file_request(&req)?;
+            if chunk.is_empty() && len > 0 {
+                bail!(
+                    "guest returned empty copy-out chunk before EOF for '{}'",
+                    guest_path
+                );
+            }
+            file.write_all(&chunk)
+                .with_context(|| format!("writing copy-out file '{}'", destination.display()))?;
+            offset += chunk.len() as u64;
+        }
+        file.sync_all()
+            .with_context(|| format!("syncing copy-out file '{}'", destination.display()))?;
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn copy_guest_dir_to_host_atomic(
+        &self,
+        guest_path: &str,
+        destination: &Path,
+        overwrite: bool,
+    ) -> Result<()> {
+        let temp_path = temp_sibling_path(destination, "dir")?;
+        fs::create_dir(&temp_path)
+            .with_context(|| format!("creating copy-out temp dir '{}'", temp_path.display()))?;
+
+        let result = self
+            .copy_guest_dir_to_host_path(guest_path, &temp_path)
+            .and_then(|_| {
+                replace_with_temp_path(&temp_path, destination, overwrite).with_context(|| {
+                    format!("publishing copy-out directory '{}'", destination.display())
+                })
+            });
+        if result.is_err() {
+            let _ = fs::remove_dir_all(&temp_path);
+        }
+        result
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn copy_guest_dir_to_host_path(&self, guest_path: &str, destination: &Path) -> Result<()> {
+        validate_guest_absolute_path(guest_path, CopyPathOperation::CopyOutGuestSource)?;
+        let entries = self.read_dir(guest_path)?;
+        let mut case_fold = CaseFoldSet::default();
+
+        for entry in entries.entries {
+            validate_guest_path_component(
+                &entry.name,
+                CopyPathOperation::CopyOutGuestEntry,
+                guest_path,
+            )?;
+            case_fold.insert(
+                &entry.name,
+                CopyPathOperation::CopyOutGuestEntry,
+                guest_path,
+            )?;
+
+            let guest_child = join_guest_child(guest_path, &entry.name);
+            let host_child = destination.join(&entry.name);
+            validate_windows_host_path_lexical(
+                &host_child,
+                CopyPathOperation::CopyOutHostDestination,
+            )?;
+            let stat = self.stat(&guest_child)?;
+            if stat.is_symlink {
+                bail!(
+                    "copy-out guest entry '{}' is a symlink; symlink export is unsupported in the Windows MVP",
+                    guest_child
+                );
+            }
+
+            if stat.is_dir {
+                fs::create_dir(&host_child).with_context(|| {
+                    format!("creating copy-out directory '{}'", host_child.display())
+                })?;
+                self.copy_guest_dir_to_host_path(&guest_child, &host_child)?;
+            } else if stat.is_file {
+                self.copy_guest_file_to_host_path(&guest_child, stat.size, &host_child)?;
+            } else {
+                bail!(
+                    "copy-out guest entry '{}' is not a regular file or directory",
+                    guest_child
+                );
+            }
+        }
+
+        Ok(())
     }
 
     /// Open a vsock connection for streaming exec. Returns the raw stream
@@ -805,6 +1138,46 @@ impl Sandbox {
         ))
     }
 
+    fn supports_file_range_io(&self) -> bool {
+        self.vm
+            .guest_capabilities()
+            .iter()
+            .any(|capability| capability == CAP_FILE_RANGE_IO)
+    }
+
+    fn ensure_file_range_io(&self, operation: &str) -> Result<()> {
+        if self.supports_file_range_io() {
+            Ok(())
+        } else {
+            bail!(
+                "{operation} requires guest capability '{}' for chunked transfers larger than {} bytes",
+                CAP_FILE_RANGE_IO,
+                frame::MAX_FRAME_PAYLOAD
+            );
+        }
+    }
+
+    fn with_guest_control_session<T>(
+        &self,
+        operation: &'static str,
+        f: impl FnOnce(&mut PlatformControlStream, &mut PlatformControlStream) -> Result<T>,
+    ) -> Result<T> {
+        #[cfg(not(target_os = "macos"))]
+        let _control_guard = self
+            .control_session
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Windows guest control session lock poisoned"))?;
+
+        let stream = self.connect_guest_control(operation)?;
+        let mut writer = stream
+            .try_clone()
+            .with_context(|| format!("cloning guest control stream for {operation}"))?;
+        let mut reader = stream;
+
+        self.send_mount_requests(&mut writer, &mut reader)?;
+        f(&mut writer, &mut reader)
+    }
+
     #[cfg(target_os = "macos")]
     fn connect_vsock(&self) -> Result<TcpStream> {
         let state_rx = self.vm.state_channel();
@@ -844,22 +1217,22 @@ impl Sandbox {
     fn connect_vsock(&self) -> Result<TcpStream> {
         Err(unsupported_runtime(
             "macOS-style vsock guest control transport",
-            "Windows M08 supports non-interactive exec over virtio-serial; file APIs, watch, shell, streaming spawn, port forwarding, and muxed sessions are later milestones",
+            "Windows uses virtio-serial guest control for M08 exec and M09 file transfer primitives; watch, shell, streaming spawn, port forwarding, and muxed sessions are later milestones",
         ))
     }
 
     #[cfg(target_os = "macos")]
-    fn connect_exec_control(&self) -> Result<PlatformControlStream> {
+    fn connect_guest_control(&self, _operation: &'static str) -> Result<PlatformControlStream> {
         self.connect_vsock()
             .map(PlatformControlStream::from_tcp_stream)
     }
 
     #[cfg(not(target_os = "macos"))]
-    fn connect_exec_control(&self) -> Result<PlatformControlStream> {
+    fn connect_guest_control(&self, operation: &'static str) -> Result<PlatformControlStream> {
         let stream = self
             .vm
             .connect_control()
-            .context("opening Windows virtio-serial exec control stream")?;
+            .with_context(|| format!("opening Windows virtio-serial {operation} control stream"))?;
         let _ = stream.set_nodelay_if_tcp(true);
         Ok(stream)
     }
@@ -887,6 +1260,16 @@ fn send_exec_request(writer: &mut impl Write, req: &ExecRequest) -> Result<()> {
     frame::send_json(writer, frame::EXEC_REQ, req).context("sending exec request")
 }
 
+fn read_response_frame(reader: &mut impl Read, operation: &str) -> Result<(u8, Vec<u8>)> {
+    loop {
+        match frame::read_frame(reader).with_context(|| format!("reading {operation} response"))? {
+            Some((frame::GUEST_READY, _)) => continue,
+            Some(frame) => return Ok(frame),
+            None => bail!("guest closed connection during {operation}"),
+        }
+    }
+}
+
 fn collect_exec_response(
     reader: &mut impl Read,
     stdout: &mut impl Write,
@@ -912,6 +1295,88 @@ fn collect_exec_response(
             None => bail!("guest closed exec stream before exit"),
         }
     }
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn temp_sibling_path(destination: &Path, label: &str) -> Result<PathBuf> {
+    let parent = destination.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "copy-out destination '{}' has no parent directory",
+            destination.display()
+        )
+    })?;
+    let file_name = destination
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "copy-out destination '{}' has no file name",
+                destination.display()
+            )
+        })?;
+    let nonce = COPY_OUT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    Ok(parent.join(format!(
+        ".{file_name}.lsb-copyout-{label}-{}-{nonce}.tmp",
+        std::process::id()
+    )))
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn replace_with_temp_path(temp_path: &Path, destination: &Path, overwrite: bool) -> Result<()> {
+    if destination.exists() {
+        if !overwrite {
+            bail!(
+                "copy-out destination '{}' already exists; explicit overwrite is required",
+                destination.display()
+            );
+        }
+        let metadata = fs::symlink_metadata(destination).with_context(|| {
+            format!(
+                "inspecting copy-out destination '{}'",
+                destination.display()
+            )
+        })?;
+        if metadata_is_symlink_or_reparse(&metadata) {
+            bail!(
+                "copy-out destination '{}' is a symlink or reparse point; refusing to replace it",
+                destination.display()
+            );
+        }
+        if metadata.is_dir() {
+            fs::remove_dir_all(destination).with_context(|| {
+                format!(
+                    "removing existing copy-out directory '{}'",
+                    destination.display()
+                )
+            })?;
+        } else {
+            fs::remove_file(destination).with_context(|| {
+                format!(
+                    "removing existing copy-out file '{}'",
+                    destination.display()
+                )
+            })?;
+        }
+    }
+
+    fs::rename(temp_path, destination).with_context(|| {
+        format!(
+            "renaming copy-out temp path '{}' to '{}'",
+            temp_path.display(),
+            destination.display()
+        )
+    })
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn metadata_is_symlink_or_reparse(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 // --- Port forwarding ---
@@ -1183,6 +1648,23 @@ mod tests {
     }
 
     #[test]
+    fn file_response_reader_skips_guest_ready_frames() {
+        let ready =
+            lsb_proto::GuestReady::new(lsb_proto::GuestTransport::VirtioSerial, "guest-test");
+        let ready_payload = serde_json::to_vec(&ready).expect("ready should encode");
+        let mut reader = exec_response_stream(&[
+            (frame::GUEST_READY, &ready_payload),
+            (frame::READ_FILE_RESP, b"file-content"),
+        ]);
+
+        let (msg_type, payload) =
+            read_response_frame(&mut reader, "read_file").expect("response should read");
+
+        assert_eq!(msg_type, frame::READ_FILE_RESP);
+        assert_eq!(payload, b"file-content");
+    }
+
+    #[test]
     fn exec_response_errors_when_guest_closes_before_exit() {
         let mut reader = exec_response_stream(&[(frame::STDOUT, b"partial")]);
         let mut stdout = Vec::new();
@@ -1289,6 +1771,96 @@ mod tests {
             let stop_result = sandbox.stop();
             result.expect("Windows exec smoke commands should pass");
             stop_result.expect("Windows exec smoke QEMU should stop cleanly");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU, and disposable LocalSandbox assets"]
+    fn windows_qemu_copy_transfer_smoke() {
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        {
+            eprintln!("skipping Windows QEMU copy transfer smoke on non-Windows host");
+        }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            let kernel = required_env_path("LSB_WINDOWS_BOOT_KERNEL");
+            let initrd = required_env_path("LSB_WINDOWS_BOOT_INITRD");
+            let rootfs = required_env_path("LSB_WINDOWS_BOOT_ROOTFS");
+            let host_root = rootfs
+                .parent()
+                .expect("rootfs should live in a work directory")
+                .join("copy-transfer-fixture");
+            let _ = std::fs::remove_dir_all(&host_root);
+            std::fs::create_dir_all(host_root.join("in/nested/empty")).expect("host fixture dirs");
+            std::fs::create_dir_all(host_root.join("out")).expect("host output dir");
+            std::fs::write(host_root.join("in/hello.txt"), b"hello from host")
+                .expect("host fixture file");
+            let large = vec![b'x'; lsb_proto::FILE_TRANSFER_CHUNK_SIZE + 123];
+            std::fs::write(host_root.join("in/nested/large.bin"), &large)
+                .expect("host large fixture");
+
+            let sandbox = Sandbox::builder()
+                .kernel(kernel.display().to_string())
+                .initrd(initrd.display().to_string())
+                .rootfs(rootfs.display().to_string())
+                .console(false)
+                .build()
+                .expect("Windows copy smoke sandbox should build");
+
+            sandbox
+                .start()
+                .expect("Windows copy smoke should reach guest ready before transfers");
+
+            let result = (|| -> Result<()> {
+                sandbox
+                    .copy_from_host(host_root.join("in/hello.txt"), "/tmp/lsb-copy/hello.txt")?;
+                let copied = sandbox.read_file("/tmp/lsb-copy/hello.txt")?;
+                assert_eq!(copied, b"hello from host");
+
+                sandbox.copy_from_host(host_root.join("in"), "/tmp/lsb-copy/tree")?;
+                let copied_large = sandbox.read_file("/tmp/lsb-copy/tree/nested/large.bin")?;
+                assert_eq!(copied_large, large);
+
+                sandbox.write_file("/tmp/lsb-copy/out/result.txt", b"result from guest")?;
+                sandbox.copy_to_host(
+                    "/tmp/lsb-copy/out/result.txt",
+                    host_root.join("out/result.txt"),
+                    false,
+                )?;
+                assert_eq!(
+                    std::fs::read(host_root.join("out/result.txt"))?,
+                    b"result from guest"
+                );
+
+                sandbox.copy_to_host(
+                    "/tmp/lsb-copy/tree",
+                    host_root.join("exported-tree"),
+                    false,
+                )?;
+                assert_eq!(
+                    std::fs::read(host_root.join("exported-tree/nested/large.bin"))?,
+                    copied_large
+                );
+
+                let traversal =
+                    sandbox.copy_to_host("/tmp/../etc/passwd", host_root.join("bad.txt"), false);
+                assert!(traversal.is_err());
+
+                let overwrite = sandbox.copy_to_host(
+                    "/tmp/lsb-copy/out/result.txt",
+                    host_root.join("out/result.txt"),
+                    false,
+                );
+                assert!(overwrite.is_err());
+
+                Ok(())
+            })();
+
+            let stop_result = sandbox.stop();
+            let _ = std::fs::remove_dir_all(&host_root);
+            result.expect("Windows copy smoke transfers should pass");
+            stop_result.expect("Windows copy smoke QEMU should stop cleanly");
         }
     }
 
