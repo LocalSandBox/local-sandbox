@@ -155,3 +155,31 @@ Use `templates/decision-record.md` for new decisions.
 - Decision: Use explicit `-cpu Westmere` for the Windows QEMU + WHPX direct boot path instead of `-cpu max`.
 - Evidence: The first provisioned M05 smoke run `28696602575` on QEMU 11.0.50 exited before serial output with APX/MPX feature conflicts and `WHPX: Unexpected VP exit code 4`. QEMU issue 1043 records the same `-cpu max` + WHPX failure shape and a `Westmere` workaround.
 - Consequence: Keep production execution WHPX-only; this is not a TCG fallback. Revisit the CPU model only with self-hosted WHPX boot smoke evidence and updated argv golden tests.
+
+### D021: Windows virtio-serial pipe is connected during boot
+
+- Status: Accepted
+- Date: 2026-07-04
+- Owner: Codex
+- Related milestone: M06
+- Related RFC section: Control transport / QEMU argv
+
+#### Context
+
+The first M06 self-hosted WHPX smoke run with `-device virtio-serial-pci`, `-chardev pipe`, and `virtserialport` in argv produced an empty `serial.log`. Diagnostics from run `28701861357` showed the expected redacted argv and no QEMU stderr, but Linux never emitted serial output. This validated R002: QEMU 11.0.50 on the Windows runner blocks guest startup until a host client connects to the named pipe chardev.
+
+#### Decision
+
+LocalSandbox connects to the QEMU-created control pipe immediately after the QEMU process starts and before boot observation. The established stream is owned by the running boot object, and later `PlatformVm::connect_control()` returns a clone of that stream instead of opening a second pipe client.
+
+#### Consequences
+
+- Guest boot is unblocked while preserving the private virtio-serial/QEMU pipe transport.
+- Control transport lifecycle is tied to the QEMU boot object; dropping/stopping the boot drops the pipe handle.
+- M07 should build the guest-ready handshake on the already-established stream rather than adding another connection attempt.
+
+#### Alternatives considered
+
+- Open the pipe only after boot: rejected because QEMU did not produce serial output until a host client connected.
+- Make LocalSandbox create the named-pipe server: rejected for M06 because QEMU `-chardev pipe` creates the endpoint and the validated path uses QEMU's server side.
+- Use hostfwd TCP/QGA/QMP for control: rejected by D007 and the M06 non-goals.

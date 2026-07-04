@@ -5,8 +5,8 @@ Track implementation risks here. Update as evidence arrives.
 | ID | Risk | Impact | Likelihood | Mitigation | Status | Owner |
 |---|---|---:|---:|---|---|---|
 | R001 | QEMU + WHPX availability varies across Windows machines | High | Medium | Strict M02 preflight; clear diagnostics; Windows 11 MVP only | Open | TBD |
-| R002 | Virtio-serial named pipe behavior differs from expectation on Windows | High | Medium | Validate in M06 with minimal guest echo/ready path; keep hostfwd TCP debug fallback only | Open | TBD |
-| R003 | Current guest assumes vsock-only control | High | High | M06 added `lsb-guest` transport selection and virtio-serial port discovery while preserving vsock; retire only after Windows WHPX smoke proves guest accepts framed control over virtio-serial | Mitigating | TBD |
+| R002 | Virtio-serial named pipe behavior differs from expectation on Windows | High | Medium | M06 self-hosted WHPX smoke showed QEMU `-chardev pipe` blocks boot until a host client connects; LocalSandbox now connects during boot and keeps the established stream. Keep validating across QEMU versions. | Mitigating | TBD |
+| R003 | Current guest assumes vsock-only control | High | High | M06 added `lsb-guest` transport selection and virtio-serial port discovery while preserving vsock; WHPX smoke proved the guest selects virtio-serial and opens `/dev/vport1p1`. Retire after M07 proves framed ready/control exchange over the opened stream. | Mitigating | TBD |
 | R004 | Windows filesystem semantics differ from current VirtioFS overlay semantics | High | High | MVP copy-in/copy-out; document limits; conformance tests | Open | TBD |
 | R005 | Existing `lsb-proxy` depends on Unix socketpair/file-handle network attachment | High | High | New Windows proxy attachment design in M12; do not enable QEMU NAT by default | Open | TBD |
 | R006 | CAS/NBD store depends on Unix domain sockets | Medium | High | Implement simple Windows checkpoint artifacts first; port CAS/NBD later | Open | TBD |
