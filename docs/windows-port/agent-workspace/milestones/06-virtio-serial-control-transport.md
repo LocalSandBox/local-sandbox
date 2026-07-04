@@ -1,6 +1,6 @@
 # M06: Virtio-Serial Control Transport
 
-Status: In progress
+Status: Review
 Depends on: See `00-index.md`
 RFC sections: See `traceability.md`
 
@@ -42,10 +42,10 @@ The specific tests should match the implementation, but this milestone must incl
 
 ## Acceptance criteria
 
-- [ ] Guest builds with both macOS/vsock and Windows/virtio-serial support.
-- [ ] Host opens control transport reliably after boot.
-- [ ] Protocol framing tests pass over in-memory and Windows transport where possible.
-- [ ] Timeouts produce clear diagnostics.
+- [x] Guest builds with both macOS/vsock and Windows/virtio-serial support.
+- [ ] Host opens control transport reliably after boot. Host implementation and bounded retry are in place; real QEMU Windows named-pipe ordering/acceptance needs self-hosted WHPX smoke validation.
+- [x] Protocol framing tests pass over in-memory and Windows transport where possible.
+- [x] Timeouts produce clear diagnostics.
 
 ## Coding-agent prompt
 
@@ -69,9 +69,17 @@ Complete the checklist in `../security-checklist.md`. Record any new risk in `..
 ## Handoff
 
 - Branch/PR: `codex/windows-m06-virtio-serial-control`
-- Summary: In progress.
-- Tests run: TBD
-- Debug artifacts: TBD
-- New decisions: TBD
-- New risks: TBD
+- Summary: Added a platform-neutral host control stream boundary, Windows QEMU virtio-serial endpoint naming/opening, QEMU control chardev lifecycle wiring, guest virtio-serial transport selection/discovery, and focused protocol/endpoint/discovery tests. No ready handshake, exec/file API parity, mux, mount, networking, checkpoint, or Node work was added.
+- Tests run: `cargo fmt --all -- --check`; `cargo check --workspace`; `cargo test --workspace`; `cargo check --workspace --target x86_64-pc-windows-msvc` (blocked by known macOS-host MSVC tooling gaps); `cargo check -p lsb-platform --target x86_64-pc-windows-msvc`; focused `lsb-platform`, `lsb-guest`, and `lsb-proto` tests.
+- Debug artifacts: None from local unit/golden tests. Real QEMU smoke artifacts are pending self-hosted Windows WHPX validation.
+- New decisions: None. D007 already selects virtio-serial over private Windows named pipe/QEMU chardev.
+- New risks: No new risk record. Existing R003 was moved to `Mitigating` because guest transport selection/discovery landed; QEMU named-pipe ordering remains a validation blocker under R002 and `state.md`.
 - Next milestone: M07 guest ready handshake.
+
+Security review:
+- No-network default preserved: yes
+- Secret redaction verified: yes, no protocol payload logging was added and QEMU argv diagnostics keep control pipe names redacted
+- Host file exposure reviewed: yes, no new host file sharing was added
+- Control/QMP endpoint privacy reviewed: partial, per-instance random pipe names are generated; QEMU-created named-pipe ACL behavior still requires Windows validation
+- Process cleanup reviewed: yes, endpoint lifetime is tied to the running boot object and QEMU cleanup remains under the existing supervisor/Job Object path
+- New risks added to risk-register.md: no; existing R003 status updated
