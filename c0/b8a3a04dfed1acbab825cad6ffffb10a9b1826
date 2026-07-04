@@ -1,0 +1,27 @@
+docs/windows-port/agent-workspace/milestones/07-guest-ready-handshake.md
+  s_899b77c54d595f::t_10075c7c80f80c 3,44-47,70-84
+docs/windows-port/agent-workspace/state.md
+  s_899b77c54d595f::t_4fe7d8ccf75816 7,18-19,31-32,45,47
+  s_899b77c54d595f::t_cfccb7e782b9db 68,72
+  s_899b77c54d595f::t_bbcebc2392cefd 104-106
+  s_899b77c54d595f::t_6275e4c416af92 183
+  s_899b77c54d595f::t_3134e3f490d819 6,35
+docs/windows-port/agent-workspace/validation.md
+  s_899b77c54d595f::t_6a39555bc8a76c 70-71,137
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c0b8a3a04dfed1acbab825cad6ffffb10a9b1826",
+  "prompts": {},
+  "sessions": {
+    "s_899b77c54d595f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2c96-9b6b-7aa2-b341-e35df897de82",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
