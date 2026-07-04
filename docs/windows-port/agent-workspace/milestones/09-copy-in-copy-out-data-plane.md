@@ -1,6 +1,6 @@
 # M09: Copy-In/Copy-Out Data Plane
 
-Status: In progress
+Status: Done
 Depends on: See `00-index.md`
 RFC sections: See `traceability.md`
 
@@ -41,10 +41,10 @@ The specific tests should match the implementation, but this milestone must incl
 
 ## Acceptance criteria
 
-- [ ] Copy-in/out tests for files/dirs/large files.
-- [ ] Path traversal rejection tests.
-- [ ] Windows symlink/junction behavior documented.
-- [ ] Explicit export does not overwrite unexpected host paths.
+- [x] Copy-in/out tests for files/dirs/large files.
+- [x] Path traversal rejection tests.
+- [x] Windows symlink/junction behavior documented.
+- [x] Explicit export does not overwrite unexpected host paths.
 
 ## Coding-agent prompt
 
@@ -67,10 +67,18 @@ Complete the checklist in `../security-checklist.md`. Record any new risk in `..
 
 ## Handoff
 
-- Branch/PR: TBD
-- Summary: TBD
-- Tests run: TBD
-- Debug artifacts: TBD
-- New decisions: TBD
-- New risks: TBD
-- Next milestone: TBD
+- Branch/PR: `codex/windows-m09-copy-in-copy-out`
+- Summary: Added Windows copy transfer data-plane helpers without live shared mounts. Host copy-in validates and plans recursive files/directories, rejects symlinks/junctions/reparse points, and streams file contents into isolated guest paths. Copy-out validates guest paths and Windows destinations, rejects traversal and unsafe names, uses temp paths plus rename, and requires explicit overwrite for existing host destinations. File contents move over the existing guest file protocol with optional chunked `file_range_io` ranges.
+- Tests run: `cargo fmt --all -- --check`; `cargo check --workspace`; `cargo check -p lsb-platform -p lsb-vm --target x86_64-pc-windows-msvc`; `git diff --check`; `cargo test -p lsb-proto file_range -- --nocapture`; `cargo test -p lsb-guest file_range -- --nocapture`; `cargo test -p lsb-platform windows_x86_64::fs -- --nocapture`; `cargo test -p lsb-vm file_response_reader_skips_guest_ready_frames -- --nocapture`; `cargo test --workspace`.
+- Debug artifacts: none locally. Added ignored `windows_qemu_copy_transfer_smoke` for self-hosted Windows WHPX validation.
+- New decisions: none; implementation follows D009/D010/D011.
+- New risks: none added. Known limitation: conservative symlink/junction/reparse rejection and no live shared mount semantics.
+- Next milestone: M10 Mount MVP semantics can build on M09 copy-in at sandbox start and explicit copy-out/export at sandbox end or on demand.
+
+Security review:
+- No-network default preserved: yes
+- Secret redaction verified: yes, no file contents are logged
+- Host file exposure reviewed: yes, host source is copied into guest storage and not exposed as a writable host mount
+- Control/QMP endpoint privacy reviewed: n/a for this milestone; existing virtio-serial/QMP privacy unchanged
+- Process cleanup reviewed: n/a for this milestone
+- New risks added to risk-register.md: no
