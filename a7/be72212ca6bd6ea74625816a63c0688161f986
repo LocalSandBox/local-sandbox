@@ -1,0 +1,21 @@
+docs/windows-port/agent-workspace/state.md
+  s_665230258694d1::t_c8dc41fb82dc6d 6-7,15,18-19,34,53
+docs/windows-port/agent-workspace/milestones/10-mount-mvp-semantics.md
+  s_665230258694d1::t_c8dc41fb82dc6d 3,70
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a7be72212ca6bd6ea74625816a63c0688161f986",
+  "prompts": {},
+  "sessions": {
+    "s_665230258694d1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2df8-508c-71f0-ad54-dc229d483e98",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
