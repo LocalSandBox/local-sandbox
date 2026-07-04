@@ -1,0 +1,25 @@
+docs/windows-port/agent-workspace/milestones/05-direct-linux-boot-serial-logs.md
+  s_8e61ef9c9e812b::t_406f352115e06f 74
+docs/windows-port/agent-workspace/state.md
+  s_8e61ef9c9e812b::t_0b08b8529c734e 87,95
+docs/windows-port/agent-workspace/diagnostics.md
+  s_8e61ef9c9e812b::t_eb9abc7e5bd316 106-109
+docs/windows-port/agent-workspace/validation.md
+  s_8e61ef9c9e812b::t_634a1ba9c28b51 65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9fe783d26722e4bec67f4e37a07ccc8008114fb5",
+  "prompts": {},
+  "sessions": {
+    "s_8e61ef9c9e812b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f28a9-5b53-7311-86c2-682bf0789f83",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
