@@ -1,0 +1,38 @@
+docs/windows-port/agent-workspace/runner-setup.md
+  s_a5ae05dcdc422e::t_8a8f657143bc2d 25,66-79,95-96,105,120-124
+docs/windows-port/agent-workspace/validation.md
+  s_a5ae05dcdc422e::t_e697e0e975e46f 38,47-55,124-126,137-140
+scripts/prepare-windows-boot-assets.ps1
+  s_a5ae05dcdc422e::t_9851601c3c1288 86
+  s_a5ae05dcdc422e::t_cde6370357b0f0 1-7,10-33,35-85,88-99,102-110,113-162,164-172
+  s_a5ae05dcdc422e::t_279e6b662b4860 34
+  s_a5ae05dcdc422e::t_6265ed51bb6d2e 87,100-101,111-112
+  s_a5ae05dcdc422e::t_d9f50ab178425f 163
+  s_a5ae05dcdc422e::t_0130549f501ce9 8-9
+.github/workflows/windows-lsb-hardware.yml
+  s_a5ae05dcdc422e::t_aa1dae3a519082 25-47,49-67,69-81,84-139,145-150,154-159,241-324
+  s_a5ae05dcdc422e::t_b8fe8d83749c97 48,68,82-83,231-240
+  s_a5ae05dcdc422e::t_a584833547d9d3 344
+  s_a5ae05dcdc422e::t_ad83708295ae77 140-144
+  s_a5ae05dcdc422e::t_7e9a7692e29f08 160
+  s_a5ae05dcdc422e::t_7378b5691927a1 325
+docs/windows-port/agent-workspace/state.md
+  s_a5ae05dcdc422e::t_8222d59a52120d 3,46,64,91,155
+  s_a5ae05dcdc422e::t_bdbdea1f440b01 29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d41d5ca13196e2692cf730fbe1b294c9e6a3926a",
+  "prompts": {},
+  "sessions": {
+    "s_a5ae05dcdc422e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2b6b-dd7c-77e1-8c4c-bdbbf29cae8e",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
