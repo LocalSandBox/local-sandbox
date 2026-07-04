@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-pub(crate) const DEFAULT_CPU_MODEL: &str = "max";
+pub(crate) const DEFAULT_CPU_MODEL: &str = "Westmere";
 pub(crate) const DEFAULT_MACHINE_TYPE: &str = "q35";
 pub(crate) const DEFAULT_KERNEL_CONSOLE: &str = "ttyS0";
 pub(crate) const DEFAULT_ROOT_DEVICE: &str = "/dev/vda";

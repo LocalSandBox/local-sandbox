@@ -228,6 +228,21 @@ jobs:
         run: |
           cargo test --workspace --locked
 
+      - name: Stage diagnostic logs
+        if: always()
+        run: |
+          $stage = Join-Path $PWD "target\windows-lsb-diagnostics"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          $runnerDiag = "C:\actions-runner\_diag"
+          if (Test-Path -LiteralPath $runnerDiag) {
+            $dest = Join-Path $stage "actions-runner"
+            New-Item -ItemType Directory -Force -Path $dest | Out-Null
+            Get-ChildItem -LiteralPath $runnerDiag -Filter "*.log" -File -ErrorAction SilentlyContinue | ForEach-Object {
+              Copy-Item -LiteralPath $_.FullName -Destination $dest -Force
+            }
+          }
+
       - name: Upload diagnostic logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -236,7 +251,7 @@ jobs:
           path: |
             target/**/*.log
             crates/**/target/**/*.log
-            C:\actions-runner\_diag\*.log
+            target/windows-lsb-diagnostics/**
           if-no-files-found: ignore
 
   windows-smoke-e2e:
@@ -333,6 +348,35 @@ jobs:
         run: |
           .\scripts\windows-e2e.ps1
 
+      - name: Stage diagnostic logs
+        if: always()
+        run: |
+          $stage = Join-Path $PWD "target\windows-lsb-diagnostics"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          $assetWork = "C:\lsb-assets\work"
+          if (Test-Path -LiteralPath $assetWork) {
+            Get-ChildItem -LiteralPath $assetWork -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+              $diagnostics = Join-Path $_.FullName "diagnostics"
+              if (Test-Path -LiteralPath $diagnostics) {
+                $dest = Join-Path (Join-Path $stage "lsb-assets-work") $_.Name
+                New-Item -ItemType Directory -Force -Path $dest | Out-Null
+                Get-ChildItem -LiteralPath $diagnostics -Force -ErrorAction SilentlyContinue | ForEach-Object {
+                  Copy-Item -LiteralPath $_.FullName -Destination $dest -Recurse -Force
+                }
+              }
+            }
+          }
+
+          $runnerDiag = "C:\actions-runner\_diag"
+          if (Test-Path -LiteralPath $runnerDiag) {
+            $dest = Join-Path $stage "actions-runner"
+            New-Item -ItemType Directory -Force -Path $dest | Out-Null
+            Get-ChildItem -LiteralPath $runnerDiag -Filter "*.log" -File -ErrorAction SilentlyContinue | ForEach-Object {
+              Copy-Item -LiteralPath $_.FullName -Destination $dest -Force
+            }
+          }
+
       - name: Upload diagnostic logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -341,6 +385,5 @@ jobs:
           path: |
             target/**/*.log
             crates/**/target/**/*.log
-            C:\lsb-assets\work\*\diagnostics\*
-            C:\actions-runner\_diag\*.log
+            target/windows-lsb-diagnostics/**
           if-no-files-found: ignore

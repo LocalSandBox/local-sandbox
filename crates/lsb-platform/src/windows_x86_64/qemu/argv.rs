@@ -444,7 +444,7 @@ mod tests {
                 "-machine",
                 "q35,accel=whpx",
                 "-cpu",
-                "max",
+                "Westmere",
                 "-smp",
                 "2",
                 "-m",
@@ -508,7 +508,7 @@ mod tests {
                 "-machine",
                 "q35,accel=whpx",
                 "-cpu",
-                "max",
+                "Westmere",
                 "-smp",
                 "2",
                 "-m",
@@ -581,6 +581,15 @@ mod tests {
         assert!(argv.iter().any(|arg| arg == "q35,accel=whpx"));
         assert!(!argv.iter().any(|arg| arg.contains("tcg")));
         assert!(!argv.iter().any(|arg| arg.contains("whpx:tcg")));
+    }
+
+    #[test]
+    fn whpx_direct_boot_uses_conservative_cpu_model() {
+        let command = build(base_config());
+        let argv = argv_as_strings(&command);
+
+        assert!(argv.windows(2).any(|pair| pair == ["-cpu", "Westmere"]));
+        assert!(!argv.windows(2).any(|pair| pair == ["-cpu", "max"]));
     }
 
     #[test]
