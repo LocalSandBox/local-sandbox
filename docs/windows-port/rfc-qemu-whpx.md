@@ -320,13 +320,13 @@ Potential changes:
 
 ### 10.5 Illustrative QEMU command
 
-This command is illustrative. The implementation must construct argv as a vector, never by shell-concatenating strings.
+This command is illustrative. The implementation must construct argv as a vector, never by shell-concatenating strings. The MVP uses a conservative `Westmere` CPU model for WHPX compatibility; see `agent-workspace/decisions.md` D020.
 
 ```powershell
 qemu-system-x86_64.exe `
   -nodefaults `
   -machine q35,accel=whpx `
-  -cpu max `
+  -cpu Westmere `
   -smp 2 `
   -m 2048M `
   -no-reboot `
@@ -1536,7 +1536,7 @@ Rejected. VirtioFS is the desired long-term semantic direction, but Windows host
 
 ## 22. Appendix A: Example QEMU Commands
 
-These commands are illustrative. The implementation must use structured argv construction.
+These commands are illustrative. The implementation must use structured argv construction. The MVP uses a conservative `Westmere` CPU model for WHPX compatibility; see `agent-workspace/decisions.md` D020.
 
 ### A.1 Minimal boot, no control, serial log only
 
@@ -1544,7 +1544,7 @@ These commands are illustrative. The implementation must use structured argv con
 qemu-system-x86_64.exe `
   -nodefaults `
   -machine q35,accel=whpx `
-  -cpu max `
+  -cpu Westmere `
   -smp 2 `
   -m 2048M `
   -display none `
@@ -1565,7 +1565,7 @@ qemu-system-x86_64.exe `
 qemu-system-x86_64.exe `
   -nodefaults `
   -machine q35,accel=whpx `
-  -cpu max `
+  -cpu Westmere `
   -smp 2 `
   -m 2048M `
   -display none `

@@ -76,11 +76,32 @@ directory containing the writable `rootfs.ext4` work copy. The M05 direct boot
 smoke test can override the diagnostics directory with
 `LSB_WINDOWS_BOOT_ARTIFACT_DIR`.
 
+In the self-hosted Windows hardware workflow, `LSB_WINDOWS_BOOT_ARTIFACT_DIR`
+currently points at:
+
+```text
+C:\lsb-assets\work\<run-id>-<attempt>\diagnostics
+```
+
+Before upload, the workflow stages those files under the checkout workspace at:
+
+```text
+target\windows-lsb-diagnostics\lsb-assets-work\<run-id>-<attempt>\
+```
+
+The uploaded artifact is named `windows-lsb-diagnostics`.
+
 `boot.status.json` records the M05 success definition:
 `qemu_process_alive_after_boot_observation_window`. This is not a guest-ready
 handshake. Until M06/M07 add virtio-serial control and readiness, a successful
 M05 boot observation means QEMU launched with WHPX and stayed alive for the
 observation window while serial/QEMU logs were captured.
+
+M05 uses `-cpu Westmere` for the Windows WHPX boot argv. The first provisioned
+boot smoke on QEMU 11.0.50 with `-cpu max` exited before serial output with
+APX/MPX feature conflict warnings and `WHPX: Unexpected VP exit code 4`. Treat
+that signature as a CPU model/WHPX compatibility failure before changing boot
+assets or adding a TCG fallback.
 
 M05 boot error categories include:
 

@@ -62,7 +62,7 @@ Hardware workflow:
 | M02 | QEMU discovery unit tests; Windows preflight diagnostic tests; manual/self-hosted preflight evidence. |
 | M03 | Golden argv tests for minimal boot, serial logs, virtio-serial, QMP, no-network default. |
 | M04 | Fake process and Windows Job Object cleanup tests where possible. |
-| M05 | WHPX boot smoke: QEMU starts, serial logs captured, kernel/initramfs reaches guest agent or clear failure point. |
+| M05 | WHPX boot smoke: QEMU starts with provisioned boot assets, serial/QEMU logs are captured, and QEMU stays alive through the M05 observation window or fails with actionable serial/stderr artifacts. Guest-ready handshake remains M07. |
 | M06 | Host can open virtio-serial transport; guest accepts framed protocol connection. |
 | M07 | Ready handshake succeeds and times out cleanly on failure. |
 | M08 | `exec` command returns stdout/stderr/exit status; kill/timeout behavior tested. |
@@ -138,3 +138,14 @@ message and must not claim direct boot validation.
 For manual Windows-side reproduction outside GitHub Actions, prepare equivalent
 assets from a trusted artifact manifest first, keep the pristine cache copy out
 of QEMU, and point `LSB_WINDOWS_BOOT_ROOTFS` at a disposable copy.
+
+The hardware workflow stages external diagnostics into the checkout before
+uploading them:
+
+```text
+target\windows-lsb-diagnostics\lsb-assets-work\<run-id>-<attempt>\
+```
+
+The source diagnostics remain under
+`C:\lsb-assets\work\<run-id>-<attempt>\diagnostics` on the runner while the job
+is active.

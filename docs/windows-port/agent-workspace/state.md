@@ -4,7 +4,7 @@ Last updated: 2026-07-04
 Owner: TBD
 RFC: `docs/windows-port/rfc-qemu-whpx.md`
 Current milestone: M05 - Direct Linux boot and serial logs
-Overall status: Review
+Overall status: Done
 
 ## How to update this file
 
@@ -16,7 +16,7 @@ Update this file at the end of every agent run. Keep it factual. Do not use it f
 - Issue: TBD
 - Agent: Codex
 - Start commit: `2023e10`
-- End commit: M05 review/status commit on `codex/windows-m05-direct-linux-boot-serial-logs`
+- End commit: M05 direct boot smoke fix/docs commits on `codex/windows-m05-direct-linux-boot-serial-logs`
 
 ## Milestone status table
 
@@ -26,7 +26,7 @@ Update this file at the end of every agent run. Keep it factual. Do not use it f
 | M02 QEMU discovery and preflight | Done | Codex | `codex/windows-m02-qemu-discovery-preflight` | Private QEMU discovery/version/WHPX preflight scaffolding and fake-runner tests are in place. |
 | M03 QEMU argv builder | Done | Codex | `codex/windows-m03-qemu-argv-builder` | Typed deterministic QEMU argv construction, sanitized diagnostics, and golden tests are in place. |
 | M04 QEMU process lifecycle | Done | Codex | `codex/windows-m04-qemu-lifecycle` | Private QEMU supervisor can spawn, monitor, terminate, write lifecycle artifacts, and use Windows Job Object cleanup; not wired to public VM startup and no guest boot. |
-| M05 Direct Linux boot and serial logs | Review | Codex | `codex/windows-m05-direct-linux-boot-serial-logs` | Direct boot path, serial/QEMU artifacts, boot observation timeout, and workflow boot asset provisioning are implemented; a manual provisioned smoke run is pending. |
+| M05 Direct Linux boot and serial logs | Done | Codex | `codex/windows-m05-direct-linux-boot-serial-logs` | Direct boot path, serial/QEMU artifacts, boot observation timeout, workflow boot asset provisioning, and provisioned self-hosted WHPX smoke evidence are in place. |
 | M06 Virtio-serial control transport | Not started | TBD | TBD | Requires bootable guest and QEMU chardev. |
 | M07 Guest ready handshake | Blocked by M06 | TBD | TBD | Requires control transport. |
 | M08 Exec command | Blocked by M07 | TBD | TBD | First useful guest operation. |
@@ -43,7 +43,7 @@ Status values: `Not started`, `In progress`, `Blocked`, `Review`, `Done`, `Defer
 ## Current known blockers
 
 - Windows VM startup now attempts M05 direct Linux boot only: it runs QEMU discovery/preflight, builds WHPX direct-boot argv, launches through the existing QEMU supervisor, captures serial/stdout/stderr/preflight/status artifacts, and returns success only after QEMU remains alive through the boot observation window. Guest readiness, control transport, exec, networking, mounts, checkpoints, and Node packaging remain unsupported.
-- Real self-hosted Windows direct boot smoke has not run yet after workflow-level boot asset provisioning was added. The smoke/e2e lanes now prepare and download boot assets before entering the Windows runner, but the hardware workflow still requires an explicit manual dispatch.
+- Guest readiness, control transport, exec, networking, mounts, checkpoints, and Node packaging remain unsupported after M05. M05 only proves the Windows backend can launch the existing assets through QEMU + WHPX and keep QEMU alive through the boot observation window while capturing logs.
 - Full `cargo check --workspace --target x86_64-pc-windows-msvc` from this macOS host is blocked by external Windows C/assembler tooling for transitive crates (`ring` needs Windows/MSVC headers such as `assert.h`; `blake3` needs `ml64.exe`). The changed `lsb-platform` crate passes a targeted Windows compile check; run the full workspace check on a Windows/MSVC runner.
 - The current safe host probe verifies target OS/arch and can report a supplied Windows major version. The standard host implementation does not yet query the native Windows build number without adding Windows API or registry probing.
 
@@ -62,6 +62,7 @@ Status values: `Not started`, `In progress`, `Blocked`, `Review`, `Done`, `Defer
 - 2026-07-03: Applied M04 follow-up review fixes: `QemuSupervisor` is now single-use and rejects restart after `failed`, `exited`, or `terminated` states to avoid stale pid/exit-status diagnostics. M04 forced cleanup remains intentional; graceful QEMU shutdown via private QMP/control plumbing is deferred to M05/MQMP work and documented in the milestone handoff.
 - 2026-07-03: Implemented M05 direct boot review slice. Added raw-rootfs direct boot argv config, `qemu::boot` orchestration, deterministic `<instance-dir>/diagnostics` artifact layout, boot observation status/error reporting, ignored `windows_qemu_boot_smoke`, Windows backend `start`/`stop` wiring, and smoke-script hooks for real QEMU preflight plus conditional direct boot.
 - 2026-07-04: Implemented manual hardware workflow boot asset provisioning for smoke/e2e. Added Linux `prepare-boot-assets` job with exact source-derived cache, same-run boot asset artifact, Windows persistent cache hydration under `C:\lsb-assets\by-key\<asset-key>\`, disposable per-run rootfs copy, and runner/validation documentation.
+- 2026-07-04: Fixed the first provisioned M05 smoke failure by changing the WHPX direct boot CPU model from `max` to `Westmere`, based on QEMU stderr APX/MPX conflicts and `WHPX: Unexpected VP exit code 4` in run `28696602575`. Also staged external Windows diagnostics into `target/windows-lsb-diagnostics` before artifact upload.
 
 ## Active implementation notes
 
@@ -81,6 +82,8 @@ Status values: `Not started`, `In progress`, `Blocked`, `Review`, `Done`, `Defer
 - 2026-07-03: M05 uses the existing prepared per-instance raw `rootfs.ext4` work image as the writable virtio block device (`format=raw`). This matches current CLI/SDK preparation and the milestone smoke path. qcow2 overlays remain the later checkpoint/store direction and were not introduced in M05.
 - 2026-07-03: M05 success is intentionally limited to `qemu_process_alive_after_boot_observation_window`, recorded in `boot.status.json`. It does not infer guest readiness from serial output and does not implement LocalSandbox guest control; M06/M07 must add virtio-serial and ready handshake.
 - 2026-07-03: M05 artifacts are written under `<instance-dir>/diagnostics`: `qemu.argv.redacted.txt`, `qemu.stdout.log`, `qemu.stderr.log`, `qemu.status.json`, `serial.log`, `preflight.json`, and `boot.status.json`. The ignored boot smoke can override this with `LSB_WINDOWS_BOOT_ARTIFACT_DIR`.
+- 2026-07-04: M05 Windows QEMU argv now uses `-cpu Westmere` for WHPX direct boot. `-cpu max` failed on the self-hosted runner before guest serial output; see decision D020.
+- 2026-07-04: The hardware workflow copies `C:\lsb-assets\work\<run-id>-<attempt>\diagnostics\*` into `target/windows-lsb-diagnostics/lsb-assets-work/<run-id>-<attempt>\` before uploading `windows-lsb-diagnostics`, because `actions/upload-artifact` rejects source files outside the workspace when mixed with workspace-relative paths.
 
 ## Test evidence log
 
@@ -88,6 +91,9 @@ Append newest entries at the top.
 
 | Date | Milestone | Platform | Command / test | Result | Notes |
 |---|---|---|---|---|---|
+| 2026-07-04 | M05/M15 | Windows self-hosted | `./scripts/win-gh-test smoke` | Pass | Run `28697374629`, Windows job `85109378078`, commit `a21f97c`. Provisioned assets were used, QEMU 11.0.50 ran real preflight, and `windows_qemu_boot_smoke` observed QEMU alive for 10000 ms. Logs were written under `C:\lsb-assets\work\28697374629-1\diagnostics` and uploaded in artifact `windows-lsb-diagnostics` ID `8079059489`. |
+| 2026-07-04 | M05/M15 | Windows self-hosted | Provisioned smoke run from user | Fail | Run `28696602575`, job `85108027605`, commit `fa6158d`. Boot assets were provisioned correctly, but `windows_qemu_boot_smoke` failed because QEMU exited before the observation window with APX/MPX warnings and `WHPX: Unexpected VP exit code 4`; serial output was empty. The diagnostics upload step also failed because it tried to upload `C:\lsb-assets\work\*\diagnostics\*` directly outside the workspace. Fixed in `a21f97c`. |
+| 2026-07-04 | M05/M15 | macOS | `cargo fmt --all -- --check`; `cargo test -p lsb-platform windows_x86_64::qemu::argv -- --nocapture`; `cargo test -p lsb-platform windows_x86_64::qemu::boot -- --nocapture`; `cargo check --workspace`; `cargo test --workspace`; `cargo check -p lsb-platform --target x86_64-pc-windows-msvc`; `git diff --check`; Ruby YAML parse of `.github/workflows/windows-lsb-hardware.yml` | Pass | Local validation for the WHPX CPU/workflow diagnostics fix. Full workspace tests passed with 96 tests passed and 2 ignored real-QEMU hooks. |
 | 2026-07-04 | M05/M15 | macOS | `git diff --check`; Ruby YAML parse of `.github/workflows/windows-lsb-hardware.yml` | Pass | `actionlint`, `pwsh`, and `powershell` were not installed locally; hardware workflow was not dispatched. |
 | 2026-07-03 | M05 | Windows self-hosted | `./scripts/win-gh-test smoke` + direct `gh run watch 28671654715 --exit-status` | Pass / boot skipped | Run `28671654715`; QEMU/WHPX preflight smoke passed. Direct boot smoke skipped because `LSB_WINDOWS_BOOT_KERNEL`, `LSB_WINDOWS_BOOT_INITRD`, and `LSB_WINDOWS_BOOT_ROOTFS` were not configured on the runner. |
 | 2026-07-03 | M05 | Windows self-hosted | `./scripts/win-gh-test unit` + direct `gh run watch 28671535931 --exit-status` | Pass | Helper initially matched prior check run; direct watch of run `28671535931` passed. |
@@ -152,7 +158,7 @@ Append newest entries at the top.
 - [x] Persist a redacted `qemu.argv.json` or equivalent diagnostics artifact once M04 creates per-instance diagnostics directories.
 - [x] Wire private M04 `QemuSupervisor` into the Windows backend start path during M05 without claiming readiness before the direct boot smoke path exists.
 - [x] Use M05 per-instance artifact layout to decide whether `qemu.argv.redacted.txt` should become structured JSON or remain a redacted text command display.
-- [ ] Manually dispatch `./scripts/win-gh-test smoke` and confirm the workflow-provisioned disposable boot assets run `windows_qemu_boot_smoke` instead of skipping.
+- [x] Manually dispatch `./scripts/win-gh-test smoke` and confirm the workflow-provisioned disposable boot assets run `windows_qemu_boot_smoke` instead of skipping.
 - [ ] Decide exact hidden/debug flag name for TCG once CLI command parsing is inspected.
 - [ ] Decide exact QEMU minimum version after M02 preflight experimentation.
 - [ ] Decide whether native Windows build-number probing should use a Windows API, registry query, or remain deferred until a CLI diagnostics command exists.

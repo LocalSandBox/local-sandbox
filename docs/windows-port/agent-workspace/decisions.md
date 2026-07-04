@@ -147,3 +147,11 @@ Use `templates/decision-record.md` for new decisions.
 - Date: 2026-07-02
 - Decision: Treat guest code as untrusted. Host secrets are high-value. QEMU is part of the attack surface. Host filesystem and local sockets/pipes must be private and minimized.
 - Consequence: Every milestone must pass the security checklist before completion.
+
+### D020: Windows WHPX direct boot uses a conservative CPU model
+
+- Status: Accepted
+- Date: 2026-07-04
+- Decision: Use explicit `-cpu Westmere` for the Windows QEMU + WHPX direct boot path instead of `-cpu max`.
+- Evidence: The first provisioned M05 smoke run `28696602575` on QEMU 11.0.50 exited before serial output with APX/MPX feature conflicts and `WHPX: Unexpected VP exit code 4`. QEMU issue 1043 records the same `-cpu max` + WHPX failure shape and a `Westmere` workaround.
+- Consequence: Keep production execution WHPX-only; this is not a TCG fallback. Revisit the CPU model only with self-hosted WHPX boot smoke evidence and updated argv golden tests.
