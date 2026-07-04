@@ -1,10 +1,12 @@
 use std::env;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use lsb_proto::{frame, GuestReady, GuestTransport};
 use serde::Serialize;
 
 use crate::windows_x86_64::control::{VirtioSerialControlEndpoint, VirtioSerialControlError};
@@ -20,21 +22,16 @@ use super::process::{
 use super::{lossy_excerpt, QemuPreflightError, StdQemuCommandRunner};
 
 pub(crate) const DEFAULT_BOOT_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const DEFAULT_GUEST_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const BOOT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SERIAL_LOG_FILE: &str = "serial.log";
 const PREFLIGHT_FILE: &str = "preflight.json";
 const BOOT_STATUS_FILE: &str = "boot.status.json";
 const SERIAL_OBSERVED_SUCCESS_DEFINITION: &str =
     "qemu_process_alive_after_boot_observation_window_with_serial_output";
-const VIRTIO_SERIAL_CONTROL_SUCCESS_DEFINITION: &str =
-    "qemu_process_alive_with_serial_output_and_virtio_serial_control_port_opened";
-const VIRTIO_SERIAL_CONTROL_TRANSPORT_MARKER: &str =
-    "lsb-guest: using virtio-serial control transport";
-const VIRTIO_SERIAL_CONTROL_OPEN_MARKER: &str = "lsb-guest: virtio-serial control port opened";
-const VIRTIO_SERIAL_CONTROL_SERIAL_MARKERS: [&str; 2] = [
-    VIRTIO_SERIAL_CONTROL_TRANSPORT_MARKER,
-    VIRTIO_SERIAL_CONTROL_OPEN_MARKER,
-];
+const GUEST_READY_SUCCESS_DEFINITION: &str =
+    "localsandbox_guest_ready_frame_received_over_control_transport";
+const CONTROL_STATE_WAITING_FOR_READY: &str = "control_channel_open_waiting_for_guest_ready";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WindowsQemuBootConfig {
@@ -46,6 +43,7 @@ pub(crate) struct WindowsQemuBootConfig {
     pub diagnostic_label: Option<String>,
     pub artifact_directory: Option<PathBuf>,
     pub boot_observation_timeout: Duration,
+    pub guest_ready_timeout: Duration,
     pub control_endpoint: Option<VirtioSerialControlEndpoint>,
 }
 
@@ -66,6 +64,7 @@ impl WindowsQemuBootConfig {
             diagnostic_label: None,
             artifact_directory: None,
             boot_observation_timeout: DEFAULT_BOOT_OBSERVATION_TIMEOUT,
+            guest_ready_timeout: DEFAULT_GUEST_READY_TIMEOUT,
             control_endpoint: None,
         }
     }
@@ -112,6 +111,8 @@ pub(crate) struct WindowsQemuBoot {
     observation_timeout: Duration,
     control_endpoint: Option<VirtioSerialControlEndpoint>,
     control_stream: Option<crate::PlatformControlStream>,
+    guest_ready: Option<GuestReady>,
+    guest_ready_elapsed: Option<Duration>,
 }
 
 impl WindowsQemuBoot {
@@ -125,6 +126,14 @@ impl WindowsQemuBoot {
 
     pub(crate) fn observation_timeout(&self) -> Duration {
         self.observation_timeout
+    }
+
+    pub(crate) fn guest_ready(&self) -> Option<&GuestReady> {
+        self.guest_ready.as_ref()
+    }
+
+    pub(crate) fn guest_ready_elapsed(&self) -> Option<Duration> {
+        self.guest_ready_elapsed
     }
 
     pub(crate) fn control_endpoint(&self) -> Option<&VirtioSerialControlEndpoint> {
@@ -168,8 +177,12 @@ pub(crate) enum QemuBootErrorKind {
     ControlOpen,
     ProcessStatus,
     GuestBootExited,
+    GuestReadyProcessExited,
+    GuestReadyTimeout,
+    GuestReadyProtocol,
+    GuestReadyTransport,
+    UnsupportedWindowsRuntimeCapability,
     SerialOutputMissing,
-    SerialEvidenceMissing,
     StopFailed,
 }
 
@@ -186,8 +199,12 @@ impl QemuBootErrorKind {
             Self::ControlOpen => "control_open",
             Self::ProcessStatus => "process_status",
             Self::GuestBootExited => "guest_boot_exited",
+            Self::GuestReadyProcessExited => "guest_ready_process_exited",
+            Self::GuestReadyTimeout => "guest_ready_timeout",
+            Self::GuestReadyProtocol => "guest_ready_protocol",
+            Self::GuestReadyTransport => "guest_ready_transport",
+            Self::UnsupportedWindowsRuntimeCapability => "unsupported_windows_runtime_capability",
             Self::SerialOutputMissing => "serial_output_missing",
-            Self::SerialEvidenceMissing => "serial_evidence_missing",
             Self::StopFailed => "stop_failed",
         }
     }
@@ -244,15 +261,40 @@ pub(crate) enum QemuBootError {
         stderr_excerpt: String,
         serial_excerpt: String,
     },
+    GuestReadyProcessExited {
+        state: QemuProcessState,
+        exit_status: Option<QemuExitStatus>,
+        artifacts: QemuBootArtifacts,
+        elapsed: Duration,
+        stderr_excerpt: String,
+        serial_excerpt: String,
+    },
+    GuestReadyTimeout {
+        timeout: Duration,
+        elapsed: Duration,
+        artifacts: QemuBootArtifacts,
+        serial_excerpt: String,
+        stderr_excerpt: String,
+    },
+    GuestReadyProtocol {
+        reason: String,
+        frame_type: Option<u8>,
+        artifacts: QemuBootArtifacts,
+        serial_excerpt: String,
+    },
+    GuestReadyTransport {
+        detail: String,
+        artifacts: QemuBootArtifacts,
+        serial_excerpt: String,
+    },
+    UnsupportedWindowsRuntimeCapability {
+        capabilities: Vec<String>,
+        artifacts: QemuBootArtifacts,
+        serial_excerpt: String,
+    },
     SerialOutputMissing {
         artifacts: QemuBootArtifacts,
         stderr_excerpt: String,
-    },
-    SerialEvidenceMissing {
-        artifacts: QemuBootArtifacts,
-        success_definition: &'static str,
-        missing_markers: Vec<&'static str>,
-        serial_excerpt: String,
     },
     StopFailed {
         source: QemuProcessError,
@@ -273,8 +315,14 @@ impl QemuBootError {
             Self::ControlOpen { .. } => QemuBootErrorKind::ControlOpen,
             Self::ProcessStatus { .. } => QemuBootErrorKind::ProcessStatus,
             Self::GuestBootExited { .. } => QemuBootErrorKind::GuestBootExited,
+            Self::GuestReadyProcessExited { .. } => QemuBootErrorKind::GuestReadyProcessExited,
+            Self::GuestReadyTimeout { .. } => QemuBootErrorKind::GuestReadyTimeout,
+            Self::GuestReadyProtocol { .. } => QemuBootErrorKind::GuestReadyProtocol,
+            Self::GuestReadyTransport { .. } => QemuBootErrorKind::GuestReadyTransport,
+            Self::UnsupportedWindowsRuntimeCapability { .. } => {
+                QemuBootErrorKind::UnsupportedWindowsRuntimeCapability
+            }
             Self::SerialOutputMissing { .. } => QemuBootErrorKind::SerialOutputMissing,
-            Self::SerialEvidenceMissing { .. } => QemuBootErrorKind::SerialEvidenceMissing,
             Self::StopFailed { .. } => QemuBootErrorKind::StopFailed,
         }
     }
@@ -289,8 +337,12 @@ impl QemuBootError {
             | Self::ControlOpen { artifacts, .. }
             | Self::ProcessStatus { artifacts, .. }
             | Self::GuestBootExited { artifacts, .. }
+            | Self::GuestReadyProcessExited { artifacts, .. }
+            | Self::GuestReadyTimeout { artifacts, .. }
+            | Self::GuestReadyProtocol { artifacts, .. }
+            | Self::GuestReadyTransport { artifacts, .. }
+            | Self::UnsupportedWindowsRuntimeCapability { artifacts, .. }
             | Self::SerialOutputMissing { artifacts, .. }
-            | Self::SerialEvidenceMissing { artifacts, .. }
             | Self::StopFailed { artifacts, .. } => Some(artifacts),
             Self::InvalidConfig { artifacts, .. } | Self::ArtifactIo { artifacts, .. } => {
                 artifacts.as_ref()
@@ -377,7 +429,7 @@ impl fmt::Display for QemuBootError {
                 ..
             } => write!(
                 f,
-                "Windows QEMU exited before the M05 boot observation window completed (state '{}', status {}). Inspect serial and QEMU logs. stderr excerpt: {}; serial excerpt: {}.{}",
+                "Windows QEMU exited before the boot observation completed (state '{}', status {}). Inspect serial and QEMU logs. stderr excerpt: {}; serial excerpt: {}.{}",
                 state.as_str(),
                 exit_status
                     .as_ref()
@@ -387,24 +439,84 @@ impl fmt::Display for QemuBootError {
                 empty_as_placeholder(serial_excerpt),
                 self.artifact_sentence()
             ),
+            Self::GuestReadyProcessExited {
+                state,
+                exit_status,
+                elapsed,
+                stderr_excerpt,
+                serial_excerpt,
+                ..
+            } => write!(
+                f,
+                "Windows QEMU exited before the LocalSandbox guest-ready handshake completed (state '{}', status {}, elapsed {} ms, control state '{}'). Inspect serial and QEMU logs. stderr excerpt: {}; serial excerpt: {}.{}",
+                state.as_str(),
+                exit_status
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "unknown".to_string()),
+                elapsed.as_millis(),
+                CONTROL_STATE_WAITING_FOR_READY,
+                empty_as_placeholder(stderr_excerpt),
+                empty_as_placeholder(serial_excerpt),
+                self.artifact_sentence()
+            ),
+            Self::GuestReadyTimeout {
+                timeout,
+                elapsed,
+                serial_excerpt,
+                stderr_excerpt,
+                ..
+            } => write!(
+                f,
+                "timed out after {} ms waiting for the LocalSandbox guest-ready handshake over the Windows virtio-serial control channel (elapsed {} ms, control state '{}'). Inspect serial and QEMU logs. stderr excerpt: {}; serial excerpt: {}.{}",
+                timeout.as_millis(),
+                elapsed.as_millis(),
+                CONTROL_STATE_WAITING_FOR_READY,
+                empty_as_placeholder(stderr_excerpt),
+                empty_as_placeholder(serial_excerpt),
+                self.artifact_sentence()
+            ),
+            Self::GuestReadyProtocol {
+                reason,
+                frame_type,
+                serial_excerpt,
+                ..
+            } => write!(
+                f,
+                "invalid LocalSandbox guest-ready handshake frame{}: {reason}. serial excerpt: {}.{}",
+                frame_type
+                    .map(|value| format!(" type 0x{value:02x}"))
+                    .unwrap_or_default(),
+                empty_as_placeholder(serial_excerpt),
+                self.artifact_sentence()
+            ),
+            Self::GuestReadyTransport {
+                detail,
+                serial_excerpt,
+                ..
+            } => write!(
+                f,
+                "failed while reading the LocalSandbox guest-ready handshake over the Windows virtio-serial control channel: {detail}. serial excerpt: {}.{}",
+                empty_as_placeholder(serial_excerpt),
+                self.artifact_sentence()
+            ),
+            Self::UnsupportedWindowsRuntimeCapability {
+                capabilities,
+                serial_excerpt,
+                ..
+            } => write!(
+                f,
+                "the Windows guest advertised unsupported runtime capabilities during readiness: {}. M07 does not implement exec, file APIs, mounts, networking, port forwarding, or checkpoints. serial excerpt: {}.{}",
+                capability_summary(capabilities),
+                empty_as_placeholder(serial_excerpt),
+                self.artifact_sentence()
+            ),
             Self::SerialOutputMissing {
                 stderr_excerpt, ..
             } => write!(
                 f,
                 "Windows QEMU stayed alive for the M05 boot observation window, but serial.log remained empty. Treat this as inconclusive boot evidence; inspect QEMU stderr and kernel console configuration. stderr excerpt: {}.{}",
                 empty_as_placeholder(stderr_excerpt),
-                self.artifact_sentence()
-            ),
-            Self::SerialEvidenceMissing {
-                success_definition,
-                missing_markers,
-                serial_excerpt,
-                ..
-            } => write!(
-                f,
-                "Windows QEMU stayed alive for the boot observation window with serial output, but serial.log did not contain required evidence for {success_definition}: {}. serial excerpt: {}.{}",
-                missing_markers.join(", "),
-                empty_as_placeholder(serial_excerpt),
                 self.artifact_sentence()
             ),
             Self::StopFailed { source, .. } => write!(
@@ -572,29 +684,83 @@ pub(crate) fn launch_windows_qemu_boot(
         None
     };
 
-    if let Err(error) = observe_boot(
-        &mut supervisor,
-        &artifacts,
-        config.boot_observation_timeout,
-        observation_goal,
-    ) {
-        record_failure(
+    let mut guest_ready = None;
+    let mut guest_ready_elapsed = None;
+    if let Some(stream) = control_stream.as_ref() {
+        let ready_reader = match stream.try_clone() {
+            Ok(reader) => reader,
+            Err(error) => {
+                let error = QemuBootError::GuestReadyTransport {
+                    detail: format!("failed to clone established control stream: {error}"),
+                    artifacts: artifacts.clone(),
+                    serial_excerpt: read_excerpt(&artifacts.serial),
+                };
+                record_failure(
+                    &artifacts,
+                    config.guest_ready_timeout,
+                    observation_goal,
+                    &error,
+                );
+                let _ = supervisor.terminate();
+                return Err(error);
+            }
+        };
+        match wait_for_guest_ready(
+            &mut supervisor,
             &artifacts,
-            config.boot_observation_timeout,
-            observation_goal,
-            &error,
-        );
-        return Err(error);
-    }
+            config.guest_ready_timeout,
+            ready_reader,
+            GuestTransport::VirtioSerial,
+        ) {
+            Ok(result) => {
+                write_boot_status_file(
+                    &artifacts,
+                    observation_goal.success_state,
+                    observation_goal.success_definition,
+                    config.guest_ready_timeout,
+                    Some(result.elapsed.as_millis()),
+                    Some(&result.message),
+                    None,
+                    None,
+                )?;
+                guest_ready_elapsed = Some(result.elapsed);
+                guest_ready = Some(result.message);
+            }
+            Err(error) => {
+                record_failure(
+                    &artifacts,
+                    config.guest_ready_timeout,
+                    observation_goal,
+                    &error,
+                );
+                let _ = supervisor.terminate();
+                return Err(error);
+            }
+        }
+    } else {
+        if let Err(error) =
+            observe_boot(&mut supervisor, &artifacts, config.boot_observation_timeout)
+        {
+            record_failure(
+                &artifacts,
+                config.boot_observation_timeout,
+                observation_goal,
+                &error,
+            );
+            return Err(error);
+        }
 
-    write_boot_status_file(
-        &artifacts,
-        observation_goal.success_state,
-        observation_goal.success_definition,
-        config.boot_observation_timeout,
-        None,
-        None,
-    )?;
+        write_boot_status_file(
+            &artifacts,
+            observation_goal.success_state,
+            observation_goal.success_definition,
+            config.boot_observation_timeout,
+            None,
+            None,
+            None,
+            None,
+        )?;
+    }
 
     Ok(WindowsQemuBoot {
         supervisor,
@@ -602,6 +768,8 @@ pub(crate) fn launch_windows_qemu_boot(
         observation_timeout: config.boot_observation_timeout,
         control_endpoint: config.control_endpoint,
         control_stream,
+        guest_ready,
+        guest_ready_elapsed,
     })
 }
 
@@ -758,7 +926,6 @@ fn write_preflight_report(
 struct BootObservationGoal {
     success_state: &'static str,
     success_definition: &'static str,
-    required_serial_markers: &'static [&'static str],
 }
 
 impl BootObservationGoal {
@@ -774,15 +941,213 @@ impl BootObservationGoal {
         Self {
             success_state: "serial_observed_alive",
             success_definition: SERIAL_OBSERVED_SUCCESS_DEFINITION,
-            required_serial_markers: &[],
         }
     }
 
     fn virtio_serial_control() -> Self {
         Self {
-            success_state: "virtio_serial_control_observed_alive",
-            success_definition: VIRTIO_SERIAL_CONTROL_SUCCESS_DEFINITION,
-            required_serial_markers: &VIRTIO_SERIAL_CONTROL_SERIAL_MARKERS,
+            success_state: "guest_ready",
+            success_definition: GUEST_READY_SUCCESS_DEFINITION,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuestReadyResult {
+    message: GuestReady,
+    elapsed: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GuestReadyFrameError {
+    Eof,
+    Transport(String),
+    Protocol {
+        reason: String,
+        frame_type: Option<u8>,
+    },
+    UnsupportedCapabilities(Vec<String>),
+}
+
+fn wait_for_guest_ready<R>(
+    supervisor: &mut QemuSupervisor,
+    artifacts: &QemuBootArtifacts,
+    timeout: Duration,
+    mut reader: R,
+    expected_transport: GuestTransport,
+) -> Result<GuestReadyResult, QemuBootError>
+where
+    R: Read + Send + 'static,
+{
+    let started_at = Instant::now();
+    let deadline = started_at + timeout;
+    let (sender, receiver) = mpsc::channel();
+
+    std::thread::spawn(move || {
+        let result = read_guest_ready_frame(&mut reader, expected_transport);
+        let _ = sender.send(result);
+    });
+
+    loop {
+        match receiver.try_recv() {
+            Ok(Ok(message)) => {
+                return Ok(GuestReadyResult {
+                    message,
+                    elapsed: started_at.elapsed(),
+                });
+            }
+            Ok(Err(error)) => return Err(map_guest_ready_frame_error(error, artifacts)),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err(QemuBootError::GuestReadyTransport {
+                    detail: "guest-ready reader thread ended before sending a result".to_string(),
+                    artifacts: artifacts.clone(),
+                    serial_excerpt: read_excerpt(&artifacts.serial),
+                });
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+
+        match supervisor.try_status() {
+            Ok(QemuProcessState::Running | QemuProcessState::Starting) => {}
+            Ok(
+                state @ (QemuProcessState::Exited
+                | QemuProcessState::Failed
+                | QemuProcessState::Terminated),
+            ) => {
+                return Err(QemuBootError::GuestReadyProcessExited {
+                    state,
+                    exit_status: supervisor.exit_status().cloned(),
+                    artifacts: artifacts.clone(),
+                    elapsed: started_at.elapsed(),
+                    stderr_excerpt: read_excerpt(&artifacts.process.stderr),
+                    serial_excerpt: read_excerpt(&artifacts.serial),
+                });
+            }
+            Ok(QemuProcessState::NotStarted) => {
+                return Err(QemuBootError::ProcessStatus {
+                    source: QemuProcessError::NotStarted,
+                    artifacts: artifacts.clone(),
+                });
+            }
+            Err(source) => {
+                return Err(QemuBootError::ProcessStatus {
+                    source,
+                    artifacts: artifacts.clone(),
+                });
+            }
+        }
+
+        if Instant::now() >= deadline {
+            return Err(QemuBootError::GuestReadyTimeout {
+                timeout,
+                elapsed: started_at.elapsed(),
+                artifacts: artifacts.clone(),
+                serial_excerpt: read_excerpt(&artifacts.serial),
+                stderr_excerpt: read_excerpt(&artifacts.process.stderr),
+            });
+        }
+
+        std::thread::sleep(BOOT_POLL_INTERVAL);
+    }
+}
+
+fn read_guest_ready_frame(
+    reader: &mut impl Read,
+    expected_transport: GuestTransport,
+) -> Result<GuestReady, GuestReadyFrameError> {
+    let (msg_type, payload) = frame::read_frame(reader)
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::InvalidData {
+                GuestReadyFrameError::Protocol {
+                    reason: error.to_string(),
+                    frame_type: None,
+                }
+            } else {
+                GuestReadyFrameError::Transport(error.to_string())
+            }
+        })?
+        .ok_or(GuestReadyFrameError::Eof)?;
+
+    if msg_type != frame::GUEST_READY {
+        return Err(GuestReadyFrameError::Protocol {
+            reason: format!(
+                "expected GUEST_READY frame type 0x{:02x}, got frame type 0x{msg_type:02x} with {} payload bytes",
+                frame::GUEST_READY,
+                payload.len()
+            ),
+            frame_type: Some(msg_type),
+        });
+    }
+
+    let ready: GuestReady =
+        serde_json::from_slice(&payload).map_err(|error| GuestReadyFrameError::Protocol {
+            reason: format!(
+                "failed to decode GUEST_READY JSON payload with {} bytes: {error}",
+                payload.len()
+            ),
+            frame_type: Some(msg_type),
+        })?;
+
+    if ready.protocol_version != lsb_proto::PROTOCOL_VERSION {
+        return Err(GuestReadyFrameError::Protocol {
+            reason: format!(
+                "unsupported guest protocol version {}; expected {}",
+                ready.protocol_version,
+                lsb_proto::PROTOCOL_VERSION
+            ),
+            frame_type: Some(msg_type),
+        });
+    }
+
+    if ready.transport != expected_transport {
+        return Err(GuestReadyFrameError::Protocol {
+            reason: format!(
+                "guest reported transport {}; expected {}",
+                transport_label(&ready.transport),
+                transport_label(&expected_transport)
+            ),
+            frame_type: Some(msg_type),
+        });
+    }
+
+    if !ready.capabilities.is_empty() {
+        return Err(GuestReadyFrameError::UnsupportedCapabilities(
+            ready.capabilities,
+        ));
+    }
+
+    Ok(ready)
+}
+
+fn map_guest_ready_frame_error(
+    error: GuestReadyFrameError,
+    artifacts: &QemuBootArtifacts,
+) -> QemuBootError {
+    match error {
+        GuestReadyFrameError::Eof => QemuBootError::GuestReadyTransport {
+            detail: "control channel closed before the guest-ready frame arrived".to_string(),
+            artifacts: artifacts.clone(),
+            serial_excerpt: read_excerpt(&artifacts.serial),
+        },
+        GuestReadyFrameError::Transport(detail) => QemuBootError::GuestReadyTransport {
+            detail,
+            artifacts: artifacts.clone(),
+            serial_excerpt: read_excerpt(&artifacts.serial),
+        },
+        GuestReadyFrameError::Protocol { reason, frame_type } => {
+            QemuBootError::GuestReadyProtocol {
+                reason,
+                frame_type,
+                artifacts: artifacts.clone(),
+                serial_excerpt: read_excerpt(&artifacts.serial),
+            }
+        }
+        GuestReadyFrameError::UnsupportedCapabilities(capabilities) => {
+            QemuBootError::UnsupportedWindowsRuntimeCapability {
+                capabilities,
+                artifacts: artifacts.clone(),
+                serial_excerpt: read_excerpt(&artifacts.serial),
+            }
         }
     }
 }
@@ -791,7 +1156,6 @@ fn observe_boot(
     supervisor: &mut QemuSupervisor,
     artifacts: &QemuBootArtifacts,
     timeout: Duration,
-    observation_goal: BootObservationGoal,
 ) -> Result<(), QemuBootError> {
     let deadline = Instant::now() + timeout;
     loop {
@@ -827,22 +1191,7 @@ fn observe_boot(
         if Instant::now() >= deadline {
             let serial = fs::read(&artifacts.serial).unwrap_or_default();
             if !serial.is_empty() {
-                let serial_text = String::from_utf8_lossy(&serial);
-                let missing_markers = observation_goal
-                    .required_serial_markers
-                    .iter()
-                    .copied()
-                    .filter(|marker| !serial_text.contains(marker))
-                    .collect::<Vec<_>>();
-                if missing_markers.is_empty() {
-                    return Ok(());
-                }
-                return Err(QemuBootError::SerialEvidenceMissing {
-                    artifacts: artifacts.clone(),
-                    success_definition: observation_goal.success_definition,
-                    missing_markers,
-                    serial_excerpt: lossy_excerpt(&serial),
-                });
+                return Ok(());
             }
             return Err(QemuBootError::SerialOutputMissing {
                 artifacts: artifacts.clone(),
@@ -874,6 +1223,8 @@ fn record_failure(
         "failed",
         observation_goal.success_definition,
         timeout,
+        None,
+        None,
         Some(error.kind()),
         Some(error.to_string()),
     );
@@ -884,6 +1235,8 @@ fn write_boot_status_file(
     state: &'static str,
     success_definition: &'static str,
     observation_timeout: Duration,
+    elapsed_ms: Option<u128>,
+    guest_ready: Option<&GuestReady>,
     error_kind: Option<QemuBootErrorKind>,
     error_message: Option<String>,
 ) -> Result<(), QemuBootError> {
@@ -891,6 +1244,7 @@ fn write_boot_status_file(
         state,
         success_definition,
         observation_timeout_ms: observation_timeout.as_millis(),
+        elapsed_ms,
         artifacts: QemuBootStatusFiles {
             serial: file_name(&artifacts.serial),
             stdout: file_name(&artifacts.process.stdout),
@@ -900,6 +1254,7 @@ fn write_boot_status_file(
             preflight: file_name(&artifacts.preflight),
             boot_status: file_name(&artifacts.boot_status),
         },
+        guest_ready: guest_ready.map(QemuGuestReadyStatus::from_ready),
         error_kind: error_kind.map(QemuBootErrorKind::as_str),
         error_message,
     };
@@ -925,7 +1280,11 @@ struct QemuBootStatusArtifact {
     state: &'static str,
     success_definition: &'static str,
     observation_timeout_ms: u128,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    elapsed_ms: Option<u128>,
     artifacts: QemuBootStatusFiles,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    guest_ready: Option<QemuGuestReadyStatus>,
     error_kind: Option<&'static str>,
     error_message: Option<String>,
 }
@@ -941,16 +1300,29 @@ struct QemuBootStatusFiles {
     boot_status: String,
 }
 
+#[derive(Debug, Serialize)]
+struct QemuGuestReadyStatus {
+    protocol_version: u16,
+    transport: &'static str,
+    guest_version: String,
+    capabilities: Vec<String>,
+}
+
+impl QemuGuestReadyStatus {
+    fn from_ready(ready: &GuestReady) -> Self {
+        Self {
+            protocol_version: ready.protocol_version,
+            transport: transport_label(&ready.transport),
+            guest_version: ready.guest_version.clone(),
+            capabilities: ready.capabilities.clone(),
+        }
+    }
+}
+
 fn read_excerpt(path: &Path) -> String {
     fs::read(path)
         .map(|bytes| lossy_excerpt(&bytes))
         .unwrap_or_else(|err| format!("<could not read '{}': {err}>", path.display()))
-}
-
-fn serial_log_has_output(path: &Path) -> bool {
-    fs::metadata(path)
-        .map(|metadata| metadata.len() > 0)
-        .unwrap_or(false)
 }
 
 fn file_name(path: &Path) -> String {
@@ -967,11 +1339,55 @@ fn empty_as_placeholder(value: &str) -> &str {
     }
 }
 
+fn transport_label(transport: &GuestTransport) -> &'static str {
+    match transport {
+        GuestTransport::Vsock => "vsock",
+        GuestTransport::VirtioSerial => "virtio_serial",
+    }
+}
+
+fn capability_summary(capabilities: &[String]) -> String {
+    if capabilities.is_empty() {
+        return "<none>".to_string();
+    }
+    let mut labels = capabilities
+        .iter()
+        .take(5)
+        .map(|value| sanitize_capability_label(value))
+        .collect::<Vec<_>>();
+    if capabilities.len() > labels.len() {
+        labels.push(format!("and {} more", capabilities.len() - labels.len()));
+    }
+    labels.join(", ")
+}
+
+fn sanitize_capability_label(value: &str) -> String {
+    let mut label = value
+        .chars()
+        .take(64)
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if value.chars().count() > 64 {
+        label.push_str("...");
+    }
+    if label.is_empty() {
+        "<empty>".to_string()
+    } else {
+        label
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::OsString;
-    use std::io::Write;
+    use std::io::{Cursor, Write};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use crate::windows_x86_64::qemu::argv::QemuArgvBuilder;
@@ -1045,6 +1461,10 @@ mod tests {
             eprintln!("fake boot child running without serial output");
             let _ = std::io::stderr().flush();
             std::thread::sleep(Duration::from_secs(60));
+        } else if mode == "exit-after-start" {
+            eprintln!("fake boot child exiting after startup");
+            let _ = std::io::stderr().flush();
+            std::thread::sleep(Duration::from_millis(250));
         }
     }
 
@@ -1108,6 +1528,8 @@ mod tests {
             Duration::from_millis(1500),
             None,
             None,
+            None,
+            None,
         )
         .expect("status should write");
 
@@ -1122,6 +1544,40 @@ mod tests {
         let _ = fs::remove_dir_all(artifact_dir);
     }
 
+    fn guest_ready_frame(ready: &GuestReady) -> Cursor<Vec<u8>> {
+        let mut stream = Cursor::new(Vec::new());
+        frame::send_json(&mut stream, frame::GUEST_READY, ready)
+            .expect("ready frame should serialize");
+        stream.set_position(0);
+        stream
+    }
+
+    fn unsupported_capability_ready_frame() -> Cursor<Vec<u8>> {
+        let mut ready = GuestReady::new(GuestTransport::VirtioSerial, "guest-test");
+        ready.capabilities.push("exec".to_string());
+        guest_ready_frame(&ready)
+    }
+
+    struct BlockingReader {
+        receiver: mpsc::Receiver<u8>,
+    }
+
+    impl Read for BlockingReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            match self.receiver.recv() {
+                Ok(byte) => {
+                    if buf.is_empty() {
+                        Ok(0)
+                    } else {
+                        buf[0] = byte;
+                        Ok(1)
+                    }
+                }
+                Err(_) => Ok(0),
+            }
+        }
+    }
+
     #[test]
     fn observe_boot_fails_when_serial_log_stays_empty() {
         let artifact_dir = temp_dir("empty-serial");
@@ -1130,13 +1586,8 @@ mod tests {
         let mut supervisor = fake_supervisor("sleep", artifact_dir.clone());
         supervisor.start().expect("fake supervisor should start");
 
-        let err = observe_boot(
-            &mut supervisor,
-            &artifacts,
-            Duration::from_millis(100),
-            BootObservationGoal::serial_output(),
-        )
-        .expect_err("empty serial should fail M05 observation");
+        let err = observe_boot(&mut supervisor, &artifacts, Duration::from_millis(100))
+            .expect_err("empty serial should fail M05 observation");
         assert_eq!(err.kind(), QemuBootErrorKind::SerialOutputMissing);
         assert!(err.to_string().contains("serial.log remained empty"));
 
@@ -1147,30 +1598,25 @@ mod tests {
     }
 
     #[test]
-    fn observe_boot_requires_m06_virtio_serial_guest_evidence() {
-        let artifact_dir = temp_dir("missing-m06-evidence");
+    fn wait_for_guest_ready_accepts_valid_virtio_serial_ready() {
+        let artifact_dir = temp_dir("ready-success");
         let artifacts = QemuBootArtifacts::new(&artifact_dir);
         prepare_artifacts(&artifacts).expect("artifacts should prepare");
-        fs::write(
-            &artifacts.serial,
-            format!("{VIRTIO_SERIAL_CONTROL_TRANSPORT_MARKER} 'org.localsandbox.control'\n"),
-        )
-        .expect("serial fixture should write");
+        let ready = GuestReady::new(GuestTransport::VirtioSerial, "guest-test");
         let mut supervisor = fake_supervisor("sleep", artifact_dir.clone());
         supervisor.start().expect("fake supervisor should start");
 
-        let err = observe_boot(
+        let result = wait_for_guest_ready(
             &mut supervisor,
             &artifacts,
-            Duration::from_millis(100),
-            BootObservationGoal::virtio_serial_control(),
+            Duration::from_secs(1),
+            guest_ready_frame(&ready),
+            GuestTransport::VirtioSerial,
         )
-        .expect_err("missing virtio-serial open evidence should fail M06 observation");
-        assert_eq!(err.kind(), QemuBootErrorKind::SerialEvidenceMissing);
-        assert!(err.to_string().contains(VIRTIO_SERIAL_CONTROL_OPEN_MARKER));
-        assert!(err
-            .to_string()
-            .contains(VIRTIO_SERIAL_CONTROL_SUCCESS_DEFINITION));
+        .expect("valid guest ready should pass");
+
+        assert_eq!(result.message, ready);
+        assert!(result.elapsed < Duration::from_secs(1));
 
         supervisor
             .terminate()
@@ -1179,31 +1625,118 @@ mod tests {
     }
 
     #[test]
-    fn observe_boot_accepts_m06_virtio_serial_guest_evidence() {
-        let artifact_dir = temp_dir("m06-evidence");
+    fn wait_for_guest_ready_times_out_without_ready_frame() {
+        let artifact_dir = temp_dir("ready-timeout");
         let artifacts = QemuBootArtifacts::new(&artifact_dir);
         prepare_artifacts(&artifacts).expect("artifacts should prepare");
-        fs::write(
-            &artifacts.serial,
-            format!(
-                "{VIRTIO_SERIAL_CONTROL_TRANSPORT_MARKER} 'org.localsandbox.control'\n{VIRTIO_SERIAL_CONTROL_OPEN_MARKER} at /dev/vport1p1\n"
-            ),
-        )
-        .expect("serial fixture should write");
+        let (sender, receiver) = mpsc::channel();
         let mut supervisor = fake_supervisor("sleep", artifact_dir.clone());
         supervisor.start().expect("fake supervisor should start");
 
-        observe_boot(
+        let err = wait_for_guest_ready(
             &mut supervisor,
             &artifacts,
             Duration::from_millis(100),
-            BootObservationGoal::virtio_serial_control(),
+            BlockingReader { receiver },
+            GuestTransport::VirtioSerial,
         )
-        .expect("complete virtio-serial evidence should pass M06 observation");
+        .expect_err("missing ready should time out");
+        drop(sender);
+
+        assert_eq!(err.kind(), QemuBootErrorKind::GuestReadyTimeout);
+        assert!(err.to_string().contains("guest-ready handshake"));
+        assert!(err.to_string().contains(CONTROL_STATE_WAITING_FOR_READY));
 
         supervisor
             .terminate()
             .expect("fake supervisor should terminate");
+        let _ = fs::remove_dir_all(artifact_dir);
+    }
+
+    #[test]
+    fn wait_for_guest_ready_rejects_invalid_frame_type() {
+        let artifact_dir = temp_dir("ready-invalid-frame");
+        let artifacts = QemuBootArtifacts::new(&artifact_dir);
+        prepare_artifacts(&artifacts).expect("artifacts should prepare");
+        let mut frame_stream = Cursor::new(Vec::new());
+        frame::write_frame(&mut frame_stream, frame::STDOUT, b"hello")
+            .expect("invalid frame fixture should write");
+        frame_stream.set_position(0);
+        let mut supervisor = fake_supervisor("sleep", artifact_dir.clone());
+        supervisor.start().expect("fake supervisor should start");
+
+        let err = wait_for_guest_ready(
+            &mut supervisor,
+            &artifacts,
+            Duration::from_secs(1),
+            frame_stream,
+            GuestTransport::VirtioSerial,
+        )
+        .expect_err("wrong frame type should fail readiness");
+
+        assert_eq!(err.kind(), QemuBootErrorKind::GuestReadyProtocol);
+        assert!(err.to_string().contains("type 0x02"));
+        assert!(err.to_string().contains("expected GUEST_READY"));
+
+        supervisor
+            .terminate()
+            .expect("fake supervisor should terminate");
+        let _ = fs::remove_dir_all(artifact_dir);
+    }
+
+    #[test]
+    fn wait_for_guest_ready_rejects_unsupported_capabilities() {
+        let artifact_dir = temp_dir("ready-unsupported-capability");
+        let artifacts = QemuBootArtifacts::new(&artifact_dir);
+        prepare_artifacts(&artifacts).expect("artifacts should prepare");
+        let mut supervisor = fake_supervisor("sleep", artifact_dir.clone());
+        supervisor.start().expect("fake supervisor should start");
+
+        let err = wait_for_guest_ready(
+            &mut supervisor,
+            &artifacts,
+            Duration::from_secs(1),
+            unsupported_capability_ready_frame(),
+            GuestTransport::VirtioSerial,
+        )
+        .expect_err("unsupported guest capabilities should fail readiness");
+
+        assert_eq!(
+            err.kind(),
+            QemuBootErrorKind::UnsupportedWindowsRuntimeCapability
+        );
+        assert!(err.to_string().contains("exec"));
+
+        supervisor
+            .terminate()
+            .expect("fake supervisor should terminate");
+        let _ = fs::remove_dir_all(artifact_dir);
+    }
+
+    #[test]
+    fn wait_for_guest_ready_reports_qemu_exit_before_ready() {
+        let artifact_dir = temp_dir("ready-early-exit");
+        let artifacts = QemuBootArtifacts::new(&artifact_dir);
+        prepare_artifacts(&artifacts).expect("artifacts should prepare");
+        let (sender, receiver) = mpsc::channel();
+        let mut supervisor = fake_supervisor("exit-after-start", artifact_dir.clone());
+        supervisor.start().expect("fake supervisor should start");
+
+        let err = wait_for_guest_ready(
+            &mut supervisor,
+            &artifacts,
+            Duration::from_secs(2),
+            BlockingReader { receiver },
+            GuestTransport::VirtioSerial,
+        )
+        .expect_err("QEMU exit before ready should fail readiness");
+        drop(sender);
+
+        assert_eq!(err.kind(), QemuBootErrorKind::GuestReadyProcessExited);
+        assert!(err.to_string().contains("exited before"));
+        assert!(err.to_string().contains("guest-ready handshake"));
+
+        let _ = supervisor.terminate();
         let _ = fs::remove_dir_all(artifact_dir);
     }
 
@@ -1228,6 +1761,11 @@ mod tests {
                 .and_then(|value| value.parse::<u64>().ok())
                 .map(Duration::from_secs)
                 .unwrap_or(DEFAULT_BOOT_OBSERVATION_TIMEOUT);
+            let ready_timeout = env::var("LSB_WINDOWS_GUEST_READY_SECS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(Duration::from_secs)
+                .unwrap_or(DEFAULT_GUEST_READY_TIMEOUT);
 
             let mut config =
                 WindowsQemuBootConfig::new(kernel, initrd, rootfs, 2 * 1024 * 1024 * 1024, 2);
@@ -1235,11 +1773,12 @@ mod tests {
                 .expect("smoke control endpoint name should be valid");
             config.artifact_directory = Some(artifact_dir);
             config.boot_observation_timeout = timeout;
+            config.guest_ready_timeout = ready_timeout;
             config.diagnostic_label = Some("windows-qemu-boot-smoke".to_string());
             config.control_endpoint = Some(control_endpoint);
 
             let mut boot = launch_windows_qemu_boot(config)
-                .expect("QEMU should stay alive and produce serial output during boot smoke");
+                .expect("QEMU should boot and the guest should send LocalSandbox ready");
             let argv = fs::read_to_string(&boot.artifacts().process.argv)
                 .expect("redacted QEMU argv should be readable");
             assert!(
@@ -1254,21 +1793,26 @@ mod tests {
                 argv.contains("lsb.transport=virtio-serial"),
                 "kernel cmdline should select virtio-serial transport: {argv}"
             );
-            let serial = fs::read(&boot.artifacts().serial).expect("serial log should be readable");
-            let serial_text = String::from_utf8_lossy(&serial);
+            let ready = boot
+                .guest_ready()
+                .expect("boot smoke should record guest ready");
+            assert_eq!(ready.protocol_version, lsb_proto::PROTOCOL_VERSION);
+            assert_eq!(ready.transport, GuestTransport::VirtioSerial);
             assert!(
-                serial_text.contains(VIRTIO_SERIAL_CONTROL_TRANSPORT_MARKER),
-                "serial log should show the guest selected virtio-serial control; excerpt: {}",
-                lossy_excerpt(&serial)
+                ready.capabilities.is_empty(),
+                "M07 guest ready must not claim future capabilities: {:?}",
+                ready.capabilities
             );
-            assert!(
-                serial_text.contains(VIRTIO_SERIAL_CONTROL_OPEN_MARKER),
-                "serial log should show the guest opened the virtio-serial control port; excerpt: {}",
-                lossy_excerpt(&serial)
-            );
+            let status = fs::read_to_string(&boot.artifacts().boot_status)
+                .expect("boot status should be readable");
+            assert!(status.contains("\"state\": \"guest_ready\""));
+            assert!(status.contains(GUEST_READY_SUCCESS_DEFINITION));
+            assert!(status.contains("\"transport\": \"virtio_serial\""));
             eprintln!(
-                "Windows QEMU boot smoke observed QEMU alive with serial output for {} ms; logs: {}",
-                boot.observation_timeout().as_millis(),
+                "Windows QEMU boot smoke reached LocalSandbox guest-ready in {} ms; logs: {}",
+                boot.guest_ready_elapsed()
+                    .map(|elapsed| elapsed.as_millis())
+                    .unwrap_or_default(),
                 boot.artifacts().summary()
             );
             boot.stop().expect("smoke QEMU should stop cleanly");
