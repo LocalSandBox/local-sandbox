@@ -1,0 +1,30 @@
+crates/lsb-vm/src/sandbox.rs
+  s_91f4748779b78e::t_7e2d60442a3ddf 19,164,175,290-307,313-315,517-524,526-527,538,821-822,825-827,830-883,885-886
+  s_91f4748779b78e::t_af9b9b38073ee7 33
+  s_91f4748779b78e::t_41014d83e04f7e 163,174
+  s_91f4748779b78e::t_751bcaab49b2fb 964,1037-1060,1065-1104,1109-1135,1138-1176
+  s_91f4748779b78e::t_d69048204fe2ed 887,965-966,1177-1221,1227-1235,1237-1247,1253-1271
+  s_91f4748779b78e::t_a4c2332b75efb0 528-530,532,534-537,828-829,884,1061-1064,1105-1108,1136-1137,1222-1226,1236,1248-1252
+crates/lsb-platform/src/windows_x86_64/qemu/boot.rs
+  s_91f4748779b78e::t_6c13bfd5867a9a 512
+  s_91f4748779b78e::t_00ae49f370e47c 1971
+crates/lsb-sdk/src/runtime.rs
+  s_91f4748779b78e::t_c4b477f9d3d97e 13,752-753,756-761
+  s_91f4748779b78e::t_a4c2332b75efb0 754-755
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f4e7187ae91fca7676839aacb8fe5868056f9beb",
+  "prompts": {},
+  "sessions": {
+    "s_91f4748779b78e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2cd0-4062-7a92-8c41-29acb53ba195",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
