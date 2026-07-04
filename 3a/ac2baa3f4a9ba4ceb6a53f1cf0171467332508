@@ -1,0 +1,27 @@
+crates/lsb-platform/src/windows_x86_64/control/virtio_serial.rs
+  s_3e9dd14c1056d7::t_709fe6356dd980 78-84,91-93,330,355-358
+crates/lsb-proto/src/frame.rs
+  s_3e9dd14c1056d7::t_709fe6356dd980 166-168
+crates/lsb-platform/src/windows_x86_64/backend.rs
+  s_3e9dd14c1056d7::t_709fe6356dd980 282-285
+crates/lsb-guest/src/main.rs
+  s_3e9dd14c1056d7::t_709fe6356dd980 70
+crates/lsb-platform/src/lib.rs
+  s_3e9dd14c1056d7::t_709fe6356dd980 239-241
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3aac2baa3f4a9ba4ceb6a53f1cf0171467332508",
+  "prompts": {},
+  "sessions": {
+    "s_3e9dd14c1056d7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2c4a-9cc5-7dd2-bda8-3a2c381848a2",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
