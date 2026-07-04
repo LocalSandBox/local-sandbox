@@ -1,0 +1,20 @@
+crates/lsb-guest/src/main.rs
+  s_899b77c54d595f::t_f66832af8e6f59 1620
+  s_899b77c54d595f::t_10a51676c2ab5f 22-33,87-98,527-530,533,547-557,1618-1619,1621
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "913007392d08e80724bdc2ecee6d996f291ec650",
+  "prompts": {},
+  "sessions": {
+    "s_899b77c54d595f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2c96-9b6b-7aa2-b341-e35df897de82",
+        "model": "gpt-5.5"
+      },
+      "human_author": null
+    }
+  }
+}
