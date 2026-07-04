@@ -4,7 +4,7 @@ Last updated: 2026-07-04
 Owner: TBD
 RFC: `docs/windows-port/rfc-qemu-whpx.md`
 Current milestone: M08 - Exec command
-Overall status: M08 implementation complete; final Windows smoke validation pending
+Overall status: M08 complete; M09 not started
 
 ## How to update this file
 
@@ -16,7 +16,7 @@ Update this file at the end of every agent run. Keep it factual. Do not use it f
 - Issue: TBD
 - Agent: Codex
 - Start commit: `c063f22`
-- End commit: TBD
+- End commit: `4677eb6` (validated implementation head; final state update is docs-only)
 
 ## Milestone status table
 
@@ -29,11 +29,11 @@ Update this file at the end of every agent run. Keep it factual. Do not use it f
 | M05 Direct Linux boot and serial logs | Done | Codex | `codex/windows-m05-direct-linux-boot-serial-logs` | Direct boot path, serial/QEMU artifacts, boot observation timeout, workflow boot asset provisioning, and provisioned self-hosted WHPX smoke evidence are in place. |
 | M06 Virtio-serial control transport | Done | Codex | `codex/windows-m06-virtio-serial-control` | Host-side virtio-serial/QEMU pipe transport, QEMU control chardev wiring, guest transport selection, focused tests, and self-hosted WHPX smoke validation are in place. |
 | M07 Guest ready handshake | Done | Codex | `codex/windows-m07-guest-ready-handshake` | Protocol-level `GuestReady` over the established virtio-serial control stream is implemented and validated by fake/unit tests plus self-hosted WHPX smoke. |
-| M08 Exec command | Review | Codex | `codex/windows-m08-exec-command` | Non-interactive exec is wired through the established virtio-serial control stream; Windows hardware smoke is pending final run completion. |
-| M09 Copy-in/copy-out data plane | Blocked by M08 | TBD | TBD | Requires guest file protocol. |
+| M08 Exec command | Done | Codex | `codex/windows-m08-exec-command` | Non-interactive exec over the established virtio-serial control stream is implemented and validated by fake/unit tests plus self-hosted WHPX smoke. |
+| M09 Copy-in/copy-out data plane | Not started | TBD | TBD | Requires guest file protocol. |
 | M10 Mount MVP semantics | Blocked by M09 | TBD | TBD | Uses copy/import/export semantics first. |
 | M11 Port forwarding | Not started | TBD | TBD | Later milestone; preserve no-network default. |
-| M12 Network policy and proxy integration | Blocked by M08/M11 | TBD | TBD | Strict egress; no QEMU NAT by default. |
+| M12 Network policy and proxy integration | Blocked by M11 | TBD | TBD | Strict egress; no QEMU NAT by default. |
 | M13 Checkpoint/store MVP | Blocked by M09/M10 | TBD | TBD | Simple disk artifact path first. |
 | M14 Node packaging | Blocked by core CLI smoke | TBD | TBD | Windows package after Rust backend. |
 | M15 CI and diagnostics hardening | Runs throughout, final gate after M14 | TBD | TBD | Self-hosted Windows 11 WHPX runner. |
@@ -45,7 +45,7 @@ Status values: `Not started`, `In progress`, `Blocked`, `Review`, `Done`, `Defer
 - Windows VM startup now attempts direct Linux boot with the M06 virtio-serial control chardev enabled. It runs QEMU discovery/preflight, builds WHPX direct-boot argv, launches through the existing QEMU supervisor, connects the QEMU-created control pipe during boot, captures serial/stdout/stderr/preflight/status artifacts, and returns success only after receiving a valid LocalSandbox `GuestReady` protocol frame over the established control stream. Non-interactive exec is implemented for Windows through the platform-neutral `Sandbox::exec` / SDK `exec` path. File APIs, networking, mounts, checkpoints, and Node packaging remain unsupported.
 - QEMU 11.0.50 on the self-hosted Windows WHPX runner blocks boot until a host client connects to the `-chardev pipe` endpoint. M06 now connects the pipe immediately after QEMU process start and stores the established stream on the running boot object; later `PlatformVm::connect_control()` clones that stream. See D021.
 - Streaming `spawn`, interactive shell, watch, file APIs, muxing, port forwarding, networking, mounts, checkpoints, and Node packaging remain later milestones. Windows streaming exec stdin/kill returns a precise unsupported error until a muxed transport exists; non-interactive exec closes guest stdin explicitly through the backward-compatible `ExecRequest.stdin_closed` field. `lsb-guest` emits `GuestReady` only on the Windows virtio-serial transport path; existing macOS/vsock behavior remains unchanged.
-- Full `cargo check --workspace --target x86_64-pc-windows-msvc` from this macOS host is blocked by external Windows C/assembler tooling for transitive crates (`ring` needs Windows/MSVC headers such as `assert.h`; `blake3` needs `ml64.exe`). The changed `lsb-platform` crate passes a targeted Windows compile check; run the full workspace check on a Windows/MSVC runner.
+- Full `cargo check --workspace --target x86_64-pc-windows-msvc` from this macOS host is blocked by external Windows C/assembler tooling for transitive crates (`ring` needs Windows/MSVC headers such as `assert.h`; `blake3` needs `ml64.exe`). The changed `lsb-platform` and `lsb-vm` crates pass targeted Windows test compile checks; run the full workspace check on a Windows/MSVC runner.
 - The current safe host probe verifies target OS/arch and can report a supplied Windows major version. The standard host implementation does not yet query the native Windows build number without adding Windows API or registry probing.
 
 ## Recently completed work
@@ -105,7 +105,7 @@ Append newest entries at the top.
 
 | Date | Milestone | Platform | Command / test | Result | Notes |
 |---|---|---|---|---|---|
-| 2026-07-04 | M08 | Windows self-hosted | `./scripts/win-gh-test smoke` / direct `gh run watch 28704870031 --exit-status` | In progress | Run `28704870031`, commit `18e4159`. Boot asset preparation completed successfully after a cache miss. The Windows native smoke/e2e job was still queued when this state entry was first written. A later documentation update must replace this row with the terminal result before marking M08 done. |
+| 2026-07-04 | M08 | Windows self-hosted | `./scripts/win-gh-test smoke` | Pass | Run `28705865747`, Windows smoke/e2e job `85131386257`, commit `4677eb6`, artifact `windows-lsb-diagnostics` ID `8081627693`. The smoke lane used the workflow-provisioned boot assets, completed `windows_qemu_boot_smoke` and `windows_qemu_exec_smoke`, skipped Windows e2e as expected for this milestone, staged diagnostics, and uploaded them. The boot smoke asserts `-nic none`; the exec smoke covers guest-ready-before-exec, `/bin/true`, `/bin/echo hello`, stderr output, env+cwd, nonzero exit `7`, and QEMU cleanup after command completion. Earlier retry `28704870031` was superseded after infrastructure was fixed. |
 | 2026-07-04 | M08 | macOS | `cargo fmt --all -- --check`; `cargo check --workspace`; `cargo test -p lsb-vm exec_ -- --nocapture`; `cargo test -p lsb-platform windows_qemu_boot_smoke -- --ignored --nocapture`; `cargo test --workspace`; `cargo check -p lsb-vm --tests --target x86_64-pc-windows-msvc`; `cargo check -p lsb-platform --tests --target x86_64-pc-windows-msvc`; `cargo check --workspace --target x86_64-pc-windows-msvc`; `git diff --check HEAD` | Pass / blocked | Format, workspace check, focused exec fake tests, ignored boot-smoke compile/run on non-Windows, full workspace tests, targeted Windows test compiles for changed crates, and whitespace checks passed. `cargo test -p lsb-vm exec_` covered exec request encoding with argv/env/cwd/stdin-closed, stdout/stderr ordering, large stdout, nonzero exit code, guest error mapping, ignored `GuestReady` frames, and EOF-before-exit failure. Full workspace Windows target check remains blocked on this macOS host by external MSVC tooling: `ring` cannot find Windows/MSVC `assert.h`, and `blake3` cannot find `ml64.exe`. |
 | 2026-07-04 | M07 review fixes | Windows self-hosted | `./scripts/win-gh-test unit` | Pass | Run `28703917966`, Windows check/unit job `85126446380`, commit `e869519`. Confirms the control-open early-exit regression test and surrounding Windows unit suite pass on the self-hosted runner. |
 | 2026-07-04 | M07 review fixes | macOS | `cargo fmt --all -- --check`; `cargo test -p lsb-platform windows_x86_64::qemu::boot -- --nocapture`; `cargo check --workspace`; `cargo test -p lsb-platform`; `cargo check -p lsb-platform --tests --target x86_64-pc-windows-msvc` | Pass | Addressed review finding that QEMU exit during control-pipe open could be reported as `control_open`. Added a fake regression test that maps control-open failure after terminal QEMU status to `guest_ready_process_exited` with control-state, stderr, and serial context. Narrowed diagnostics wording and recorded the M08 single-owner/muxed control-stream follow-up. |

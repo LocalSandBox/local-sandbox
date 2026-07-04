@@ -1,6 +1,6 @@
 # M08: Exec Command
 
-Status: Review
+Status: Done
 Depends on: See `00-index.md`
 RFC sections: See `traceability.md`
 
@@ -69,8 +69,8 @@ Complete the checklist in `../security-checklist.md`. Record any new risk in `..
 
 - Branch/PR: `codex/windows-m08-exec-command`
 - Summary: Implemented non-interactive Windows guest exec over the existing LocalSandbox exec protocol on the established virtio-serial control stream. The path supports argv, env, cwd, stdout, stderr, exit status, EOF-before-exit errors, and guest protocol errors through the existing platform-neutral result shape. Windows streaming `spawn`/kill remains a precise unsupported case until a muxed transport exists.
-- Tests run: `cargo fmt --all -- --check`; `cargo check --workspace`; `cargo test -p lsb-vm exec_ -- --nocapture`; `cargo test -p lsb-platform windows_qemu_boot_smoke -- --ignored --nocapture`; `cargo test --workspace`; `cargo check -p lsb-vm --tests --target x86_64-pc-windows-msvc`; `cargo check -p lsb-platform --tests --target x86_64-pc-windows-msvc`; `git diff --check HEAD`. `cargo check --workspace --target x86_64-pc-windows-msvc` remains blocked on this macOS host by missing Windows/MSVC C/assembler tooling for transitive crates. Windows hardware smoke run `28704870031` is pending terminal result.
-- Debug artifacts: Windows hardware run `28704870031` prepared boot assets successfully and queued `Windows native smoke/e2e`; update with uploaded artifact ID when the run finishes.
+- Tests run: `cargo fmt --all -- --check`; `cargo check --workspace`; `cargo test -p lsb-vm exec_ -- --nocapture`; `cargo test -p lsb-platform windows_qemu_boot_smoke -- --ignored --nocapture`; `cargo test --workspace`; `cargo check -p lsb-vm --tests --target x86_64-pc-windows-msvc`; `cargo check -p lsb-platform --tests --target x86_64-pc-windows-msvc`; `git diff --check HEAD`; `./scripts/win-gh-test smoke` on the self-hosted Windows WHPX runner. `cargo check --workspace --target x86_64-pc-windows-msvc` remains blocked on this macOS host by missing Windows/MSVC C/assembler tooling for transitive crates.
+- Debug artifacts: Windows hardware run `28705865747`, Windows smoke/e2e job `85131386257`, diagnostics artifact `windows-lsb-diagnostics` ID `8081627693`.
 - New decisions: None. M08 uses the established virtio-serial control stream and adds only a backward-compatible `ExecRequest.stdin_closed` compatibility field.
 - New risks: None added.
 - Next milestone: M09 copy-in/copy-out data plane.
