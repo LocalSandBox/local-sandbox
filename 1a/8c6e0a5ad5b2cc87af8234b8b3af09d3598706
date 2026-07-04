@@ -1,0 +1,21 @@
+crates/lsb-vm/src/sandbox.rs
+  s_91f4748779b78e::t_009c545e151cc3 31-57
+crates/lsb-platform/src/windows_x86_64/qemu/boot.rs
+  s_91f4748779b78e::t_9db5149243f7fb 1964-1967
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1a8c6e0a5ad5b2cc87af8234b8b3af09d3598706",
+  "prompts": {},
+  "sessions": {
+    "s_91f4748779b78e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2cd0-4062-7a92-8c41-29acb53ba195",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
