@@ -92,10 +92,11 @@ target\windows-lsb-diagnostics\lsb-assets-work\<run-id>-<attempt>\
 The uploaded artifact is named `windows-lsb-diagnostics`.
 
 `boot.status.json` records the M05 success definition:
-`qemu_process_alive_after_boot_observation_window`. This is not a guest-ready
-handshake. Until M06/M07 add virtio-serial control and readiness, a successful
-M05 boot observation means QEMU launched with WHPX and stayed alive for the
-observation window while serial/QEMU logs were captured.
+`qemu_process_alive_after_boot_observation_window_with_serial_output`. This is
+not a guest-ready handshake. Until M06/M07 add virtio-serial control and
+readiness, a successful M05 boot observation means QEMU launched with WHPX,
+stayed alive for the observation window, and captured non-empty Linux serial
+output.
 
 M05 uses `-cpu Westmere` for the Windows WHPX boot argv. The first provisioned
 boot smoke on QEMU 11.0.50 with `-cpu max` exited before serial output with
@@ -103,9 +104,10 @@ APX/MPX feature conflict warnings and `WHPX: Unexpected VP exit code 4`. Treat
 that signature as a CPU model/WHPX compatibility failure before changing boot
 assets or adding a TCG fallback.
 
-An `observed_alive` M05 result with an empty `serial.log` is still only a QEMU
-process/diagnostics result. Do not treat it as guest readiness until M06/M07 add
-the control transport and ready handshake.
+`serial.log` must contain real guest output for M05 success. If QEMU stays alive
+but `serial.log` remains empty, the boot path records `serial_output_missing`
+instead of success; check the kernel console configuration, QEMU serial device,
+and `qemu.stderr.log`.
 
 M05 boot error categories include:
 
@@ -118,6 +120,7 @@ M05 boot error categories include:
 - `process_start`
 - `process_status`
 - `guest_boot_exited`
+- `serial_output_missing`
 - `stop_failed`
 
 Manual Windows boot smoke:

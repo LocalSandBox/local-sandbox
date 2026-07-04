@@ -62,7 +62,7 @@ Hardware workflow:
 | M02 | QEMU discovery unit tests; Windows preflight diagnostic tests; manual/self-hosted preflight evidence. |
 | M03 | Golden argv tests for minimal boot, serial logs, virtio-serial, QMP, no-network default. |
 | M04 | Fake process and Windows Job Object cleanup tests where possible. |
-| M05 | WHPX boot smoke: QEMU starts with provisioned boot assets, serial/QEMU artifact files are captured, and QEMU stays alive through the M05 observation window or fails with actionable serial/stderr artifacts. A populated serial marker and guest-ready handshake remain M06/M07 work. |
+| M05 | WHPX boot smoke: QEMU starts with provisioned boot assets, serial/QEMU artifact files are captured, and QEMU stays alive through the M05 observation window with non-empty serial evidence such as kernel, `/init`, rootfs mount, or `lsb-guest` startup lines. Empty serial output must fail with actionable serial/stderr artifacts. The guest-ready handshake remains M06/M07 work. |
 | M06 | Host can open virtio-serial transport; guest accepts framed protocol connection. |
 | M07 | Ready handshake succeeds and times out cleanly on failure. |
 | M08 | `exec` command returns stdout/stderr/exit status; kill/timeout behavior tested. |
