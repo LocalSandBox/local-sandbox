@@ -1710,6 +1710,54 @@ mod tests {
         }
     }
 
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn windows_overlay_mount_plan_uses_copy_imports_not_shared_dirs() {
+        let root = temp_dir("mount-plan");
+        let source = root.join("src");
+        std::fs::create_dir_all(source.join("nested")).expect("fixture dirs");
+        write_fixture(&source.join("hello.txt"), b"hello");
+
+        let plan = build_mount_plan(&[MountConfig::Overlay {
+            host_path: source.display().to_string(),
+            guest_path: "/workspace".into(),
+        }])
+        .expect("Windows overlay mount plan should build");
+
+        assert!(plan.shared_dirs.is_empty());
+        assert_eq!(plan.windows_imports.len(), 1);
+        assert_eq!(
+            plan.windows_imports[0].guest_source,
+            "/tmp/lsb/mounts/mount0/source"
+        );
+        match &plan.mount_requests[0] {
+            MountRequest::Overlay { source, target } => {
+                assert_eq!(source, "/tmp/lsb/mounts/mount0/source");
+                assert_eq!(target, "/workspace");
+            }
+            MountRequest::Direct { .. } => panic!("expected overlay request"),
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn windows_direct_mount_plan_fails_closed() {
+        let err = match build_mount_plan(&[MountConfig::Direct {
+            host_path: r"C:\project".into(),
+            guest_path: "/workspace".into(),
+            flags: 0,
+        }]) {
+            Ok(_) => panic!("Windows direct host mounts should fail"),
+            Err(error) => error,
+        };
+
+        let message = err.to_string();
+        assert!(message.contains("direct host mounts"));
+        assert!(message.contains("Windows MVP"));
+    }
+
     #[test]
     fn exec_request_frame_includes_argv_env_and_cwd() {
         let mut env = HashMap::new();
@@ -2157,10 +2205,127 @@ mod tests {
         }
     }
 
+    #[test]
+    #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU, and disposable LocalSandbox assets"]
+    fn windows_qemu_mount_mvp_smoke() {
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        {
+            eprintln!("skipping Windows QEMU mount MVP smoke on non-Windows host");
+        }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            let kernel = required_env_path("LSB_WINDOWS_BOOT_KERNEL");
+            let initrd = required_env_path("LSB_WINDOWS_BOOT_INITRD");
+            let rootfs = required_env_path("LSB_WINDOWS_BOOT_ROOTFS");
+            let host_root = rootfs
+                .parent()
+                .expect("rootfs should live in a work directory")
+                .join("mount-mvp-fixture");
+            let _ = std::fs::remove_dir_all(&host_root);
+            let source = host_root.join("source");
+            let export = host_root.join("export");
+            std::fs::create_dir_all(source.join("nested")).expect("mount fixture dirs");
+            std::fs::create_dir_all(&export).expect("export fixture dir");
+            std::fs::write(source.join("hello.txt"), b"hello from host")
+                .expect("mount fixture file");
+            std::fs::write(source.join("nested/data.txt"), b"nested from host")
+                .expect("nested mount fixture file");
+
+            let sandbox = Sandbox::builder()
+                .kernel(kernel.display().to_string())
+                .initrd(initrd.display().to_string())
+                .rootfs(rootfs.display().to_string())
+                .console(false)
+                .mount(MountConfig::Overlay {
+                    host_path: source.display().to_string(),
+                    guest_path: "/workspace".into(),
+                })
+                .build()
+                .expect("Windows mount smoke sandbox should build");
+
+            sandbox
+                .start()
+                .expect("Windows mount smoke should import and mount the source snapshot");
+
+            let result = (|| -> Result<()> {
+                assert_eq!(
+                    sandbox.read_file("/workspace/hello.txt")?,
+                    b"hello from host"
+                );
+                assert_eq!(
+                    sandbox.read_file("/workspace/nested/data.txt")?,
+                    b"nested from host"
+                );
+
+                sandbox.write_file("/workspace/guest.txt", b"guest write")?;
+                assert!(
+                    !source.join("guest.txt").exists(),
+                    "guest writes under the mounted target must not mutate the host source"
+                );
+
+                std::fs::write(source.join("after-start.txt"), b"host live update")
+                    .expect("host source live update fixture");
+                assert!(
+                    sandbox.read_file("/workspace/after-start.txt").is_err(),
+                    "Windows MVP mounts expose a startup snapshot, not live host synchronization"
+                );
+
+                sandbox.copy_to_host("/workspace/guest.txt", export.join("guest.txt"), false)?;
+                assert_eq!(std::fs::read(export.join("guest.txt"))?, b"guest write");
+
+                let direct = Sandbox::builder()
+                    .kernel(kernel.display().to_string())
+                    .initrd(initrd.display().to_string())
+                    .rootfs(rootfs.display().to_string())
+                    .console(false)
+                    .mount(MountConfig::Direct {
+                        host_path: source.display().to_string(),
+                        guest_path: "/direct-rw".into(),
+                        flags: 0,
+                    })
+                    .build();
+                let direct_error = match direct {
+                    Ok(_) => panic!("direct read-write host mount should fail"),
+                    Err(error) => error,
+                };
+                assert!(direct_error.to_string().contains("direct host mounts"));
+
+                Ok(())
+            })();
+
+            let stop_result = sandbox.stop();
+            let _ = std::fs::remove_dir_all(&host_root);
+            result.expect("Windows mount MVP smoke should pass");
+            stop_result.expect("Windows mount smoke QEMU should stop cleanly");
+        }
+    }
+
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn required_env_path(name: &str) -> PathBuf {
         std::env::var_os(name)
             .map(PathBuf::from)
             .unwrap_or_else(|| panic!("{name} must point to a disposable boot asset path"))
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn write_fixture(path: &std::path::Path, content: &[u8]) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("fixture parent dir");
+        }
+        let mut file = std::fs::File::create(path).expect("fixture file");
+        file.write_all(content).expect("fixture content");
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn temp_dir(label: &str) -> PathBuf {
+        static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nonce = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "lsb-windows-vm-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        root
     }
 }
