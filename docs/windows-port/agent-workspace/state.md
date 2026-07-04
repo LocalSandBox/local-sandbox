@@ -3,8 +3,8 @@
 Last updated: 2026-07-04
 Owner: TBD
 RFC: `docs/windows-port/rfc-qemu-whpx.md`
-Current milestone: M09 - Copy-in/copy-out data plane
-Overall status: M09 complete; M10 ready to start
+Current milestone: M10 - Mount MVP semantics
+Overall status: M10 in progress; implementing copy/import mount semantics on top of M09 transfer primitives
 
 ## How to update this file
 
@@ -12,11 +12,11 @@ Update this file at the end of every agent run. Keep it factual. Do not use it f
 
 ## Current branch / issue
 
-- Branch: `codex/windows-m09-copy-in-copy-out`
+- Branch: `codex/windows-m10-mount-mvp`
 - Issue: TBD
 - Agent: Codex
-- Start commit: `f8b4903`
-- End commit: `db601e7` (validated review-fix code head; final state update is docs-only)
+- Start commit: `5bf405b`
+- End commit: TBD
 
 ## Milestone status table
 
@@ -31,7 +31,7 @@ Update this file at the end of every agent run. Keep it factual. Do not use it f
 | M07 Guest ready handshake | Done | Codex | `codex/windows-m07-guest-ready-handshake` | Protocol-level `GuestReady` over the established virtio-serial control stream is implemented and validated by fake/unit tests plus self-hosted WHPX smoke. |
 | M08 Exec command | Done | Codex | `codex/windows-m08-exec-command` | Non-interactive exec over the established virtio-serial control stream is implemented and validated by fake/unit tests plus self-hosted WHPX smoke. |
 | M09 Copy-in/copy-out data plane | Done | Codex | `codex/windows-m09-copy-in-copy-out` | Safe Windows copy-in/copy-out data-plane helpers, chunked guest file transfer, and WHPX copy smoke validation are in place. |
-| M10 Mount MVP semantics | Not started | TBD | TBD | M09 is complete; use copy/import/export semantics first. |
+| M10 Mount MVP semantics | In progress | Codex | `codex/windows-m10-mount-mvp` | Implement copy/import mount semantics on top of M09 transfer primitives; no live host sharing or direct writable host mounts. |
 | M11 Port forwarding | Not started | TBD | TBD | Later milestone; preserve no-network default. |
 | M12 Network policy and proxy integration | Blocked by M11 | TBD | TBD | Strict egress; no QEMU NAT by default. |
 | M13 Checkpoint/store MVP | Blocked by M10 | TBD | TBD | Simple disk artifact path first. |
@@ -50,6 +50,7 @@ Status values: `Not started`, `In progress`, `Blocked`, `Review`, `Done`, `Defer
 
 ## Recently completed work
 
+- 2026-07-04: Started M10 on `codex/windows-m10-mount-mvp` from `5bf405b`; scope is Windows mount MVP semantics only. The implementation must reuse the M09 copy-in/copy-out data plane where possible, preserve host-read-only and isolated guest-write semantics, reject direct `:rw` host mounts with clear capability errors, keep macOS VirtioFS behavior unchanged, and avoid live shared mount claims.
 - 2026-07-03: Completed M01 compile scaffolding. Added `lsb-platform::windows_x86_64` backend/config/error stubs, removed the `lsb-vm` non-macOS compile rejection, added Windows runtime capability errors, cfg-gated Unix-only proxy/store/CLI paths, and added stub coverage tests.
 - 2026-07-03: Ran Windows hardware workflow through `./scripts/win-gh-test`. `check` passed on run `28651692448`. Initial `unit` run `28651764230` failed because Windows-only stub tests used `expect_err` with non-`Debug` handle types; fixed in `066a6c2`, then `unit` passed on run `28651905208`.
 - 2026-07-03: Added macOS helper for manually dispatching Windows hardware workflow, added Windows smoke/e2e script entrypoints, and documented runner trigger usage.
