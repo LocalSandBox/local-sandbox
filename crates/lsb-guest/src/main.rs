@@ -449,22 +449,65 @@ mod guest {
     }
 
     fn mount_overlay(source: &str, target: &str) -> Result<(), String> {
+        if source.starts_with('/') {
+            return mount_imported_overlay(source, target);
+        }
+
         let virtiofs_dir = format!("/mnt/.virtiofs/{}", source);
-        let overlay_dir = format!("/mnt/.overlay/{}", source);
+        mount_overlay_lower(source, &virtiofs_dir, target, true)
+    }
+
+    fn mount_imported_overlay(source: &str, target: &str) -> Result<(), String> {
+        let source_path = Path::new(source);
+        if !source_path.is_absolute() {
+            return Err(format!(
+                "imported mount source '{}' must be absolute",
+                source
+            ));
+        }
+        let metadata = std::fs::metadata(source_path).map_err(|e| {
+            format!(
+                "failed to inspect imported mount source '{}': {}",
+                source, e
+            )
+        })?;
+        if !metadata.is_dir() {
+            return Err(format!(
+                "imported mount source '{}' is not a directory",
+                source
+            ));
+        }
+
+        mount_overlay_lower(source, source, target, false)
+    }
+
+    fn mount_overlay_lower(
+        source_label: &str,
+        lower_dir: &str,
+        target: &str,
+        mount_virtiofs_lower: bool,
+    ) -> Result<(), String> {
+        let overlay_dir = format!("/mnt/.overlay/{}", overlay_id(source_label));
         let upper_dir = format!("{}/upper", overlay_dir);
         let work_dir = format!("{}/work", overlay_dir);
 
-        std::fs::create_dir_all(&virtiofs_dir)
+        std::fs::create_dir_all(lower_dir)
             .and_then(|_| std::fs::create_dir_all(&upper_dir))
             .and_then(|_| std::fs::create_dir_all(&work_dir))
             .map_err(|e| format!("failed to create staging dirs: {}", e))?;
 
-        if !mount_fs(source, &virtiofs_dir, "virtiofs", None) {
-            return Err(format!("failed to mount virtiofs device '{}'", source));
+        if mount_virtiofs_lower && !mount_fs(source_label, lower_dir, "virtiofs", None) {
+            return Err(format!(
+                "failed to mount virtiofs device '{}'",
+                source_label
+            ));
         }
 
         if !mount_fs("tmpfs", &overlay_dir, "tmpfs", None) {
-            return Err(format!("failed to mount tmpfs for overlay on '{}'", source));
+            return Err(format!(
+                "failed to mount tmpfs for overlay on '{}'",
+                source_label
+            ));
         }
 
         // Re-create upper/work after tmpfs mount
@@ -474,14 +517,30 @@ mod guest {
 
         let overlay_opts = format!(
             "lowerdir={},upperdir={},workdir={}",
-            virtiofs_dir, upper_dir, work_dir
+            lower_dir, upper_dir, work_dir
         );
         if !mount_fs("overlay", target, "overlay", Some(&overlay_opts)) {
             return Err(format!("failed to mount overlay at {}", target));
         }
 
-        eprintln!("lsb-guest: mounted {} -> {} (overlay)", source, target);
+        eprintln!(
+            "lsb-guest: mounted {} -> {} (overlay)",
+            source_label, target
+        );
         Ok(())
+    }
+
+    fn overlay_id(source: &str) -> String {
+        source
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect()
     }
 
     fn mount_direct(source: &str, target: &str, flags: u64) -> Result<(), String> {
