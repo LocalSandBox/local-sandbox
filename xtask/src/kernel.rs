@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -29,6 +30,12 @@ make ARCH="${KERNEL_ARCH}" -j"$(nproc)" "${KERNEL_TARGET}"
 cp "${KERNEL_OUTPUT_RELATIVE_PATH}" /output/Image
 "#;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KernelArchiveSource {
+    url: String,
+    archive_suffix: &'static str,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct KernelBuildLayout {
     defconfig_relpath: &'static str,
@@ -54,10 +61,7 @@ pub fn build_kernel_for_platform(platform: &PlatformSpec) -> Result<()> {
     let defconfig = root.join(layout.defconfig_relpath);
     let build_dir = data_dir.join("kernel-build");
     let source_dir = build_dir.join(format!("linux-{kernel_version}"));
-    let archive_path = build_dir.join(format!("linux-{kernel_version}.tar.xz"));
-    let kernel_url = format!(
-        "https://cdn.kernel.org/pub/linux/kernel/v{kernel_major}.x/linux-{kernel_version}.tar.xz"
-    );
+    let kernel_sources = kernel_archive_sources(&kernel_version, kernel_major);
 
     println!("==> Building custom kernel {kernel_version} for lsb");
 
@@ -72,14 +76,7 @@ pub fn build_kernel_for_platform(platform: &PlatformSpec) -> Result<()> {
         println!("    Downloading kernel source...");
         fs::create_dir_all(&build_dir)
             .with_context(|| format!("failed to create {}", build_dir.display()))?;
-        run_command(
-            Command::new("curl")
-                .arg("-sL")
-                .arg(&kernel_url)
-                .arg("-o")
-                .arg(&archive_path),
-            "download kernel source",
-        )?;
+        let archive_path = download_kernel_archive(&kernel_sources, &build_dir, &kernel_version)?;
         println!("    Extracting...");
         run_command(
             Command::new("tar")
@@ -164,6 +161,89 @@ pub fn build_kernel_for_platform(platform: &PlatformSpec) -> Result<()> {
     Ok(())
 }
 
+fn kernel_archive_sources(kernel_version: &str, kernel_major: &str) -> Vec<KernelArchiveSource> {
+    let xz_archive_name = format!("linux-{kernel_version}.tar.xz");
+    let gz_archive_name = format!("linux-{kernel_version}.tar.gz");
+    let kernel_dir = format!("v{kernel_major}.x");
+    vec![
+        KernelArchiveSource {
+            url: format!(
+                "https://cdn.kernel.org/pub/linux/kernel/{kernel_dir}/{xz_archive_name}"
+            ),
+            archive_suffix: "tar.xz",
+        },
+        KernelArchiveSource {
+            url: format!("https://mirrors.aliyun.com/linux-kernel/{kernel_dir}/{xz_archive_name}"),
+            archive_suffix: "tar.xz",
+        },
+        KernelArchiveSource {
+            url: format!(
+                "https://ftp.riken.jp/Linux/kernel.org/linux/kernel/{kernel_dir}/{xz_archive_name}"
+            ),
+            archive_suffix: "tar.xz",
+        },
+        KernelArchiveSource {
+            url: format!(
+                "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/snapshot/{gz_archive_name}"
+            ),
+            archive_suffix: "tar.gz",
+        },
+    ]
+}
+
+fn download_kernel_archive(
+    sources: &[KernelArchiveSource],
+    build_dir: &Path,
+    kernel_version: &str,
+) -> Result<std::path::PathBuf> {
+    let mut errors = Vec::new();
+
+    for source in sources {
+        let archive_path = build_dir.join(format!(
+            "linux-{}.{}",
+            kernel_version, source.archive_suffix
+        ));
+        let tmp_path = archive_path.with_file_name(format!(
+            "{}.tmp",
+            archive_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("linux-kernel.tar")
+        ));
+
+        println!("    Trying {}", source.url);
+        let status = Command::new("curl")
+            .arg("--fail")
+            .arg("--location")
+            .arg("--show-error")
+            .arg("--silent")
+            .arg("-o")
+            .arg(&tmp_path)
+            .arg(&source.url)
+            .status()
+            .with_context(|| format!("failed to start curl for {}", source.url))?;
+
+        if status.success() {
+            fs::rename(&tmp_path, &archive_path).with_context(|| {
+                format!(
+                    "failed to move downloaded kernel archive from {} to {}",
+                    tmp_path.display(),
+                    archive_path.display()
+                )
+            })?;
+            return Ok(archive_path);
+        }
+
+        let _ = fs::remove_file(&tmp_path);
+        errors.push(format!("{} exited with {status}", source.url));
+    }
+
+    bail!(
+        "failed to download kernel source from all mirrors:\n       {}",
+        errors.join("\n       ")
+    )
+}
+
 fn kernel_build_layout(platform: &PlatformSpec) -> Result<KernelBuildLayout> {
     match platform.target_arch {
         "aarch64" => Ok(KernelBuildLayout {
@@ -214,6 +294,37 @@ mod tests {
                 build_target: "bzImage",
                 output_relpath: "arch/x86/boot/bzImage",
             }
+        );
+    }
+
+    #[test]
+    fn kernel_archive_sources_include_primary_mirrors_and_snapshot_fallback() {
+        let sources = kernel_archive_sources("6.12.17", "6");
+
+        assert_eq!(
+            sources,
+            vec![
+                KernelArchiveSource {
+                    url: "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.17.tar.xz"
+                        .to_string(),
+                    archive_suffix: "tar.xz",
+                },
+                KernelArchiveSource {
+                    url: "https://mirrors.aliyun.com/linux-kernel/v6.x/linux-6.12.17.tar.xz"
+                        .to_string(),
+                    archive_suffix: "tar.xz",
+                },
+                KernelArchiveSource {
+                    url: "https://ftp.riken.jp/Linux/kernel.org/linux/kernel/v6.x/linux-6.12.17.tar.xz"
+                        .to_string(),
+                    archive_suffix: "tar.xz",
+                },
+                KernelArchiveSource {
+                    url: "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/snapshot/linux-6.12.17.tar.gz"
+                        .to_string(),
+                    archive_suffix: "tar.gz",
+                },
+            ]
         );
     }
 }

@@ -35,7 +35,7 @@ Required runner properties:
 - Windows 11 x86_64.
 - Hyper-V / Windows Hypervisor Platform enabled.
 - QEMU installed and discoverable or configured via `LSB_QEMU`.
-- LocalSandbox guest assets available or built during job.
+- `C:\lsb-assets` writable by the runner account for the persistent boot asset cache.
 - Non-admin execution path preferred for MVP tests.
 
 Hardware workflow:
@@ -44,6 +44,15 @@ Hardware workflow:
 - Trigger: manual `workflow_dispatch` only.
 - macOS/Linux helper: `./scripts/win-gh-test check|unit|smoke|e2e`
 - Do not add automatic `pull_request` triggers for the self-hosted Windows hardware runner.
+- `check` and `unit` run on the self-hosted Windows runner without boot asset preparation.
+- `smoke` and `e2e` depend on a GitHub-hosted Linux `prepare-boot-assets` job.
+  That job prepares `windows-x86_64` boot assets with
+  `LSB_FORCE_DOCKER_ROOTFS=1`, uses an exact source-derived GitHub cache key
+  with no broad restore keys, and uploads `Image`, `initramfs.cpio.gz`,
+  `rootfs.ext4`, and `asset-manifest.json` as a same-run artifact.
+- The Windows smoke/e2e job downloads the artifact, verifies the manifest,
+  maintains `C:\lsb-assets\by-key\<asset-key>\`, and boots only a disposable
+  per-run copy of `rootfs.ext4` from `C:\lsb-assets\work\<run-id>-<attempt>\`.
 
 ## Milestone validation gates
 
@@ -112,9 +121,9 @@ cargo test -p lsb-platform windows_qemu_boot_smoke -- --ignored --nocapture
 cargo test --workspace --features windows-integration -- --ignored --nocapture
 ```
 
-M05 boot smoke requires disposable boot assets. On the self-hosted runner,
-`scripts/windows-smoke.ps1` runs real QEMU preflight and runs the direct boot
-smoke only when all of these are set:
+M05 boot smoke requires disposable boot assets. In the hardware workflow,
+`scripts/prepare-windows-boot-assets.ps1` sets these variables before
+`scripts/windows-smoke.ps1` runs:
 
 ```powershell
 $env:LSB_WINDOWS_BOOT_KERNEL="C:\path\to\Image"
@@ -125,3 +134,7 @@ $env:LSB_WINDOWS_BOOT_ARTIFACT_DIR="C:\path\to\diagnostics" # optional
 
 If the asset variables are absent, the smoke lane must print an explicit skip
 message and must not claim direct boot validation.
+
+For manual Windows-side reproduction outside GitHub Actions, prepare equivalent
+assets from a trusted artifact manifest first, keep the pristine cache copy out
+of QEMU, and point `LSB_WINDOWS_BOOT_ROOTFS` at a disposable copy.
