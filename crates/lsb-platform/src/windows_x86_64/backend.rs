@@ -164,7 +164,7 @@ impl PlatformVm for WindowsVm {
     fn connect_to_vsock_port(&self, _port: u32) -> Result<TcpStream> {
         Err(unsupported(
             "guest control transport",
-            "M06 virtio-serial control transport; M05 captures serial logs only",
+            "M06 exposes guest control through PlatformVm::connect_control using virtio-serial; macOS-style vsock guest control remains unsupported on Windows",
         ))
     }
 }

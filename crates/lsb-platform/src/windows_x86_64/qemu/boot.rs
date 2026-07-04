@@ -24,6 +24,17 @@ const BOOT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SERIAL_LOG_FILE: &str = "serial.log";
 const PREFLIGHT_FILE: &str = "preflight.json";
 const BOOT_STATUS_FILE: &str = "boot.status.json";
+const SERIAL_OBSERVED_SUCCESS_DEFINITION: &str =
+    "qemu_process_alive_after_boot_observation_window_with_serial_output";
+const VIRTIO_SERIAL_CONTROL_SUCCESS_DEFINITION: &str =
+    "qemu_process_alive_with_serial_output_and_virtio_serial_control_port_opened";
+const VIRTIO_SERIAL_CONTROL_TRANSPORT_MARKER: &str =
+    "lsb-guest: using virtio-serial control transport";
+const VIRTIO_SERIAL_CONTROL_OPEN_MARKER: &str = "lsb-guest: virtio-serial control port opened";
+const VIRTIO_SERIAL_CONTROL_SERIAL_MARKERS: [&str; 2] = [
+    VIRTIO_SERIAL_CONTROL_TRANSPORT_MARKER,
+    VIRTIO_SERIAL_CONTROL_OPEN_MARKER,
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WindowsQemuBootConfig {
@@ -158,6 +169,7 @@ pub(crate) enum QemuBootErrorKind {
     ProcessStatus,
     GuestBootExited,
     SerialOutputMissing,
+    SerialEvidenceMissing,
     StopFailed,
 }
 
@@ -175,6 +187,7 @@ impl QemuBootErrorKind {
             Self::ProcessStatus => "process_status",
             Self::GuestBootExited => "guest_boot_exited",
             Self::SerialOutputMissing => "serial_output_missing",
+            Self::SerialEvidenceMissing => "serial_evidence_missing",
             Self::StopFailed => "stop_failed",
         }
     }
@@ -235,6 +248,12 @@ pub(crate) enum QemuBootError {
         artifacts: QemuBootArtifacts,
         stderr_excerpt: String,
     },
+    SerialEvidenceMissing {
+        artifacts: QemuBootArtifacts,
+        success_definition: &'static str,
+        missing_markers: Vec<&'static str>,
+        serial_excerpt: String,
+    },
     StopFailed {
         source: QemuProcessError,
         artifacts: QemuBootArtifacts,
@@ -255,6 +274,7 @@ impl QemuBootError {
             Self::ProcessStatus { .. } => QemuBootErrorKind::ProcessStatus,
             Self::GuestBootExited { .. } => QemuBootErrorKind::GuestBootExited,
             Self::SerialOutputMissing { .. } => QemuBootErrorKind::SerialOutputMissing,
+            Self::SerialEvidenceMissing { .. } => QemuBootErrorKind::SerialEvidenceMissing,
             Self::StopFailed { .. } => QemuBootErrorKind::StopFailed,
         }
     }
@@ -270,6 +290,7 @@ impl QemuBootError {
             | Self::ProcessStatus { artifacts, .. }
             | Self::GuestBootExited { artifacts, .. }
             | Self::SerialOutputMissing { artifacts, .. }
+            | Self::SerialEvidenceMissing { artifacts, .. }
             | Self::StopFailed { artifacts, .. } => Some(artifacts),
             Self::InvalidConfig { artifacts, .. } | Self::ArtifactIo { artifacts, .. } => {
                 artifacts.as_ref()
@@ -374,6 +395,18 @@ impl fmt::Display for QemuBootError {
                 empty_as_placeholder(stderr_excerpt),
                 self.artifact_sentence()
             ),
+            Self::SerialEvidenceMissing {
+                success_definition,
+                missing_markers,
+                serial_excerpt,
+                ..
+            } => write!(
+                f,
+                "Windows QEMU stayed alive for the boot observation window with serial output, but serial.log did not contain required evidence for {success_definition}: {}. serial excerpt: {}.{}",
+                missing_markers.join(", "),
+                empty_as_placeholder(serial_excerpt),
+                self.artifact_sentence()
+            ),
             Self::StopFailed { source, .. } => write!(
                 f,
                 "failed to stop Windows QEMU direct boot process: {source}.{}",
@@ -401,29 +434,74 @@ pub(crate) fn launch_windows_qemu_boot(
     config: WindowsQemuBootConfig,
 ) -> Result<WindowsQemuBoot, QemuBootError> {
     let artifacts = resolve_artifacts(&config)?;
+    let observation_goal = BootObservationGoal::for_config(&config);
     prepare_artifacts(&artifacts)?;
 
     let kernel_image = require_existing_file("kernel Image", &config.kernel_image, &artifacts)
-        .map_err(|error| record_error(&artifacts, config.boot_observation_timeout, error))?;
+        .map_err(|error| {
+            record_error(
+                &artifacts,
+                config.boot_observation_timeout,
+                observation_goal,
+                error,
+            )
+        })?;
     let initrd_image = require_existing_file("initramfs", &config.initrd_image, &artifacts)
-        .map_err(|error| record_error(&artifacts, config.boot_observation_timeout, error))?;
-    let rootfs_image = require_existing_file("rootfs", &config.rootfs_image, &artifacts)
-        .map_err(|error| record_error(&artifacts, config.boot_observation_timeout, error))?;
-    let memory_mib = memory_mib(config.memory_bytes, &artifacts)
-        .map_err(|error| record_error(&artifacts, config.boot_observation_timeout, error))?;
-    let vcpu_count = vcpu_count(config.vcpu_count, &artifacts)
-        .map_err(|error| record_error(&artifacts, config.boot_observation_timeout, error))?;
+        .map_err(|error| {
+            record_error(
+                &artifacts,
+                config.boot_observation_timeout,
+                observation_goal,
+                error,
+            )
+        })?;
+    let rootfs_image =
+        require_existing_file("rootfs", &config.rootfs_image, &artifacts).map_err(|error| {
+            record_error(
+                &artifacts,
+                config.boot_observation_timeout,
+                observation_goal,
+                error,
+            )
+        })?;
+    let memory_mib = memory_mib(config.memory_bytes, &artifacts).map_err(|error| {
+        record_error(
+            &artifacts,
+            config.boot_observation_timeout,
+            observation_goal,
+            error,
+        )
+    })?;
+    let vcpu_count = vcpu_count(config.vcpu_count, &artifacts).map_err(|error| {
+        record_error(
+            &artifacts,
+            config.boot_observation_timeout,
+            observation_goal,
+            error,
+        )
+    })?;
 
     let preflight = run_preflight().map_err(|source| {
         let error = QemuBootError::Preflight {
             source,
             artifacts: artifacts.clone(),
         };
-        record_failure(&artifacts, config.boot_observation_timeout, &error);
+        record_failure(
+            &artifacts,
+            config.boot_observation_timeout,
+            observation_goal,
+            &error,
+        );
         error
     })?;
-    write_preflight_report(&artifacts, &preflight)
-        .map_err(|error| record_error(&artifacts, config.boot_observation_timeout, error))?;
+    write_preflight_report(&artifacts, &preflight).map_err(|error| {
+        record_error(
+            &artifacts,
+            config.boot_observation_timeout,
+            observation_goal,
+            error,
+        )
+    })?;
 
     let mut argv_config = QemuArgvBootConfig::direct_linux_boot_raw_rootfs(
         preflight.qemu.path,
@@ -446,7 +524,12 @@ pub(crate) fn launch_windows_qemu_boot(
                 source,
                 artifacts: artifacts.clone(),
             };
-            record_failure(&artifacts, config.boot_observation_timeout, &error);
+            record_failure(
+                &artifacts,
+                config.boot_observation_timeout,
+                observation_goal,
+                &error,
+            );
             error
         })?;
 
@@ -458,7 +541,12 @@ pub(crate) fn launch_windows_qemu_boot(
             source,
             artifacts: artifacts.clone(),
         };
-        record_failure(&artifacts, config.boot_observation_timeout, &error);
+        record_failure(
+            &artifacts,
+            config.boot_observation_timeout,
+            observation_goal,
+            &error,
+        );
         error
     })?;
 
@@ -470,7 +558,12 @@ pub(crate) fn launch_windows_qemu_boot(
                     source,
                     artifacts: artifacts.clone(),
                 };
-                record_failure(&artifacts, config.boot_observation_timeout, &error);
+                record_failure(
+                    &artifacts,
+                    config.boot_observation_timeout,
+                    observation_goal,
+                    &error,
+                );
                 let _ = supervisor.terminate();
                 return Err(error);
             }
@@ -479,14 +572,25 @@ pub(crate) fn launch_windows_qemu_boot(
         None
     };
 
-    if let Err(error) = observe_boot(&mut supervisor, &artifacts, config.boot_observation_timeout) {
-        record_failure(&artifacts, config.boot_observation_timeout, &error);
+    if let Err(error) = observe_boot(
+        &mut supervisor,
+        &artifacts,
+        config.boot_observation_timeout,
+        observation_goal,
+    ) {
+        record_failure(
+            &artifacts,
+            config.boot_observation_timeout,
+            observation_goal,
+            &error,
+        );
         return Err(error);
     }
 
     write_boot_status_file(
         &artifacts,
-        "serial_observed_alive",
+        observation_goal.success_state,
+        observation_goal.success_definition,
         config.boot_observation_timeout,
         None,
         None,
@@ -650,10 +754,44 @@ fn write_preflight_report(
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BootObservationGoal {
+    success_state: &'static str,
+    success_definition: &'static str,
+    required_serial_markers: &'static [&'static str],
+}
+
+impl BootObservationGoal {
+    fn for_config(config: &WindowsQemuBootConfig) -> Self {
+        if config.control_endpoint.is_some() {
+            Self::virtio_serial_control()
+        } else {
+            Self::serial_output()
+        }
+    }
+
+    fn serial_output() -> Self {
+        Self {
+            success_state: "serial_observed_alive",
+            success_definition: SERIAL_OBSERVED_SUCCESS_DEFINITION,
+            required_serial_markers: &[],
+        }
+    }
+
+    fn virtio_serial_control() -> Self {
+        Self {
+            success_state: "virtio_serial_control_observed_alive",
+            success_definition: VIRTIO_SERIAL_CONTROL_SUCCESS_DEFINITION,
+            required_serial_markers: &VIRTIO_SERIAL_CONTROL_SERIAL_MARKERS,
+        }
+    }
+}
+
 fn observe_boot(
     supervisor: &mut QemuSupervisor,
     artifacts: &QemuBootArtifacts,
     timeout: Duration,
+    observation_goal: BootObservationGoal,
 ) -> Result<(), QemuBootError> {
     let deadline = Instant::now() + timeout;
     loop {
@@ -687,8 +825,24 @@ fn observe_boot(
         }
 
         if Instant::now() >= deadline {
-            if serial_log_has_output(&artifacts.serial) {
-                return Ok(());
+            let serial = fs::read(&artifacts.serial).unwrap_or_default();
+            if !serial.is_empty() {
+                let serial_text = String::from_utf8_lossy(&serial);
+                let missing_markers = observation_goal
+                    .required_serial_markers
+                    .iter()
+                    .copied()
+                    .filter(|marker| !serial_text.contains(marker))
+                    .collect::<Vec<_>>();
+                if missing_markers.is_empty() {
+                    return Ok(());
+                }
+                return Err(QemuBootError::SerialEvidenceMissing {
+                    artifacts: artifacts.clone(),
+                    success_definition: observation_goal.success_definition,
+                    missing_markers,
+                    serial_excerpt: lossy_excerpt(&serial),
+                });
             }
             return Err(QemuBootError::SerialOutputMissing {
                 artifacts: artifacts.clone(),
@@ -702,16 +856,23 @@ fn observe_boot(
 fn record_error(
     artifacts: &QemuBootArtifacts,
     timeout: Duration,
+    observation_goal: BootObservationGoal,
     error: QemuBootError,
 ) -> QemuBootError {
-    record_failure(artifacts, timeout, &error);
+    record_failure(artifacts, timeout, observation_goal, &error);
     error
 }
 
-fn record_failure(artifacts: &QemuBootArtifacts, timeout: Duration, error: &QemuBootError) {
+fn record_failure(
+    artifacts: &QemuBootArtifacts,
+    timeout: Duration,
+    observation_goal: BootObservationGoal,
+    error: &QemuBootError,
+) {
     let _ = write_boot_status_file(
         artifacts,
         "failed",
+        observation_goal.success_definition,
         timeout,
         Some(error.kind()),
         Some(error.to_string()),
@@ -721,13 +882,14 @@ fn record_failure(artifacts: &QemuBootArtifacts, timeout: Duration, error: &Qemu
 fn write_boot_status_file(
     artifacts: &QemuBootArtifacts,
     state: &'static str,
+    success_definition: &'static str,
     observation_timeout: Duration,
     error_kind: Option<QemuBootErrorKind>,
     error_message: Option<String>,
 ) -> Result<(), QemuBootError> {
     let artifact = QemuBootStatusArtifact {
         state,
-        success_definition: "qemu_process_alive_after_boot_observation_window_with_serial_output",
+        success_definition,
         observation_timeout_ms: observation_timeout.as_millis(),
         artifacts: QemuBootStatusFiles {
             serial: file_name(&artifacts.serial),
@@ -942,6 +1104,7 @@ mod tests {
         write_boot_status_file(
             &artifacts,
             "serial_observed_alive",
+            SERIAL_OBSERVED_SUCCESS_DEFINITION,
             Duration::from_millis(1500),
             None,
             None,
@@ -967,10 +1130,76 @@ mod tests {
         let mut supervisor = fake_supervisor("sleep", artifact_dir.clone());
         supervisor.start().expect("fake supervisor should start");
 
-        let err = observe_boot(&mut supervisor, &artifacts, Duration::from_millis(100))
-            .expect_err("empty serial should fail M05 observation");
+        let err = observe_boot(
+            &mut supervisor,
+            &artifacts,
+            Duration::from_millis(100),
+            BootObservationGoal::serial_output(),
+        )
+        .expect_err("empty serial should fail M05 observation");
         assert_eq!(err.kind(), QemuBootErrorKind::SerialOutputMissing);
         assert!(err.to_string().contains("serial.log remained empty"));
+
+        supervisor
+            .terminate()
+            .expect("fake supervisor should terminate");
+        let _ = fs::remove_dir_all(artifact_dir);
+    }
+
+    #[test]
+    fn observe_boot_requires_m06_virtio_serial_guest_evidence() {
+        let artifact_dir = temp_dir("missing-m06-evidence");
+        let artifacts = QemuBootArtifacts::new(&artifact_dir);
+        prepare_artifacts(&artifacts).expect("artifacts should prepare");
+        fs::write(
+            &artifacts.serial,
+            format!("{VIRTIO_SERIAL_CONTROL_TRANSPORT_MARKER} 'org.localsandbox.control'\n"),
+        )
+        .expect("serial fixture should write");
+        let mut supervisor = fake_supervisor("sleep", artifact_dir.clone());
+        supervisor.start().expect("fake supervisor should start");
+
+        let err = observe_boot(
+            &mut supervisor,
+            &artifacts,
+            Duration::from_millis(100),
+            BootObservationGoal::virtio_serial_control(),
+        )
+        .expect_err("missing virtio-serial open evidence should fail M06 observation");
+        assert_eq!(err.kind(), QemuBootErrorKind::SerialEvidenceMissing);
+        assert!(err.to_string().contains(VIRTIO_SERIAL_CONTROL_OPEN_MARKER));
+        assert!(err
+            .to_string()
+            .contains(VIRTIO_SERIAL_CONTROL_SUCCESS_DEFINITION));
+
+        supervisor
+            .terminate()
+            .expect("fake supervisor should terminate");
+        let _ = fs::remove_dir_all(artifact_dir);
+    }
+
+    #[test]
+    fn observe_boot_accepts_m06_virtio_serial_guest_evidence() {
+        let artifact_dir = temp_dir("m06-evidence");
+        let artifacts = QemuBootArtifacts::new(&artifact_dir);
+        prepare_artifacts(&artifacts).expect("artifacts should prepare");
+        fs::write(
+            &artifacts.serial,
+            format!(
+                "{VIRTIO_SERIAL_CONTROL_TRANSPORT_MARKER} 'org.localsandbox.control'\n{VIRTIO_SERIAL_CONTROL_OPEN_MARKER} at /dev/vport1p1\n"
+            ),
+        )
+        .expect("serial fixture should write");
+        let mut supervisor = fake_supervisor("sleep", artifact_dir.clone());
+        supervisor.start().expect("fake supervisor should start");
+
+        observe_boot(
+            &mut supervisor,
+            &artifacts,
+            Duration::from_millis(100),
+            BootObservationGoal::virtio_serial_control(),
+        )
+        .expect("complete virtio-serial evidence should pass M06 observation");
 
         supervisor
             .terminate()
@@ -1026,17 +1255,15 @@ mod tests {
                 "kernel cmdline should select virtio-serial transport: {argv}"
             );
             let serial = fs::read(&boot.artifacts().serial).expect("serial log should be readable");
-            assert!(
-                !serial.is_empty(),
-                "serial log should contain kernel or init output"
-            );
             let serial_text = String::from_utf8_lossy(&serial);
             assert!(
-                serial_text.contains("Linux version")
-                    || serial_text.contains("Kernel command line")
-                    || serial_text.contains("Run /init")
-                    || serial_text.contains("lsb-guest:"),
-                "serial log should contain a kernel/init marker; excerpt: {}",
+                serial_text.contains(VIRTIO_SERIAL_CONTROL_TRANSPORT_MARKER),
+                "serial log should show the guest selected virtio-serial control; excerpt: {}",
+                lossy_excerpt(&serial)
+            );
+            assert!(
+                serial_text.contains(VIRTIO_SERIAL_CONTROL_OPEN_MARKER),
+                "serial log should show the guest opened the virtio-serial control port; excerpt: {}",
                 lossy_excerpt(&serial)
             );
             eprintln!(
