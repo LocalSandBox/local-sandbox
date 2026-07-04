@@ -1,0 +1,19 @@
+crates/lsb-platform/src/windows_x86_64/control/virtio_serial.rs
+  s_3e9dd14c1056d7::t_c6833b75a2fae3 43,49,58,63,90
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "93739c53e0f937212918c38b4b9877f0e5a41277",
+  "prompts": {},
+  "sessions": {
+    "s_3e9dd14c1056d7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2c4a-9cc5-7dd2-bda8-3a2c381848a2",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
