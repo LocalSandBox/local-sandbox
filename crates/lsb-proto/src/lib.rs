@@ -55,6 +55,8 @@ pub struct ExecRequest {
     pub cols: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdin_closed: Option<bool>,
 }
 
 // --- Port forwarding protocol ---
@@ -227,9 +229,10 @@ pub const VIRTIO_SERIAL_CONTROL_PORT_NAME: &str = "org.localsandbox.control";
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::io::Cursor;
 
-    use super::{GuestReady, GuestTransport, MountRequest, PROTOCOL_VERSION};
+    use super::{ExecRequest, GuestReady, GuestTransport, MountRequest, PROTOCOL_VERSION};
     use crate::frame;
 
     #[test]
@@ -300,5 +303,15 @@ mod tests {
             }
             MountRequest::Overlay { .. } => panic!("expected direct request"),
         }
+    }
+
+    #[test]
+    fn exec_request_defaults_stdin_closed_when_field_is_absent() {
+        let request: ExecRequest =
+            serde_json::from_str(r#"{"argv":["/bin/true"]}"#).expect("exec request");
+
+        assert_eq!(request.argv, ["/bin/true"]);
+        assert_eq!(request.env, HashMap::new());
+        assert_eq!(request.stdin_closed, None);
     }
 }

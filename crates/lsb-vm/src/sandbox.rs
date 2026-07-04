@@ -310,7 +310,7 @@ impl Sandbox {
 
         self.send_mount_requests(&mut writer, &mut reader)?;
 
-        let req = build_exec_request(argv, env, cwd, None);
+        let req = build_exec_request(argv, env, cwd, None, Some(true));
         send_exec_request(&mut writer, &req)?;
         collect_exec_response(&mut reader, stdout, stderr)
     }
@@ -531,7 +531,7 @@ impl Sandbox {
 
             self.send_mount_requests(&mut writer, &mut reader)?;
 
-            let req = build_exec_request(argv, env, cwd, None);
+            let req = build_exec_request(argv, env, cwd, None, None);
             send_exec_request(&mut writer, &req)?;
 
             Ok(stream)
@@ -562,6 +562,7 @@ impl Sandbox {
             rows: Some(rows),
             cols: Some(cols),
             cwd: None,
+            stdin_closed: None,
         };
         frame::send_json(&mut writer, frame::EXEC_REQ, &req)?;
 
@@ -610,6 +611,7 @@ impl Sandbox {
             rows: Some(rows),
             cols: Some(cols),
             cwd: None,
+            stdin_closed: None,
         };
         frame::send_json(&mut writer, frame::EXEC_REQ, &req)?;
 
@@ -845,6 +847,7 @@ fn build_exec_request(
     env: &HashMap<String, String>,
     cwd: Option<&str>,
     tty: Option<bool>,
+    stdin_closed: Option<bool>,
 ) -> ExecRequest {
     ExecRequest {
         argv: argv.iter().map(|s| s.as_ref().to_string()).collect(),
@@ -853,6 +856,7 @@ fn build_exec_request(
         rows: None,
         cols: None,
         cwd: cwd.map(|s| s.to_string()),
+        stdin_closed,
     }
 }
 
@@ -1044,6 +1048,7 @@ mod tests {
             &env,
             Some("/workspace"),
             None,
+            Some(true),
         );
         let mut encoded = Vec::new();
 
@@ -1064,6 +1069,7 @@ mod tests {
         );
         assert_eq!(decoded.cwd.as_deref(), Some("/workspace"));
         assert_eq!(decoded.tty, None);
+        assert_eq!(decoded.stdin_closed, Some(true));
     }
 
     #[test]

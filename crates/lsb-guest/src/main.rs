@@ -1026,28 +1026,33 @@ mod guest {
                     }
                 });
 
-                // Thread: vsock STDIN/KILL frames -> child stdin
-                let child_stdin = child.stdin.take().unwrap();
-                let input_thread = std::thread::spawn(move || {
-                    let mut stdin = child_stdin;
-                    let mut reader = control_reader;
-                    loop {
-                        match frame::read_frame(&mut reader) {
-                            Ok(Some((frame::STDIN, data))) => {
-                                if stdin.write_all(&data).is_err() {
+                let input_thread = if req.stdin_closed.unwrap_or(false) {
+                    drop(child.stdin.take());
+                    None
+                } else {
+                    // Thread: vsock STDIN/KILL frames -> child stdin
+                    let child_stdin = child.stdin.take().unwrap();
+                    Some(std::thread::spawn(move || {
+                        let mut stdin = child_stdin;
+                        let mut reader = control_reader;
+                        loop {
+                            match frame::read_frame(&mut reader) {
+                                Ok(Some((frame::STDIN, data))) => {
+                                    if stdin.write_all(&data).is_err() {
+                                        break;
+                                    }
+                                    let _ = stdin.flush();
+                                }
+                                Ok(Some((frame::KILL, _))) => {
+                                    // Kill entire process group (negative pid)
+                                    unsafe { libc::kill(-child_pid, libc::SIGTERM) };
                                     break;
                                 }
-                                let _ = stdin.flush();
+                                _ => break,
                             }
-                            Ok(Some((frame::KILL, _))) => {
-                                // Kill entire process group (negative pid)
-                                unsafe { libc::kill(-child_pid, libc::SIGTERM) };
-                                break;
-                            }
-                            _ => break,
                         }
-                    }
-                });
+                    }))
+                };
 
                 // Wait for output to drain, then wait for child
                 let _ = stdout_thread.join();
@@ -1063,7 +1068,7 @@ mod guest {
                 drop(tx);
                 let _ = writer_thread.join();
 
-                // Input thread will exit when vsock closes or we drop
+                // Streaming input threads exit when vsock closes or the host sends KILL.
                 drop(input_thread);
             }
             Err(e) => {
