@@ -76,6 +76,7 @@ fn unsupported_runtime(capability: &'static str, milestone: &'static str) -> any
 
 // --- Mount types ---
 
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 const MS_RDONLY: u64 = 1;
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 static COPY_OUT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -317,7 +318,8 @@ fn build_windows_mount_plan(mounts: &[MountConfig]) -> Result<SandboxMountPlan> 
             }
         })
         .collect::<Vec<_>>();
-    let plan = plan_windows_mounts(&specs).context("planning Windows mount imports")?;
+    let plan = plan_windows_mounts(&specs)
+        .map_err(|error| anyhow::anyhow!("planning Windows mount imports: {error}"))?;
 
     Ok(SandboxMountPlan {
         shared_dirs: Vec::new(),
@@ -1640,6 +1642,7 @@ mod tests {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     use std::path::PathBuf;
 
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     #[test]
     fn overlay_mount_generates_readonly_shared_dir_and_overlay_request() {
         let mounts = vec![MountConfig::Overlay {
@@ -1663,6 +1666,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     #[test]
     fn direct_mount_preserves_flags_and_derives_platform_readonly() {
         let mounts = vec![
