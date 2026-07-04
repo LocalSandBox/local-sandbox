@@ -1,0 +1,21 @@
+docs/windows-port/agent-workspace/state.md
+  s_20688dffa7c059::t_d9856012d24654 19,33-34,37,72,110-111,199-201
+docs/windows-port/agent-workspace/milestones/09-copy-in-copy-out-data-plane.md
+  s_20688dffa7c059::t_c050f31fa39022 72-73,75
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "651780e8d0b9daca09efc60683e1f9cb1f5e0a49",
+  "prompts": {},
+  "sessions": {
+    "s_20688dffa7c059": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2d8a-d1e6-7063-ab13-57ed9148d2f8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
