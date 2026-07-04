@@ -974,7 +974,7 @@ mod tests {
 
             let mut boot = launch_windows_qemu_boot(config)
                 .expect("QEMU should stay alive and produce serial output during boot smoke");
-            let argv = fs::read_to_string(&boot.artifacts().process.argv_redacted)
+            let argv = fs::read_to_string(&boot.artifacts().process.argv)
                 .expect("redacted QEMU argv should be readable");
             assert!(
                 argv.contains("virtio-serial-pci"),
