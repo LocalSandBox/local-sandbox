@@ -1,0 +1,25 @@
+docs/windows-port/agent-workspace/risk-register.md
+  s_3e9dd14c1056d7::t_c28334ba7c0c60 8-9
+docs/windows-port/agent-workspace/milestones/06-virtio-serial-control-transport.md
+  s_3e9dd14c1056d7::t_8bb80f8b858973 3,46,72-76,83
+docs/windows-port/agent-workspace/state.md
+  s_3e9dd14c1056d7::t_79dd4b33a8717c 7,30-31,45-46,73,101-102
+docs/windows-port/agent-workspace/decisions.md
+  s_3e9dd14c1056d7::t_bf23d43ba70969 158-185
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b3661ea0621288607d71679902b30e2ef43d32a6",
+  "prompts": {},
+  "sessions": {
+    "s_3e9dd14c1056d7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2c4a-9cc5-7dd2-bda8-3a2c381848a2",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
