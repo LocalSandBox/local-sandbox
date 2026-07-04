@@ -1961,6 +1961,10 @@ mod tests {
                 argv.contains("lsb.transport=virtio-serial"),
                 "kernel cmdline should select virtio-serial transport: {argv}"
             );
+            assert!(
+                argv.contains("-nic none"),
+                "redacted argv should preserve no guest NIC for the Windows MVP: {argv}"
+            );
             let ready = boot
                 .guest_ready()
                 .expect("boot smoke should record guest ready");

@@ -28,10 +28,33 @@ use lsb_proto::{
 use lsb_proto::{ForwardRequest, ForwardResponse, VSOCK_PORT, VSOCK_PORT_FORWARD};
 
 #[cfg(not(target_os = "macos"))]
-fn unsupported_runtime(capability: &str, milestone: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "Windows support is in progress: {capability} is not implemented yet ({milestone}); current Windows runtime support includes VM startup through the M07 guest-ready handshake and non-interactive exec through M08"
-    )
+#[derive(Debug)]
+struct UnsupportedWindowsRuntime {
+    capability: &'static str,
+    milestone: &'static str,
+}
+
+#[cfg(not(target_os = "macos"))]
+impl std::fmt::Display for UnsupportedWindowsRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Windows support is in progress: {} is not implemented yet ({}); current Windows runtime support includes VM startup through the M07 guest-ready handshake and non-interactive exec through M08",
+            self.capability, self.milestone
+        )
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl std::error::Error for UnsupportedWindowsRuntime {}
+
+#[cfg(not(target_os = "macos"))]
+fn unsupported_runtime(capability: &'static str, milestone: &'static str) -> anyhow::Error {
+    UnsupportedWindowsRuntime {
+        capability,
+        milestone,
+    }
+    .into()
 }
 
 // --- Mount types ---
