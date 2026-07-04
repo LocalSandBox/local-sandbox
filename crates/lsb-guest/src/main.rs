@@ -67,9 +67,7 @@ mod control_transport {
                 GuestControlTransport::Vsock
             );
             assert_eq!(
-                from_kernel_cmdline(
-                    "console=ttyS0 root=/dev/vda rw lsb.transport=virtio-serial"
-                ),
+                from_kernel_cmdline("console=ttyS0 root=/dev/vda rw lsb.transport=virtio-serial"),
                 GuestControlTransport::VirtioSerial
             );
         }

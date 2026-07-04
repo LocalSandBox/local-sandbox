@@ -279,7 +279,10 @@ mod tests {
             .control_endpoint
             .expect("M06 boot should configure control endpoint");
 
-        assert_eq!(endpoint.port_name(), lsb_proto::VIRTIO_SERIAL_CONTROL_PORT_NAME);
+        assert_eq!(
+            endpoint.port_name(),
+            lsb_proto::VIRTIO_SERIAL_CONTROL_PORT_NAME
+        );
         assert!(endpoint.pipe_name().starts_with("lsb-12345-"));
         assert!(endpoint.pipe_name().ends_with("-control"));
     }

@@ -75,15 +75,22 @@ impl VirtioSerialControlEndpoint {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum VirtioSerialControlError {
-    InvalidPipeName { pipe_name: String, reason: String },
-    RandomUnavailable { detail: String },
+    InvalidPipeName {
+        pipe_name: String,
+        reason: String,
+    },
+    RandomUnavailable {
+        detail: String,
+    },
     EndpointUnavailable,
     HostPipeUnsupported,
     ConnectTimeout {
         timeout: Duration,
         last_error: Option<String>,
     },
-    OpenFailed { detail: String },
+    OpenFailed {
+        detail: String,
+    },
 }
 
 impl VirtioSerialControlError {
@@ -320,10 +327,7 @@ mod tests {
     fn generated_pipe_name_has_instance_label_and_random_suffix_shape() {
         let name = pipe_name_from_parts("abc-123", "00112233445566778899aabbccddeeff");
 
-        assert_eq!(
-            name,
-            "lsb-abc-123-00112233445566778899aabbccddeeff-control"
-        );
+        assert_eq!(name, "lsb-abc-123-00112233445566778899aabbccddeeff-control");
         validate_pipe_name(&name).expect("generated name should be valid");
     }
 
@@ -348,7 +352,10 @@ mod tests {
 
     #[test]
     fn instance_label_is_qemu_pipe_safe() {
-        assert_eq!(instance_label(Path::new("/tmp/lsb/instances/12345")), "12345");
+        assert_eq!(
+            instance_label(Path::new("/tmp/lsb/instances/12345")),
+            "12345"
+        );
         assert_eq!(
             instance_label(Path::new("/tmp/Local Sandbox/instance,one")),
             "instance-one"

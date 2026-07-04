@@ -236,9 +236,9 @@ impl PlatformControlStream {
 
     pub fn try_clone(&self) -> io::Result<Self> {
         match &self.inner {
-            PlatformControlStreamInner::Tcp(stream) => {
-                stream.try_clone().map(PlatformControlStream::from_tcp_stream)
-            }
+            PlatformControlStreamInner::Tcp(stream) => stream
+                .try_clone()
+                .map(PlatformControlStream::from_tcp_stream),
             PlatformControlStreamInner::File(file) => file.try_clone().map(Self::from_file),
         }
     }

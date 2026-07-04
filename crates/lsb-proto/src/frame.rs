@@ -163,7 +163,9 @@ mod tests {
             .expect("frame should read")
             .expect("frame should be present");
         assert_eq!(frame, (STDOUT, b"hello".to_vec()));
-        assert!(read_frame(&mut stream).expect("EOF should be clean").is_none());
+        assert!(read_frame(&mut stream)
+            .expect("EOF should be clean")
+            .is_none());
     }
 
     #[test]
