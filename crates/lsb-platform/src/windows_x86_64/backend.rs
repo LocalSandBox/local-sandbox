@@ -68,8 +68,8 @@ impl WindowsVm {
         }
         if self.config.shared_dir_count > 0 {
             return Err(unsupported(
-                "directory mounts",
-                "M10 mount MVP semantics; the current Windows boot path does not expose host directories",
+                "live shared directory devices",
+                "M10 mount MVP uses lsb-vm copy-import staging after guest-ready; the Windows QEMU backend does not attach VirtioFS, 9p, virtual FAT, or other live host shared-directory devices",
             ));
         }
         Ok(())
@@ -255,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_vm_rejects_mounts_before_qemu_boot() {
+    fn windows_vm_rejects_live_shared_directory_devices() {
         let mut config = test_config();
         config.shared_dirs = vec![PlatformSharedDir {
             host_path: "host".into(),
@@ -264,10 +264,13 @@ mod tests {
         }];
         let vm = create_vm(config).expect("vm should be constructible");
 
-        let err = vm.start().expect_err("mounts should be unsupported in M07");
+        let err = vm
+            .start()
+            .expect_err("live shared directory devices should be unsupported");
         let message = err.to_string();
 
-        assert!(message.contains("directory mounts"));
+        assert!(message.contains("live shared directory devices"));
+        assert!(message.contains("copy-import staging"));
         assert!(message.contains("M10"));
     }
 

@@ -56,7 +56,7 @@ impl std::fmt::Display for UnsupportedWindowsRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Windows support is in progress: {} is not implemented yet ({}); current Windows runtime support includes VM startup through the M07 guest-ready handshake, non-interactive exec through M08, and guest file copy transfer primitives through M09",
+            "Windows support is in progress: {} is not implemented yet ({}); current Windows runtime support includes VM startup through the M07 guest-ready handshake, non-interactive exec through M08, guest file copy transfer primitives through M09, and overlay mount copy-import semantics through M10",
             self.capability, self.milestone
         )
     }
