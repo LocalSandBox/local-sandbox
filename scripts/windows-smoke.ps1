@@ -2,7 +2,22 @@ $ErrorActionPreference = "Stop"
 
 Write-Host "== Windows LSB smoke test =="
 
-cargo run -p lsb-cli -- --help
+function Invoke-NativeCommand {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$FilePath,
+
+    [Parameter(Mandatory = $true)]
+    [string[]]$Arguments
+  )
+
+  & $FilePath @Arguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "$FilePath $($Arguments -join ' ') failed with exit code $LASTEXITCODE"
+  }
+}
+
+Invoke-NativeCommand "cargo" @("run", "-p", "lsb-cli", "--", "--help")
 
 function Invoke-YarnCommand {
   param(
@@ -12,14 +27,10 @@ function Invoke-YarnCommand {
 
   $corepack = Get-Command corepack -ErrorAction SilentlyContinue
   if ($corepack) {
-    & corepack yarn @YarnArgs
+    Invoke-NativeCommand "corepack" (@("yarn") + $YarnArgs)
   } else {
     Write-Warning "corepack was not found on PATH; falling back to npx corepack."
-    & npx --yes corepack@latest yarn @YarnArgs
-  }
-
-  if ($LASTEXITCODE -ne 0) {
-    throw "yarn $($YarnArgs -join ' ') failed with exit code $LASTEXITCODE"
+    Invoke-NativeCommand "npx" (@("--yes", "corepack@latest", "yarn") + $YarnArgs)
   }
 }
 
@@ -29,9 +40,94 @@ function Invoke-NodeCommand {
     [string[]]$NodeArgs
   )
 
-  & node @NodeArgs
-  if ($LASTEXITCODE -ne 0) {
-    throw "node $($NodeArgs -join ' ') failed with exit code $LASTEXITCODE"
+  Invoke-NativeCommand "node" $NodeArgs
+}
+
+function Invoke-NpmCommand {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string[]]$NpmArgs
+  )
+
+  Invoke-NativeCommand "npm" $NpmArgs
+}
+
+function Invoke-NpmPack {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$PackageDir,
+
+    [Parameter(Mandatory = $true)]
+    [string]$PackDir
+  )
+
+  Push-Location $PackageDir
+  try {
+    $packOutput = & npm pack --silent --pack-destination $PackDir 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      throw "npm pack failed with exit code $LASTEXITCODE. Output: $($packOutput -join "`n")"
+    }
+
+    $packLines = @($packOutput | Where-Object { $_ } | ForEach-Object { $_.ToString().Trim() })
+    if ($packLines.Count -eq 0) {
+      throw "npm pack did not print a tarball name for $PackageDir"
+    }
+
+    $tarballName = $packLines[-1]
+    if (-not $tarballName) {
+      throw "npm pack did not print a tarball name for $PackageDir"
+    }
+
+    $tarball = Join-Path $PackDir $tarballName
+    if (-not (Test-Path -LiteralPath $tarball -PathType Leaf)) {
+      throw "npm pack reported $tarballName but $tarball does not exist"
+    }
+
+    return $tarball
+  } finally {
+    Pop-Location
+  }
+}
+
+function Invoke-WindowsNodePackedInstallSmoke {
+  Write-Host "== Windows Node packed package install/import smoke =="
+
+  $packRoot = Join-Path ([System.IO.Path]::GetTempPath()) "lsb-nodejs-pack-$PID"
+  $installRoot = Join-Path ([System.IO.Path]::GetTempPath()) "lsb-nodejs-install-$PID"
+  Remove-Item -LiteralPath $packRoot -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Force -Path $packRoot | Out-Null
+  New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
+
+  try {
+    Invoke-YarnCommand @("napi", "prepublish", "-t", "npm", "--no-gh-release", "--skip-optional-publish")
+
+    $packageRoot = (Get-Location).Path
+    $platformPackageRoot = Join-Path $packageRoot "npm\win32-x64-msvc"
+    $rootTarball = Invoke-NpmPack -PackageDir $packageRoot -PackDir $packRoot
+    $platformTarball = Invoke-NpmPack -PackageDir $platformPackageRoot -PackDir $packRoot
+
+    Push-Location $installRoot
+    try {
+      Invoke-NpmCommand @("init", "-y")
+      Invoke-NpmCommand @(
+        "install",
+        "--ignore-scripts",
+        "--no-audit",
+        "--fund=false",
+        $rootTarball,
+        $platformTarball
+      )
+      Invoke-NodeCommand @(
+        "-e",
+        "const binding = require('@local-sandbox/lsb-nodejs'); if (typeof binding.Sandbox?.start !== 'function') throw new Error('Sandbox.start missing from packed install'); console.log('packed install loaded @local-sandbox/lsb-nodejs');"
+      )
+    } finally {
+      Pop-Location
+    }
+  } finally {
+    Remove-Item -LiteralPath $packRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
   }
 }
 
@@ -52,6 +148,7 @@ function Invoke-WindowsNodeSmoke {
       "index.d.ts"
     )
     Invoke-YarnCommand @("patch-loader")
+    Invoke-WindowsNodePackedInstallSmoke
     Invoke-NodeCommand @("scripts/windows-preflight-smoke.mjs")
   } finally {
     Pop-Location
@@ -60,7 +157,15 @@ function Invoke-WindowsNodeSmoke {
 
 Write-Host "== Windows QEMU preflight smoke =="
 $env:LSB_TEST_REAL_QEMU = "1"
-cargo test -p lsb-platform real_qemu_preflight_when_explicitly_enabled -- --ignored --nocapture
+Invoke-NativeCommand "cargo" @(
+  "test",
+  "-p",
+  "lsb-platform",
+  "real_qemu_preflight_when_explicitly_enabled",
+  "--",
+  "--ignored",
+  "--nocapture"
+)
 
 $bootVars = @(
   "LSB_WINDOWS_BOOT_KERNEL",
@@ -71,19 +176,19 @@ $missingBootVars = @($bootVars | Where-Object { -not [Environment]::GetEnvironme
 if ($missingBootVars.Count -eq 0) {
   Invoke-WindowsNodeSmoke
   Write-Host "== Windows QEMU direct boot smoke =="
-  cargo test -p lsb-platform windows_qemu_boot_smoke -- --ignored --nocapture
+  Invoke-NativeCommand "cargo" @("test", "-p", "lsb-platform", "windows_qemu_boot_smoke", "--", "--ignored", "--nocapture")
   Write-Host "== Windows guest exec smoke =="
-  cargo test -p lsb-vm windows_qemu_exec_smoke -- --ignored --nocapture
+  Invoke-NativeCommand "cargo" @("test", "-p", "lsb-vm", "windows_qemu_exec_smoke", "--", "--ignored", "--nocapture")
   Write-Host "== Windows guest copy transfer smoke =="
-  cargo test -p lsb-vm windows_qemu_copy_transfer_smoke -- --ignored --nocapture
+  Invoke-NativeCommand "cargo" @("test", "-p", "lsb-vm", "windows_qemu_copy_transfer_smoke", "--", "--ignored", "--nocapture")
   Write-Host "== Windows mount MVP smoke =="
-  cargo test -p lsb-vm windows_qemu_mount_mvp_smoke -- --ignored --nocapture
+  Invoke-NativeCommand "cargo" @("test", "-p", "lsb-vm", "windows_qemu_mount_mvp_smoke", "--", "--ignored", "--nocapture")
   Write-Host "== Windows port-forward smoke =="
-  cargo test -p lsb-vm windows_qemu_port_forward_smoke -- --ignored --nocapture
+  Invoke-NativeCommand "cargo" @("test", "-p", "lsb-vm", "windows_qemu_port_forward_smoke", "--", "--ignored", "--nocapture")
   Write-Host "== Windows checkpoint/store smoke =="
-  cargo test -p lsb-sdk windows_qemu_checkpoint_store_smoke -- --ignored --nocapture
+  Invoke-NativeCommand "cargo" @("test", "-p", "lsb-sdk", "windows_qemu_checkpoint_store_smoke", "--", "--ignored", "--nocapture")
   Write-Host "== Windows network policy/proxy smoke =="
-  cargo test -p lsb-sdk windows_qemu_network_policy_proxy_smoke -- --ignored --nocapture
+  Invoke-NativeCommand "cargo" @("test", "-p", "lsb-sdk", "windows_qemu_network_policy_proxy_smoke", "--", "--ignored", "--nocapture")
 } else {
   Write-Warning "Skipping Windows Node binding, QEMU direct boot, guest exec, guest copy transfer, mount MVP, port-forward, checkpoint/store, and network policy/proxy smokes. Set $($missingBootVars -join ', ') to disposable LocalSandbox boot asset paths."
 }

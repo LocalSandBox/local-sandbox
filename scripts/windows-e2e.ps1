@@ -2,7 +2,22 @@ $ErrorActionPreference = "Stop"
 
 Write-Host "== Windows LSB e2e test =="
 
-cargo test --workspace --locked
+function Invoke-NativeCommand {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$FilePath,
+
+    [Parameter(Mandatory = $true)]
+    [string[]]$Arguments
+  )
+
+  & $FilePath @Arguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "$FilePath $($Arguments -join ' ') failed with exit code $LASTEXITCODE"
+  }
+}
+
+Invoke-NativeCommand "cargo" @("test", "--workspace", "--locked")
 
 # Future full suite:
 # - boot VM
