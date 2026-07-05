@@ -59,7 +59,7 @@ jobs:
       - name: QEMU argv golden tests
         run: cargo test -p lsb-platform --locked windows_x86_64::qemu::argv
       - name: QEMU preflight unit tests
-        run: cargo test -p lsb-platform --locked windows_x86_64::qemu::preflight
+        run: cargo test -p lsb-platform --locked preflight
       - name: Cargo unit tests
         run: cargo test --workspace --locked
       - name: Stage Windows hosted diagnostics
