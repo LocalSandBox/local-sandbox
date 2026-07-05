@@ -1,6 +1,6 @@
 # M12: Network Policy and Proxy Integration
 
-Status: In progress
+Status: Done
 Depends on: See `00-index.md`
 RFC sections: See `traceability.md`
 
@@ -43,11 +43,11 @@ The specific tests should match the implementation, but this milestone must incl
 
 ## Acceptance criteria
 
-- [ ] No-network default test passes.
-- [ ] Allowed domain succeeds.
-- [ ] Blocked domain/direct IP fails.
-- [ ] Secret substitution works only for configured host patterns.
-- [ ] Logs redact secret values.
+- [x] No-network default test passes.
+- [x] Allowed domain succeeds.
+- [x] Blocked domain/direct IP fails.
+- [x] Secret substitution works only for configured host patterns.
+- [x] Logs redact secret values.
 
 ## Coding-agent prompt
 
@@ -70,10 +70,10 @@ Complete the checklist in `../security-checklist.md`. Record any new risk in `..
 
 ## Handoff
 
-- Branch/PR: TBD
-- Summary: TBD
-- Tests run: TBD
-- Debug artifacts: TBD
-- New decisions: TBD
-- New risks: TBD
-- Next milestone: TBD
+- Branch/PR: `codex/windows-m12-network-policy-proxy`
+- Summary: Windows allow-net now attaches the guest NIC only to a LocalSandbox-owned `lsb-proxy` QEMU stream path. Default Windows QEMU argv remains `-nic none`; allow-net uses `-netdev stream` plus `virtio-net-pci` and rejects legacy fd/socketpair, non-loopback, and bypass-prone paths. Proxy policy enforcement now blocks direct-IP/missing-domain traffic for explicit allowlists before upstream connect and secret substitution, and secret diagnostics redact literal host values.
+- Tests run: `cargo fmt --all -- --check`; `cargo check --workspace`; `cargo test --workspace`; `cargo test -p lsb-proxy`; `cargo test -p lsb-platform -p lsb-vm -p lsb-cli -p lsb-sdk`; `cargo test -p lsb-sdk`; self-hosted Windows check run `28736521420`; self-hosted Windows smoke run `28736441996`.
+- Debug artifacts: Windows smoke artifact `windows-lsb-diagnostics` ID `8090499794`, staged under `lsb-assets-work/28736441996-1`. Earlier failed smoke artifact `8090467336` captured the fixed Windows-only SDK smoke compile error from run `28735986498`.
+- New decisions: None. The implementation follows existing decisions D012, D013, D014, D015, and D019.
+- New risks: No new risk IDs. R005 and R010 are now `Mitigating` with M12 evidence.
+- Next milestone: M13 checkpoint/store MVP.
