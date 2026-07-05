@@ -1,0 +1,39 @@
+crates/lsb-proxy/src/stack.rs
+  s_d4ed328c196059::t_a1627bd4e46da9 15,62-66,85-88,90,211,215
+crates/lsb-proxy/src/config.rs
+  s_d4ed328c196059::t_efcd59af103f4a 128-129
+  s_d4ed328c196059::t_07ea071be465ae 2,26,35-43,65-70,110-111,113-114,117,159-175
+  s_d4ed328c196059::t_4bef4e79efc4ea 176
+crates/lsb-proxy/src/device.rs
+  s_d4ed328c196059::t_2d66635976d183 405
+  s_d4ed328c196059::t_5622bc82559845 73
+  s_d4ed328c196059::t_130ebefc81e510 2-4,6,10,15-20,27,35,64,74-85,89,94,104,109,132,165,167-173,175-184,186-211,213-251,253-265,267-316,318-343,345-381,399-404,406-416
+  s_d4ed328c196059::t_6105af4b4fb424 14,166,174,185,212,252,266,317,344,382-398
+crates/lsb-proxy/src/proxy.rs
+  s_d4ed328c196059::t_9135134766d8ed 471-473,496-497
+  s_d4ed328c196059::t_f38a992616a800 172-173,204-220,274-293,467-470,474-492,523-606
+  s_d4ed328c196059::t_4228559a85f341 493
+crates/lsb-proxy/src/lib.rs
+  s_d4ed328c196059::t_97c1d7b2c216cf 19,21,25-26,177
+  s_d4ed328c196059::t_25fee89dc98f76 2,4,6,8,10,12,17,20,28-29,31,33,35,37,46-48,50-63,66,68,90-133,187-193,213,243-267,276,280,290-298,302,306,311,317-331
+  s_d4ed328c196059::t_c31a0e91a94bbe 49,194-197,268-275,277-279,281-289
+  s_d4ed328c196059::t_22af771095d3c2 134
+crates/lsb-proxy/Cargo.toml
+  s_d4ed328c196059::t_07ea071be465ae 12,30-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "05c37c0456ba89b32f7c41c808c51aa4b7571393",
+  "prompts": {},
+  "sessions": {
+    "s_d4ed328c196059": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f317b-d5ac-73a2-8e90-54b0b04a45b4",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
