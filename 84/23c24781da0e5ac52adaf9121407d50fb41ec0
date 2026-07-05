@@ -1,0 +1,27 @@
+docs/windows-port/agent-workspace/diagnostics.md
+  s_f7374ea5377c6e::t_df29a4953626da 27,152-174
+docs/windows-port/agent-workspace/validation.md
+  s_f7374ea5377c6e::t_6b38ec0f877da5 75,127-129,154-166
+  s_f7374ea5377c6e::t_708023990a7566 167
+docs/windows-port/agent-workspace/milestones/11-port-forwarding-no-network.md
+  s_f7374ea5377c6e::t_16ec5282934a2d 3,45-47,70-71,73-76
+  s_f7374ea5377c6e::t_6f7076de9370b7 44,72
+docs/windows-port/agent-workspace/state.md
+  s_f7374ea5377c6e::t_f9a120c10fd7d7 7,19,35-36,45,47,57,110,118,218-219
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8423c24781da0e5ac52adaf9121407d50fb41ec0",
+  "prompts": {},
+  "sessions": {
+    "s_f7374ea5377c6e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f30d2-9cc8-7261-addd-e1d10b986c4b",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
