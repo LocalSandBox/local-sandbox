@@ -1,0 +1,21 @@
+docs/windows-port/agent-workspace/state.md
+  s_d4ed328c196059::t_d158c7e2d13855 7,19,36,45,47-48,61-62,89-90,126-130,239-240
+docs/windows-port/agent-workspace/milestones/12-network-policy-proxy-integration.md
+  s_d4ed328c196059::t_d158c7e2d13855 3,46-50,73-79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4d35d7a3a3d29394b31d392bcad69e3a3c56d458",
+  "prompts": {},
+  "sessions": {
+    "s_d4ed328c196059": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f317b-d5ac-73a2-8e90-54b0b04a45b4",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
