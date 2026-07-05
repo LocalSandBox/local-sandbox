@@ -1,0 +1,25 @@
+.github/workflows/ci.yml
+  s_686182ffe192bd::t_1f7e393cd3dabc 55-56,65-68,73
+scripts/collect-windows-diagnostics.ps1
+  s_686182ffe192bd::t_7f5f126bf5af73 1-87,89-124,129-333
+  s_686182ffe192bd::t_a6dc8530cc2143 125-128
+  s_686182ffe192bd::t_cc856f2166872a 88
+.github/workflows/windows-lsb-hardware.yml
+  s_686182ffe192bd::t_1f7e393cd3dabc 342,349,465,472
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ecdbef560960e85fa30a6b6b9d221247a3734a81",
+  "prompts": {},
+  "sessions": {
+    "s_686182ffe192bd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3299-8bfe-78d0-8d81-a918039c0f92",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
