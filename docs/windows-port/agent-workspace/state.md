@@ -1,6 +1,6 @@
 # Windows Port State
 
-Last updated: 2026-07-04
+Last updated: 2026-07-05
 Owner: TBD
 RFC: `docs/windows-port/rfc-qemu-whpx.md`
 Current milestone: M10 - Mount MVP semantics
@@ -16,7 +16,7 @@ Update this file at the end of every agent run. Keep it factual. Do not use it f
 - Issue: TBD
 - Agent: Codex
 - Start commit: `5bf405b`
-- End commit: `a5d3667` (validated code head; final state update is docs-only)
+- End commit: `bb423a4` (validated review-fix code head; final state update is docs-only)
 
 ## Milestone status table
 
@@ -111,7 +111,8 @@ Append newest entries at the top.
 
 | Date | Milestone | Platform | Command / test | Result | Notes |
 |---|---|---|---|---|---|
-| 2026-07-04 | M10 review fixes | macOS | `cargo fmt --all -- --check`; `cargo check --workspace`; `cargo test -p lsb-platform windows_x86_64::fs -- --nocapture`; `cargo test -p lsb-vm send_mount_requests_retains_pending_mounts_on_guest_error -- --nocapture`; `cargo test -p lsb-vm -- --nocapture`; `cargo check -p lsb-platform -p lsb-vm --tests --target x86_64-pc-windows-msvc`; `cargo test --workspace` | Pass | Addressed review findings for build-to-start mount source revalidation, mount queue retention on initialization failure, and hardlink handling. The Windows hardlink regression is cfg-gated and must be exercised by the self-hosted Windows unit lane. |
+| 2026-07-05 | M10 review fixes | Windows self-hosted | `./scripts/win-gh-test unit` | Pass | Run `28729436438`, Windows check/unit job `85192454081`, commit `bb423a4`, artifact `windows-lsb-diagnostics` ID `8088274579`. The Windows-only hardlink regression `copy_in_plan_rejects_hardlinked_files_on_windows` ran and passed; workspace unit lane reported 93 `lsb-platform` tests and 17 `lsb-vm` tests passing with the existing ignored hardware hooks. |
+| 2026-07-05 | M10 review fixes | macOS | `cargo fmt --all -- --check`; `cargo check --workspace`; `cargo test -p lsb-platform windows_x86_64::fs -- --nocapture`; `cargo test -p lsb-vm send_mount_requests_retains_pending_mounts_on_guest_error -- --nocapture`; `cargo test -p lsb-vm -- --nocapture`; `cargo check -p lsb-platform -p lsb-vm --tests --target x86_64-pc-windows-msvc`; `cargo test --workspace` | Pass | Addressed review findings for build-to-start mount source revalidation, mount queue retention on initialization failure, and hardlink handling. Focused coverage includes re-planning a mount import after a source entry is replaced with a symlink and retaining pending mount requests after guest mount failure. |
 | 2026-07-04 | M10 | Windows self-hosted | `./scripts/win-gh-test smoke` + direct `gh run watch 28714141992 --exit-status` | Pass | Run `28714141992`, Windows smoke/e2e job `85153326347`, commit `a5d3667`, artifact `windows-lsb-diagnostics` ID `8084000670`. Boot asset cache missed, so the workflow prepared fresh assets, then the smoke lane completed real QEMU preflight, `windows_qemu_boot_smoke`, `windows_qemu_exec_smoke`, `windows_qemu_copy_transfer_smoke`, and `windows_qemu_mount_mvp_smoke`; Windows e2e remained skipped. The mount smoke verified guest read access to a staged host snapshot, guest writes did not mutate the host source, post-start host writes were not visible as live sync, explicit copy-out export worked, and direct writable host mounts failed closed. |
 | 2026-07-04 | M10 | Windows self-hosted | `./scripts/win-gh-test unit` | Pass | Run `28714105683`, Windows check/unit job passed at commit `a5d3667`. Earlier run `28713782675` caught legacy non-Windows mount-plan test assumptions and an overly shallow error assertion; commit `a5d3667` cfg-gated the legacy VirtioFS assertions and surfaced the Windows mount planning reason in the top-level error. |
 | 2026-07-04 | M10 | macOS | `cargo fmt --all -- --check`; `cargo check --workspace`; `cargo test -p lsb-platform windows_x86_64::fs -- --nocapture`; `cargo test -p lsb-vm -- --nocapture`; `cargo test -p lsb-guest -- --nocapture`; `cargo check -p lsb-vm --tests --target x86_64-pc-windows-msvc`; `cargo check -p lsb-platform -p lsb-vm --tests --target x86_64-pc-windows-msvc`; `cargo test --workspace` | Pass | Local validation for the M10 mount MVP. Added coverage for Windows overlay planning, reserved/traversal guest targets, duplicate targets, direct mount rejection, missing/file/UNC/unsafe host sources via reused M09 copy-in validation, guest imported-lower overlay handling, Windows build-plan behavior, and the ignored WHPX mount MVP smoke hook. `cargo check -p lsb-guest --target x86_64-unknown-linux-gnu` was not run because that Rust target is not installed locally. |
