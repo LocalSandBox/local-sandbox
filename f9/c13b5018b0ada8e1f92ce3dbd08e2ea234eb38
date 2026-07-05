@@ -1,0 +1,28 @@
+crates/lsb-store/src/windows_checkpoint.rs
+  s_184d5e3b064abb::t_74ada0613b2c2f 1106-1107,1122-1147,1149-1165,1167-1174
+  s_184d5e3b064abb::t_f584749fd925fb 1148,1166
+  s_184d5e3b064abb::t_d63e2bb7764e57 136,159,164-166,616-617,924-964
+  s_184d5e3b064abb::t_8a18b50e904470 173
+  s_184d5e3b064abb::t_a5b5b83b05c6f4 965
+  s_184d5e3b064abb::t_10854aef74b639 1175
+docs/windows-port/agent-workspace/milestones/13-checkpoint-store-mvp.md
+  s_184d5e3b064abb::t_0f234b4ed14736 71-72
+docs/windows-port/agent-workspace/state.md
+  s_184d5e3b064abb::t_e3289dbb498ae4 19,56,133
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f9c13b5018b0ada8e1f92ce3dbd08e2ea234eb38",
+  "prompts": {},
+  "sessions": {
+    "s_184d5e3b064abb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f31e8-5f63-77d3-b4c9-7e59b8ebcdda",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
