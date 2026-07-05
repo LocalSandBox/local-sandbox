@@ -1,0 +1,42 @@
+docs/windows-port/agent-workspace/validation.md
+  s_d4ed328c196059::t_1b5a4eed65fe44 181-185
+crates/lsb-sdk/src/runtime.rs
+  s_d4ed328c196059::t_7a48d6daa9507c 877-878
+  s_d4ed328c196059::t_238e3a2ecca5ed 861-862,866-867,872-875,879-883,914-951,965-966,971-972,976-977,1022-1056
+  s_d4ed328c196059::t_794580899725b2 864,870-871
+  s_d4ed328c196059::t_10cf120c8fa789 876,1057
+docs/windows-port/agent-workspace/diagnostics.md
+  s_d4ed328c196059::t_a5a8c613d35ef2 196,199-202,216-221,226-228
+crates/lsb-platform/src/windows_x86_64/qemu/argv.rs
+  s_d4ed328c196059::t_dbae216e5b3a0d 427,431
+  s_d4ed328c196059::t_0b1b74f5c78ca3 748,750
+crates/lsb-platform/src/windows_x86_64/backend.rs
+  s_d4ed328c196059::t_794580899725b2 347
+  s_d4ed328c196059::t_2417c3041a15c3 348-352
+  s_d4ed328c196059::t_e2dad86cbca10e 353-355
+crates/lsb-platform/src/windows_x86_64/network/mod.rs
+  s_d4ed328c196059::t_c9e222f95b5645 13,31-34,62,65-75,79-87,108-116,119
+  s_d4ed328c196059::t_23b6a72185c65e 117-118
+docs/windows-port/agent-workspace/milestones/12-network-policy-proxy-integration.md
+  s_d4ed328c196059::t_f3b71e273e9d84 74-75
+docs/windows-port/agent-workspace/state.md
+  s_d4ed328c196059::t_a21ad6fc4d2824 63,90-91,127
+docs/windows-port/agent-workspace/risk-register.md
+  s_d4ed328c196059::t_a0a303ebb3dcba 16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "83348f48ce717aa69a15e9616e0298002081c07f",
+  "prompts": {},
+  "sessions": {
+    "s_d4ed328c196059": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f317b-d5ac-73a2-8e90-54b0b04a45b4",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
