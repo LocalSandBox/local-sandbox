@@ -1,0 +1,39 @@
+crates/lsb-platform/src/windows_x86_64/fs/mount_plan.rs
+  s_665230258694d1::t_feff2000b8c079 173-192,342-384
+  s_665230258694d1::t_1d25c975bea384 385
+docs/windows-port/agent-workspace/milestones/10-mount-mvp-semantics.md
+  s_665230258694d1::t_7e169ccb4f6b63 75
+crates/lsb-platform/Cargo.toml
+  s_665230258694d1::t_c5b125291c80dc 43
+crates/lsb-platform/src/windows_x86_64/fs/copy.rs
+  s_665230258694d1::t_3aa19bc290c0d0 537-593
+  s_665230258694d1::t_24b59d8871dbaa 956-974
+  s_665230258694d1::t_8b76a5eca9d3ff 165,475,530-536,594-602
+  s_665230258694d1::t_37a37ee284a7f8 603-604
+docs/windows-port/agent-workspace/state.md
+  s_665230258694d1::t_e8f7e8c4c70433 114
+  s_665230258694d1::t_59528844a74ac3 79
+crates/lsb-platform/src/windows_x86_64/fs/mod.rs
+  s_665230258694d1::t_6279fa24b05c7d 11-13
+crates/lsb-vm/src/sandbox.rs
+  s_665230258694d1::t_c6815bc47039be 33-34,357-359,361,394,1322-1326,1333-1339,1343,1348,1350-1357
+  s_665230258694d1::t_7b508bc64d2306 1660-1695,1816-1833,1841
+  s_665230258694d1::t_462acd9e087ead 1834-1840
+  s_665230258694d1::t_8878d8800c3844 1842
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bb423a41e30a2e1cd5d2c9735106de223983639b",
+  "prompts": {},
+  "sessions": {
+    "s_665230258694d1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2df8-508c-71f0-ad54-dc229d483e98",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
