@@ -1,0 +1,19 @@
+.github/workflows/windows-lsb-hardware.yml
+  s_8263fdba60b00e::t_320945ea35bde9 106,123-130,159-164,166-167
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "945b001e6367e8abcacbf3eaafc665f9ed27a607",
+  "prompts": {},
+  "sessions": {
+    "s_8263fdba60b00e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3133-cffc-7d42-8ebb-e633afc7badf",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
