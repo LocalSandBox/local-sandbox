@@ -75,6 +75,7 @@ jobs:
       - run: cmake --version
       - run: yarn install --immutable
       - run: yarn napi build --target ${{ matrix.target }} --platform --release --js index.js --dts index.d.ts
+      - run: yarn patch-loader
       - uses: actions/upload-artifact@v6
         with:
           name: bindings-nodejs-${{ matrix.target }}

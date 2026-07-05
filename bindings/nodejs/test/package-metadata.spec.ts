@@ -1,4 +1,4 @@
-import { readdirSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -92,4 +92,12 @@ test('Windows packaging remains x64-only for the MVP', (t) => {
   t.false(packageDirs.includes('win32-ia32-msvc'))
   t.false(rootPackage.napi.targets.includes('aarch64-pc-windows-msvc'))
   t.false(rootPackage.napi.targets.includes('i686-pc-windows-msvc'))
+})
+
+test('generated loader names the missing Windows native package and artifact', (t) => {
+  const generatedLoader = readFileSync(join(projectRoot, 'index.js'), 'utf8')
+
+  t.true(generatedLoader.includes('@local-sandbox/lsb-nodejs-win32-x64-msvc'))
+  t.true(generatedLoader.includes('lsb-nodejs.win32-x64-msvc.node'))
+  t.true(generatedLoader.includes('Cannot find native binding for win32-x64-msvc'))
 })
