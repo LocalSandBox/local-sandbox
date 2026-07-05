@@ -1,0 +1,25 @@
+docs/windows-port/agent-workspace/diagnostics.md
+  s_686182ffe192bd::t_82aad4ba60e5a4 72-74,97-114,254-280
+docs/windows-port/agent-workspace/risk-register.md
+  s_686182ffe192bd::t_82aad4ba60e5a4 19
+docs/windows-port/agent-workspace/validation.md
+  s_686182ffe192bd::t_82aad4ba60e5a4 21-24,47,94-95,102-120,231-236
+docs/windows-port/agent-workspace/runner-setup.md
+  s_686182ffe192bd::t_82aad4ba60e5a4 3,21-25,38,117-119,140-141
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4b3c939415706cdc71caccf994a869c624aacb68",
+  "prompts": {},
+  "sessions": {
+    "s_686182ffe192bd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3299-8bfe-78d0-8d81-a918039c0f92",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
