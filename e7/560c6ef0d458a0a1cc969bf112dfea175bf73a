@@ -1,0 +1,46 @@
+crates/lsb-guest/src/main.rs
+  s_f7374ea5377c6e::t_976ed9f2989724 35-37,105-106,108,1731,1746,1757,1798,1803,1808-1809,1816-1817,1825,1831,1840-1847,1853-1854,1867-2049,2051-2087
+  s_f7374ea5377c6e::t_7cc27fee3487a1 107,1826,1832,2050
+  s_f7374ea5377c6e::t_fe14297cb0a789 2088
+crates/lsb-platform/src/windows_x86_64/control/virtio_serial.rs
+  s_f7374ea5377c6e::t_0c8696eb87e828 65
+  s_f7374ea5377c6e::t_7cc27fee3487a1 49,69,374,388-391
+  s_f7374ea5377c6e::t_8b7b09ce8eb727 14-35,46-48,50-56,59-62,68,70-74,78,82,332-333,380-387,392-394
+  s_f7374ea5377c6e::t_9bc946d844170d 395
+crates/lsb-platform/src/windows_x86_64/backend.rs
+  s_f7374ea5377c6e::t_d1c07681d9b687 52-54,179-197,318-320,328-333
+crates/lsb-platform/src/windows_x86_64/qemu/config.rs
+  s_f7374ea5377c6e::t_7702a8850a254f 9,11,24,91,214-218
+  s_f7374ea5377c6e::t_4051c2202b91bd 219-220
+crates/lsb-platform/src/windows_x86_64/qemu/argv.rs
+  s_f7374ea5377c6e::t_7cc27fee3487a1 96,356-357,582-584
+  s_f7374ea5377c6e::t_7702a8850a254f 8,112-133,336,338-340,342-344,349-350,562-581,695-705
+  s_f7374ea5377c6e::t_7fd5850b2ccc1b 585-586,706-707
+crates/lsb-platform/src/windows_x86_64/qemu/boot.rs
+  s_f7374ea5377c6e::t_81c69f60ab9e10 1821
+  s_f7374ea5377c6e::t_02db75740035f3 530,1498-1503,1700-1702,1724,1743,1748-1750
+  s_f7374ea5377c6e::t_701b1cff650b3b 1832,1835,1839-1842,2114-2117
+  s_f7374ea5377c6e::t_d8db9cc3302f16 35,50,72,118,162-175,651-653,714-738,823,866-882,884,894
+  s_f7374ea5377c6e::t_edb63547f9fa9f 883
+  s_f7374ea5377c6e::t_b50e191dba9a62 885-887,891-893
+  s_f7374ea5377c6e::t_1ec978b2f9b1f3 895-896
+  s_f7374ea5377c6e::t_d126f3b3002fed 888-890
+crates/lsb-platform/src/lib.rs
+  s_f7374ea5377c6e::t_d1c07681d9b687 293-297
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e7560c6ef0d458a0a1cc969bf112dfea175bf73a",
+  "prompts": {},
+  "sessions": {
+    "s_f7374ea5377c6e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f30d2-9cc8-7261-addd-e1d10b986c4b",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
