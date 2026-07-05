@@ -7,7 +7,7 @@
 use std::env;
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::net::TcpStream;
+use std::net::{Ipv4Addr, TcpStream};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
@@ -202,6 +202,28 @@ pub struct PlatformSharedDir {
     pub read_only: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlatformQemuStreamNetworkAttachment {
+    pub host: Ipv4Addr,
+    pub port: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlatformNetworkAttachment {
+    FileDescriptor(i32),
+    QemuStream(PlatformQemuStreamNetworkAttachment),
+}
+
+impl PlatformNetworkAttachment {
+    pub fn file_descriptor(fd: i32) -> Self {
+        Self::FileDescriptor(fd)
+    }
+
+    pub fn qemu_stream(host: Ipv4Addr, port: u16) -> Self {
+        Self::QemuStream(PlatformQemuStreamNetworkAttachment { host, port })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PlatformVmConfig {
     pub kernel_path: String,
@@ -212,6 +234,7 @@ pub struct PlatformVmConfig {
     pub console: bool,
     pub verbose: bool,
     pub network_fd: Option<i32>,
+    pub network_attachment: Option<PlatformNetworkAttachment>,
     pub nbd_uri: Option<String>,
     pub shared_dirs: Vec<PlatformSharedDir>,
 }

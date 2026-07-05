@@ -41,7 +41,9 @@ use lsb_platform::windows_x86_64::fs::{
     WindowsMountSpec,
 };
 use lsb_platform::PlatformControlStream;
-use lsb_platform::{self, PlatformSharedDir, PlatformVm, PlatformVmConfig, VmState};
+use lsb_platform::{
+    self, PlatformNetworkAttachment, PlatformSharedDir, PlatformVm, PlatformVmConfig, VmState,
+};
 
 use lsb_proto::{
     frame, ChmodRequest, CopyRequest, ExecRequest, FsOkResponse, MkdirRequest, MountRequest,
@@ -120,6 +122,7 @@ pub struct VmConfigBuilder {
     console: bool,
     verbose: bool,
     network_fd: Option<i32>,
+    network_attachment: Option<PlatformNetworkAttachment>,
     nbd_uri: Option<String>,
     mounts: Vec<MountConfig>,
 }
@@ -135,6 +138,7 @@ impl VmConfigBuilder {
             console: true,
             verbose: false,
             network_fd: None,
+            network_attachment: None,
             nbd_uri: None,
             mounts: Vec::new(),
         }
@@ -183,6 +187,17 @@ impl VmConfigBuilder {
     /// Attach a network device via a socketpair fd for proxy-based networking.
     pub fn network_fd(mut self, fd: i32) -> Self {
         self.network_fd = Some(fd);
+        self.network_attachment = Some(PlatformNetworkAttachment::file_descriptor(fd));
+        self
+    }
+
+    /// Attach a platform-specific proxy-backed network device.
+    pub fn network_attachment(mut self, attachment: PlatformNetworkAttachment) -> Self {
+        self.network_fd = match attachment {
+            PlatformNetworkAttachment::FileDescriptor(fd) => Some(fd),
+            PlatformNetworkAttachment::QemuStream(_) => None,
+        };
+        self.network_attachment = Some(attachment);
         self
     }
 
@@ -214,6 +229,7 @@ impl VmConfigBuilder {
                 console: self.console,
                 verbose: self.verbose,
                 network_fd: self.network_fd,
+                network_attachment: self.network_attachment,
                 nbd_uri: self.nbd_uri,
                 shared_dirs: mount_plan.shared_dirs,
             })?,

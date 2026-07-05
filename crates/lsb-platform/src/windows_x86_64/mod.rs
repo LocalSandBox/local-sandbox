@@ -8,6 +8,7 @@ mod config;
 mod control;
 mod errors;
 pub mod fs;
+mod network;
 mod qemu;
 
 pub(crate) use backend::create_vm;

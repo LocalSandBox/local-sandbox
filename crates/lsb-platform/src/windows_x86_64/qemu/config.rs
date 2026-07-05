@@ -10,6 +10,7 @@ pub(crate) const FORWARD_CHARDEV_ID: &str = "lsbfwd";
 pub(crate) const CONTROL_PORT_NAME: &str = lsb_proto::VIRTIO_SERIAL_CONTROL_PORT_NAME;
 pub(crate) const FORWARD_PORT_NAME: &str = lsb_proto::VIRTIO_SERIAL_FORWARD_PORT_NAME;
 pub(crate) const ROOT_DRIVE_ID: &str = "root";
+pub(crate) const PROXY_NETDEV_ID: &str = "lsbproxy0";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QemuBootConfig {
@@ -22,6 +23,7 @@ pub(crate) struct QemuBootConfig {
     pub serial: QemuSerialConfig,
     pub control_channel: Option<QemuControlChannelConfig>,
     pub forward_channel: Option<QemuControlChannelConfig>,
+    pub network: QemuNetworkConfig,
     pub qmp: Option<QemuQmpEndpoint>,
     pub diagnostic_label: Option<String>,
 }
@@ -89,8 +91,32 @@ impl QemuBootConfig {
             serial: QemuSerialConfig::File(serial_log.into()),
             control_channel: None,
             forward_channel: None,
+            network: QemuNetworkConfig::None,
             qmp: None,
             diagnostic_label: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum QemuNetworkConfig {
+    None,
+    ProxyStream(QemuProxyStreamNetworkConfig),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct QemuProxyStreamNetworkConfig {
+    pub host: String,
+    pub port: u16,
+    pub mac: String,
+}
+
+impl QemuProxyStreamNetworkConfig {
+    pub(crate) fn new(host: impl Into<String>, port: u16, mac: impl Into<String>) -> Self {
+        Self {
+            host: host.into(),
+            port,
+            mac: mac.into(),
         }
     }
 }

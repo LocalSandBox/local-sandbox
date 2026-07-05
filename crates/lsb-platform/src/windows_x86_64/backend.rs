@@ -10,6 +10,7 @@ use crate::{PlatformControlStream, PlatformVm, PlatformVmConfig, VmState};
 use super::config::WindowsVmConfig;
 use super::control::VirtioSerialControlEndpoint;
 use super::errors::unsupported;
+use super::network::qemu_network_config;
 use super::qemu::boot::{launch_windows_qemu_boot, WindowsQemuBoot, WindowsQemuBootConfig};
 
 struct WindowsVm {
@@ -32,7 +33,7 @@ impl WindowsVm {
     }
 
     fn direct_boot_config(&self) -> Result<WindowsQemuBootConfig> {
-        self.ensure_m05_supported_config()?;
+        self.ensure_supported_config()?;
         let initrd_path = self.config.initrd_path.clone().ok_or_else(|| {
             anyhow!(
                 "Windows direct QEMU boot requires initramfs.cpio.gz for guest-ready diagnostics; \
@@ -52,17 +53,12 @@ impl WindowsVm {
         config.forward_endpoint = Some(VirtioSerialControlEndpoint::for_forwarding(
             &instance_dir_for_rootfs(&self.config.rootfs_path)?,
         )?);
+        config.network = qemu_network_config(self.config.network_attachment.as_ref())?;
         config.diagnostic_label = Some("windows-direct-linux-boot".to_string());
         Ok(config)
     }
 
-    fn ensure_m05_supported_config(&self) -> Result<()> {
-        if self.config.network_requested {
-            return Err(unsupported(
-                "proxy networking",
-                "M12 network policy and proxy integration; no QEMU NIC is created before that milestone",
-            ));
-        }
+    fn ensure_supported_config(&self) -> Result<()> {
         if self.config.nbd_requested {
             return Err(unsupported(
                 "NBD/CAS root storage",
@@ -222,7 +218,7 @@ fn instance_dir_for_rootfs(rootfs_path: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{PlatformSharedDir, PlatformVmConfig};
+    use crate::{PlatformNetworkAttachment, PlatformSharedDir, PlatformVmConfig};
 
     fn test_config() -> PlatformVmConfig {
         PlatformVmConfig {
@@ -234,6 +230,7 @@ mod tests {
             console: false,
             verbose: false,
             network_fd: None,
+            network_attachment: None,
             nbd_uri: None,
             shared_dirs: Vec::new(),
         }
@@ -331,5 +328,47 @@ mod tests {
         );
         assert!(forward_endpoint.pipe_name().starts_with("lsb-12345-"));
         assert!(forward_endpoint.pipe_name().ends_with("-forward"));
+    }
+
+    #[test]
+    fn direct_boot_config_accepts_proxy_stream_network_attachment() {
+        let mut config = test_config();
+        config.rootfs_path = "/tmp/lsb/instances/12345/rootfs.ext4".to_string();
+        config.network_attachment = Some(PlatformNetworkAttachment::qemu_stream(
+            std::net::Ipv4Addr::LOCALHOST,
+            49152,
+        ));
+        let vm = WindowsVm::new(config);
+
+        let boot_config = vm
+            .direct_boot_config()
+            .expect("proxy stream network config should build");
+
+        assert_eq!(
+            boot_config.network,
+            super::super::qemu::config::QemuNetworkConfig::ProxyStream(
+                super::super::qemu::config::QemuProxyStreamNetworkConfig::new(
+                    "127.0.0.1",
+                    49152,
+                    "02:4c:53:42:c0:00"
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn direct_boot_config_rejects_legacy_network_fd_on_windows() {
+        let mut config = test_config();
+        config.rootfs_path = "/tmp/lsb/instances/12345/rootfs.ext4".to_string();
+        config.network_fd = Some(7);
+        let vm = WindowsVm::new(config);
+
+        let err = vm
+            .direct_boot_config()
+            .expect_err("legacy fd network attachment should fail closed");
+        let message = err.to_string();
+
+        assert!(message.contains("fd/socketpair network attachments are macOS-only"));
+        assert!(message.contains("No QEMU user networking"));
     }
 }

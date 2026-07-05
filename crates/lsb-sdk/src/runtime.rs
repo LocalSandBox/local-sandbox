@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
-use lsb_platform::asset_paths;
+use lsb_platform::{asset_paths, PlatformNetworkAttachment};
 use lsb_proxy::config::ProxyConfig;
 use tokio::sync::{mpsc, oneshot};
 use tracing::info;
@@ -524,15 +524,16 @@ fn boot_vm(
         None
     };
 
-    let (vm_fd, proxy_handle) = if config.allow_net {
+    let (network_attachment, proxy_handle) = if config.allow_net {
         let mut proxy_config = ProxyConfig::default();
         proxy_config.secrets = config.secrets;
         proxy_config.network.allow = config.allowed_hosts;
         proxy_config.expose_host = config.expose_host;
 
-        let (vm_fd, host_fd) = lsb_proxy::create_socketpair()?;
-        let handle = lsb_proxy::start(host_fd, proxy_config)?;
-        (Some(vm_fd), Some(handle))
+        let link = lsb_proxy::create_proxy_link()?;
+        let vm_attachment = platform_network_attachment(link.vm);
+        let handle = lsb_proxy::start_link(link.host, proxy_config)?;
+        (Some(vm_attachment), Some(handle))
     } else {
         (None, None)
     };
@@ -558,8 +559,8 @@ fn boot_vm(
         .memory_mb(config.memory_mb)
         .console(false);
 
-    if let Some(fd) = vm_fd {
-        builder = builder.network_fd(fd);
+    if let Some(attachment) = network_attachment {
+        builder = builder.network_attachment(attachment);
     }
     if let Some(uri) = nbd_uri {
         builder = builder.nbd_uri(uri);
@@ -610,6 +611,19 @@ fn boot_vm(
         fwd_handle,
         nbd_handle,
     ))
+}
+
+fn platform_network_attachment(
+    attachment: lsb_proxy::VmNetworkAttachment,
+) -> PlatformNetworkAttachment {
+    match attachment {
+        lsb_proxy::VmNetworkAttachment::FileDescriptor(fd) => {
+            PlatformNetworkAttachment::file_descriptor(fd)
+        }
+        lsb_proxy::VmNetworkAttachment::QemuStream { host, port } => {
+            PlatformNetworkAttachment::qemu_stream(host, port)
+        }
+    }
 }
 
 fn run_vm_loop(

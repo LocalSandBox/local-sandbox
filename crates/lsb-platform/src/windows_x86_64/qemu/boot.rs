@@ -12,7 +12,7 @@ use serde::Serialize;
 use crate::windows_x86_64::control::{VirtioSerialControlEndpoint, VirtioSerialControlError};
 
 use super::argv::{QemuArgvBuilder, QemuArgvError};
-use super::config::QemuBootConfig as QemuArgvBootConfig;
+use super::config::{QemuBootConfig as QemuArgvBootConfig, QemuNetworkConfig};
 use super::discovery::{QemuDiscovery, StdQemuDiscoveryHost};
 use super::preflight::{QemuPreflight, QemuPreflightReport};
 use super::process::{
@@ -48,6 +48,7 @@ pub(crate) struct WindowsQemuBootConfig {
     pub guest_ready_timeout: Duration,
     pub control_endpoint: Option<VirtioSerialControlEndpoint>,
     pub forward_endpoint: Option<VirtioSerialControlEndpoint>,
+    pub network: QemuNetworkConfig,
 }
 
 impl WindowsQemuBootConfig {
@@ -70,6 +71,7 @@ impl WindowsQemuBootConfig {
             guest_ready_timeout: DEFAULT_GUEST_READY_TIMEOUT,
             control_endpoint: None,
             forward_endpoint: None,
+            network: QemuNetworkConfig::None,
         }
     }
 }
@@ -651,6 +653,7 @@ pub(crate) fn launch_windows_qemu_boot(
     if let Some(endpoint) = &config.forward_endpoint {
         argv_config.forward_channel = Some(endpoint.qemu_config());
     }
+    argv_config.network = config.network.clone();
     argv_config.diagnostic_label = config.diagnostic_label.clone();
 
     let command = QemuArgvBuilder::new(argv_config)

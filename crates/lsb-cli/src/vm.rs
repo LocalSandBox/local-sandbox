@@ -4,6 +4,7 @@ use std::io::IsTerminal;
 use anyhow::{bail, Context, Result};
 
 use lsb_platform::asset_paths;
+use lsb_platform::PlatformNetworkAttachment;
 use lsb_vm::{MountConfig, PortMapping, Sandbox};
 
 use crate::assets;
@@ -206,7 +207,7 @@ pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &LsbConfig, from: Option<&str>) -> Re
 pub(crate) fn build_sandbox(
     prepared: &PreparedVm,
     console: bool,
-    network_fd: Option<i32>,
+    network_attachment: Option<PlatformNetworkAttachment>,
     nbd_uri: Option<&str>,
 ) -> Result<Sandbox> {
     let mut builder = Sandbox::builder()
@@ -217,8 +218,8 @@ pub(crate) fn build_sandbox(
         .console(console)
         .verbose(prepared.verbose);
 
-    if let Some(fd) = network_fd {
-        builder = builder.network_fd(fd);
+    if let Some(attachment) = network_attachment {
+        builder = builder.network_attachment(attachment);
     }
 
     if let Some(uri) = nbd_uri {
@@ -234,6 +235,28 @@ pub(crate) fn build_sandbox(
     }
 
     builder.build()
+}
+
+pub(crate) fn start_proxy_network(
+    proxy_config: &lsb_proxy::config::ProxyConfig,
+) -> Result<(PlatformNetworkAttachment, lsb_proxy::ProxyHandle)> {
+    let link = lsb_proxy::create_proxy_link()?;
+    let vm_attachment = platform_network_attachment(link.vm);
+    let handle = lsb_proxy::start_link(link.host, proxy_config.clone())?;
+    Ok((vm_attachment, handle))
+}
+
+fn platform_network_attachment(
+    attachment: lsb_proxy::VmNetworkAttachment,
+) -> PlatformNetworkAttachment {
+    match attachment {
+        lsb_proxy::VmNetworkAttachment::FileDescriptor(fd) => {
+            PlatformNetworkAttachment::file_descriptor(fd)
+        }
+        lsb_proxy::VmNetworkAttachment::QemuStream { host, port } => {
+            PlatformNetworkAttachment::qemu_stream(host, port)
+        }
+    }
 }
 
 pub(crate) struct RunResult {
@@ -289,15 +312,14 @@ fn run_command_inner(
     );
 
     // Set up proxy networking if --allow-net
-    let (vm_fd, proxy_handle) = if let Some(ref proxy_config) = prepared.proxy_config {
-        let (vm_fd, host_fd) = lsb_proxy::create_socketpair()?;
-        let handle = lsb_proxy::start(host_fd, proxy_config.clone())?;
+    let (network_attachment, proxy_handle) = if let Some(ref proxy_config) = prepared.proxy_config {
+        let (vm_attachment, handle) = start_proxy_network(proxy_config)?;
 
         if prepared.verbose {
             eprintln!("lsb: proxy started");
         }
 
-        (Some(vm_fd), Some(handle))
+        (Some(vm_attachment), Some(handle))
     } else {
         (None, None)
     };
@@ -305,7 +327,7 @@ fn run_command_inner(
     let nbd_handle = start_nbd(prepared)?;
     let nbd_uri = nbd_handle.as_ref().map(|handle| handle.uri());
 
-    let sandbox = build_sandbox(prepared, false, vm_fd, nbd_uri.as_deref())?;
+    let sandbox = build_sandbox(prepared, false, network_attachment, nbd_uri.as_deref())?;
     if prepared.verbose {
         eprintln!("lsb: VM created and validated successfully");
     }

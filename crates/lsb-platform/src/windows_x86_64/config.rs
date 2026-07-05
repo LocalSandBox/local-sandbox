@@ -1,4 +1,4 @@
-use crate::PlatformVmConfig;
+use crate::{PlatformNetworkAttachment, PlatformVmConfig};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WindowsVmConfig {
@@ -10,6 +10,7 @@ pub(crate) struct WindowsVmConfig {
     pub console: bool,
     pub verbose: bool,
     pub network_requested: bool,
+    pub network_attachment: Option<PlatformNetworkAttachment>,
     pub nbd_requested: bool,
     pub shared_dir_count: usize,
 }
@@ -24,7 +25,11 @@ impl WindowsVmConfig {
             memory_bytes: config.memory_bytes,
             console: config.console,
             verbose: config.verbose,
-            network_requested: config.network_fd.is_some(),
+            network_requested: config.network_fd.is_some() || config.network_attachment.is_some(),
+            network_attachment: config
+                .network_attachment
+                .clone()
+                .or_else(|| config.network_fd.map(PlatformNetworkAttachment::file_descriptor)),
             nbd_requested: config.nbd_uri.is_some(),
             shared_dir_count: config.shared_dirs.len(),
         }
@@ -47,6 +52,7 @@ mod tests {
             console: true,
             verbose: true,
             network_fd: Some(7),
+            network_attachment: None,
             nbd_uri: Some("nbd+unix:///export?socket=nbd.sock".into()),
             shared_dirs: vec![PlatformSharedDir {
                 host_path: "host".into(),
@@ -59,6 +65,10 @@ mod tests {
 
         assert_eq!(windows.kernel_path, "Image");
         assert!(windows.network_requested);
+        assert_eq!(
+            windows.network_attachment,
+            Some(PlatformNetworkAttachment::file_descriptor(7))
+        );
         assert!(windows.nbd_requested);
         assert_eq!(windows.shared_dir_count, 1);
     }

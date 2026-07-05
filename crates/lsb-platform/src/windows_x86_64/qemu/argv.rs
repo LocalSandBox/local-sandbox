@@ -3,9 +3,10 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use super::config::{
-    QemuBootConfig, QemuControlChannelConfig, QemuDiskConfig, QemuKernelAppend, QemuQmpEndpoint,
-    QemuSerialConfig, CONTROL_BUS_ID, CONTROL_CHARDEV_ID, DEFAULT_CPU_MODEL, DEFAULT_MACHINE_TYPE,
-    FORWARD_CHARDEV_ID, ROOT_DRIVE_ID,
+    QemuBootConfig, QemuControlChannelConfig, QemuDiskConfig, QemuKernelAppend, QemuNetworkConfig,
+    QemuProxyStreamNetworkConfig, QemuQmpEndpoint, QemuSerialConfig, CONTROL_BUS_ID,
+    CONTROL_CHARDEV_ID, DEFAULT_CPU_MODEL, DEFAULT_MACHINE_TYPE, FORWARD_CHARDEV_ID,
+    PROXY_NETDEV_ID, ROOT_DRIVE_ID,
 };
 use super::preflight::PRODUCTION_ACCELERATOR;
 
@@ -137,7 +138,7 @@ impl QemuArgvBuilder {
             push_qmp(&mut command, qmp)?;
         }
 
-        push_pair(&mut command, "-nic", "none");
+        push_network(&mut command, &self.config.network)?;
 
         Ok(QemuCommand {
             program: self.config.qemu_executable.clone(),
@@ -165,6 +166,9 @@ pub(crate) enum QemuArgvError {
         field: &'static str,
         reason: &'static str,
     },
+    UnsupportedNetworkMode {
+        reason: &'static str,
+    },
 }
 
 impl fmt::Display for QemuArgvError {
@@ -181,6 +185,9 @@ impl fmt::Display for QemuArgvError {
             }
             Self::InvalidQemuOptionValue { field, reason } => {
                 write!(f, "invalid QEMU option value {field}: {reason}")
+            }
+            Self::UnsupportedNetworkMode { reason } => {
+                write!(f, "unsupported QEMU network mode: {reason}")
             }
         }
     }
@@ -375,6 +382,59 @@ fn push_qmp(command: &mut QemuCommandParts, qmp: &QemuQmpEndpoint) -> Result<(),
     Ok(())
 }
 
+fn push_network(
+    command: &mut QemuCommandParts,
+    network: &QemuNetworkConfig,
+) -> Result<(), QemuArgvError> {
+    match network {
+        QemuNetworkConfig::None => {
+            push_pair(command, "-nic", "none");
+            Ok(())
+        }
+        QemuNetworkConfig::ProxyStream(proxy) => push_proxy_stream_network(command, proxy),
+    }
+}
+
+fn push_proxy_stream_network(
+    command: &mut QemuCommandParts,
+    proxy: &QemuProxyStreamNetworkConfig,
+) -> Result<(), QemuArgvError> {
+    validate_qemu_suboption("network.proxy_stream.host", &proxy.host)?;
+    validate_qemu_suboption("network.proxy_stream.mac", &proxy.mac)?;
+    if proxy.port == 0 {
+        return Err(QemuArgvError::InvalidNumericInput {
+            field: "network.proxy_stream.port",
+            reason: "must be a nonzero TCP port",
+        });
+    }
+    if proxy.host != "127.0.0.1" {
+        return Err(QemuArgvError::UnsupportedNetworkMode {
+            reason: "Windows proxy stream netdev must connect to a host loopback endpoint",
+        });
+    }
+
+    push_pair_redacted(
+        command,
+        "-netdev",
+        format!(
+            "stream,id={PROXY_NETDEV_ID},server=off,addr.type=inet,addr.host={},addr.port={},reconnect-ms=1000",
+            proxy.host, proxy.port
+        ),
+        format!(
+            "stream,id={PROXY_NETDEV_ID},server=off,addr.type=inet,addr.host=127.0.0.1,addr.port=<proxy-port>,reconnect-ms=1000"
+        ),
+    );
+    push_pair(
+        command,
+        "-device",
+        format!(
+            "virtio-net-pci,netdev={PROXY_NETDEV_ID},mac={}",
+            proxy.mac
+        ),
+    );
+    Ok(())
+}
+
 fn path_as_qemu_option_value(field: &'static str, path: &Path) -> Result<String, QemuArgvError> {
     let value = path_as_qemu_string(field, path)?;
     Ok(value.replace(',', ",,"))
@@ -415,7 +475,8 @@ fn render_diagnostic_arg(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::windows_x86_64::qemu::config::{
-        QemuControlChannelConfig, QemuQmpEndpoint, QemuRootMode,
+        QemuControlChannelConfig, QemuNetworkConfig, QemuProxyStreamNetworkConfig,
+        QemuQmpEndpoint, QemuRootMode,
     };
 
     fn base_config() -> QemuBootConfig {
@@ -641,6 +702,73 @@ mod tests {
         assert!(!argv.iter().any(|arg| arg == "-netdev"));
         assert!(!argv.iter().any(|arg| arg.contains("hostfwd")));
         assert!(!argv.iter().any(|arg| arg.contains("virtio-net")));
+    }
+
+    #[test]
+    fn proxy_stream_network_argv_uses_policy_proxy_without_qemu_nat() {
+        let mut config = base_config();
+        config.network = QemuNetworkConfig::ProxyStream(QemuProxyStreamNetworkConfig::new(
+            "127.0.0.1",
+            49152,
+            "02:4c:53:42:c0:00",
+        ));
+
+        let command = build(config);
+        let argv = argv_as_strings(&command);
+
+        assert!(argv.windows(2).any(|pair| {
+            pair == [
+                "-netdev",
+                "stream,id=lsbproxy0,server=off,addr.type=inet,addr.host=127.0.0.1,addr.port=49152,reconnect-ms=1000",
+            ]
+        }));
+        assert!(argv.windows(2).any(|pair| {
+            pair == [
+                "-device",
+                "virtio-net-pci,netdev=lsbproxy0,mac=02:4c:53:42:c0:00",
+            ]
+        }));
+        assert!(!argv.windows(2).any(|pair| pair == ["-nic", "none"]));
+        assert!(!argv.iter().any(|arg| arg.contains("hostfwd")));
+        assert!(!argv.iter().any(|arg| arg.starts_with("user,")));
+        assert!(!argv.iter().any(|arg| arg.contains("tap,")));
+        assert!(!argv.iter().any(|arg| arg.contains("bridge")));
+    }
+
+    #[test]
+    fn proxy_stream_network_diagnostics_redact_endpoint_port() {
+        let mut config = base_config();
+        config.network = QemuNetworkConfig::ProxyStream(QemuProxyStreamNetworkConfig::new(
+            "127.0.0.1",
+            54321,
+            "02:4c:53:42:d4:31",
+        ));
+
+        let display = build(config).sanitized_display();
+
+        assert!(display.contains("addr.port=<proxy-port>"));
+        assert!(!display.contains("54321"));
+    }
+
+    #[test]
+    fn proxy_stream_network_rejects_non_loopback_endpoint() {
+        let mut config = base_config();
+        config.network = QemuNetworkConfig::ProxyStream(QemuProxyStreamNetworkConfig::new(
+            "0.0.0.0",
+            49152,
+            "02:4c:53:42:c0:00",
+        ));
+
+        let err = QemuArgvBuilder::new(config)
+            .build()
+            .expect_err("non-loopback proxy endpoint should fail");
+
+        assert_eq!(
+            err,
+            QemuArgvError::UnsupportedNetworkMode {
+                reason: "Windows proxy stream netdev must connect to a host loopback endpoint"
+            }
+        );
     }
 
     #[test]

@@ -315,10 +315,9 @@ pub(crate) fn run_stdio(prepared: &PreparedVm) -> Result<i32> {
     let out: SharedWriter = Arc::new(Mutex::new(io::stdout()));
 
     // Set up proxy networking if --allow-net
-    let (vm_fd, proxy_handle) = if let Some(ref proxy_config) = prepared.proxy_config {
-        let (vm_fd, host_fd) = lsb_proxy::create_socketpair()?;
-        let handle = lsb_proxy::start(host_fd, proxy_config.clone())?;
-        (Some(vm_fd), Some(handle))
+    let (network_attachment, proxy_handle) = if let Some(ref proxy_config) = prepared.proxy_config {
+        let (vm_attachment, handle) = vm::start_proxy_network(proxy_config)?;
+        (Some(vm_attachment), Some(handle))
     } else {
         (None, None)
     };
@@ -329,7 +328,7 @@ pub(crate) fn run_stdio(prepared: &PreparedVm) -> Result<i32> {
     let sandbox = Arc::new(vm::build_sandbox(
         prepared,
         false,
-        vm_fd,
+        network_attachment,
         nbd_uri.as_deref(),
     )?);
     sandbox.start()?;
