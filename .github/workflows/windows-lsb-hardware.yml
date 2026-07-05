@@ -1,10 +1,13 @@
-name: windows-lsb-hardware
+# Manual-only hardware workflow. This must stay off pull_request triggers because
+# it runs maintainer code on a privileged self-hosted Windows 11 WHPX machine.
+name: Windows LSB Hardware (self-hosted WHPX)
+run-name: Windows WHPX ${{ inputs.test_set }} on ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
     inputs:
       test_set:
-        description: "Which Windows test set to run"
+        description: "Manual self-hosted Windows 11 WHPX test set"
         required: true
         default: "check"
         type: choice
@@ -23,7 +26,7 @@ concurrency:
 
 jobs:
   windows-boot-cache-probe:
-    name: Probe Windows boot asset cache
+    name: Probe boot asset cache on self-hosted Windows
     if: ${{ inputs.test_set == 'smoke' || inputs.test_set == 'e2e' }}
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 30
@@ -50,6 +53,16 @@ jobs:
           persist-credentials: false
           clean: false
           fetch-depth: 1
+
+      - name: Verify self-hosted Windows runner contract
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -and $env:RUNNER_ENVIRONMENT -ne "self-hosted") {
+            throw "windows-lsb-hardware must run on a self-hosted runner, got RUNNER_ENVIRONMENT=$env:RUNNER_ENVIRONMENT"
+          }
+          if ($env:RUNNER_OS -ne "Windows" -or $env:RUNNER_ARCH -ne "X64") {
+            throw "windows-lsb-hardware requires a Windows X64 runner, got RUNNER_OS=$env:RUNNER_OS RUNNER_ARCH=$env:RUNNER_ARCH"
+          }
+          Write-Host "Runner contract verified: self-hosted Windows X64"
 
       - name: Configure PATH
         run: |
@@ -232,7 +245,7 @@ jobs:
           if-no-files-found: error
 
   windows-check-unit:
-    name: Windows native check/unit
+    name: Self-hosted Windows check/unit
     if: ${{ inputs.test_set == 'check' || inputs.test_set == 'unit' }}
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 90
@@ -255,6 +268,16 @@ jobs:
           persist-credentials: false
           clean: false
           fetch-depth: 1
+
+      - name: Verify self-hosted Windows runner contract
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -and $env:RUNNER_ENVIRONMENT -ne "self-hosted") {
+            throw "windows-lsb-hardware must run on a self-hosted runner, got RUNNER_ENVIRONMENT=$env:RUNNER_ENVIRONMENT"
+          }
+          if ($env:RUNNER_OS -ne "Windows" -or $env:RUNNER_ARCH -ne "X64") {
+            throw "windows-lsb-hardware requires a Windows X64 runner, got RUNNER_OS=$env:RUNNER_OS RUNNER_ARCH=$env:RUNNER_ARCH"
+          }
+          Write-Host "Runner contract verified: self-hosted Windows X64"
 
       - name: Configure PATH
         run: |
@@ -341,7 +364,7 @@ jobs:
           if-no-files-found: ignore
 
   windows-smoke-e2e:
-    name: Windows native smoke/e2e
+    name: Self-hosted Windows WHPX smoke/e2e
     if: ${{ always() && (inputs.test_set == 'smoke' || inputs.test_set == 'e2e') && needs.windows-boot-cache-probe.result == 'success' && (needs.windows-boot-cache-probe.outputs.cache_hit == 'true' || needs.prepare-boot-assets.result == 'success') }}
     needs: [windows-boot-cache-probe, prepare-boot-assets]
     runs-on: [self-hosted, Windows, X64]
@@ -365,6 +388,16 @@ jobs:
           persist-credentials: false
           clean: false
           fetch-depth: 1
+
+      - name: Verify self-hosted Windows runner contract
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -and $env:RUNNER_ENVIRONMENT -ne "self-hosted") {
+            throw "windows-lsb-hardware must run on a self-hosted runner, got RUNNER_ENVIRONMENT=$env:RUNNER_ENVIRONMENT"
+          }
+          if ($env:RUNNER_OS -ne "Windows" -or $env:RUNNER_ARCH -ne "X64") {
+            throw "windows-lsb-hardware requires a Windows X64 runner, got RUNNER_OS=$env:RUNNER_OS RUNNER_ARCH=$env:RUNNER_ARCH"
+          }
+          Write-Host "Runner contract verified: self-hosted Windows X64"
 
       - name: Configure PATH
         run: |
