@@ -1,6 +1,6 @@
 # M11: Port Forwarding Without Guest Network
 
-Status: Not started
+Status: In progress
 Depends on: See `00-index.md`
 RFC sections: See `traceability.md`
 

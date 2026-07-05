@@ -3,8 +3,8 @@
 Last updated: 2026-07-05
 Owner: TBD
 RFC: `docs/windows-port/rfc-qemu-whpx.md`
-Current milestone: M10 - Mount MVP semantics
-Overall status: M10 complete; Windows mount MVP uses staged copy/import semantics on top of M09 transfer primitives
+Current milestone: M11 - Port forwarding without guest network
+Overall status: M11 in progress; implementing Windows host-to-guest loopback port forwarding without guest NIC/QEMU hostfwd
 
 ## How to update this file
 
@@ -12,11 +12,11 @@ Update this file at the end of every agent run. Keep it factual. Do not use it f
 
 ## Current branch / issue
 
-- Branch: `codex/windows-m10-mount-mvp`
+- Branch: `codex/windows-m11-port-forwarding`
 - Issue: TBD
 - Agent: Codex
-- Start commit: `5bf405b`
-- End commit: `eb67a5c` (validated review-fix code head; final state update is docs-only)
+- Start commit: `7e0ca5c`
+- End commit: In progress
 
 ## Milestone status table
 
@@ -32,7 +32,7 @@ Update this file at the end of every agent run. Keep it factual. Do not use it f
 | M08 Exec command | Done | Codex | `codex/windows-m08-exec-command` | Non-interactive exec over the established virtio-serial control stream is implemented and validated by fake/unit tests plus self-hosted WHPX smoke. |
 | M09 Copy-in/copy-out data plane | Done | Codex | `codex/windows-m09-copy-in-copy-out` | Safe Windows copy-in/copy-out data-plane helpers, chunked guest file transfer, and WHPX copy smoke validation are in place. |
 | M10 Mount MVP semantics | Done | Codex | `codex/windows-m10-mount-mvp` | Staged copy/import mount MVP is implemented and validated; no live host sharing or direct writable host mounts. |
-| M11 Port forwarding | Not started | TBD | TBD | Later milestone; preserve no-network default. |
+| M11 Port forwarding | In progress | Codex | `codex/windows-m11-port-forwarding` | Implementing host loopback forwarding over a private LocalSandbox guest channel without guest NIC/QEMU hostfwd. |
 | M12 Network policy and proxy integration | Blocked by M11 | TBD | TBD | Strict egress; no QEMU NAT by default. |
 | M13 Checkpoint/store MVP | Not started | TBD | TBD | Simple disk artifact path first. |
 | M14 Node packaging | Blocked by core CLI smoke | TBD | TBD | Windows package after Rust backend. |
@@ -53,6 +53,7 @@ Status values: `Not started`, `In progress`, `Blocked`, `Review`, `Done`, `Defer
 - 2026-07-04: Started M10 on `codex/windows-m10-mount-mvp` from `5bf405b`; scope is Windows mount MVP semantics only. The implementation must reuse the M09 copy-in/copy-out data plane where possible, preserve host-read-only and isolated guest-write semantics, reject direct `:rw` host mounts with clear capability errors, keep macOS VirtioFS behavior unchanged, and avoid live shared mount claims.
 - 2026-07-04: Completed M10 mount MVP semantics. Added Windows mount planning/validation under `lsb-platform::windows_x86_64::fs`, integrated staged import into Windows `Sandbox::start`, taught the guest overlay mount path to use an imported absolute lower directory, and added a hardware smoke covering host snapshot visibility, isolated guest writes, explicit copy-out export, no live sync, and direct `:rw` mount rejection. macOS VirtioFS behavior and public CLI/SDK/Node API shape remain unchanged.
 - 2026-07-05: Applied additional M10 review hardening in `eb67a5c`. Windows mount/copy validation now accepts canonicalized drive-verbatim paths from CLI/Node canonicalization, records Windows file identity in copy-in plans, opens copy-in files through a checked no-final-reparse handle path before reading, rejects plan-to-open file/parent replacement, rejects mount targets that cover the internal staging root, and serializes macOS mount-request sends by holding the pending-mount lock until success or failure.
+- 2026-07-05: Started M11 on `codex/windows-m11-port-forwarding` from `7e0ca5c`; scope is Windows host-to-guest port forwarding only. The implementation must keep host listeners loopback-bound, keep QEMU argv at `-nic none`, avoid QEMU user networking/hostfwd, reuse LocalSandbox protocol semantics over a private guest channel, preserve macOS behavior and public CLI/SDK/Node API shape, and document any missing real WHPX smoke evidence.
 - 2026-07-03: Completed M01 compile scaffolding. Added `lsb-platform::windows_x86_64` backend/config/error stubs, removed the `lsb-vm` non-macOS compile rejection, added Windows runtime capability errors, cfg-gated Unix-only proxy/store/CLI paths, and added stub coverage tests.
 - 2026-07-03: Ran Windows hardware workflow through `./scripts/win-gh-test`. `check` passed on run `28651692448`. Initial `unit` run `28651764230` failed because Windows-only stub tests used `expect_err` with non-`Debug` handle types; fixed in `066a6c2`, then `unit` passed on run `28651905208`.
 - 2026-07-03: Added macOS helper for manually dispatching Windows hardware workflow, added Windows smoke/e2e script entrypoints, and documented runner trigger usage.
