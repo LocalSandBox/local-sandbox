@@ -1,0 +1,31 @@
+bindings/nodejs/scripts/patch-generated-loader.mjs
+  s_1eedf061012699::t_6433265c785716 1-9,18-19,21-52
+  s_1eedf061012699::t_6800b02e5905f4 10-17,20
+.github/workflows/nodejs-binding.yml
+  s_1eedf061012699::t_6433265c785716 78
+bindings/nodejs/package.json
+  s_1eedf061012699::t_6433265c785716 53,59,61
+  s_1eedf061012699::t_c0bc9830f78fee 52
+.github/workflows/release_nodejs.yml
+  s_1eedf061012699::t_6433265c785716 53
+bindings/nodejs/test/package-metadata.spec.ts
+  s_1eedf061012699::t_76d899b66d8cee 98-99
+  s_1eedf061012699::t_6433265c785716 1,96-97,100-102
+  s_1eedf061012699::t_2978f23014777d 103
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "531630b8a08275fef629ec0ccff792347496626e",
+  "prompts": {},
+  "sessions": {
+    "s_1eedf061012699": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3242-032d-7483-ad32-09a3066dd5e1",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
