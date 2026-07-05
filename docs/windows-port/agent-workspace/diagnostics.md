@@ -166,6 +166,12 @@ Actionable failure checks:
   and whether `Sandbox.start()` reached guest ready before forwarding started.
 - Guest refused connection: verify the service is listening inside the guest on
   `127.0.0.1:<guest_port>`; M11 does not expose guest-wide networking.
+- Host connection actively refused immediately after LocalSandbox reports
+  `forwarding 127.0.0.1:<host_port> -> guest:<guest_port>`: confirm the host
+  listener is still alive and inspect VM lifecycle watcher behavior. A stale
+  initial terminal state from a cloned VM state receiver can tear down the
+  listener before the VM reaches `Running`; listener shutdown should only react
+  to terminal states after `Running` has been observed.
 - Forwarding channel closed: inspect guest logs for `lsb-guest` forwarding
   errors and QEMU lifecycle artifacts for process exit.
 - Duplicate bind: reject duplicate host ports before opening listeners.
