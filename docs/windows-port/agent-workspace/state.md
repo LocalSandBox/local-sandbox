@@ -3,8 +3,8 @@
 Last updated: 2026-07-05
 Owner: TBD
 RFC: `docs/windows-port/rfc-qemu-whpx.md`
-Current milestone: M13 - Checkpoint/store MVP
-Overall status: M13 Windows checkpoint/store MVP completed with self-hosted Windows 11 WHPX validation
+Current milestone: M14 - Node packaging
+Overall status: M14 Windows x86_64 Node packaging in progress after M13 WHPX validation
 
 ## How to update this file
 
@@ -12,11 +12,11 @@ Update this file at the end of every agent run. Keep it factual. Do not use it f
 
 ## Current branch / issue
 
-- Branch: `codex/windows-m13-checkpoint-store-mvp`
+- Branch: `codex/windows-m14-node-packaging`
 - Issue: TBD
 - Agent: Codex
-- Start commit: `84338ad`
-- End commit: branch head after the M13 review-hardening update
+- Start commit: `f9c13b5`
+- End commit: TBD
 
 ## Milestone status table
 
@@ -35,7 +35,7 @@ Update this file at the end of every agent run. Keep it factual. Do not use it f
 | M11 Port forwarding | Done | Codex | `codex/windows-m11-port-forwarding` | Host loopback forwarding over a private LocalSandbox guest channel is implemented and validated on self-hosted Windows 11 WHPX without guest NIC/QEMU hostfwd. |
 | M12 Network policy and proxy integration | Done | Codex | `codex/windows-m12-network-policy-proxy` | Windows allow-net uses LocalSandbox proxy stream attachment; default remains no guest NIC and no QEMU user networking. |
 | M13 Checkpoint/store MVP | Done | Codex | `codex/windows-m13-checkpoint-store-mvp` | Windows MVP uses immutable base plus per-instance qcow2 overlays and flattened qcow2 checkpoint artifacts; self-hosted WHPX smoke passed. |
-| M14 Node packaging | Not started | TBD | TBD | Windows package after Rust backend and M13 smoke validation. |
+| M14 Node packaging | In progress | Codex | `codex/windows-m14-node-packaging` | Adding Windows x86_64 Node package metadata, native build target, package resolution tests, and docs after M13 smoke validation. |
 | M15 CI and diagnostics hardening | Runs throughout, final gate after M14 | TBD | TBD | Self-hosted Windows 11 WHPX runner. |
 
 Status values: `Not started`, `In progress`, `Blocked`, `Review`, `Done`, `Deferred`.
