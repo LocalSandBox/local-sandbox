@@ -1855,44 +1855,63 @@ fn relay_windows_forward(
     });
 
     let result = loop {
-        match frame::read_frame(&mut forward_reader).context("reading forwarded guest bytes")? {
-            Some((frame::FWD_DATA, payload)) => {
-                let (frame_session_id, data) =
-                    lsb_proto::decode_forward_payload(&payload).context("decoding forward data")?;
+        let frame = match frame::read_frame(&mut forward_reader) {
+            Ok(Some(frame)) => frame,
+            Ok(None) => {
+                break Err(anyhow::anyhow!(
+                    "Windows port-forward channel closed before guest closed the session"
+                ));
+            }
+            Err(error) => {
+                break Err(anyhow::anyhow!("reading forwarded guest bytes: {error}"));
+            }
+        };
+
+        match frame {
+            (frame::FWD_DATA, payload) => {
+                let (frame_session_id, data) = match lsb_proto::decode_forward_payload(&payload) {
+                    Ok(decoded) => decoded,
+                    Err(error) => break Err(anyhow::anyhow!("decoding forward data: {error}")),
+                };
                 if frame_session_id != session_id {
-                    bail!(
+                    break Err(anyhow::anyhow!(
                         "received forward data for session {}; expected {}",
                         frame_session_id,
                         session_id
-                    );
+                    ));
                 }
-                tcp_write
-                    .write_all(data)
-                    .context("writing forwarded guest bytes to host TCP client")?;
+                if let Err(error) = tcp_write.write_all(data) {
+                    break Err(anyhow::anyhow!(
+                        "writing forwarded guest bytes to host TCP client: {error}"
+                    ));
+                }
             }
-            Some((frame::FWD_CLOSE, payload)) => {
-                let frame_session_id =
-                    lsb_proto::decode_forward_close(&payload).context("decoding forward close")?;
+            (frame::FWD_CLOSE, payload) => {
+                let frame_session_id = match lsb_proto::decode_forward_close(&payload) {
+                    Ok(session_id) => session_id,
+                    Err(error) => {
+                        break Err(anyhow::anyhow!("decoding forward close: {error}"));
+                    }
+                };
                 if frame_session_id == session_id {
                     break Ok(());
                 }
-                bail!(
+                break Err(anyhow::anyhow!(
                     "received forward close for session {}; expected {}",
                     frame_session_id,
                     session_id
-                );
+                ));
             }
-            Some((frame::ERROR, payload)) => {
-                bail!(
+            (frame::ERROR, payload) => {
+                break Err(anyhow::anyhow!(
                     "guest port-forward error: {}",
                     String::from_utf8_lossy(&payload)
-                );
+                ));
             }
-            Some((other, _)) => {
-                bail!("unexpected frame type 0x{other:02x} in forwarded data stream");
-            }
-            None => {
-                bail!("Windows port-forward channel closed before guest closed the session");
+            (other, _) => {
+                break Err(anyhow::anyhow!(
+                    "unexpected frame type 0x{other:02x} in forwarded data stream"
+                ));
             }
         }
     };
