@@ -1,0 +1,21 @@
+docs/windows-port/agent-workspace/milestones/15-ci-diagnostics-hardening.md
+  s_686182ffe192bd::t_88fdf98d133088 3
+docs/windows-port/agent-workspace/state.md
+  s_686182ffe192bd::t_88fdf98d133088 6-7,15,18-19,39,53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "386e543a59d0aa88e78872150c72aaad99655c8c",
+  "prompts": {},
+  "sessions": {
+    "s_686182ffe192bd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3299-8bfe-78d0-8d81-a918039c0f92",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
