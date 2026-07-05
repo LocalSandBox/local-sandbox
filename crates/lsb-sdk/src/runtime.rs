@@ -844,8 +844,7 @@ mod tests {
 
                 let mut env = HashMap::new();
                 env.insert("M12_SECRET".to_string(), placeholder.clone());
-                let allowed = exec_with_env(
-                    &sandbox,
+                let allowed = sandbox.exec_with_env(
                     &[
                         "/usr/bin/curl",
                         "-fsS",
@@ -854,25 +853,27 @@ mod tests {
                         "http://example.com/",
                     ],
                     &env,
+                    &mut std::io::sink(),
+                    &mut std::io::sink(),
                 )?;
-                assert_eq!(allowed.exit_code, 0, "allowed host should succeed");
+                assert_eq!(allowed, 0, "allowed host should succeed");
 
-                let secret_env = exec_with_env(
-                    &sandbox,
+                let secret_env = sandbox.exec_with_env(
                     &[
                         "/bin/sh",
                         "-c",
                         "test \"$M12_SECRET\" != 'm12-real-secret-never-in-guest' && case \"$M12_SECRET\" in lsb_tok_*) exit 0;; *) exit 2;; esac",
                     ],
                     &env,
+                    &mut std::io::sink(),
+                    &mut std::io::sink(),
                 )?;
                 assert_eq!(
-                    secret_env.exit_code, 0,
+                    secret_env, 0,
                     "guest env should contain only the placeholder token"
                 );
 
-                let blocked = exec_with_env(
-                    &sandbox,
+                let blocked = sandbox.exec_with_env(
                     &[
                         "/usr/bin/curl",
                         "-fsS",
@@ -881,11 +882,12 @@ mod tests {
                         "http://iana.org/",
                     ],
                     &env,
+                    &mut std::io::sink(),
+                    &mut std::io::sink(),
                 )?;
-                assert_ne!(blocked.exit_code, 0, "blocked domain should fail");
+                assert_ne!(blocked, 0, "blocked domain should fail");
 
-                let direct_ip = exec_with_env(
-                    &sandbox,
+                let direct_ip = sandbox.exec_with_env(
                     &[
                         "/usr/bin/curl",
                         "-fsS",
@@ -894,8 +896,10 @@ mod tests {
                         "http://93.184.216.34/",
                     ],
                     &env,
+                    &mut std::io::sink(),
+                    &mut std::io::sink(),
                 )?;
-                assert_ne!(direct_ip.exit_code, 0, "direct IP egress should fail");
+                assert_ne!(direct_ip, 0, "direct IP egress should fail");
 
                 let argv_path = Path::new(&instance_dir)
                     .join("diagnostics")
