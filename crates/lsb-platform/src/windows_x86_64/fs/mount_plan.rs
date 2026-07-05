@@ -202,16 +202,21 @@ fn copy_plan_root_is_directory(plan: &CopyInPlan) -> bool {
 }
 
 fn reject_reserved_mount_target(target: &str) -> Result<(), WindowsMountPlanError> {
-    if target == WINDOWS_MOUNT_STAGING_ROOT
-        || target
-            .strip_prefix(WINDOWS_MOUNT_STAGING_ROOT)
-            .is_some_and(|suffix| suffix.starts_with('/'))
+    if guest_path_contains_or_equals(target, WINDOWS_MOUNT_STAGING_ROOT)
+        || guest_path_contains_or_equals(WINDOWS_MOUNT_STAGING_ROOT, target)
     {
         return Err(WindowsMountPlanError::ReservedTarget {
             target: target.to_string(),
         });
     }
     Ok(())
+}
+
+fn guest_path_contains_or_equals(path: &str, ancestor: &str) -> bool {
+    path == ancestor
+        || path
+            .strip_prefix(ancestor)
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 #[cfg(test)]
@@ -321,6 +326,40 @@ mod tests {
             reserved,
             WindowsMountPlanError::ReservedTarget { .. }
         ));
+
+        let _ = fs::remove_dir_all(source.parent().unwrap());
+    }
+
+    #[test]
+    fn mount_plan_rejects_targets_that_cover_staging_root() {
+        let source = host_fixture_dir("target-ancestor");
+
+        for target in ["/tmp", "/tmp/lsb", WINDOWS_MOUNT_STAGING_ROOT] {
+            let err = plan_windows_mounts(&[WindowsMountSpec::overlay("mount0", &source, target)])
+                .expect_err("staging root ancestors should be reserved");
+            assert!(matches!(err, WindowsMountPlanError::ReservedTarget { .. }));
+        }
+
+        let _ = fs::remove_dir_all(source.parent().unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn mount_plan_accepts_canonicalized_verbatim_windows_source() {
+        let source = host_fixture_dir("canonical-verbatim");
+        let canonical = source.canonicalize().expect("canonical source path");
+        assert!(
+            canonical.display().to_string().starts_with(r"\\?\"),
+            "Windows canonicalize should use a verbatim path: {}",
+            canonical.display()
+        );
+
+        let plan =
+            plan_windows_mounts(&[WindowsMountSpec::overlay("mount0", canonical, "/workspace")])
+                .expect("canonicalized Windows mount source should plan");
+
+        assert_eq!(plan.imports.len(), 1);
+        assert_eq!(plan.mount_requests.len(), 1);
 
         let _ = fs::remove_dir_all(source.parent().unwrap());
     }

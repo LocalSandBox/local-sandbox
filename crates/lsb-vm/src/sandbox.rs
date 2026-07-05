@@ -24,9 +24,10 @@ use crossbeam_channel::Receiver;
 use lsb_platform::terminal;
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use lsb_platform::windows_x86_64::fs::{
-    join_guest_child, plan_copy_in, validate_copy_out_destination, validate_guest_absolute_path,
-    validate_guest_path_component, validate_windows_host_path_lexical, CaseFoldSet,
-    CopyInEntryKind, CopyInPlan, CopyPathOperation,
+    join_guest_child, open_copy_in_file_checked, plan_copy_in, validate_copy_out_destination,
+    validate_guest_absolute_path, validate_guest_path_component,
+    validate_windows_host_path_lexical, CaseFoldSet, CopyInEntryKind, CopyInFileIdentity,
+    CopyInPlan, CopyPathOperation,
 };
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use lsb_platform::windows_x86_64::fs::{
@@ -358,9 +359,9 @@ impl Sandbox {
     /// Clears the mount list only after all requests succeed so failed startup
     /// attempts cannot silently drop configured mounts.
     fn send_mount_requests(&self, writer: &mut impl Write, reader: &mut impl Read) -> Result<()> {
-        let mounts = self.mounts.lock().unwrap().clone();
-        for req in &mounts {
-            frame::send_json(writer, frame::MOUNT_REQ, &req).context("sending mount request")?;
+        let mut mounts = self.mounts.lock().unwrap();
+        for req in mounts.iter() {
+            frame::send_json(writer, frame::MOUNT_REQ, req).context("sending mount request")?;
             let (msg_type, payload) =
                 read_response_frame(reader, "mount init").context("reading mount response")?;
             if msg_type == frame::ERROR {
@@ -391,7 +392,7 @@ impl Sandbox {
                 );
             }
         }
-        self.mounts.lock().unwrap().clear();
+        mounts.clear();
         Ok(())
     }
 
@@ -714,10 +715,9 @@ impl Sandbox {
                         format!("copy-in create guest dir '{}'", entry.guest_path)
                     })?;
                 }
-                CopyInEntryKind::File { .. } => {
-                    self.copy_host_file_to_guest(&entry.host_path, &entry.guest_path)
-                        .with_context(|| format!("copy-in file to '{}'", entry.guest_path))?;
-                }
+                CopyInEntryKind::File { len, identity } => self
+                    .copy_host_file_to_guest(&entry.host_path, *len, *identity, &entry.guest_path)
+                    .with_context(|| format!("copy-in file to '{}'", entry.guest_path))?,
             }
         }
 
@@ -757,8 +757,14 @@ impl Sandbox {
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    fn copy_host_file_to_guest(&self, host_path: &Path, guest_path: &str) -> Result<()> {
-        let mut file = fs::File::open(host_path)
+    fn copy_host_file_to_guest(
+        &self,
+        host_path: &Path,
+        expected_len: u64,
+        expected_identity: CopyInFileIdentity,
+        guest_path: &str,
+    ) -> Result<()> {
+        let mut file = open_copy_in_file_checked(host_path, expected_len, expected_identity)
             .with_context(|| format!("opening copy-in source '{}'", host_path.display()))?;
         let mut buffer = vec![0u8; FILE_TRANSFER_CHUNK_SIZE];
         let mut offset = 0u64;

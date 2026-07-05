@@ -107,7 +107,19 @@ pub struct CopyInEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CopyInEntryKind {
     Directory,
-    File { len: u64 },
+    File {
+        len: u64,
+        #[cfg(windows)]
+        identity: CopyInFileIdentity,
+    },
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CopyInFileIdentity {
+    volume_serial_number: u32,
+    file_index_high: u32,
+    file_index_low: u32,
 }
 
 #[derive(Debug, Default)]
@@ -162,13 +174,10 @@ pub fn plan_copy_in(source: &Path, guest_root: &str) -> Result<CopyInPlan, CopyP
     let mut entries = Vec::new();
 
     if metadata.is_file() {
-        reject_hardlinked_file(source, &metadata, CopyPathOperation::CopyInSource)?;
         entries.push(CopyInEntry {
             host_path: source_root.clone(),
             guest_path: guest_root.clone(),
-            kind: CopyInEntryKind::File {
-                len: metadata.len(),
-            },
+            kind: copy_in_file_entry_kind(source, &metadata, CopyPathOperation::CopyInSource)?,
         });
     } else if metadata.is_dir() {
         entries.push(CopyInEntry {
@@ -273,14 +282,27 @@ pub fn validate_windows_host_path_lexical(
     }
 
     let normalized = raw.replace('/', "\\");
-    if normalized.starts_with("\\\\?\\") || normalized.starts_with("\\\\.\\") {
+    let lexical = if let Some(verbatim) = normalized.strip_prefix("\\\\?\\") {
+        if verbatim.starts_with("UNC\\") {
+            return Err(CopyPathError::new(
+                operation,
+                raw,
+                "UNC paths are not supported in the Windows MVP",
+            ));
+        }
+        verbatim
+    } else {
+        normalized.as_str()
+    };
+
+    if lexical.starts_with("\\\\.\\") {
         return Err(CopyPathError::new(
             operation,
             raw,
-            "extended-length and device paths are not supported in the Windows MVP",
+            "device paths are not supported in the Windows MVP",
         ));
     }
-    if normalized.starts_with("\\\\") {
+    if lexical.starts_with("\\\\") {
         return Err(CopyPathError::new(
             operation,
             raw,
@@ -288,12 +310,12 @@ pub fn validate_windows_host_path_lexical(
         ));
     }
 
-    let (kind, remainder) = if let Some(remainder) = drive_absolute_remainder(&normalized) {
+    let (kind, remainder) = if let Some(remainder) = drive_absolute_remainder(lexical) {
         (WindowsPathKind::DriveAbsolute, remainder)
-    } else if cfg!(not(windows)) && normalized.starts_with('\\') {
+    } else if cfg!(not(windows)) && lexical.starts_with('\\') {
         (
             WindowsPathKind::UnixAbsoluteForTests,
-            normalized.trim_start_matches('\\'),
+            lexical.trim_start_matches('\\'),
         )
     } else {
         return Err(CopyPathError::new(
@@ -472,13 +494,14 @@ fn plan_copy_in_dir(
             });
             plan_copy_in_dir(&child_path, &child_guest_path, entries)?;
         } else if metadata.is_file() {
-            reject_hardlinked_file(&child_path, &metadata, CopyPathOperation::CopyInSource)?;
             entries.push(CopyInEntry {
                 host_path: child_path.clone(),
                 guest_path: child_guest_path,
-                kind: CopyInEntryKind::File {
-                    len: metadata.len(),
-                },
+                kind: copy_in_file_entry_kind(
+                    &child_path,
+                    &metadata,
+                    CopyPathOperation::CopyInSource,
+                )?,
             });
         } else {
             return Err(CopyPathError::new(
@@ -490,6 +513,29 @@ fn plan_copy_in_dir(
     }
 
     Ok(())
+}
+
+fn copy_in_file_entry_kind(
+    path: &Path,
+    metadata: &fs::Metadata,
+    operation: CopyPathOperation,
+) -> Result<CopyInEntryKind, CopyPathError> {
+    #[cfg(windows)]
+    {
+        let identity = inspect_copy_in_file_for_plan(path, metadata.len(), operation)?;
+        Ok(CopyInEntryKind::File {
+            len: metadata.len(),
+            identity,
+        })
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (path, operation);
+        Ok(CopyInEntryKind::File {
+            len: metadata.len(),
+        })
+    }
 }
 
 fn validate_existing_prefixes(
@@ -527,79 +573,204 @@ fn reject_reparse_point(
     Ok(metadata)
 }
 
-fn reject_hardlinked_file(
+#[cfg(windows)]
+pub fn open_copy_in_file_checked(
     path: &Path,
-    metadata: &fs::Metadata,
-    operation: CopyPathOperation,
-) -> Result<(), CopyPathError> {
-    #[cfg(windows)]
+    expected_len: u64,
+    expected_identity: CopyInFileIdentity,
+) -> Result<fs::File, CopyPathError> {
+    use std::os::windows::io::{FromRawHandle, RawHandle};
+
+    validate_windows_host_path_lexical(path, CopyPathOperation::CopyInSource)?;
+    validate_existing_prefixes(path, CopyPathOperation::CopyInSource)?;
+
+    let (handle, info) = open_windows_file_handle(
+        path,
+        windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ,
+        windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL
+            | windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT
+            | windows_sys::Win32::Storage::FileSystem::FILE_FLAG_SEQUENTIAL_SCAN,
+        CopyPathOperation::CopyInSource,
+    )?;
+    if let Err(error) =
+        validate_copy_in_file_info(path, &info, Some(expected_len), Some(expected_identity))
     {
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-        use windows_sys::Win32::Storage::FileSystem::{
-            CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
-            FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
-            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
-        };
+        let _ = unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+        return Err(error);
+    }
+    if let Err(error) = validate_existing_prefixes(path, CopyPathOperation::CopyInSource) {
+        let _ = unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+        return Err(error);
+    }
 
-        if metadata.is_file() {
-            let path_text = path.display().to_string();
-            let mut wide_path = path.as_os_str().encode_wide().collect::<Vec<_>>();
-            wide_path.push(0);
+    Ok(unsafe { fs::File::from_raw_handle(handle as RawHandle) })
+}
 
-            let handle = unsafe {
-                CreateFileW(
-                    wide_path.as_ptr(),
-                    FILE_READ_ATTRIBUTES,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                    std::ptr::null(),
-                    OPEN_EXISTING,
-                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
-                    std::ptr::null_mut(),
-                )
-            };
-            if handle == INVALID_HANDLE_VALUE {
-                return Err(CopyPathError::new(
-                    operation,
-                    path_text,
-                    format!(
-                        "failed to inspect Windows hardlink metadata: {}",
-                        std::io::Error::last_os_error()
-                    ),
-                ));
-            }
+#[cfg(windows)]
+fn inspect_copy_in_file_for_plan(
+    path: &Path,
+    expected_len: u64,
+    operation: CopyPathOperation,
+) -> Result<CopyInFileIdentity, CopyPathError> {
+    let (handle, info) = open_windows_file_handle(
+        path,
+        windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES,
+        windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL
+            | windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT,
+        operation,
+    )?;
+    let close_result = unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+    if close_result == 0 {
+        return Err(CopyPathError::new(
+            operation,
+            path.display().to_string(),
+            format!(
+                "failed to close Windows copy-in inspection handle: {}",
+                std::io::Error::last_os_error()
+            ),
+        ));
+    }
 
-            let mut info = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
-            let ok = unsafe { GetFileInformationByHandle(handle, &mut info) };
-            let _ = unsafe { CloseHandle(handle) };
+    validate_copy_in_file_info(path, &info, Some(expected_len), None)?;
+    Ok(copy_in_file_identity_from_info(&info))
+}
 
-            if ok == 0 {
-                return Err(CopyPathError::new(
-                    operation,
-                    path_text,
-                    format!(
-                        "failed to inspect Windows hardlink metadata: {}",
-                        std::io::Error::last_os_error()
-                    ),
-                ));
-            }
+#[cfg(windows)]
+fn open_windows_file_handle(
+    path: &Path,
+    desired_access: u32,
+    flags_and_attributes: u32,
+    operation: CopyPathOperation,
+) -> Result<
+    (
+        windows_sys::Win32::Foundation::HANDLE,
+        windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION,
+    ),
+    CopyPathError,
+> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, OPEN_EXISTING,
+    };
 
-            if info.nNumberOfLinks > 1 {
-                return Err(CopyPathError::new(
-                    operation,
-                    path_text,
-                    "hardlinked files are not copied in the Windows MVP",
-                ));
-            }
+    let path_text = path.display().to_string();
+    let mut wide_path = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    wide_path.push(0);
+
+    let handle = unsafe {
+        CreateFileW(
+            wide_path.as_ptr(),
+            desired_access,
+            FILE_SHARE_READ | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            flags_and_attributes,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(CopyPathError::new(
+            operation,
+            path_text,
+            format!(
+                "failed to open Windows copy-in source without following final reparse points: {}",
+                std::io::Error::last_os_error()
+            ),
+        ));
+    }
+
+    let mut info = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
+    let ok = unsafe { GetFileInformationByHandle(handle, &mut info) };
+    if ok == 0 {
+        let error = std::io::Error::last_os_error();
+        let _ = unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+        return Err(CopyPathError::new(
+            operation,
+            path_text,
+            format!("failed to inspect Windows copy-in file handle: {error}"),
+        ));
+    }
+
+    Ok((handle, info))
+}
+
+#[cfg(windows)]
+fn validate_copy_in_file_info(
+    path: &Path,
+    info: &windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION,
+    expected_len: Option<u64>,
+    expected_identity: Option<CopyInFileIdentity>,
+) -> Result<(), CopyPathError> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+    };
+
+    let path_text = path.display().to_string();
+    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(CopyPathError::new(
+            CopyPathOperation::CopyInSource,
+            path_text,
+            "symlinks and junction/reparse-point paths are not followed in the Windows MVP",
+        ));
+    }
+    if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        return Err(CopyPathError::new(
+            CopyPathOperation::CopyInSource,
+            path_text,
+            "copy-in source changed from a file to a directory before import",
+        ));
+    }
+    if info.nNumberOfLinks > 1 {
+        return Err(CopyPathError::new(
+            CopyPathOperation::CopyInSource,
+            path_text,
+            "hardlinked files are not copied in the Windows MVP",
+        ));
+    }
+    if let Some(expected_len) = expected_len {
+        let actual_len = windows_file_len(info);
+        if actual_len != expected_len {
+            return Err(CopyPathError::new(
+                CopyPathOperation::CopyInSource,
+                path_text,
+                format!(
+                    "copy-in source changed before import: expected {expected_len} bytes, found {actual_len} bytes"
+                ),
+            ));
+        }
+    }
+    if let Some(expected_identity) = expected_identity {
+        let actual_identity = copy_in_file_identity_from_info(info);
+        if actual_identity != expected_identity {
+            return Err(CopyPathError::new(
+                CopyPathOperation::CopyInSource,
+                path_text,
+                "copy-in source changed identity before import",
+            ));
         }
     }
 
-    #[cfg(not(windows))]
-    {
-        let _ = (path, metadata, operation);
-    }
-
     Ok(())
+}
+
+#[cfg(windows)]
+fn copy_in_file_identity_from_info(
+    info: &windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION,
+) -> CopyInFileIdentity {
+    CopyInFileIdentity {
+        volume_serial_number: info.dwVolumeSerialNumber,
+        file_index_high: info.nFileIndexHigh,
+        file_index_low: info.nFileIndexLow,
+    }
+}
+
+#[cfg(windows)]
+fn windows_file_len(
+    info: &windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION,
+) -> u64 {
+    ((info.nFileSizeHigh as u64) << 32) | info.nFileSizeLow as u64
 }
 
 fn is_symlink_or_reparse_point(metadata: &fs::Metadata) -> bool {
@@ -740,6 +911,17 @@ mod tests {
             CopyPathOperation::CopyInSource,
         )
         .expect("drive absolute path should be valid");
+
+        assert_eq!(kind, WindowsPathKind::DriveAbsolute);
+    }
+
+    #[test]
+    fn windows_path_accepts_verbatim_drive_absolute_path() {
+        let kind = validate_windows_host_path_lexical(
+            Path::new(r"\\?\C:\Users\alice\project\file.txt"),
+            CopyPathOperation::CopyInSource,
+        )
+        .expect("canonicalized Windows drive path should be valid");
 
         assert_eq!(kind, WindowsPathKind::DriveAbsolute);
     }
@@ -968,6 +1150,87 @@ mod tests {
 
         assert_eq!(err.operation(), CopyPathOperation::CopyInSource);
         assert!(err.reason().contains("hardlinked files"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn copy_in_checked_open_rejects_file_replaced_after_plan_on_windows() {
+        let root = temp_dir("checked-open-replaced-file");
+        let source = root.join("src");
+        fs::create_dir_all(&source).expect("source dir");
+        let input = source.join("input.txt");
+        write_fixture(&input, b"safe");
+
+        let plan = plan_copy_in(&source, "/workspace/input").expect("copy-in plan should build");
+        let entry = plan
+            .entries
+            .iter()
+            .find(|entry| matches!(entry.kind, CopyInEntryKind::File { .. }))
+            .expect("planned file entry");
+        let (len, identity) = match &entry.kind {
+            CopyInEntryKind::File { len, identity } => (*len, *identity),
+            CopyInEntryKind::Directory => panic!("expected file entry"),
+        };
+
+        fs::remove_file(&input).expect("remove planned file");
+        write_fixture(&input, b"safe");
+
+        let err = open_copy_in_file_checked(&entry.host_path, len, identity)
+            .expect_err("replacement file identity should fail closed");
+
+        assert_eq!(err.operation(), CopyPathOperation::CopyInSource);
+        assert!(err.reason().contains("changed identity"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn copy_in_checked_open_rejects_parent_replaced_with_symlink_on_windows() {
+        let root = temp_dir("checked-open-parent-symlink");
+        let source = root.join("src");
+        let nested = source.join("nested");
+        fs::create_dir_all(&nested).expect("nested source dir");
+        let input = nested.join("input.txt");
+        write_fixture(&input, b"safe");
+
+        let plan = plan_copy_in(&source, "/workspace/input").expect("copy-in plan should build");
+        let entry = plan
+            .entries
+            .iter()
+            .find(|entry| entry.guest_path == "/workspace/input/nested/input.txt")
+            .expect("planned nested file entry");
+        let (len, identity) = match &entry.kind {
+            CopyInEntryKind::File { len, identity } => (*len, *identity),
+            CopyInEntryKind::Directory => panic!("expected file entry"),
+        };
+
+        fs::remove_dir_all(&nested).expect("remove planned parent");
+        let outside = root.join("outside");
+        fs::create_dir_all(&outside).expect("outside dir");
+        write_fixture(&outside.join("input.txt"), b"safe");
+        match std::os::windows::fs::symlink_dir(&outside, &nested) {
+            Ok(()) => {}
+            Err(error) if error.raw_os_error() == Some(1314) => {
+                eprintln!(
+                    "skipping Windows parent symlink replacement fixture because the runner lacks symlink privilege: {error}"
+                );
+                let _ = fs::remove_dir_all(root);
+                return;
+            }
+            Err(error) => panic!("directory symlink fixture: {error}"),
+        }
+
+        let err = open_copy_in_file_checked(&entry.host_path, len, identity)
+            .expect_err("parent symlink replacement should fail closed");
+
+        assert_eq!(err.operation(), CopyPathOperation::CopyInSource);
+        assert!(
+            err.reason().contains("changed identity")
+                || err.reason().contains("symlinks and junction")
+        );
 
         let _ = fs::remove_dir_all(root);
     }
