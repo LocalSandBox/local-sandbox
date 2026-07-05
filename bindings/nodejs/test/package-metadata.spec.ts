@@ -101,3 +101,18 @@ test('generated loader names the missing Windows native package and artifact', (
   t.true(generatedLoader.includes('lsb-nodejs.win32-x64-msvc.node'))
   t.true(generatedLoader.includes('Cannot find native binding for win32-x64-msvc'))
 })
+
+test('generated loader explains unsupported Windows architectures', (t) => {
+  const generatedLoader = readFileSync(join(projectRoot, 'index.js'), 'utf8')
+
+  t.true(generatedLoader.includes("if (process.platform === 'win32')"))
+  t.true(generatedLoader.includes("if (process.arch === 'x64')"))
+  t.true(generatedLoader.includes('Windows Node support is limited to win32-x64-msvc'))
+  t.true(
+    generatedLoader.includes(
+      'Windows ARM64 and IA32 native packages are not published for this MVP',
+    ),
+  )
+  t.true(generatedLoader.includes("' Current host is win32-'"))
+  t.true(generatedLoader.includes('process.arch'))
+})

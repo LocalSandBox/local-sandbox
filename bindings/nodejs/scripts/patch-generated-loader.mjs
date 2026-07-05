@@ -15,9 +15,24 @@ const windowsMissingMessage = [
   'Windows QEMU/WHPX preflight errors from the Rust backend.',
 ].join(' ')
 
+const unsupportedWindowsMessage = [
+  'Windows Node support is limited to win32-x64-msvc.',
+  'Windows ARM64 and IA32 native packages are not published for this MVP.',
+  'Use Windows 11 x64, or install only the root package metadata on unsupported Windows hosts.',
+].join(' ')
+
 const helper = `function missingNativeBindingMessage() {
-  if (process.platform === 'win32' && process.arch === 'x64') {
-    return ${JSON.stringify(windowsMissingMessage)}
+  if (process.platform === 'win32') {
+    if (process.arch === 'x64') {
+      return ${JSON.stringify(windowsMissingMessage)}
+    }
+
+    return (
+      ${JSON.stringify(unsupportedWindowsMessage)} +
+      ' Current host is win32-' +
+      process.arch +
+      '.'
+    )
   }
 
   return (
@@ -29,8 +44,16 @@ const helper = `function missingNativeBindingMessage() {
 
 `
 
-if (!source.includes('function missingNativeBindingMessage()')) {
-  const insertionPoint = '\nif (!nativeBinding) {\n'
+const insertionPoint = '\nif (!nativeBinding) {\n'
+const helperPattern =
+  /function missingNativeBindingMessage\(\) \{[\s\S]*?\n\}\n\nif \(!nativeBinding\) \{\n/
+
+if (source.includes('function missingNativeBindingMessage()')) {
+  if (!helperPattern.test(source)) {
+    throw new Error('could not replace existing native binding message helper')
+  }
+  source = source.replace(helperPattern, `${helper}if (!nativeBinding) {\n`)
+} else {
   if (!source.includes(insertionPoint)) {
     throw new Error('could not find native binding failure block in generated index.js')
   }

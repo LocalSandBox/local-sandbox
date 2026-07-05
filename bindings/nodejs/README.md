@@ -39,6 +39,11 @@ corepack yarn install
   `qemu-system-x86_64.exe` and `qemu-img.exe`, enable Windows Hypervisor Platform, and make QEMU
   discoverable through `LSB_QEMU` or `PATH`. The Windows backend requires WHPX; it does not fall
   back to TCG for production Node users.
+- Windows support is currently limited to the non-streaming backend paths implemented by the
+  Windows MVP: sandbox start/stop, non-interactive `exec()` / `execShell()`, guest file APIs,
+  overlay mounts, loopback port forwarding, policy-mediated proxy networking, and checkpoint
+  restore/save. Direct writable host mounts, streaming `spawn()`, interactive shells, and
+  `watch()` are macOS-only until the later Windows mux/watch work lands.
 
 ## Usage
 
@@ -148,7 +153,7 @@ const sandbox = await Sandbox.start({
   memoryMb: 4096,
   diskSizeMb: 8192,
   ports: [{ host: 8080, guest: 80 }],
-  mounts: [{ type: 'direct', hostPath: './src', guestPath: '/workspace', flags: 0 }],
+  mounts: [{ type: 'overlay', hostPath: './src', guestPath: '/workspace' }],
   network: {
     allow: ['api.openai.com', 'registry.npmjs.org'],
     exposeHost: [{ host: 3000, guest: 3000 }],
@@ -182,9 +187,11 @@ await sandbox.stop()
 | Type      | Shape                                                                    | Behavior                                      |
 | --------- | ------------------------------------------------------------------------ | --------------------------------------------- |
 | `overlay` | `{ type: 'overlay'; hostPath: string; guestPath: string }`               | Host is read-only; guest writes go to overlay |
-| `direct`  | `{ type: 'direct'; hostPath: string; guestPath: string; flags: number }` | Mounts VirtioFS directly with libc flags      |
+| `direct`  | `{ type: 'direct'; hostPath: string; guestPath: string; flags: number }` | macOS VirtioFS direct mount with libc flags   |
 
-For direct mounts, `flags: 0` is read-write and `flags: 1` is `MS_RDONLY`.
+For direct mounts on macOS, `flags: 0` is read-write and `flags: 1` is `MS_RDONLY`. Windows MVP
+mounts are overlay/snapshot imports only; direct writable host mounts return a backend capability
+error.
 
 `network` enables proxy networking when present. It accepts:
 
@@ -211,6 +218,9 @@ console.log(await proc.exited)
 await sandbox.stop()
 ```
 
+`spawn()` streaming is macOS-only in this release. On Windows, use `exec()` or `execShell()` for
+non-interactive commands; streaming process I/O returns a backend capability error.
+
 ### Watch files
 
 ```ts
@@ -223,6 +233,8 @@ for await (const event of events) {
   console.log(event.path, event.event)
 }
 ```
+
+`watch()` is macOS-only in this release and returns a backend capability error on Windows.
 
 ## Scripts
 
@@ -261,6 +273,10 @@ virtualization after signing the local Node copy, the command will surface that 
 - Installation is limited to supported operating systems and CPU families where npm can express
   them. Unsupported platform packages should fail clearly instead of masking native-module load
   failures.
+- npm cannot express supported OS/CPU pairs in the root package metadata, so Windows ARM64 may be
+  accepted by the root package metadata even though no Windows ARM64 native package is published.
+  The loader reports this as unsupported Windows architecture; only `win32-x64-msvc` is supported
+  for Windows.
 - The published native binaries live in the platform packages
   `@local-sandbox/lsb-nodejs-darwin-arm64`, `@local-sandbox/lsb-nodejs-darwin-x64`, and
   `@local-sandbox/lsb-nodejs-win32-x64-msvc`.
