@@ -1,0 +1,22 @@
+docs/windows-port/agent-workspace/state.md
+  s_1eedf061012699::t_90bd546ad85c40 7,38,53-54,99,141,268-269
+  s_1eedf061012699::t_dbc6ccb8972d70 57
+docs/windows-port/agent-workspace/milestones/14-node-packaging.md
+  s_1eedf061012699::t_dbc6ccb8972d70 43-44,75-76,80
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "916cc73554d5f2d409f2435329b7b0782261a752",
+  "prompts": {},
+  "sessions": {
+    "s_1eedf061012699": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3242-032d-7483-ad32-09a3066dd5e1",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
