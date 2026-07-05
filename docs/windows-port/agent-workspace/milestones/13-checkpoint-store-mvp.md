@@ -1,6 +1,6 @@
 # M13: Checkpoint and Store MVP
 
-Status: Not started
+Status: Review
 Depends on: See `00-index.md`
 RFC sections: See `traceability.md`
 
@@ -41,10 +41,10 @@ The specific tests should match the implementation, but this milestone must incl
 
 ## Acceptance criteria
 
-- [ ] Create/list/delete checkpoint tests.
-- [ ] Restore smoke test after exec/file mutation.
-- [ ] Base image remains unchanged.
-- [ ] Checkpoint errors mention Windows MVP limitations clearly.
+- [x] Create/list/delete checkpoint tests.
+- [x] Restore smoke test after exec/file mutation is implemented as `windows_qemu_checkpoint_store_smoke`; real self-hosted WHPX execution is pending.
+- [x] Base image remains unchanged in the Windows MVP design and smoke assertion.
+- [x] Checkpoint errors mention Windows MVP limitations clearly.
 
 ## Coding-agent prompt
 
@@ -67,10 +67,10 @@ Complete the checklist in `../security-checklist.md`. Record any new risk in `..
 
 ## Handoff
 
-- Branch/PR: TBD
-- Summary: TBD
-- Tests run: TBD
-- Debug artifacts: TBD
-- New decisions: TBD
-- New risks: TBD
-- Next milestone: TBD
+- Branch/PR: `codex/windows-m13-checkpoint-store-mvp`
+- Summary: Implemented Windows checkpoint/store MVP with immutable base images, private per-instance qcow2 writable overlays, flattened qcow2 checkpoint artifacts plus versioned JSON metadata, explicit unsupported errors for CAS `.idx` restore on Windows, CLI/SDK checkpoint wiring, and Windows QEMU qcow2 disk-format selection. Existing macOS NBD/CAS behavior is unchanged.
+- Tests run: `cargo fmt --all -- --check`; `git diff --check`; `cargo check --workspace`; `cargo test --workspace`; `cargo test -p lsb-store windows_checkpoint -- --nocapture`; `cargo test -p lsb-platform windows_x86_64::backend -- --nocapture`; `cargo test -p lsb-sdk windows_qemu_checkpoint_store_smoke -- --ignored --nocapture`; `cargo check -p lsb-platform -p lsb-vm --tests --target x86_64-pc-windows-msvc`. `cargo check --workspace --target x86_64-pc-windows-msvc` remains blocked on this macOS host by external Windows/MSVC C and assembler tooling.
+- Debug artifacts: None from local tests. Real WHPX smoke artifacts pending self-hosted runner execution.
+- New decisions: D022 records flattened qcow2 checkpoint artifacts for M13.
+- New risks: No new risk; R006 moved to mitigating for the MVP while CAS/NBD remains future work.
+- Next milestone: Run the M13 self-hosted WHPX checkpoint smoke, then proceed to M14 Node packaging if the smoke passes.

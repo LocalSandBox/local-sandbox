@@ -74,7 +74,7 @@ Hardware workflow:
 | M10 | Mount MVP conformance tests for read-only source semantics and isolated writes. |
 | M11 | Host-to-guest port forwarding works without guest NIC or QEMU `hostfwd`; host listeners bind loopback, invalid/duplicate ports fail clearly, Windows argv remains `-nic none`, and the WHPX smoke reaches a guest-local TCP service through host `127.0.0.1`. |
 | M12 | No-network default test; policy-mediated proxy argv test; allowed-domain test; blocked-domain/direct-IP test; unsupported attachment rejection; secret placeholder/redaction test; WHPX network policy/proxy smoke. |
-| M13 | Checkpoint create/list/restore/delete tests for Windows MVP path. |
+| M13 | Checkpoint create/list/restore/delete tests for Windows MVP path; ignored WHPX smoke verifies mutate, checkpoint, restore, fresh-base isolation, delete, and failed restore after delete. |
 | M14 | Node package install/import smoke on Windows after Rust backend works. |
 | M15 | CI jobs split correctly and diagnostics artifacts uploaded. |
 
@@ -129,6 +129,9 @@ cargo test -p lsb-vm windows_qemu_port_forward_smoke -- --ignored --nocapture
 
 # Run network policy/proxy smoke once M12 exists
 cargo test -p lsb-sdk windows_qemu_network_policy_proxy_smoke -- --ignored --nocapture
+
+# Run checkpoint/store smoke once M13 exists
+cargo test -p lsb-sdk windows_qemu_checkpoint_store_smoke -- --ignored --nocapture
 
 # Run all Windows integration tests once M15 exists
 cargo test --workspace --features windows-integration -- --ignored --nocapture

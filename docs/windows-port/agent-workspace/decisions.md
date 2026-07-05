@@ -183,3 +183,32 @@ LocalSandbox connects to the QEMU-created control pipe immediately after the QEM
 - Open the pipe only after boot: rejected because QEMU did not produce serial output until a host client connected.
 - Make LocalSandbox create the named-pipe server: rejected for M06 because QEMU `-chardev pipe` creates the endpoint and the validated path uses QEMU's server side.
 - Use hostfwd TCP/QGA/QMP for control: rejected by D007 and the M06 non-goals.
+
+### D022: Windows checkpoint artifacts are flattened qcow2 files for M13
+
+- Status: Accepted
+- Date: 2026-07-05
+- Owner: Codex
+- Related milestone: M13
+- Related RFC section: Storage and checkpoints
+
+#### Context
+
+D016 allows the Windows checkpoint MVP to use simple disk artifacts before porting Unix-socket NBD/CAS. The implementation still needed to choose between persistent qcow2 backing chains, flat checkpoint copies, or QEMU internal snapshots.
+
+#### Decision
+
+For M13, each running Windows sandbox uses a private qcow2 writable overlay over the immutable base image or a source checkpoint. Creating a product checkpoint converts the active overlay into a standalone flattened qcow2 artifact and registers versioned JSON metadata only after conversion succeeds.
+
+#### Consequences
+
+- Restoring from a checkpoint does not depend on mutable backing-chain paths and does not mutate the base rootfs.
+- Deleting a checkpoint is local to its `.qcow2` and `.json` artifacts; it does not invalidate other checkpoint files through shared backing chains.
+- Checkpoints may be larger than overlay-chain artifacts and are not CAS/NBD parity.
+- The Windows SDK `checkpoint()` path stops the VM before conversion for the MVP; live checkpointing requires later QMP/block-layer work or another approved design.
+
+#### Alternatives considered
+
+- Persistent qcow2 overlay chains: deferred because durable backing paths across Windows data-dir moves, deletes, and future CAS migration need more design.
+- QEMU internal snapshots as the product checkpoint abstraction: rejected for M13 because the RFC and milestone require preserving the LocalSandbox explicit saved-disk-state model.
+- Port Unix-socket NBD/CAS first: rejected by D016 and the M13 non-goals.
