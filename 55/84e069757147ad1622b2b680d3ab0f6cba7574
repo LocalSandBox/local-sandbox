@@ -1,0 +1,19 @@
+bindings/nodejs/README.md
+  s_1eedf061012699::t_9a2a0d3ea643af 17-18,30,38-41,258-263,265-270
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5584e069757147ad1622b2b680d3ab0f6cba7574",
+  "prompts": {},
+  "sessions": {
+    "s_1eedf061012699": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3242-032d-7483-ad32-09a3066dd5e1",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
