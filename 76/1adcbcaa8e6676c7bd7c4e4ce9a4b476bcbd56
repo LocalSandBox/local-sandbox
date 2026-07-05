@@ -1,0 +1,24 @@
+scripts/windows-smoke.ps1
+  s_686182ffe192bd::t_a74839ad462e01 72-75
+  s_686182ffe192bd::t_9e891c4b7039e2 30,33,71,76
+  s_686182ffe192bd::t_fd9c7842c920ff 5-20,43-70,77-104,109-130,151,160-168,179,181,183,185,187,189,191
+  s_686182ffe192bd::t_7613f9ab1f551e 105-108
+scripts/windows-e2e.ps1
+  s_686182ffe192bd::t_5d34eae33578b5 5-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "761adcbcaa8e6676c7bd7c4e4ce9a4b476bcbd56",
+  "prompts": {},
+  "sessions": {
+    "s_686182ffe192bd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3299-8bfe-78d0-8d81-a918039c0f92",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
