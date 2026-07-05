@@ -193,12 +193,13 @@ link and attaches the guest NIC only to that link:
 
 ```text
 -netdev stream,id=lsbproxy0,server=off,addr.type=inet,addr.host=127.0.0.1,addr.port=<proxy-port>
--device virtio-net-pci,netdev=lsbproxy0,mac=<generated-local-mac>
+-device virtio-net-pci,netdev=lsbproxy0,mac=<proxy-mac>
 ```
 
-The diagnostic display redacts the ephemeral proxy port as `<proxy-port>`.
-It must not show QEMU `user` networking, `hostfwd`, TAP, bridge, NAT, literal
-secret values, or guest-visible secret placeholders.
+The diagnostic display redacts the ephemeral proxy port as `<proxy-port>` and
+the generated local NIC MAC as `<proxy-mac>`. It must not show QEMU `user`
+networking, `hostfwd`, TAP, bridge, NAT, literal secret values, or
+guest-visible secret placeholders.
 
 Actionable failure checks:
 
@@ -212,14 +213,19 @@ Actionable failure checks:
 - Non-loopback proxy endpoint rejected: Windows proxy attachments must stay on
   loopback; public control/proxy listeners are not supported.
 - Allowed domain fails: capture the requested hostname/SNI/HTTP Host and proxy
-  policy decision, but do not log payload bytes or secret values.
-- Blocked domain, direct IP, or missing domain succeeds: treat as a security
-  bug. The proxy must enforce configured allowlists before upstream connect and
-  before secret substitution.
+  policy decision, plus whether that domain matched a DNS answer the proxy gave
+  the guest. Do not log payload bytes or secret values.
+- Blocked domain, direct IP, missing domain, or forged allowed Host/SNI to an
+  unrelated destination IP succeeds: treat as a security bug. Explicit
+  allowlists must bind the policy-visible domain to proxy DNS answers before
+  upstream connect and before secret substitution.
 - Secret appears in QEMU argv, guest env, serial log, proxy log, or diagnostics:
   treat as a security bug. Guest env should contain only placeholder tokens and
   substitution should occur only in the host-side proxy path for configured
   destinations.
+- Proxy thread or host secret config remains alive after VM teardown: treat as a
+  lifecycle bug. `ProxyHandle` drop should signal shutdown and join the stack
+  and runtime threads; timeout diagnostics should not include secret values.
 
 Logs may include sanitized domain names, policy decision names, local ephemeral
 ports, and high-level errors. They must not include proxy payloads, literal host

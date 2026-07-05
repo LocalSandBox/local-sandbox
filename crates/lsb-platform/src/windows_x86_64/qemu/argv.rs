@@ -424,10 +424,11 @@ fn push_proxy_stream_network(
             "stream,id={PROXY_NETDEV_ID},server=off,addr.type=inet,addr.host=127.0.0.1,addr.port=<proxy-port>,reconnect-ms=1000"
         ),
     );
-    push_pair(
+    push_pair_redacted(
         command,
         "-device",
         format!("virtio-net-pci,netdev={PROXY_NETDEV_ID},mac={}", proxy.mac),
+        format!("virtio-net-pci,netdev={PROXY_NETDEV_ID},mac=<proxy-mac>"),
     );
     Ok(())
 }
@@ -744,7 +745,9 @@ mod tests {
         let display = build(config).sanitized_display();
 
         assert!(display.contains("addr.port=<proxy-port>"));
+        assert!(display.contains("mac=<proxy-mac>"));
         assert!(!display.contains("54321"));
+        assert!(!display.contains("02:4c:53:42:d4:31"));
     }
 
     #[test]

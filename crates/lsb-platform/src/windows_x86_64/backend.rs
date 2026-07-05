@@ -344,16 +344,15 @@ mod tests {
             .direct_boot_config()
             .expect("proxy stream network config should build");
 
-        assert_eq!(
-            boot_config.network,
-            super::super::qemu::config::QemuNetworkConfig::ProxyStream(
-                super::super::qemu::config::QemuProxyStreamNetworkConfig::new(
-                    "127.0.0.1",
-                    49152,
-                    "02:4c:53:42:c0:00"
-                )
-            )
-        );
+        let super::super::qemu::config::QemuNetworkConfig::ProxyStream(proxy) = boot_config.network
+        else {
+            panic!("proxy stream attachment should produce proxy stream QEMU config");
+        };
+        assert_eq!(proxy.host, "127.0.0.1");
+        assert_eq!(proxy.port, 49152);
+        let first_octet = u8::from_str_radix(&proxy.mac[..2], 16).expect("MAC first octet");
+        assert_eq!(first_octet & 0x01, 0, "proxy MAC should be unicast");
+        assert_eq!(first_octet & 0x02, 0x02, "proxy MAC should be local");
     }
 
     #[test]

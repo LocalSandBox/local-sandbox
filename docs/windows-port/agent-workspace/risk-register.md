@@ -13,7 +13,7 @@ Track implementation risks here. Update as evidence arrives.
 | R007 | CI cannot run WHPX on hosted runners | Medium | High | Use self-hosted Windows 11 runner for boot/integration | Accepted | Maintainer |
 | R008 | QEMU binary provenance/security if user-installed | Medium | Medium | Discovery diagnostics; warn on suspicious paths; consider bundling later | Open | TBD |
 | R009 | Process cleanup leaves QEMU running after host crash/test timeout | High | Medium | Windows Job Object cleanup in M04; tests with fake child processes | Open | TBD |
-| R010 | Network policy bypass through accidental NIC/user networking | High | Medium | M12 golden/unit tests assert default `-nic none`, policy-mediated `-netdev stream` only when allow-net/proxy is configured, no QEMU user networking/hostfwd/TAP/bridge, direct-IP and missing-domain denial, and fail-closed unsupported Windows attachment modes. | Mitigating | TBD |
+| R010 | Network policy bypass through accidental NIC/user networking | High | Medium | M12 golden/unit tests assert default `-nic none`, policy-mediated `-netdev stream` only when allow-net/proxy is configured, no QEMU user networking/hostfwd/TAP/bridge, DNS-answer binding for explicit allowlists, forged Host/SNI denial to arbitrary IPs, direct-IP and missing-domain denial, and fail-closed unsupported Windows attachment modes. | Mitigating | TBD |
 | R011 | Public API drift while adding Windows capability errors | Medium | Medium | Compile/API compatibility tests; keep errors structured below API boundary | Open | TBD |
 | R012 | Boot asset compatibility with QEMU differs from Apple VZ | High | Medium | M05 minimal direct boot smoke; update kernel/initramfs only behind preserved semantics | Open | TBD |
 

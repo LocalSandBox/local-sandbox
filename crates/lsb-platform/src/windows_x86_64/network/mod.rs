@@ -10,6 +10,7 @@ pub(crate) enum WindowsNetworkError {
     LegacyFileDescriptorAttachment,
     NonLoopbackProxyEndpoint { host: Ipv4Addr },
     InvalidProxyPort,
+    ProxyMacGeneration,
 }
 
 impl fmt::Display for WindowsNetworkError {
@@ -26,6 +27,10 @@ impl fmt::Display for WindowsNetworkError {
             Self::InvalidProxyPort => write!(
                 f,
                 "Windows proxy networking requires a nonzero loopback TCP port for the LocalSandbox proxy stream attachment"
+            ),
+            Self::ProxyMacGeneration => write!(
+                f,
+                "Windows proxy networking could not generate a private local MAC for the QEMU proxy attachment; no QEMU user networking was enabled"
             ),
         }
     }
@@ -54,19 +59,32 @@ fn proxy_stream_config(
     if stream.port == 0 {
         return Err(WindowsNetworkError::InvalidProxyPort);
     }
+    let mac = random_local_mac().map_err(|_| WindowsNetworkError::ProxyMacGeneration)?;
 
     Ok(QemuNetworkConfig::ProxyStream(
-        QemuProxyStreamNetworkConfig::new(
-            stream.host.to_string(),
-            stream.port,
-            proxy_mac_from_port(stream.port),
-        ),
+        QemuProxyStreamNetworkConfig::new(stream.host.to_string(), stream.port, mac),
     ))
 }
 
-fn proxy_mac_from_port(port: u16) -> String {
-    let [hi, lo] = port.to_be_bytes();
-    format!("02:4c:53:42:{hi:02x}:{lo:02x}")
+fn random_local_mac() -> Result<String, getrandom::Error> {
+    let mut bytes = [0u8; 6];
+    getrandom::fill(&mut bytes)?;
+    bytes[0] = (bytes[0] | 0x02) & 0xfe;
+    Ok(format!(
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]
+    ))
+}
+
+#[cfg(test)]
+fn parse_mac(mac: &str) -> [u8; 6] {
+    let parts = mac.split(':').collect::<Vec<_>>();
+    assert_eq!(parts.len(), 6, "MAC should have six octets: {mac}");
+    let mut bytes = [0u8; 6];
+    for (index, part) in parts.into_iter().enumerate() {
+        bytes[index] = u8::from_str_radix(part, 16).expect("MAC octet should be hex");
+    }
+    bytes
 }
 
 #[cfg(test)]
@@ -87,13 +105,18 @@ mod tests {
 
         let network = qemu_network_config(Some(&attachment)).expect("proxy stream config");
 
-        assert_eq!(
-            network,
-            QemuNetworkConfig::ProxyStream(QemuProxyStreamNetworkConfig::new(
-                "127.0.0.1",
-                49152,
-                "02:4c:53:42:c0:00"
-            ))
+        let QemuNetworkConfig::ProxyStream(proxy) = network else {
+            panic!("proxy stream attachment should produce proxy stream QEMU config");
+        };
+        assert_eq!(proxy.host, "127.0.0.1");
+        assert_eq!(proxy.port, 49152);
+        let mac = parse_mac(&proxy.mac);
+        assert_eq!(mac[0] & 0x01, 0, "proxy MAC should be unicast");
+        assert_eq!(mac[0] & 0x02, 0x02, "proxy MAC should be local");
+        assert_ne!(
+            [mac[4], mac[5]],
+            49152u16.to_be_bytes(),
+            "proxy MAC must not encode the proxy listener port"
         );
     }
 

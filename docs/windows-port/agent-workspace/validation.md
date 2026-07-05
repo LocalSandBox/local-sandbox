@@ -178,10 +178,11 @@ The M12 smoke uses the same asset variables after the boot/exec/copy/mount and
 port-forward smokes. It starts a sandbox with existing allow-net configuration,
 attaches the Windows guest NIC only to the LocalSandbox proxy stream path,
 verifies an allowed HTTP destination succeeds, verifies direct-IP and
-non-allowlisted destinations fail closed, checks the guest receives a secret
-placeholder instead of the literal host secret, and inspects the redacted argv
-for `-netdev stream` with no QEMU user networking, `hostfwd`, TAP, bridge, or
-secret material.
+non-allowlisted destinations fail closed, verifies forged allowed Host/SNI
+traffic to arbitrary IPs fails closed, checks the guest receives a secret
+placeholder instead of the literal host secret, scans diagnostics for the
+sentinel host secret, and inspects the redacted argv for `-netdev stream` with
+no QEMU user networking, `hostfwd`, TAP, bridge, or secret material.
 
 If the asset variables are absent, the smoke lane must print an explicit skip
 message and must not claim direct boot validation.

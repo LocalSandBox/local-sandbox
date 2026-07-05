@@ -858,19 +858,29 @@ mod tests {
                 )?;
                 assert_eq!(allowed, 0, "allowed host should succeed");
 
+                let mut secret_stdout = Vec::new();
+                let mut secret_stderr = Vec::new();
                 let secret_env = sandbox.exec_with_env(
-                    &[
-                        "/bin/sh",
-                        "-c",
-                        "test \"$M12_SECRET\" != 'm12-real-secret-never-in-guest' && case \"$M12_SECRET\" in lsb_tok_*) exit 0;; *) exit 2;; esac",
-                    ],
+                    &["/bin/sh", "-c", "printf '%s' \"$M12_SECRET\""],
                     &env,
-                    &mut std::io::sink(),
-                    &mut std::io::sink(),
+                    &mut secret_stdout,
+                    &mut secret_stderr,
                 )?;
                 assert_eq!(
-                    secret_env, 0,
-                    "guest env should contain only the placeholder token"
+                    secret_env,
+                    0,
+                    "guest env placeholder read failed: {}",
+                    String::from_utf8_lossy(&secret_stderr)
+                );
+                let guest_secret = String::from_utf8(secret_stdout)?;
+                assert_eq!(
+                    guest_secret,
+                    placeholder.as_str(),
+                    "guest env should contain the placeholder token"
+                );
+                assert_ne!(
+                    guest_secret, secret_value,
+                    "guest env must not contain the host-side secret"
                 );
 
                 let blocked = sandbox.exec_with_env(
@@ -901,6 +911,44 @@ mod tests {
                 )?;
                 assert_ne!(direct_ip, 0, "direct IP egress should fail");
 
+                let forged_host = sandbox.exec_with_env(
+                    &[
+                        "/usr/bin/curl",
+                        "-fsS",
+                        "--max-time",
+                        "8",
+                        "-H",
+                        "Host: example.com",
+                        "http://1.1.1.1/",
+                    ],
+                    &env,
+                    &mut std::io::sink(),
+                    &mut std::io::sink(),
+                )?;
+                assert_ne!(
+                    forged_host, 0,
+                    "forged allowed Host header to arbitrary IP should fail"
+                );
+
+                let forged_sni = sandbox.exec_with_env(
+                    &[
+                        "/usr/bin/curl",
+                        "-fsS",
+                        "--max-time",
+                        "8",
+                        "--resolve",
+                        "example.com:443:1.1.1.1",
+                        "https://example.com/",
+                    ],
+                    &env,
+                    &mut std::io::sink(),
+                    &mut std::io::sink(),
+                )?;
+                assert_ne!(
+                    forged_sni, 0,
+                    "forged allowed SNI to arbitrary IP should fail"
+                );
+
                 let argv_path = Path::new(&instance_dir)
                     .join("diagnostics")
                     .join("qemu.argv.redacted.txt");
@@ -914,13 +962,19 @@ mod tests {
                 assert!(!argv.contains(&secret_value));
                 assert!(!argv.contains(placeholder));
 
+                assert_smoke_artifacts_do_not_contain(Path::new(&instance_dir), &secret_value)?;
+
                 Ok(())
             })();
 
             let stop_result = sandbox.stop();
+            let post_stop_artifact_scan =
+                assert_smoke_artifacts_do_not_contain(Path::new(&instance_dir), &secret_value);
             let _ = std::fs::remove_dir_all(&data_dir);
             result.expect("Windows network policy/proxy smoke should pass");
             stop_result.expect("Windows network smoke QEMU should stop cleanly");
+            post_stop_artifact_scan
+                .expect("Windows network smoke artifacts should not contain sentinel secret");
 
             struct EnvVarGuard {
                 name: &'static str,
@@ -964,6 +1018,42 @@ mod tests {
                 std::env::var_os(name)
                     .map(PathBuf::from)
                     .unwrap_or_else(|| panic!("{name} must point to a disposable boot asset path"))
+            }
+
+            fn assert_smoke_artifacts_do_not_contain(
+                instance_dir: &Path,
+                sentinel: &str,
+            ) -> anyhow::Result<()> {
+                let diagnostics = instance_dir.join("diagnostics");
+                if !diagnostics.exists() {
+                    return Ok(());
+                }
+
+                let mut pending = vec![diagnostics];
+                while let Some(dir) = pending.pop() {
+                    for entry in std::fs::read_dir(&dir)? {
+                        let entry = entry?;
+                        let path = entry.path();
+                        let file_type = entry.file_type()?;
+                        if file_type.is_dir() {
+                            pending.push(path);
+                            continue;
+                        }
+                        if !file_type.is_file() {
+                            continue;
+                        }
+
+                        let contents = std::fs::read(&path)?;
+                        let text = String::from_utf8_lossy(&contents);
+                        anyhow::ensure!(
+                            !text.contains(sentinel),
+                            "sentinel secret found in diagnostic artifact {}",
+                            path.display()
+                        );
+                    }
+                }
+
+                Ok(())
             }
         }
     }
