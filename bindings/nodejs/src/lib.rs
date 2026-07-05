@@ -45,7 +45,7 @@ pub async fn init_sandbox(opts: Option<SandboxInitOptions>) -> Result<SandboxIni
       None => lsb_sdk::init_sandbox(options),
     })
     .await
-    .map_err(to_napi_error)?
+    .map_err(|error| to_napi_error(anyhow::Error::new(error)))?
     .map_err(to_napi_error)?;
     return Ok(map_init_result(result));
   }

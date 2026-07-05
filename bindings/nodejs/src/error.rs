@@ -11,6 +11,11 @@ pub(crate) fn unsupported_platform_error() -> Error {
 }
 
 #[cfg(lsb_nodejs_supported)]
-pub(crate) fn to_napi_error(error: impl std::fmt::Display) -> Error {
-  Error::new(Status::GenericFailure, error.to_string())
+pub(crate) fn to_napi_error(error: anyhow::Error) -> Error {
+  let message = error
+    .chain()
+    .map(ToString::to_string)
+    .collect::<Vec<_>>()
+    .join(": ");
+  Error::new(Status::GenericFailure, message)
 }
