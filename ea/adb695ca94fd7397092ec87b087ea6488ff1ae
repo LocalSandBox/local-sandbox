@@ -1,0 +1,32 @@
+docs/windows-port/agent-workspace/decisions.md
+  s_184d5e3b064abb::t_41f6ab25641b93 186-214
+docs/windows-port/agent-workspace/milestones/13-checkpoint-store-mvp.md
+  s_184d5e3b064abb::t_2762e271d98c9f 3,44-47,70-76
+docs/windows-port/agent-workspace/risk-register.md
+  s_184d5e3b064abb::t_1beca7762a3d2f 12
+docs/windows-port/agent-workspace/state.md
+  s_184d5e3b064abb::t_9082afe420d6a5 45,47-48
+  s_184d5e3b064abb::t_b779778b046d60 53-54
+  s_184d5e3b064abb::t_c5768f0090eaf0 90-91,103
+  s_184d5e3b064abb::t_65fe70967e37a0 6-7,15,18-19,37
+  s_184d5e3b064abb::t_b015bb63b1baf1 131,250-252
+docs/windows-port/agent-workspace/validation.md
+  s_184d5e3b064abb::t_82015ea1af68b5 77,133-134
+  s_184d5e3b064abb::t_39aab5afa9e70b 135
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "eaadb695ca94fd7397092ec87b087ea6488ff1ae",
+  "prompts": {},
+  "sessions": {
+    "s_184d5e3b064abb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f31e8-5f63-77d3-b4c9-7e59b8ebcdda",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
