@@ -21,6 +21,12 @@ use std::net::Ipv4Addr;
 use std::net::TcpListener;
 #[cfg(unix)]
 use std::os::unix::io::RawFd;
+#[cfg(any(unix, windows))]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(any(unix, windows))]
+use std::sync::{mpsc as std_mpsc, Arc};
+#[cfg(any(unix, windows))]
+use std::time::Duration;
 
 #[cfg(windows)]
 use device::QemuStreamDevice;
@@ -36,6 +42,9 @@ use tls::CertificateAuthority;
 use tokio::sync::mpsc;
 #[cfg(any(unix, windows))]
 use tracing::info;
+
+#[cfg(any(unix, windows))]
+const PROXY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[cfg(unix)]
 pub type PlatformNetworkFd = RawFd;
@@ -61,16 +70,104 @@ pub struct ProxyLink {
     pub host: ProxyHostAttachment,
 }
 
+#[cfg(any(unix, windows))]
+struct ManagedThread {
+    name: &'static str,
+    handle: Option<std::thread::JoinHandle<()>>,
+    done_rx: std_mpsc::Receiver<()>,
+}
+
+#[cfg(any(unix, windows))]
+impl ManagedThread {
+    fn join_timeout(&mut self, timeout: Duration) -> anyhow::Result<()> {
+        if self.handle.is_none() {
+            return Ok(());
+        }
+
+        match self.done_rx.recv_timeout(timeout) {
+            Ok(()) | Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+                let handle = self.handle.take().expect("handle checked above");
+                handle
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("proxy thread '{}' panicked", self.name))
+            }
+            Err(std_mpsc::RecvTimeoutError::Timeout) => {
+                anyhow::bail!("timed out waiting for proxy thread '{}' to stop", self.name);
+            }
+        }
+    }
+}
+
+#[cfg(any(unix, windows))]
+fn spawn_managed_thread<F>(name: &'static str, f: F) -> std::io::Result<ManagedThread>
+where
+    F: FnOnce() + Send + 'static,
+{
+    let (done_tx, done_rx) = std_mpsc::sync_channel(1);
+    let handle = std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            f();
+            let _ = done_tx.send(());
+        })?;
+
+    Ok(ManagedThread {
+        name,
+        handle: Some(handle),
+        done_rx,
+    })
+}
+
 /// Handle to a running proxy. Shuts down on drop.
 pub struct ProxyHandle {
     #[cfg(any(unix, windows))]
-    _stack_thread: std::thread::JoinHandle<()>,
+    shutdown: Arc<AtomicBool>,
     #[cfg(any(unix, windows))]
-    _runtime_thread: std::thread::JoinHandle<()>,
+    stack_thread: Option<ManagedThread>,
+    #[cfg(any(unix, windows))]
+    runtime_thread: Option<ManagedThread>,
     /// Placeholder tokens generated for secrets. Key = env var name, Value = placeholder.
     pub placeholders: std::collections::HashMap<String, String>,
     /// CA certificate in PEM format (for injecting into guest trust store).
     pub ca_cert_pem: Vec<u8>,
+}
+
+#[cfg(any(unix, windows))]
+impl ProxyHandle {
+    pub fn shutdown(mut self) -> anyhow::Result<()> {
+        self.shutdown_inner(PROXY_SHUTDOWN_TIMEOUT)
+    }
+
+    fn shutdown_inner(&mut self, timeout: Duration) -> anyhow::Result<()> {
+        self.shutdown.store(true, Ordering::SeqCst);
+
+        let mut first_error = None;
+        if let Some(thread) = &mut self.stack_thread {
+            if let Err(error) = thread.join_timeout(timeout) {
+                first_error.get_or_insert(error);
+            }
+        }
+        if let Some(thread) = &mut self.runtime_thread {
+            if let Err(error) = thread.join_timeout(timeout) {
+                first_error.get_or_insert(error);
+            }
+        }
+
+        if let Some(error) = first_error {
+            Err(error)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[cfg(any(unix, windows))]
+impl Drop for ProxyHandle {
+    fn drop(&mut self) {
+        if let Err(error) = self.shutdown_inner(PROXY_SHUTDOWN_TIMEOUT) {
+            tracing::debug!("proxy shutdown did not complete cleanly: {error}");
+        }
+    }
 }
 
 /// Generate a unique placeholder token for a secret.
@@ -210,31 +307,38 @@ pub fn start_link(
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
 
-    let stack_thread = spawn_stack_thread(attachment, event_tx, cmd_rx)?;
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let mut stack_thread = spawn_stack_thread(attachment, event_tx, cmd_rx, shutdown.clone())?;
 
     let proxy_config = config;
     let proxy_placeholders = placeholders.clone();
-    let runtime_thread = std::thread::Builder::new()
-        .name("lsb-proxy".into())
-        .spawn(move || {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .expect("failed to create tokio runtime for proxy");
+    let runtime_thread = match spawn_managed_thread("lsb-proxy", move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("failed to create tokio runtime for proxy");
 
-            rt.block_on(async move {
-                let mut engine =
-                    ProxyEngine::new(proxy_config, event_rx, cmd_tx, ca, proxy_placeholders);
-                engine.run().await;
-            });
-        })?;
+        rt.block_on(async move {
+            let mut engine =
+                ProxyEngine::new(proxy_config, event_rx, cmd_tx, ca, proxy_placeholders);
+            engine.run().await;
+        });
+    }) {
+        Ok(thread) => thread,
+        Err(error) => {
+            shutdown.store(true, Ordering::SeqCst);
+            let _ = stack_thread.join_timeout(PROXY_SHUTDOWN_TIMEOUT);
+            return Err(error.into());
+        }
+    };
 
     info!("proxy started");
 
     Ok(ProxyHandle {
-        _stack_thread: stack_thread,
-        _runtime_thread: runtime_thread,
+        shutdown,
+        stack_thread: Some(stack_thread),
+        runtime_thread: Some(runtime_thread),
         placeholders,
         ca_cert_pem,
     })
@@ -245,15 +349,14 @@ fn spawn_stack_thread(
     attachment: ProxyHostAttachment,
     event_tx: mpsc::UnboundedSender<stack::StackEvent>,
     cmd_rx: mpsc::UnboundedReceiver<stack::StackCommand>,
-) -> anyhow::Result<std::thread::JoinHandle<()>> {
+    shutdown: Arc<AtomicBool>,
+) -> anyhow::Result<ManagedThread> {
     let ProxyHostAttachment::FileDescriptor(host_fd) = attachment;
-    std::thread::Builder::new()
-        .name("lsb-netstack".into())
-        .spawn(move || {
-            let mut stack = NetworkStack::new(VZDevice::new(host_fd), event_tx, cmd_rx);
-            stack.run();
-        })
-        .map_err(Into::into)
+    spawn_managed_thread("lsb-netstack", move || {
+        let mut stack = NetworkStack::new(VZDevice::new(host_fd), event_tx, cmd_rx);
+        stack.run_until_shutdown(&shutdown);
+    })
+    .map_err(Into::into)
 }
 
 #[cfg(windows)]
@@ -261,36 +364,39 @@ fn spawn_stack_thread(
     attachment: ProxyHostAttachment,
     event_tx: mpsc::UnboundedSender<stack::StackEvent>,
     cmd_rx: mpsc::UnboundedReceiver<stack::StackCommand>,
-) -> anyhow::Result<std::thread::JoinHandle<()>> {
+    shutdown: Arc<AtomicBool>,
+) -> anyhow::Result<ManagedThread> {
     let ProxyHostAttachment::QemuStreamListener(listener) = attachment;
-    std::thread::Builder::new()
-        .name("lsb-netstack".into())
-        .spawn(move || loop {
-            match listener.accept() {
-                Ok((stream, addr)) => {
-                    info!("proxy QEMU stream link connected from {addr}");
-                    match QemuStreamDevice::new(stream) {
-                        Ok(device) => {
-                            let mut stack = NetworkStack::new(device, event_tx, cmd_rx);
-                            stack.run();
-                        }
-                        Err(error) => {
-                            tracing::debug!("failed to initialize QEMU stream proxy link: {error}");
-                        }
+    spawn_managed_thread("lsb-netstack", move || loop {
+        if shutdown.load(Ordering::SeqCst) {
+            break;
+        }
+
+        match listener.accept() {
+            Ok((stream, addr)) => {
+                info!("proxy QEMU stream link connected from {addr}");
+                match QemuStreamDevice::new(stream) {
+                    Ok(device) => {
+                        let mut stack = NetworkStack::new(device, event_tx, cmd_rx);
+                        stack.run_until_shutdown(&shutdown);
                     }
-                    break;
+                    Err(error) => {
+                        tracing::debug!("failed to initialize QEMU stream proxy link: {error}");
+                    }
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(error) => {
-                    tracing::debug!("QEMU stream proxy listener failed: {error}");
-                    break;
-                }
+                break;
             }
-        })
-        .map_err(Into::into)
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => {
+                tracing::debug!("QEMU stream proxy listener failed: {error}");
+                break;
+            }
+        }
+    })
+    .map_err(Into::into)
 }
 
 /// Legacy Windows fd proxy startup is intentionally unavailable; use
@@ -329,5 +435,30 @@ mod non_unix_tests {
             }
             VmNetworkAttachment::FileDescriptor(_) => panic!("Windows should not use fd link"),
         }
+    }
+}
+
+#[cfg(all(test, any(unix, windows)))]
+mod lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn proxy_handle_shutdown_stops_idle_threads() {
+        let ProxyLink { vm, host } = create_proxy_link().expect("proxy link should be created");
+        let handle = start_link(host, ProxyConfig::default()).expect("proxy should start");
+
+        handle
+            .shutdown()
+            .expect("proxy shutdown should join idle stack and runtime threads");
+
+        #[cfg(unix)]
+        if let VmNetworkAttachment::FileDescriptor(fd) = vm {
+            unsafe {
+                libc::close(fd);
+            }
+        }
+
+        #[cfg(windows)]
+        drop(vm);
     }
 }

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::socket::tcp::{self, Socket as TcpSocket};
@@ -135,8 +136,22 @@ where
     }
 
     /// Run the poll loop. Blocks the current thread.
+    #[allow(dead_code)]
     pub fn run(&mut self) {
+        self.run_loop(|| false);
+    }
+
+    /// Run the poll loop until `shutdown` is set. Blocks the current thread.
+    pub fn run_until_shutdown(&mut self, shutdown: &AtomicBool) {
+        self.run_loop(|| shutdown.load(Ordering::SeqCst));
+    }
+
+    fn run_loop(&mut self, should_stop: impl Fn() -> bool) {
         loop {
+            if should_stop() {
+                break;
+            }
+
             self.process_commands();
 
             // Drain all available frames and inspect for TCP SYN
