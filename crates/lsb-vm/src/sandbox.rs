@@ -69,7 +69,7 @@ impl std::fmt::Display for UnsupportedWindowsRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Windows support is in progress: {} is not implemented yet ({}); current Windows runtime support includes VM startup through the M07 guest-ready handshake, non-interactive exec through M08, guest file copy transfer primitives through M09, and overlay mount copy-import semantics through M10",
+            "Windows support is in progress: {} is not implemented yet ({}); current Windows runtime support includes VM startup through the M07 guest-ready handshake, non-interactive exec through M08, guest file copy transfer primitives through M09, overlay mount copy-import semantics through M10, and host-to-guest loopback port forwarding through M11",
             self.capability, self.milestone
         )
     }
@@ -1247,6 +1247,11 @@ impl Sandbox {
         let stop = Arc::new(AtomicBool::new(false));
         let mut listeners = Vec::new();
         let mut bound_listeners = Vec::new();
+        let state_rx = self.vm.state_channel();
+        let state_stop = Arc::clone(&stop);
+        listeners.push(std::thread::spawn(move || {
+            stop_port_forwarding_when_vm_stops(state_rx, state_stop);
+        }));
 
         for mapping in forwards {
             let tcp_listener = bind_loopback_listener(mapping.host_port).with_context(|| {
@@ -1708,6 +1713,23 @@ fn validate_port_mappings(forwards: &[PortMapping]) -> Result<()> {
 fn bind_loopback_listener(host_port: u16) -> Result<TcpListener> {
     let addr = format!("127.0.0.1:{host_port}");
     TcpListener::bind(&addr).with_context(|| format!("binding {addr}"))
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn stop_port_forwarding_when_vm_stops(state_rx: Receiver<VmState>, stop: Arc<AtomicBool>) {
+    while !stop.load(Ordering::Relaxed) {
+        match state_rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(VmState::Stopping | VmState::Stopped | VmState::Error) => {
+                stop.store(true, Ordering::Relaxed);
+                break;
+            }
+            Ok(_) | Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                stop.store(true, Ordering::Relaxed);
+                break;
+            }
+        }
+    }
 }
 
 /// Handle returned by `start_port_forwarding`. Signals all listener threads
@@ -2790,21 +2812,20 @@ mod tests {
                     .context("reading forwarded response")?;
                 assert_eq!(response, "lsb-port-forward-ok");
 
+                sandbox
+                    .stop()
+                    .context("stopping sandbox while port-forward handle is alive")?;
+                std::thread::sleep(Duration::from_millis(100));
+                assert!(
+                    TcpStream::connect(("127.0.0.1", host_port)).is_err(),
+                    "forwarded host port should close after sandbox shutdown"
+                );
+
                 drop(forward);
                 std::thread::sleep(Duration::from_millis(100));
                 assert!(
                     TcpStream::connect(("127.0.0.1", host_port)).is_err(),
                     "forwarded host port should close after dropping PortForwardHandle"
-                );
-
-                let _ = sandbox.exec(
-                    &[
-                        "/bin/sh",
-                        "-c",
-                        "test -f /tmp/lsb-port-forward.pid && kill $(cat /tmp/lsb-port-forward.pid) || true",
-                    ],
-                    &mut std::io::sink(),
-                    &mut std::io::sink(),
                 );
                 Ok(())
             })();
