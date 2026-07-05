@@ -318,6 +318,7 @@ mod file_transfer {
 mod guest {
     use std::fs::{File, OpenOptions};
     use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
     use std::os::unix::process::CommandExt;
     use std::path::Path;
@@ -2129,7 +2130,70 @@ mod guest {
         }
     }
 
+    fn run_hidden_test_mode() -> Option<i32> {
+        let mut args = std::env::args();
+        let _program = args.next();
+        match args.next().as_deref() {
+            Some("--lsb-test-tcp-server") => {
+                let result = (|| -> std::io::Result<()> {
+                    let port = args
+                        .next()
+                        .ok_or_else(|| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                "missing test server port",
+                            )
+                        })?
+                        .parse::<u16>()
+                        .map_err(|err| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                format!("invalid test server port: {err}"),
+                            )
+                        })?;
+                    if port == 0 {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "invalid test server port 0",
+                        ));
+                    }
+                    let response = args.next().ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "missing test server response",
+                        )
+                    })?;
+                    if args.next().is_some() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "unexpected extra test server arguments",
+                        ));
+                    }
+
+                    let listener = TcpListener::bind(("127.0.0.1", port))?;
+                    let (mut stream, _) = listener.accept()?;
+                    stream.write_all(response.as_bytes())?;
+                    stream.shutdown(std::net::Shutdown::Write)?;
+                    Ok(())
+                })();
+
+                match result {
+                    Ok(()) => Some(0),
+                    Err(err) => {
+                        eprintln!("lsb-guest: test tcp server failed: {err}");
+                        Some(1)
+                    }
+                }
+            }
+            _ => None,
+        }
+    }
+
     pub fn run() -> ! {
+        if let Some(code) = run_hidden_test_mode() {
+            std::process::exit(code);
+        }
+
         eprintln!("lsb-guest: starting as PID 1");
 
         mount_filesystems();

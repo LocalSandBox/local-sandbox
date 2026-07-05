@@ -2750,7 +2750,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU, disposable LocalSandbox assets, and busybox/nc in the guest"]
+    #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU, and disposable LocalSandbox assets"]
     fn windows_qemu_port_forward_smoke() {
         #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
         {
@@ -2780,10 +2780,7 @@ mod tests {
             let result = (|| -> Result<()> {
                 let server_script = format!(
                     "set -eu; \
-                     if command -v busybox >/dev/null 2>&1; then NC='busybox nc'; \
-                     elif command -v nc >/dev/null 2>&1; then NC='nc'; \
-                     else echo 'guest lacks busybox/nc for port-forward smoke' >&2; exit 127; fi; \
-                     (while true; do printf 'lsb-port-forward-ok' | $NC -l -p {guest_port}; done) \
+                     /usr/bin/lsb-init --lsb-test-tcp-server {guest_port} lsb-port-forward-ok \
                      >/tmp/lsb-port-forward.log 2>&1 & echo $! >/tmp/lsb-port-forward.pid"
                 );
                 let mut stdout = Vec::new();
@@ -2803,8 +2800,17 @@ mod tests {
                     guest_port,
                 }])?;
 
-                let mut client = TcpStream::connect(("127.0.0.1", host_port))
-                    .context("connecting to forwarded host loopback port")?;
+                let connect_deadline = std::time::Instant::now() + Duration::from_secs(5);
+                let mut client = loop {
+                    match TcpStream::connect(("127.0.0.1", host_port)) {
+                        Ok(stream) => break stream,
+                        Err(error) if std::time::Instant::now() >= connect_deadline => {
+                            return Err(error)
+                                .context("connecting to forwarded host loopback port");
+                        }
+                        Err(_) => std::thread::sleep(Duration::from_millis(100)),
+                    }
+                };
                 client.set_read_timeout(Some(Duration::from_secs(5)))?;
                 let mut response = String::new();
                 client
