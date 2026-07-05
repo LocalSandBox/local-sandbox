@@ -1,0 +1,27 @@
+bindings/nodejs/npm/win32-x64-msvc/README.md
+  s_1eedf061012699::t_1acfae515042ac 1-3
+.github/workflows/release_nodejs.yml
+  s_1eedf061012699::t_1acfae515042ac 36-37
+.github/workflows/nodejs-binding.yml
+  s_1eedf061012699::t_1acfae515042ac 61-62
+bindings/nodejs/package.json
+  s_1eedf061012699::t_1acfae515042ac 9-10,39-40
+bindings/nodejs/npm/win32-x64-msvc/package.json
+  s_1eedf061012699::t_1acfae515042ac 1-28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e0c60dbb4f1778c6307e88d669ce6c85038c3db2",
+  "prompts": {},
+  "sessions": {
+    "s_1eedf061012699": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3242-032d-7483-ad32-09a3066dd5e1",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
