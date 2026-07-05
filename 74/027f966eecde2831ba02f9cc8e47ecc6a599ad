@@ -1,0 +1,22 @@
+bindings/nodejs/src/error.rs
+  s_1eedf061012699::t_f4ec0df5396191 14-19
+  s_1eedf061012699::t_9429e51c7a6c63 20
+bindings/nodejs/src/lib.rs
+  s_1eedf061012699::t_5a01c4ce944ae9 48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "74027f966eecde2831ba02f9cc8e47ecc6a599ad",
+  "prompts": {},
+  "sessions": {
+    "s_1eedf061012699": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3242-032d-7483-ad32-09a3066dd5e1",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
