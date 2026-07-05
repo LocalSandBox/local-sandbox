@@ -1717,9 +1717,10 @@ fn bind_loopback_listener(host_port: u16) -> Result<TcpListener> {
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 fn stop_port_forwarding_when_vm_stops(state_rx: Receiver<VmState>, stop: Arc<AtomicBool>) {
+    let mut observed_running = false;
     while !stop.load(Ordering::Relaxed) {
         match state_rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(VmState::Stopping | VmState::Stopped | VmState::Error) => {
+            Ok(state) if port_forward_state_should_stop(state, &mut observed_running) => {
                 stop.store(true, Ordering::Relaxed);
                 break;
             }
@@ -1729,6 +1730,18 @@ fn stop_port_forwarding_when_vm_stops(state_rx: Receiver<VmState>, stop: Arc<Ato
                 break;
             }
         }
+    }
+}
+
+#[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
+fn port_forward_state_should_stop(state: VmState, observed_running: &mut bool) -> bool {
+    match state {
+        VmState::Running => {
+            *observed_running = true;
+            false
+        }
+        VmState::Stopping | VmState::Stopped | VmState::Error if *observed_running => true,
+        _ => false,
     }
 }
 
@@ -2224,6 +2237,28 @@ mod tests {
 
         assert_eq!(addr.ip().to_string(), "127.0.0.1");
         assert_ne!(addr.port(), 0);
+    }
+
+    #[test]
+    fn port_forward_stop_waits_for_running_before_terminal_state() {
+        let mut observed_running = false;
+
+        assert!(!port_forward_state_should_stop(
+            VmState::Stopped,
+            &mut observed_running
+        ));
+        assert!(!port_forward_state_should_stop(
+            VmState::Starting,
+            &mut observed_running
+        ));
+        assert!(!port_forward_state_should_stop(
+            VmState::Running,
+            &mut observed_running
+        ));
+        assert!(port_forward_state_should_stop(
+            VmState::Stopped,
+            &mut observed_running
+        ));
     }
 
     #[test]
