@@ -1,0 +1,28 @@
+{
+  "name": "@local-sandbox/lsb-nodejs-win32-x64-msvc",
+  "version": "0.3.12",
+  "description": "Native binary for @local-sandbox/lsb-nodejs on Windows x64 MSVC",
+  "license": "Apache-2.0",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "lsb-nodejs.win32-x64-msvc.node",
+  "files": [
+    "lsb-nodejs.win32-x64-msvc.node"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LocalSandBox/local-sandbox.git",
+    "directory": "bindings/nodejs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  }
+}
