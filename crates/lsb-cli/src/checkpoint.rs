@@ -4,7 +4,7 @@ use lsb_vm::default_data_dir;
 
 use crate::cli::VmArgs;
 use crate::config::load_config;
-use crate::vm;
+use crate::vm::{self, PreparedStorageKind};
 
 pub(crate) fn create(
     name: String,
@@ -35,6 +35,28 @@ pub(crate) fn create(
     if let Some(ref nbd_handle) = result.nbd_handle {
         let index_path = format!("{}/{}.idx", prepared.checkpoints_dir, name);
         nbd_handle.save_checkpoint(&index_path)?;
+    } else if prepared.storage_kind == PreparedStorageKind::WindowsQcow2 {
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            let source = prepared.windows_checkpoint_source.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Windows checkpoint source metadata missing for active qcow2 disk '{}'",
+                    prepared.work_rootfs
+                )
+            })?;
+            let store = lsb_store::WindowsCheckpointStore::new(&prepared.data_dir);
+            store.save_flat_checkpoint(
+                &name,
+                &prepared.work_rootfs,
+                source,
+                prepared.disk_size * 1024 * 1024,
+                false,
+            )?;
+        }
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        {
+            unreachable!("Windows qcow2 storage kind is only produced on Windows x86_64");
+        }
     } else {
         let checkpoint_path = format!("{}/{}.ext4", prepared.checkpoints_dir, name);
         vm::clone_file(&prepared.work_rootfs, &checkpoint_path)?;
@@ -59,7 +81,7 @@ pub(crate) fn list() -> Result<()> {
         Err(e) => bail!("Failed to read checkpoints directory: {}", e),
     };
 
-    let mut checkpoints: Vec<(String, u64, std::time::SystemTime, bool)> = Vec::new();
+    let mut checkpoints: Vec<CheckpointListEntry> = Vec::new();
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
@@ -84,7 +106,26 @@ pub(crate) fn list() -> Result<()> {
         } else {
             checkpoint_disk_usage(&meta)
         };
-        checkpoints.push((name, disk_usage, meta.modified()?, is_cas));
+        checkpoints.push(CheckpointListEntry {
+            name,
+            disk_usage,
+            modified: meta.modified()?,
+            kind: if is_cas {
+                CheckpointKind::Cas
+            } else {
+                CheckpointKind::Ext4
+            },
+        });
+    }
+
+    let windows_store = lsb_store::WindowsCheckpointStore::new(&data_dir);
+    for entry in windows_store.list_checkpoints()? {
+        checkpoints.push(CheckpointListEntry {
+            name: entry.name,
+            disk_usage: entry.disk_bytes,
+            modified: entry.modified,
+            kind: CheckpointKind::WindowsQcow2,
+        });
     }
 
     if checkpoints.is_empty() {
@@ -92,22 +133,41 @@ pub(crate) fn list() -> Result<()> {
         return Ok(());
     }
 
-    checkpoints.sort_by_key(|(_, _, t, _)| *t);
+    checkpoints.sort_by_key(|entry| entry.modified);
 
     println!("{:<20} {:>10} {}", "NAME", "SIZE", "CREATED");
-    for (name, size, mtime, is_cas) in &checkpoints {
-        let size_str = if *is_cas {
-            if *size >= 1024 * 1024 {
-                format!("{} MB (cas)", size / (1024 * 1024))
-            } else {
-                format!("{} KB (cas)", size / 1024)
+    for entry in &checkpoints {
+        let size_str = match entry.kind {
+            CheckpointKind::Cas => {
+                if entry.disk_usage >= 1024 * 1024 {
+                    format!("{} MB (cas)", entry.disk_usage / (1024 * 1024))
+                } else {
+                    format!("{} KB (cas)", entry.disk_usage / 1024)
+                }
             }
-        } else if *size >= 1024 * 1024 * 1024 {
-            format!("{:.1} GB", *size as f64 / (1024.0 * 1024.0 * 1024.0))
-        } else {
-            format!("{} MB", size / (1024 * 1024))
+            CheckpointKind::WindowsQcow2 => {
+                if entry.disk_usage >= 1024 * 1024 * 1024 {
+                    format!(
+                        "{:.1} GB (win)",
+                        entry.disk_usage as f64 / (1024.0 * 1024.0 * 1024.0)
+                    )
+                } else {
+                    format!("{} MB (win)", entry.disk_usage / (1024 * 1024))
+                }
+            }
+            CheckpointKind::Ext4 => {
+                if entry.disk_usage >= 1024 * 1024 * 1024 {
+                    format!(
+                        "{:.1} GB",
+                        entry.disk_usage as f64 / (1024.0 * 1024.0 * 1024.0)
+                    )
+                } else {
+                    format!("{} MB", entry.disk_usage / (1024 * 1024))
+                }
+            }
         };
-        let elapsed = mtime
+        let elapsed = entry
+            .modified
             .elapsed()
             .unwrap_or(std::time::Duration::ZERO)
             .as_secs();
@@ -120,15 +180,36 @@ pub(crate) fn list() -> Result<()> {
         } else {
             format!("{}d ago", elapsed / 86400)
         };
-        println!("{:<20} {:>10} {}", name, size_str, age);
+        println!("{:<20} {:>10} {}", entry.name, size_str, age);
     }
 
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct CheckpointListEntry {
+    name: String,
+    disk_usage: u64,
+    modified: std::time::SystemTime,
+    kind: CheckpointKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckpointKind {
+    Cas,
+    Ext4,
+    WindowsQcow2,
+}
+
 pub(crate) fn delete(name: &str) -> Result<()> {
     let data_dir = default_data_dir();
     lsb_vm::validate_checkpoint_name(name).map_err(|e| anyhow::anyhow!(e))?;
+
+    let windows_store = lsb_store::WindowsCheckpointStore::new(&data_dir);
+    if windows_store.delete_checkpoint(name)? {
+        eprintln!("lsb: checkpoint '{}' deleted", name);
+        return Ok(());
+    }
 
     let idx_path = format!("{}/checkpoints/{}.idx", data_dir, name);
     let ext4_path = format!("{}/checkpoints/{}.ext4", data_dir, name);
@@ -146,8 +227,14 @@ pub(crate) fn delete(name: &str) -> Result<()> {
 }
 
 fn checkpoint_exists(checkpoints_dir: &str, name: &str) -> bool {
+    let store = lsb_store::WindowsCheckpointStore::new(
+        std::path::Path::new(checkpoints_dir)
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(checkpoints_dir)),
+    );
     std::path::Path::new(&format!("{}/{}.idx", checkpoints_dir, name)).exists()
         || std::path::Path::new(&format!("{}/{}.ext4", checkpoints_dir, name)).exists()
+        || store.checkpoint_exists(name)
 }
 
 #[cfg(unix)]

@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::io::IsTerminal;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
@@ -20,6 +22,9 @@ pub(crate) struct PreparedVm {
     pub source_rootfs: String,
     pub work_rootfs: String,
     pub cas_index: Option<String>,
+    pub storage_kind: PreparedStorageKind,
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    pub windows_checkpoint_source: Option<lsb_store::WindowsCheckpointSource>,
     pub kernel_path: String,
     pub initrd_path: Option<String>,
     pub cpus: usize,
@@ -29,6 +34,13 @@ pub(crate) struct PreparedVm {
     pub verbose: bool,
     pub forwards: Vec<PortMapping>,
     pub mounts: Vec<MountConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PreparedStorageKind {
+    Direct,
+    CasNbd,
+    WindowsQcow2,
 }
 
 pub(crate) fn clone_file(src: &str, dst: &str) -> Result<()> {
@@ -131,49 +143,36 @@ pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &LsbConfig, from: Option<&str>) -> Re
         );
     }
 
-    let storage = lsb_sdk::prepare_storage(lsb_sdk::StoragePrepareOptions {
-        data_dir: &data_dir,
-        checkpoints_dir: &paths.checkpoints_dir,
-        rootfs_path: &rootfs_path,
-        from,
-        base_version: vm.base_version.as_deref(),
-        custom_rootfs: vm.rootfs.is_some(),
-        direct: std::env::var("LSB_STORAGE").unwrap_or_default() == "direct",
-    })?;
-
     // Create per-instance working copy (clean any stale dir from PID reuse)
     let instance_dir = format!("{}/{}", paths.instances_dir, std::process::id());
     let _ = std::fs::remove_dir_all(&instance_dir);
     std::fs::create_dir_all(&instance_dir)?;
-    let work_rootfs = format!("{instance_dir}/rootfs.ext4");
-    if !storage.is_nbd() {
-        if verbose {
-            eprintln!("lsb: creating working copy...");
-        }
-        lsb_platform::copy_file_cow(&storage.direct_source_rootfs, &work_rootfs)?;
-    } else {
-        std::fs::File::create(&work_rootfs)?;
-    }
 
-    // Extend to requested disk size
-    let f = std::fs::OpenOptions::new().write(true).open(&work_rootfs)?;
-    let target = disk_size * 1024 * 1024;
-    let current = if storage.is_nbd() {
-        storage.logical_size
-    } else {
-        f.metadata()?.len()
-    };
-    if target < current {
-        bail!(
-            "--disk-size {}MB is smaller than the base image ({}MB)",
-            disk_size,
-            current / 1024 / 1024
-        );
-    }
-    if !storage.is_nbd() && target > current {
-        f.set_len(target)?;
-    }
-    drop(f);
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    let prepared_storage = prepare_windows_storage(
+        &data_dir,
+        &paths.checkpoints_dir,
+        &rootfs_path,
+        from,
+        vm.base_version.as_deref(),
+        vm.rootfs.is_some(),
+        &instance_dir,
+        disk_size,
+        verbose,
+    )?;
+
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    let prepared_storage = prepare_non_windows_storage(
+        &data_dir,
+        &paths.checkpoints_dir,
+        &rootfs_path,
+        from,
+        vm.base_version.as_deref(),
+        vm.rootfs.is_some(),
+        &instance_dir,
+        disk_size,
+        verbose,
+    )?;
 
     let initrd_path = if std::path::Path::new(&initrd_path_str).exists() {
         Some(initrd_path_str)
@@ -189,9 +188,12 @@ pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &LsbConfig, from: Option<&str>) -> Re
         data_dir,
         checkpoints_dir: paths.checkpoints_dir,
         instance_dir,
-        source_rootfs: storage.active_source_rootfs().to_string(),
-        work_rootfs,
-        cas_index: storage.cas_index().map(str::to_string),
+        source_rootfs: prepared_storage.source_rootfs,
+        work_rootfs: prepared_storage.work_rootfs,
+        cas_index: prepared_storage.cas_index,
+        storage_kind: prepared_storage.storage_kind,
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        windows_checkpoint_source: prepared_storage.windows_checkpoint_source,
         kernel_path,
         initrd_path,
         cpus,
@@ -202,6 +204,137 @@ pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &LsbConfig, from: Option<&str>) -> Re
         forwards,
         mounts,
     })
+}
+
+struct PreparedRootDisk {
+    source_rootfs: String,
+    work_rootfs: String,
+    cas_index: Option<String>,
+    storage_kind: PreparedStorageKind,
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    windows_checkpoint_source: Option<lsb_store::WindowsCheckpointSource>,
+}
+
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+fn prepare_non_windows_storage(
+    data_dir: &str,
+    checkpoints_dir: &str,
+    rootfs_path: &str,
+    from: Option<&str>,
+    base_version: Option<&str>,
+    custom_rootfs: bool,
+    instance_dir: &str,
+    disk_size_mb: u64,
+    verbose: bool,
+) -> Result<PreparedRootDisk> {
+    let storage = lsb_sdk::prepare_storage(lsb_sdk::StoragePrepareOptions {
+        data_dir,
+        checkpoints_dir,
+        rootfs_path,
+        from,
+        base_version,
+        custom_rootfs,
+        direct: std::env::var("LSB_STORAGE").unwrap_or_default() == "direct",
+    })?;
+    let work_rootfs = format!("{instance_dir}/rootfs.ext4");
+    prepare_raw_or_nbd_work_rootfs(&storage, &work_rootfs, disk_size_mb, verbose)?;
+    Ok(PreparedRootDisk {
+        source_rootfs: storage.active_source_rootfs().to_string(),
+        work_rootfs,
+        cas_index: storage.cas_index().map(str::to_string),
+        storage_kind: if storage.is_nbd() {
+            PreparedStorageKind::CasNbd
+        } else {
+            PreparedStorageKind::Direct
+        },
+    })
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn prepare_windows_storage(
+    data_dir: &str,
+    checkpoints_dir: &str,
+    rootfs_path: &str,
+    from: Option<&str>,
+    base_version: Option<&str>,
+    custom_rootfs: bool,
+    instance_dir: &str,
+    disk_size_mb: u64,
+    verbose: bool,
+) -> Result<PreparedRootDisk> {
+    if std::env::var("LSB_STORAGE").unwrap_or_default() == "direct" {
+        let storage = lsb_sdk::prepare_storage(lsb_sdk::StoragePrepareOptions {
+            data_dir,
+            checkpoints_dir,
+            rootfs_path,
+            from,
+            base_version,
+            custom_rootfs,
+            direct: true,
+        })?;
+        let work_rootfs = format!("{instance_dir}/rootfs.ext4");
+        prepare_raw_or_nbd_work_rootfs(&storage, &work_rootfs, disk_size_mb, verbose)?;
+        return Ok(PreparedRootDisk {
+            source_rootfs: storage.active_source_rootfs().to_string(),
+            work_rootfs,
+            cas_index: None,
+            storage_kind: PreparedStorageKind::Direct,
+            windows_checkpoint_source: None,
+        });
+    }
+
+    let store = lsb_store::WindowsCheckpointStore::new(data_dir);
+    let source = store.resolve_source(rootfs_path, from, base_version, custom_rootfs)?;
+    let work_rootfs = Path::new(instance_dir).join("root.qcow2");
+    let target = disk_size_mb * 1024 * 1024;
+    if verbose {
+        eprintln!("lsb: creating Windows qcow2 overlay...");
+    }
+    store.create_active_overlay(&source, &work_rootfs, target)?;
+
+    Ok(PreparedRootDisk {
+        source_rootfs: source.path().display().to_string(),
+        work_rootfs: work_rootfs.display().to_string(),
+        cas_index: None,
+        storage_kind: PreparedStorageKind::WindowsQcow2,
+        windows_checkpoint_source: Some(source),
+    })
+}
+
+fn prepare_raw_or_nbd_work_rootfs(
+    storage: &lsb_sdk::PreparedStorage,
+    work_rootfs: &str,
+    disk_size_mb: u64,
+    verbose: bool,
+) -> Result<()> {
+    if !storage.is_nbd() {
+        if verbose {
+            eprintln!("lsb: creating working copy...");
+        }
+        lsb_platform::copy_file_cow(&storage.direct_source_rootfs, work_rootfs)?;
+    } else {
+        std::fs::File::create(work_rootfs)?;
+    }
+
+    let f = std::fs::OpenOptions::new().write(true).open(work_rootfs)?;
+    let target = disk_size_mb * 1024 * 1024;
+    let current = if storage.is_nbd() {
+        storage.logical_size
+    } else {
+        f.metadata()?.len()
+    };
+    if target < current {
+        bail!(
+            "--disk-size {}MB is smaller than the base image ({}MB)",
+            disk_size_mb,
+            current / 1024 / 1024
+        );
+    }
+    if !storage.is_nbd() && target > current {
+        f.set_len(target)?;
+    }
+    drop(f);
+    Ok(())
 }
 
 pub(crate) fn build_sandbox(
@@ -265,6 +398,9 @@ pub(crate) struct RunResult {
 }
 
 pub(crate) fn start_nbd(prepared: &PreparedVm) -> Result<Option<lsb_store::NbdHandle>> {
+    if prepared.storage_kind != PreparedStorageKind::CasNbd {
+        return Ok(None);
+    }
     if std::env::var("LSB_STORAGE").unwrap_or_default() == "direct" {
         return Ok(None);
     }

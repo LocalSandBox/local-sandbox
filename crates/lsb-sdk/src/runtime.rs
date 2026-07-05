@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::io::BufReader;
 use std::net::TcpStream;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -113,14 +115,19 @@ impl AsyncSandbox {
         std::thread::Builder::new()
             .name("lsb-vm".into())
             .spawn(move || match boot_vm(config) {
-                Ok((
+                Ok(BootedVm {
                     sandbox,
                     instance_dir,
                     checkpoints_dir,
+                    active_disk,
+                    virtual_size_bytes,
+                    storage_kind,
+                    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+                    windows_checkpoint_source,
                     proxy_handle,
                     fwd_handle,
                     nbd_handle,
-                )) => {
+                }) => {
                     if ready_tx.send(Ok(instance_dir.clone())).is_err() {
                         return;
                     }
@@ -128,6 +135,11 @@ impl AsyncSandbox {
                         sandbox,
                         &instance_dir,
                         &checkpoints_dir,
+                        &active_disk,
+                        virtual_size_bytes,
+                        storage_kind,
+                        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+                        windows_checkpoint_source,
                         cmd_rx,
                         proxy_handle,
                         fwd_handle,
@@ -430,16 +442,28 @@ impl Drop for AsyncSandbox {
     }
 }
 
-fn boot_vm(
-    config: SandboxConfig,
-) -> Result<(
-    lsb_vm::Sandbox,
-    String,
-    String,
-    Option<lsb_proxy::ProxyHandle>,
-    Option<lsb_vm::PortForwardHandle>,
-    Option<lsb_store::NbdHandle>,
-)> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeStorageKind {
+    Direct,
+    CasNbd,
+    WindowsQcow2,
+}
+
+struct BootedVm {
+    sandbox: lsb_vm::Sandbox,
+    instance_dir: String,
+    checkpoints_dir: String,
+    active_disk: String,
+    virtual_size_bytes: u64,
+    storage_kind: RuntimeStorageKind,
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    windows_checkpoint_source: Option<lsb_store::WindowsCheckpointSource>,
+    proxy_handle: Option<lsb_proxy::ProxyHandle>,
+    fwd_handle: Option<lsb_vm::PortForwardHandle>,
+    nbd_handle: Option<lsb_store::NbdHandle>,
+}
+
+fn boot_vm(config: SandboxConfig) -> Result<BootedVm> {
     let data_dir = config.data_dir.unwrap_or_else(lsb_vm::default_data_dir);
     let paths = asset_paths(&data_dir);
 
@@ -457,16 +481,6 @@ fn boot_vm(
     if config.from.is_some() && config.base_version.is_some() {
         bail!("SandboxConfig::from and SandboxConfig::base_version cannot be used together");
     }
-
-    let storage = prepare_storage(StoragePrepareOptions {
-        data_dir: &data_dir,
-        checkpoints_dir: &paths.checkpoints_dir,
-        rootfs_path: &rootfs_path,
-        from: config.from.as_deref(),
-        base_version: config.base_version.as_deref(),
-        custom_rootfs: false,
-        direct: std::env::var("LSB_STORAGE").unwrap_or_default() == "direct",
-    })?;
 
     let instance_dir = match config.instance_id {
         Some(id) => {
@@ -492,31 +506,28 @@ fn boot_vm(
     };
     let _ = std::fs::remove_dir_all(&instance_dir);
     std::fs::create_dir_all(&instance_dir)?;
-    let work_rootfs = format!("{instance_dir}/rootfs.ext4");
-    if storage.nbd_source.is_none() {
-        lsb_platform::copy_file_cow(&storage.direct_source_rootfs, &work_rootfs)?;
-    } else {
-        std::fs::File::create(&work_rootfs)?;
-    }
 
-    let f = std::fs::OpenOptions::new().write(true).open(&work_rootfs)?;
-    let target = config.disk_size_mb * 1024 * 1024;
-    let current = if storage.nbd_source.is_some() {
-        storage.logical_size
-    } else {
-        f.metadata()?.len()
-    };
-    if target < current {
-        bail!(
-            "disk_size_mb {}MB is smaller than the base image ({}MB)",
-            config.disk_size_mb,
-            current / 1024 / 1024
-        );
-    }
-    if storage.nbd_source.is_none() && target > current {
-        f.set_len(target)?;
-    }
-    drop(f);
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    let prepared_storage = prepare_windows_runtime_storage(
+        &data_dir,
+        &paths.checkpoints_dir,
+        &rootfs_path,
+        config.from.as_deref(),
+        config.base_version.as_deref(),
+        &instance_dir,
+        config.disk_size_mb,
+    )?;
+
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    let prepared_storage = prepare_non_windows_runtime_storage(
+        &data_dir,
+        &paths.checkpoints_dir,
+        &rootfs_path,
+        config.from.as_deref(),
+        config.base_version.as_deref(),
+        &instance_dir,
+        config.disk_size_mb,
+    )?;
 
     let initrd_path = if std::path::Path::new(&initrd_path_str).exists() {
         Some(initrd_path_str)
@@ -538,14 +549,14 @@ fn boot_vm(
         (None, None)
     };
 
-    let nbd_handle = if let Some(ref nbd_source) = storage.nbd_source {
+    let nbd_handle = if let Some(ref nbd_source) = prepared_storage.nbd_source {
         let socket_path = format!("{instance_dir}/nbd.sock");
         Some(lsb_store::start_cas_nbd_server(
             &nbd_source.rootfs_path,
             &format!("{data_dir}/cas"),
             &nbd_source.index_path,
             &socket_path,
-            target,
+            prepared_storage.virtual_size_bytes,
         )?)
     } else {
         None
@@ -554,7 +565,7 @@ fn boot_vm(
 
     let mut builder = lsb_vm::Sandbox::builder()
         .kernel(&kernel_path)
-        .rootfs(&work_rootfs)
+        .rootfs(&prepared_storage.active_disk)
         .cpus(config.cpus)
         .memory_mb(config.memory_mb)
         .console(false);
@@ -603,14 +614,139 @@ fn boot_vm(
 
     info!("VM ready");
 
-    Ok((
+    Ok(BootedVm {
         sandbox,
         instance_dir,
-        paths.checkpoints_dir,
+        checkpoints_dir: paths.checkpoints_dir,
+        active_disk: prepared_storage.active_disk,
+        virtual_size_bytes: prepared_storage.virtual_size_bytes,
+        storage_kind: prepared_storage.storage_kind,
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        windows_checkpoint_source: prepared_storage.windows_checkpoint_source,
         proxy_handle,
         fwd_handle,
         nbd_handle,
-    ))
+    })
+}
+
+struct RuntimePreparedStorage {
+    active_disk: String,
+    virtual_size_bytes: u64,
+    nbd_source: Option<crate::storage::NbdSource>,
+    storage_kind: RuntimeStorageKind,
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    windows_checkpoint_source: Option<lsb_store::WindowsCheckpointSource>,
+}
+
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+fn prepare_non_windows_runtime_storage(
+    data_dir: &str,
+    checkpoints_dir: &str,
+    rootfs_path: &str,
+    from: Option<&str>,
+    base_version: Option<&str>,
+    instance_dir: &str,
+    disk_size_mb: u64,
+) -> Result<RuntimePreparedStorage> {
+    let storage = prepare_storage(StoragePrepareOptions {
+        data_dir,
+        checkpoints_dir,
+        rootfs_path,
+        from,
+        base_version,
+        custom_rootfs: false,
+        direct: std::env::var("LSB_STORAGE").unwrap_or_default() == "direct",
+    })?;
+    let active_disk = format!("{instance_dir}/rootfs.ext4");
+    prepare_raw_or_nbd_work_rootfs(&storage, &active_disk, disk_size_mb)?;
+    let storage_kind = if storage.is_nbd() {
+        RuntimeStorageKind::CasNbd
+    } else {
+        RuntimeStorageKind::Direct
+    };
+    Ok(RuntimePreparedStorage {
+        active_disk,
+        virtual_size_bytes: disk_size_mb * 1024 * 1024,
+        nbd_source: storage.nbd_source,
+        storage_kind,
+    })
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn prepare_windows_runtime_storage(
+    data_dir: &str,
+    checkpoints_dir: &str,
+    rootfs_path: &str,
+    from: Option<&str>,
+    base_version: Option<&str>,
+    instance_dir: &str,
+    disk_size_mb: u64,
+) -> Result<RuntimePreparedStorage> {
+    if std::env::var("LSB_STORAGE").unwrap_or_default() == "direct" {
+        let storage = prepare_storage(StoragePrepareOptions {
+            data_dir,
+            checkpoints_dir,
+            rootfs_path,
+            from,
+            base_version,
+            custom_rootfs: false,
+            direct: true,
+        })?;
+        let active_disk = format!("{instance_dir}/rootfs.ext4");
+        prepare_raw_or_nbd_work_rootfs(&storage, &active_disk, disk_size_mb)?;
+        return Ok(RuntimePreparedStorage {
+            active_disk,
+            virtual_size_bytes: disk_size_mb * 1024 * 1024,
+            nbd_source: None,
+            storage_kind: RuntimeStorageKind::Direct,
+            windows_checkpoint_source: None,
+        });
+    }
+
+    let store = lsb_store::WindowsCheckpointStore::new(data_dir);
+    let source = store.resolve_source(rootfs_path, from, base_version, false)?;
+    let active_disk = Path::new(instance_dir).join("root.qcow2");
+    store.create_active_overlay(&source, &active_disk, disk_size_mb * 1024 * 1024)?;
+
+    Ok(RuntimePreparedStorage {
+        active_disk: active_disk.display().to_string(),
+        virtual_size_bytes: disk_size_mb * 1024 * 1024,
+        nbd_source: None,
+        storage_kind: RuntimeStorageKind::WindowsQcow2,
+        windows_checkpoint_source: Some(source),
+    })
+}
+
+fn prepare_raw_or_nbd_work_rootfs(
+    storage: &crate::storage::PreparedStorage,
+    work_rootfs: &str,
+    disk_size_mb: u64,
+) -> Result<()> {
+    if storage.nbd_source.is_none() {
+        lsb_platform::copy_file_cow(&storage.direct_source_rootfs, work_rootfs)?;
+    } else {
+        std::fs::File::create(work_rootfs)?;
+    }
+
+    let f = std::fs::OpenOptions::new().write(true).open(work_rootfs)?;
+    let target = disk_size_mb * 1024 * 1024;
+    let current = if storage.nbd_source.is_some() {
+        storage.logical_size
+    } else {
+        f.metadata()?.len()
+    };
+    if target < current {
+        bail!(
+            "disk_size_mb {}MB is smaller than the base image ({}MB)",
+            disk_size_mb,
+            current / 1024 / 1024
+        );
+    }
+    if storage.nbd_source.is_none() && target > current {
+        f.set_len(target)?;
+    }
+    drop(f);
+    Ok(())
 }
 
 fn platform_network_attachment(
@@ -630,11 +766,21 @@ fn run_vm_loop(
     sandbox: lsb_vm::Sandbox,
     instance_dir: &str,
     checkpoints_dir: &str,
+    active_disk: &str,
+    virtual_size_bytes: u64,
+    storage_kind: RuntimeStorageKind,
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))] windows_checkpoint_source: Option<
+        lsb_store::WindowsCheckpointSource,
+    >,
     cmd_rx: std::sync::mpsc::Receiver<SandboxCmd>,
     proxy_handle: Option<lsb_proxy::ProxyHandle>,
     _fwd_handle: Option<lsb_vm::PortForwardHandle>,
     nbd_handle: Option<lsb_store::NbdHandle>,
 ) {
+    let _ = instance_dir;
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    let _ = virtual_size_bytes;
+
     let env: HashMap<String, String> = proxy_handle
         .as_ref()
         .map(|h| h.placeholders.clone())
@@ -733,13 +879,45 @@ fn run_vm_loop(
                     if let Some(ref handle) = nbd_handle {
                         let checkpoint_path = format!("{}/{}.idx", checkpoints_dir, name);
                         handle.save_checkpoint(&checkpoint_path)?;
+                    } else if storage_kind == RuntimeStorageKind::WindowsQcow2 {
+                        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+                        {
+                            sandbox.stop()?;
+                            let source = windows_checkpoint_source.as_ref().ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "Windows checkpoint source metadata missing for active qcow2 disk '{}'",
+                                    active_disk
+                                )
+                            })?;
+                            let data_dir = std::path::Path::new(checkpoints_dir)
+                                .parent()
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "Windows checkpoints directory '{}' has no data-dir parent",
+                                        checkpoints_dir
+                                    )
+                                })?;
+                            let store = lsb_store::WindowsCheckpointStore::new(data_dir);
+                            store.save_flat_checkpoint(
+                                &name,
+                                active_disk,
+                                source,
+                                virtual_size_bytes,
+                                true,
+                            )?;
+                        }
+                        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+                        {
+                            unreachable!(
+                                "Windows qcow2 storage kind is only produced on Windows x86_64"
+                            );
+                        }
                     } else {
                         let checkpoint_path = format!("{}/{}.ext4", checkpoints_dir, name);
                         if std::path::Path::new(&checkpoint_path).exists() {
                             std::fs::remove_file(&checkpoint_path)?;
                         }
-                        let work_rootfs = format!("{instance_dir}/rootfs.ext4");
-                        lsb_platform::copy_file_cow(&work_rootfs, &checkpoint_path)?;
+                        lsb_platform::copy_file_cow(active_disk, &checkpoint_path)?;
                     }
                     info!("checkpoint '{}' saved", name);
                     Ok(())
@@ -778,6 +956,160 @@ fn exec_command(
 #[cfg(test)]
 mod tests {
     #[test]
+    #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU/qemu-img, and disposable LocalSandbox assets"]
+    fn windows_qemu_checkpoint_store_smoke() {
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        {
+            eprintln!("skipping Windows QEMU checkpoint smoke on non-Windows host");
+        }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            use std::path::PathBuf;
+
+            use crate::types::SandboxConfig;
+
+            let data_dir = prepare_checkpoint_smoke_data_dir();
+            let checkpoint_name = format!("m13-checkpoint-{}", std::process::id());
+            let store = lsb_store::WindowsCheckpointStore::new(&data_dir);
+            let _ = store.delete_checkpoint(&checkpoint_name);
+
+            let base = super::boot_vm(SandboxConfig {
+                data_dir: Some(data_dir.display().to_string()),
+                instance_id: Some(format!("m13-base-{}", std::process::id())),
+                ..Default::default()
+            })
+            .expect("Windows base sandbox should boot with qcow2 active overlay");
+            assert_eq!(base.storage_kind, super::RuntimeStorageKind::WindowsQcow2);
+
+            let result = (|| -> anyhow::Result<()> {
+                let code = base.sandbox.exec(
+                    &[
+                        "/bin/sh",
+                        "-c",
+                        "mkdir -p /workspace && printf checkpoint-state > /workspace/state.txt && sync",
+                    ],
+                    &mut std::io::sink(),
+                    &mut std::io::sink(),
+                )?;
+                assert_eq!(code, 0);
+                base.sandbox.stop()?;
+
+                let source = base
+                    .windows_checkpoint_source
+                    .as_ref()
+                    .expect("Windows qcow2 boot should retain checkpoint source metadata");
+                store.save_flat_checkpoint(
+                    &checkpoint_name,
+                    &base.active_disk,
+                    source,
+                    base.virtual_size_bytes,
+                    false,
+                )?;
+                let paths = store.checkpoint_paths(&checkpoint_name);
+                assert!(paths.qcow2_path.is_file());
+                assert!(paths.metadata_path.is_file());
+                let metadata = std::fs::read_to_string(&paths.metadata_path)?;
+                assert!(metadata.contains("\"layout\": \"flat\""));
+                assert!(metadata.contains("\"disk_format\": \"qcow2\""));
+
+                let restored = super::boot_vm(SandboxConfig {
+                    data_dir: Some(data_dir.display().to_string()),
+                    from: Some(checkpoint_name.clone()),
+                    instance_id: Some(format!("m13-restored-{}", std::process::id())),
+                    ..Default::default()
+                })
+                .expect("Windows sandbox should restore from checkpoint");
+                let restored_result = (|| -> anyhow::Result<()> {
+                    let mut stdout = Vec::new();
+                    let mut stderr = Vec::new();
+                    let code = restored.sandbox.exec(
+                        &["/bin/cat", "/workspace/state.txt"],
+                        &mut stdout,
+                        &mut stderr,
+                    )?;
+                    assert_eq!(
+                        code,
+                        0,
+                        "restored checkpoint read failed: {}",
+                        String::from_utf8_lossy(&stderr)
+                    );
+                    assert_eq!(String::from_utf8_lossy(&stdout), "checkpoint-state");
+                    Ok(())
+                })();
+                let restored_stop = restored.sandbox.stop();
+                restored_result?;
+                restored_stop?;
+
+                let fresh = super::boot_vm(SandboxConfig {
+                    data_dir: Some(data_dir.display().to_string()),
+                    instance_id: Some(format!("m13-fresh-{}", std::process::id())),
+                    ..Default::default()
+                })
+                .expect("fresh Windows sandbox should boot from base");
+                let fresh_result = (|| -> anyhow::Result<()> {
+                    let mut stdout = Vec::new();
+                    let mut stderr = Vec::new();
+                    let code = fresh.sandbox.exec(
+                        &["/bin/sh", "-c", "test ! -e /workspace/state.txt"],
+                        &mut stdout,
+                        &mut stderr,
+                    )?;
+                    assert_eq!(
+                        code,
+                        0,
+                        "fresh base should not contain checkpoint mutation: stdout={} stderr={}",
+                        String::from_utf8_lossy(&stdout),
+                        String::from_utf8_lossy(&stderr)
+                    );
+                    Ok(())
+                })();
+                let fresh_stop = fresh.sandbox.stop();
+                fresh_result?;
+                fresh_stop?;
+
+                assert!(store.delete_checkpoint(&checkpoint_name)?);
+                let deleted_restore = super::boot_vm(SandboxConfig {
+                    data_dir: Some(data_dir.display().to_string()),
+                    from: Some(checkpoint_name.clone()),
+                    instance_id: Some(format!("m13-deleted-{}", std::process::id())),
+                    ..Default::default()
+                });
+                assert!(deleted_restore.is_err());
+
+                Ok(())
+            })();
+
+            let _ = base.sandbox.stop();
+            let _ = store.delete_checkpoint(&checkpoint_name);
+            let _ = std::fs::remove_dir_all(&data_dir);
+            result.expect("Windows checkpoint/store smoke should pass");
+
+            fn prepare_checkpoint_smoke_data_dir() -> PathBuf {
+                let kernel = required_env_path("LSB_WINDOWS_BOOT_KERNEL");
+                let initrd = required_env_path("LSB_WINDOWS_BOOT_INITRD");
+                let rootfs = required_env_path("LSB_WINDOWS_BOOT_ROOTFS");
+                let root = std::env::temp_dir()
+                    .join(format!("lsb-sdk-m13-checkpoint-{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&root);
+                std::fs::create_dir_all(root.join("instances")).expect("create instances dir");
+                std::fs::create_dir_all(root.join("checkpoints")).expect("create checkpoints dir");
+                std::fs::write(root.join("VERSION"), b"m13-smoke\n").expect("write VERSION");
+                std::fs::copy(kernel, root.join("Image")).expect("copy kernel asset");
+                std::fs::copy(initrd, root.join("initramfs.cpio.gz")).expect("copy initrd asset");
+                std::fs::copy(rootfs, root.join("rootfs.ext4")).expect("copy rootfs asset");
+                root
+            }
+
+            fn required_env_path(name: &str) -> PathBuf {
+                std::env::var_os(name)
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| panic!("{name} must point to a disposable boot asset path"))
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU, outbound network, and disposable LocalSandbox assets"]
     fn windows_qemu_network_policy_proxy_smoke() {
         #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
@@ -815,8 +1147,10 @@ mod tests {
                 ..Default::default()
             };
 
-            let (sandbox, instance_dir, _checkpoints, proxy_handle, _fwd, _nbd) =
-                super::boot_vm(config).expect("Windows allow-net sandbox should boot");
+            let booted = super::boot_vm(config).expect("Windows allow-net sandbox should boot");
+            let sandbox = booted.sandbox;
+            let instance_dir = booted.instance_dir;
+            let proxy_handle = booted.proxy_handle;
 
             let result = (|| -> anyhow::Result<()> {
                 let proxy_handle = proxy_handle
