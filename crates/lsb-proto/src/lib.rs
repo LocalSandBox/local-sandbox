@@ -10,6 +10,7 @@ pub mod frame;
 
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const CAP_FILE_RANGE_IO: &str = "file_range_io";
+pub const CAP_PORT_FORWARD: &str = "port_forward";
 pub const FILE_TRANSFER_CHUNK_SIZE: usize = 512 * 1024;
 
 // --- Guest lifecycle protocol ---
@@ -71,17 +72,61 @@ pub struct PortMapping {
 }
 
 /// Sent by the host over vsock to request forwarding to a guest port.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForwardRequest {
     pub port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<u64>,
 }
 
 /// Sent by the guest in response to a ForwardRequest.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForwardResponse {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForwardPayloadError;
+
+impl std::fmt::Display for ForwardPayloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("forward payload is shorter than the 8-byte session id")
+    }
+}
+
+impl std::error::Error for ForwardPayloadError {}
+
+pub fn encode_forward_payload(session_id: u64, data: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(8 + data.len());
+    payload.extend_from_slice(&session_id.to_be_bytes());
+    payload.extend_from_slice(data);
+    payload
+}
+
+pub fn decode_forward_payload(payload: &[u8]) -> Result<(u64, &[u8]), ForwardPayloadError> {
+    if payload.len() < 8 {
+        return Err(ForwardPayloadError);
+    }
+    let mut id = [0u8; 8];
+    id.copy_from_slice(&payload[..8]);
+    Ok((u64::from_be_bytes(id), &payload[8..]))
+}
+
+pub fn encode_forward_close(session_id: u64) -> [u8; 8] {
+    session_id.to_be_bytes()
+}
+
+pub fn decode_forward_close(payload: &[u8]) -> Result<u64, ForwardPayloadError> {
+    if payload.len() != 8 {
+        return Err(ForwardPayloadError);
+    }
+    let mut id = [0u8; 8];
+    id.copy_from_slice(payload);
+    Ok(u64::from_be_bytes(id))
 }
 
 // --- Mount protocol ---
@@ -236,6 +281,7 @@ pub struct WatchEvent {
 pub const VSOCK_PORT: u32 = 1024;
 pub const VSOCK_PORT_FORWARD: u32 = 1025;
 pub const VIRTIO_SERIAL_CONTROL_PORT_NAME: &str = "org.localsandbox.control";
+pub const VIRTIO_SERIAL_FORWARD_PORT_NAME: &str = "org.localsandbox.forward";
 
 #[cfg(test)]
 mod tests {
@@ -243,8 +289,9 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        ExecRequest, GuestReady, GuestTransport, MountRequest, ReadFileRequest, WriteFileRequest,
-        PROTOCOL_VERSION,
+        decode_forward_close, decode_forward_payload, encode_forward_close, encode_forward_payload,
+        ExecRequest, ForwardRequest, ForwardResponse, GuestReady, GuestTransport, MountRequest,
+        ReadFileRequest, WriteFileRequest, PROTOCOL_VERSION,
     };
     use crate::frame;
 
@@ -260,6 +307,49 @@ mod tests {
         assert_eq!(decoded.transport, GuestTransport::VirtioSerial);
         assert_eq!(decoded.guest_version, "0.5.2-test");
         assert!(decoded.capabilities.is_empty());
+    }
+
+    #[test]
+    fn forward_request_round_trips_with_optional_session_id() {
+        let request = ForwardRequest {
+            port: 8080,
+            session_id: Some(42),
+        };
+
+        let json = serde_json::to_string(&request).expect("forward request serializes");
+        let decoded: ForwardRequest =
+            serde_json::from_str(&json).expect("forward request deserializes");
+
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn forward_response_round_trips_without_session_id_for_vsock_compatibility() {
+        let response = ForwardResponse {
+            status: "ok".to_string(),
+            message: None,
+            session_id: None,
+        };
+
+        let json = serde_json::to_string(&response).expect("forward response serializes");
+        assert!(!json.contains("session_id"));
+        let decoded: ForwardResponse =
+            serde_json::from_str(&json).expect("forward response deserializes");
+
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn forward_payload_encodes_session_prefix() {
+        let payload = encode_forward_payload(0x0102_0304_0506_0708, b"hello");
+        let (session_id, data) = decode_forward_payload(&payload).expect("payload should decode");
+
+        assert_eq!(session_id, 0x0102_0304_0506_0708);
+        assert_eq!(data, b"hello");
+        assert_eq!(
+            decode_forward_close(&encode_forward_close(session_id)).expect("close decodes"),
+            session_id
+        );
     }
 
     #[test]

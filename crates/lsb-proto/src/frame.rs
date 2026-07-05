@@ -29,6 +29,8 @@ pub const WRITE_FILE_RESP: u8 = 0x17;
 // Port forwarding
 pub const FWD_REQ: u8 = 0x20;
 pub const FWD_RESP: u8 = 0x21;
+pub const FWD_DATA: u8 = 0x22;
+pub const FWD_CLOSE: u8 = 0x23;
 
 // File watching
 pub const WATCH_REQ: u8 = 0x30;
