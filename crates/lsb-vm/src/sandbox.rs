@@ -1849,9 +1849,14 @@ fn relay_windows_forward(
     let mut tcp_read = tcp_stream
         .try_clone()
         .context("cloning host TCP stream for port-forward upload")?;
+    tcp_read
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .context("setting host TCP read timeout for port-forward upload")?;
     let mut tcp_write = tcp_stream;
     let upload_done = Arc::new(AtomicBool::new(false));
     let upload_done_thread = Arc::clone(&upload_done);
+    let stop_upload = Arc::new(AtomicBool::new(false));
+    let stop_upload_thread = Arc::clone(&stop_upload);
 
     let upload = std::thread::spawn(move || {
         let mut buffer = [0u8; 16 * 1024];
@@ -1863,6 +1868,16 @@ fn relay_windows_forward(
                     if frame::write_frame(&mut forward_writer, frame::FWD_DATA, &payload).is_err() {
                         upload_done_thread.store(true, Ordering::Relaxed);
                         return;
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    if stop_upload_thread.load(Ordering::Relaxed) {
+                        break;
                     }
                 }
                 Err(_) => break,
@@ -1938,7 +1953,12 @@ fn relay_windows_forward(
         }
     };
 
-    let _ = tcp_write.shutdown(Shutdown::Both);
+    stop_upload.store(true, Ordering::Relaxed);
+    let _ = if result.is_ok() {
+        tcp_write.shutdown(Shutdown::Write)
+    } else {
+        tcp_write.shutdown(Shutdown::Both)
+    };
     let _ = upload.join();
     if !upload_done.load(Ordering::Relaxed) {
         tracing::debug!("port forward upload thread ended before close frame was sent");
