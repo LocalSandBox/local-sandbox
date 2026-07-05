@@ -3,8 +3,8 @@
 Last updated: 2026-07-05
 Owner: TBD
 RFC: `docs/windows-port/rfc-qemu-whpx.md`
-Current milestone: M11 - Port forwarding without guest network
-Overall status: M11 complete; Windows host-to-guest loopback port forwarding is implemented and validated on self-hosted Windows 11 WHPX without guest NIC/QEMU hostfwd
+Current milestone: M12 - Network policy and proxy integration
+Overall status: M12 in progress; M11 completed Windows host-to-guest loopback port forwarding without guest NIC/QEMU hostfwd
 
 ## How to update this file
 
@@ -12,7 +12,7 @@ Update this file at the end of every agent run. Keep it factual. Do not use it f
 
 ## Current branch / issue
 
-- Branch: `codex/windows-m11-port-forwarding`
+- Branch: `codex/windows-m12-network-policy-proxy`
 - Issue: TBD
 - Agent: Codex
 - Start commit: `7e0ca5c`
@@ -33,7 +33,7 @@ Update this file at the end of every agent run. Keep it factual. Do not use it f
 | M09 Copy-in/copy-out data plane | Done | Codex | `codex/windows-m09-copy-in-copy-out` | Safe Windows copy-in/copy-out data-plane helpers, chunked guest file transfer, and WHPX copy smoke validation are in place. |
 | M10 Mount MVP semantics | Done | Codex | `codex/windows-m10-mount-mvp` | Staged copy/import mount MVP is implemented and validated; no live host sharing or direct writable host mounts. |
 | M11 Port forwarding | Done | Codex | `codex/windows-m11-port-forwarding` | Host loopback forwarding over a private LocalSandbox guest channel is implemented and validated on self-hosted Windows 11 WHPX without guest NIC/QEMU hostfwd. |
-| M12 Network policy and proxy integration | Not started | TBD | TBD | Strict egress; no QEMU NAT by default. |
+| M12 Network policy and proxy integration | In progress | Codex | `codex/windows-m12-network-policy-proxy` | Strict egress; no QEMU NAT by default. |
 | M13 Checkpoint/store MVP | Not started | TBD | TBD | Simple disk artifact path first. |
 | M14 Node packaging | Blocked by core CLI smoke | TBD | TBD | Windows package after Rust backend. |
 | M15 CI and diagnostics hardening | Runs throughout, final gate after M14 | TBD | TBD | Self-hosted Windows 11 WHPX runner. |
@@ -57,6 +57,7 @@ Status values: `Not started`, `In progress`, `Blocked`, `Review`, `Done`, `Defer
 - 2026-07-05: Implemented M11 Windows host-to-guest port forwarding. Added a dedicated `org.localsandbox.forward` virtio-serial channel, optional session IDs and framed forwarding payload/close messages in `lsb-proto`, Windows QEMU argv wiring that keeps `-nic none`, guest-side proxying only to `127.0.0.1:<guest_port>`, host listener validation/binding on `127.0.0.1`, lifecycle cleanup on listener handle drop and QEMU shutdown, and an ignored WHPX `windows_qemu_port_forward_smoke` hook. Public CLI/SDK/Node API shape and macOS vsock forwarding remain unchanged for valid nonzero mappings.
 - 2026-07-05: Diagnosed the final M11 WHPX smoke failure. Run `28734574582` on commit `b4ea8ca` reached `windows_qemu_port_forward_smoke` and failed with Windows TCP connect refused (`os error 10061`) immediately after `lsb: forwarding 127.0.0.1:61768 -> guest:18080`. Diagnostics showed `boot.status.json` reached `guest_ready`, the guest advertised `port_forward`, and QEMU argv used `-nic none` with the dedicated `org.localsandbox.control` and `org.localsandbox.forward` virtio-serial ports and no `hostfwd`/`-netdev`. Root cause: the Windows backend initialized its VM state channel with `VmState::Stopped`; the port-forward shutdown watcher consumed that stale initial state and dropped the listener before the VM reached `Running`.
 - 2026-07-05: Completed M11 WHPX validation in `e38b6a2`. `stop_port_forwarding_when_vm_stops` now ignores terminal VM states until it has observed `VmState::Running`, with a regression test covering stale initial `Stopped` followed by normal startup/shutdown. Self-hosted Windows smoke run `28734824475` passed `windows_qemu_port_forward_smoke` on real Windows 11 WHPX hardware; artifact `windows-lsb-diagnostics` ID `8090018787` contains `lsb-assets-work/28734824475-1/boot.status.json` with `guest_ready` and `port_forward`, plus redacted QEMU argv with `-nic none`, `org.localsandbox.forward`, no `hostfwd`, and no `-netdev`. Self-hosted Windows check run `28734981835` also passed the Windows/MSVC `Cargo check` step on commit `e38b6a2`.
+- 2026-07-05: Started M12 on `codex/windows-m12-network-policy-proxy`; scope is Windows policy-mediated network/proxy integration only. The implementation must keep no-network as the default, avoid QEMU user networking/NAT as policy, attach a guest NIC only to a LocalSandbox-owned proxy path when existing allow-net configuration requests it, preserve host-side secret substitution semantics, reject direct-IP/bypass-prone modes, and keep macOS behavior unchanged.
 - 2026-07-03: Completed M01 compile scaffolding. Added `lsb-platform::windows_x86_64` backend/config/error stubs, removed the `lsb-vm` non-macOS compile rejection, added Windows runtime capability errors, cfg-gated Unix-only proxy/store/CLI paths, and added stub coverage tests.
 - 2026-07-03: Ran Windows hardware workflow through `./scripts/win-gh-test`. `check` passed on run `28651692448`. Initial `unit` run `28651764230` failed because Windows-only stub tests used `expect_err` with non-`Debug` handle types; fixed in `066a6c2`, then `unit` passed on run `28651905208`.
 - 2026-07-03: Added macOS helper for manually dispatching Windows hardware workflow, added Windows smoke/e2e script entrypoints, and documented runner trigger usage.
