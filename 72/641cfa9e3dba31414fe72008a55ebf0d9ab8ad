@@ -1,0 +1,28 @@
+crates/lsb-platform/src/windows_x86_64/qemu/argv.rs
+  s_d4ed328c196059::t_9d6a26460606e2 430,475-476
+scripts/windows-smoke.ps1
+  s_d4ed328c196059::t_46224bf86e4308 28-29,31
+crates/lsb-sdk/src/runtime.rs
+  s_d4ed328c196059::t_9d6a26460606e2 948-949,951-952,954
+  s_d4ed328c196059::t_b05f4253e08ece 777-947,950,953,955-966
+crates/lsb-platform/src/windows_x86_64/network/mod.rs
+  s_d4ed328c196059::t_9d6a26460606e2 86
+crates/lsb-platform/src/windows_x86_64/config.rs
+  s_d4ed328c196059::t_9d6a26460606e2 29-33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "72641cfa9e3dba31414fe72008a55ebf0d9ab8ad",
+  "prompts": {},
+  "sessions": {
+    "s_d4ed328c196059": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f317b-d5ac-73a2-8e90-54b0b04a45b4",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
