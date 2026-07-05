@@ -1,0 +1,21 @@
+docs/windows-port/agent-workspace/state.md
+  s_f7374ea5377c6e::t_b86e8189a99d4b 6-7,15,18-19,35,56
+docs/windows-port/agent-workspace/milestones/11-port-forwarding-no-network.md
+  s_f7374ea5377c6e::t_b86e8189a99d4b 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2962ddee8127e9174316c7761fa68288231850fa",
+  "prompts": {},
+  "sessions": {
+    "s_f7374ea5377c6e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f30d2-9cc8-7261-addd-e1d10b986c4b",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}

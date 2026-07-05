@@ -1,0 +1,19 @@
+crates/lsb-vm/src/sandbox.rs
+  s_f7374ea5377c6e::t_a8a0d925a38835 1852-1854,1858-1859,1873-1882,1956-1961
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2dd158a13d6dcb2e795896feeecf9c3923faa040",
+  "prompts": {},
+  "sessions": {
+    "s_f7374ea5377c6e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f30d2-9cc8-7261-addd-e1d10b986c4b",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
