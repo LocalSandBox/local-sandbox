@@ -1,0 +1,32 @@
+crates/lsb-sdk/src/runtime.rs
+  s_184d5e3b064abb::t_cdad65cec25c13 1150-1153
+  s_184d5e3b064abb::t_50de217ba078e3 780-783
+  s_184d5e3b064abb::t_3526101ef5e6ff 4-5,118,122,124-126,130,138,140-142,445-456,458-466,510-530,552,568,617,621,623-625,629-633,635-661,667-668,670,672-698,700-712,714-749,769,771,882-904,906-910,914,920
+  s_184d5e3b064abb::t_1bac50ce022200 772-774,911-913
+  s_184d5e3b064abb::t_545b303b89da8b 959-967,969-1111
+  s_184d5e3b064abb::t_29f218f7f36960 123,139,457,559,620,622,634,662-666,669,671,699,713,770,905
+  s_184d5e3b064abb::t_0729d67eee0d22 968
+  s_184d5e3b064abb::t_552eb49b018000 958
+crates/lsb-cli/src/vm.rs
+  s_184d5e3b064abb::t_d8e4855d44c54a 3-4,25-27,39-45,151-175,191-196,209-339,401-403
+scripts/windows-smoke.ps1
+  s_184d5e3b064abb::t_aad64c7945f2e1 28-29,33
+crates/lsb-cli/src/checkpoint.rs
+  s_184d5e3b064abb::t_3eebbd5a86d14f 7,38-59,84,109-128,136,139-166,169-170,183,189-203,208-213,230-234,237
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2f8c75cd6de176db522cdda42d474197527abc0e",
+  "prompts": {},
+  "sessions": {
+    "s_184d5e3b064abb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f31e8-5f63-77d3-b4c9-7e59b8ebcdda",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
