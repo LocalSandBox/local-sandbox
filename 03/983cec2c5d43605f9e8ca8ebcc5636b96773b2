@@ -1,0 +1,50 @@
+crates/lsb-sdk/src/runtime.rs
+  s_d4ed328c196059::t_fbf4f1787bee99 8,527,533-536,562-563,616-626
+  s_d4ed328c196059::t_1df467735fa18d 627-628
+crates/lsb-platform/src/windows_x86_64/mod.rs
+  s_d4ed328c196059::t_87871ed2f8442e 11
+crates/lsb-cli/src/vm.rs
+  s_d4ed328c196059::t_0842895cec80d5 7,210,221-222,240-261,315-316,322,330
+crates/lsb-cli/src/stdio.rs
+  s_d4ed328c196059::t_e8733019741f80 318-320,331
+crates/lsb-platform/src/windows_x86_64/qemu/argv.rs
+  s_d4ed328c196059::t_71b17db139c55f 478-479,707-772
+  s_d4ed328c196059::t_970a1351003636 6-9,141,169-171,189-191,385-434,436
+  s_d4ed328c196059::t_edaa82100e7b10 435
+  s_d4ed328c196059::t_47be33065b76d9 437
+  s_d4ed328c196059::t_1a4061129497dd 773
+crates/lsb-platform/src/windows_x86_64/qemu/config.rs
+  s_d4ed328c196059::t_c058fb2db0e37e 13,26,94,101-119,122
+  s_d4ed328c196059::t_b6785512c182ee 120-121
+  s_d4ed328c196059::t_51b555dedf8bba 123
+crates/lsb-platform/src/windows_x86_64/config.rs
+  s_d4ed328c196059::t_b2f790dd3f6378 1,13,28-32,55,68-71
+crates/lsb-platform/src/lib.rs
+  s_d4ed328c196059::t_32b58beaa8d66f 10,205-226,237
+crates/lsb-vm/src/sandbox.rs
+  s_d4ed328c196059::t_afdeb9df16c5c1 44-46,125,141,190-200,232
+crates/lsb-platform/src/windows_x86_64/qemu/boot.rs
+  s_d4ed328c196059::t_02b9a03b0b7e6f 15,51,74,656
+crates/lsb-platform/src/windows_x86_64/backend.rs
+  s_d4ed328c196059::t_b038eea8a1363b 221,332-373
+  s_d4ed328c196059::t_3b04ac8a50b1bc 233
+  s_d4ed328c196059::t_7de396fdc28340 13,36,56,61
+crates/lsb-platform/src/windows_x86_64/network/mod.rs
+  s_d4ed328c196059::t_50dc43229030a2 1-125
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "03983cec2c5d43605f9e8ca8ebcc5636b96773b2",
+  "prompts": {},
+  "sessions": {
+    "s_d4ed328c196059": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f317b-d5ac-73a2-8e90-54b0b04a45b4",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
