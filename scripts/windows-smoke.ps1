@@ -104,6 +104,18 @@ function Invoke-WindowsNodePackedInstallSmoke {
 
     $packageRoot = (Get-Location).Path
     $platformPackageRoot = Join-Path $packageRoot "npm\win32-x64-msvc"
+    $nativeArtifact = Join-Path $packageRoot "lsb-nodejs.win32-x64-msvc.node"
+    $platformNativeArtifact = Join-Path $platformPackageRoot "lsb-nodejs.win32-x64-msvc.node"
+
+    if (-not (Test-Path -LiteralPath $nativeArtifact -PathType Leaf)) {
+      throw "Windows native binding was not produced at $nativeArtifact"
+    }
+
+    Copy-Item -LiteralPath $nativeArtifact -Destination $platformNativeArtifact -Force
+    if (-not (Test-Path -LiteralPath $platformNativeArtifact -PathType Leaf)) {
+      throw "Windows platform package is missing $platformNativeArtifact"
+    }
+
     $rootTarball = Invoke-NpmPack -PackageDir $packageRoot -PackDir $packRoot
     $platformTarball = Invoke-NpmPack -PackageDir $platformPackageRoot -PackDir $packRoot
 
