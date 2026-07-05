@@ -245,10 +245,10 @@ test('unsupported platforms fail with a clear unsupported error', async (t) => {
   }
 
   const error = await t.throwsAsync(() => Sandbox.start())
-  t.regex(error?.message ?? '', /only macOS on x86_64 and Apple Silicon|darwin\/(arm64|x64)/i)
+  t.regex(error?.message ?? '', /macOS on arm64\/x64 and Windows 11 x64|win32-x64-msvc/i)
 
   const initError = await t.throwsAsync(() => initSandbox())
-  t.regex(initError?.message ?? '', /only macOS on x86_64 and Apple Silicon|darwin\/(arm64|x64)/i)
+  t.regex(initError?.message ?? '', /macOS on arm64\/x64 and Windows 11 x64|win32-x64-msvc/i)
 })
 
 test('supported builds can initialize against already-present runtime assets', async (t) => {

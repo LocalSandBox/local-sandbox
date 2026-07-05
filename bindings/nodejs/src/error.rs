@@ -6,7 +6,7 @@ use napi::{Error, Status};
 pub(crate) fn unsupported_platform_error() -> Error {
   Error::new(
     Status::GenericFailure,
-    "lsb native bindings currently support only macOS on x86_64 and Apple Silicon (arm64). This package may install elsewhere, but Sandbox.start() is unsupported there.".to_string(),
+    "lsb native bindings support macOS on arm64/x64 and Windows 11 x64 through the win32-x64-msvc package. Unsupported hosts should install only the root package metadata or fail with a missing native package such as @local-sandbox/lsb-nodejs-win32-x64-msvc / lsb-nodejs.win32-x64-msvc.node.".to_string(),
   )
 }
 
