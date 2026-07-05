@@ -1,6 +1,6 @@
 # Self-Hosted Windows 11 Runner Setup Notes
 
-This document describes the maintainer-owned Windows 11 WHPX runner used by `.github/workflows/windows-lsb-hardware.yml`. The workflow is intentionally manual-only through `workflow_dispatch` so untrusted pull request code does not run automatically on self-hosted hardware.
+This document describes the maintainer-owned Windows 11 WHPX runner used by `.github/workflows/windows-lsb-hardware.yml`. The workflow display name is `Windows LSB Hardware (self-hosted WHPX)`. It is intentionally manual-only through `workflow_dispatch` so untrusted pull request code does not run automatically on self-hosted hardware.
 
 ## Runner labels
 
@@ -18,6 +18,11 @@ added, give this machine a dedicated label or remove the local-cache skip path;
 otherwise the probe job can hit one machine's `C:\lsb-assets` cache while the
 final smoke/e2e job lands on another machine.
 
+Each self-hosted job also checks `RUNNER_ENVIRONMENT`, `RUNNER_OS`, and
+`RUNNER_ARCH` before running repository commands. This is a guardrail against
+accidental workflow edits; the `runs-on` labels remain the primary routing
+control.
+
 ## Runner requirements
 
 - Windows 11 x86_64 host.
@@ -30,6 +35,7 @@ final smoke/e2e job lands on another machine.
 - Git configured for long paths if the repository needs it.
 - `C:\lsb-assets` writable by the runner account for the persistent boot asset cache.
 - GitHub Actions runner service registered to the target repository or organization with the labels above.
+- `C:\actions-runner\_diag` readable by the runner account if maintainer wants redacted runner logs included in failed-job artifacts.
 
 ## Suggested environment variables
 
@@ -108,8 +114,9 @@ The helper requires GitHub CLI (`gh`), an authenticated GitHub session, and a cl
 The workflow delegates long-running Windows hardware suites to PowerShell scripts in `scripts/`:
 
 - `scripts/prepare-windows-boot-assets.ps1`: validates either a downloaded boot asset artifact or a local `C:\lsb-assets\by-key\<asset-key>\` cache entry, maintains the persistent cache, creates the disposable rootfs work copy, and exports `LSB_WINDOWS_BOOT_KERNEL`, `LSB_WINDOWS_BOOT_INITRD`, `LSB_WINDOWS_BOOT_ROOTFS`, and `LSB_WINDOWS_BOOT_ARTIFACT_DIR` through `GITHUB_ENV`.
-- `scripts/windows-smoke.ps1`: current smoke entrypoint; it verifies the CLI starts, runs real QEMU/WHPX preflight, and runs the direct boot smoke when the workflow-provisioned boot asset variables are present.
-- `scripts/windows-e2e.ps1`: current e2e entrypoint; today it runs `cargo test --workspace --locked` and is the place to expand the full hardware integration suite.
+- `scripts/windows-smoke.ps1`: current smoke entrypoint; it verifies the CLI starts, runs real QEMU/WHPX preflight, builds and imports the Windows Node package from both source and packed npm tarballs, and then runs the boot, guest-ready, exec, copy, mount, port-forward, checkpoint/store, and network policy/proxy smokes when the workflow-provisioned boot asset variables are present.
+- `scripts/windows-e2e.ps1`: current e2e entrypoint; today it runs `cargo test --workspace --locked` with explicit native-command exit-code checking and is the place to expand the full hardware integration suite.
+- `scripts/collect-windows-diagnostics.ps1`: stages a redacted diagnostic bundle under `target\windows-lsb-diagnostics` for upload. Run with `-IncludeRunnerLogs` in GitHub Actions if redacted runner logs should be included.
 
 ## CI safety
 
@@ -130,6 +137,8 @@ For failed WHPX jobs, retain:
 - QEMU stderr/stdout,
 - preflight output,
 - host LocalSandbox logs,
+- allowlisted environment/tool summary,
+- diagnostics manifest,
 - test report.
 
 Do not retain secret-bearing env dumps or unredacted proxy logs.

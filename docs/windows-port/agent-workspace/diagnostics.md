@@ -69,6 +69,9 @@ writes QEMU boot artifacts under:
   preflight.json
   qemu.status.json
   boot.status.json
+  qmp.log                  # if QMP transcript logging is added/enabled
+  control.log.redacted     # if control trace logging is added/enabled
+  proxy.log.redacted       # if proxy trace logging is added/enabled
 ```
 
 For normal CLI/SDK startup, `<instance-dir>` is the existing per-run instance
@@ -90,6 +93,24 @@ target\windows-lsb-diagnostics\lsb-assets-work\<run-id>-<attempt>\
 ```
 
 The uploaded artifact is named `windows-lsb-diagnostics`.
+
+M15 centralizes upload staging through:
+
+```powershell
+.\scripts\collect-windows-diagnostics.ps1
+.\scripts\collect-windows-diagnostics.ps1 -IncludeRunnerLogs
+.\scripts\collect-windows-diagnostics.ps1 -StageRoot C:\tmp\lsb-diag -AssetWorkRoot C:\lsb-assets\work
+```
+
+The collector writes `environment.summary.json` and
+`diagnostics-manifest.json`, copies text-like diagnostic files from
+`LSB_WINDOWS_BOOT_ARTIFACT_DIR`, `C:\lsb-assets\work\*\diagnostics`, Cargo
+target logs, and optionally `C:\actions-runner\_diag`. It allowlists
+environment variables and file extensions, redacts known secret values from
+environment variables whose names look secret-bearing, and also redacts common
+token/private-key patterns. It does not upload raw environment dumps, boot
+assets, rootfs images, qcow2 disks, npm caches, private keys, or unredacted QEMU
+argv.
 
 For current M07 Windows boots, `boot.status.json` records state `guest_ready`
 and success definition
@@ -230,3 +251,30 @@ Actionable failure checks:
 Logs may include sanitized domain names, policy decision names, local ephemeral
 ports, and high-level errors. They must not include proxy payloads, literal host
 secret values, unredacted guest environment dumps, or full unredacted QEMU argv.
+
+## M15 CI diagnostic bundle checks
+
+When a hosted Windows Rust CI job fails, `.github/workflows/ci.yml` runs the
+collector and uploads `windows-hosted-rust-diagnostics`. This hosted bundle is
+compile/unit/golden-only and normally contains environment/tool summaries plus
+Cargo logs; it must not contain WHPX smoke artifacts because hosted runners do
+not run QEMU boot tests.
+
+When the manual self-hosted WHPX workflow runs, it uploads
+`windows-lsb-diagnostics` after `check`, `unit`, `smoke`, and `e2e` lanes. The
+smoke/e2e bundle should contain, when present:
+
+- `qemu.argv.redacted.txt`
+- `qemu.stdout.log` and `qemu.stderr.log`
+- `serial.log`
+- `preflight.json`
+- `qemu.status.json`
+- `boot.status.json`
+- control/forwarding/proxy/checkpoint logs if future code writes them as
+  `.log`, `.txt`, `.json`, or `.redacted`
+- `environment.summary.json`
+- `diagnostics-manifest.json`
+
+If a failure needs a file not present in `diagnostics-manifest.json`, add a
+redacted text artifact at the producer first or extend the collector allowlist
+deliberately. Do not broaden the workflow to upload arbitrary directories.

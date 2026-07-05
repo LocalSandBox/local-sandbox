@@ -16,6 +16,7 @@ Track implementation risks here. Update as evidence arrives.
 | R010 | Network policy bypass through accidental NIC/user networking | High | Medium | M12 golden/unit tests assert default `-nic none`, policy-mediated `-netdev stream` only when allow-net/proxy is configured, no QEMU user networking/hostfwd/TAP/bridge, DNS-answer binding for explicit allowlists, forged Host/SNI denial to arbitrary IPs, direct-IP and missing-domain denial, and fail-closed unsupported Windows attachment modes. | Mitigating | TBD |
 | R011 | Public API drift while adding Windows capability errors | Medium | Medium | Compile/API compatibility tests; keep errors structured below API boundary | Open | TBD |
 | R012 | Boot asset compatibility with QEMU differs from Apple VZ | High | Medium | M05 minimal direct boot smoke; update kernel/initramfs only behind preserved semantics | Open | TBD |
+| R013 | Default self-hosted Windows labels can route cache probe and smoke jobs to different machines if the runner pool grows | Medium | Medium | M15 documents the single-runner assumption, adds explicit self-hosted Windows runner checks, and keeps the workflow manual-only. Move to a dedicated label such as `whpx` or `local-sandbox` before adding another Windows self-hosted runner with the same default labels, or disable the local-cache skip path. | Open | Maintainer |
 
 ## Risk status values
 

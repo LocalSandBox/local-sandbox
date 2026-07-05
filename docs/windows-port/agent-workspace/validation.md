@@ -18,8 +18,10 @@ This document defines the test and CI expectations for the Windows QEMU + WHPX p
 
 ### Hosted runners
 
-- `windows-latest`: compile, unit, golden tests that do not require WHPX.
-- `macos-latest`: ensure existing macOS behavior remains intact.
+- Workflow: `.github/workflows/ci.yml`.
+- `ubuntu-24.04`: `cargo fmt --all -- --check`.
+- `windows-latest`: `cargo check --workspace --locked --target x86_64-pc-windows-msvc`, focused `lsb-platform` QEMU argv/preflight tests, and `cargo test --workspace --locked`. These tests must not set `LSB_TEST_REAL_QEMU`, must not require QEMU, and must not require WHPX/nested virtualization.
+- `macos-14`: existing macOS Rust check lanes remain in place to preserve current macOS behavior.
 - Optional `ubuntu-latest`: protocol/store/proxy logic where platform-independent.
 
 ### Self-hosted runner
@@ -42,6 +44,7 @@ Required runner properties:
 Hardware workflow:
 
 - Workflow: `.github/workflows/windows-lsb-hardware.yml`
+- Display name: `Windows LSB Hardware (self-hosted WHPX)`.
 - Trigger: manual `workflow_dispatch` only.
 - macOS/Linux helper: `./scripts/win-gh-test check|unit|smoke|e2e`
 - Do not add automatic `pull_request` triggers for the self-hosted Windows hardware runner.
@@ -88,11 +91,32 @@ For failed integration tests, capture:
 - LocalSandbox host logs,
 - guest readiness/control handshake logs,
 - relevant Windows preflight output,
+- allowlisted environment/tool summary,
+- diagnostic manifest showing collected and skipped files,
 - test name and seed/temp directory,
 - QEMU version and path,
 - Windows build/version from runner.
 
 Never capture secret values or unredacted environment dumps.
+
+M15 adds `scripts/collect-windows-diagnostics.ps1` as the common collector for
+hosted and self-hosted Windows CI. It stages artifacts under:
+
+```text
+target\windows-lsb-diagnostics\
+  environment.summary.json
+  diagnostics-manifest.json
+  explicit-boot-artifact-dir\
+  lsb-assets-work\<run-id>-<attempt>\
+  actions-runner\                  # self-hosted workflow only
+  workspace-target-logs\
+  cargo-target-logs\
+```
+
+The collector copies only allowlisted text-like diagnostic files (`.json`,
+`.log`, `.redacted`, `.txt`) and redacts known secret environment values plus
+common token/private-key patterns before upload. Environment capture is
+allowlisted; it is not a raw environment dump.
 
 ## Manual validation commands
 
@@ -204,3 +228,9 @@ target\windows-lsb-diagnostics\lsb-assets-work\<run-id>-<attempt>\
 The source diagnostics remain under
 `C:\lsb-assets\work\<run-id>-<attempt>\diagnostics` on the runner while the job
 is active.
+
+The smoke lane also runs a packed Node package install/import smoke after the
+local Windows N-API build. It packs the root package plus
+`@local-sandbox/lsb-nodejs-win32-x64-msvc`, installs both tarballs into a
+temporary project, and imports `@local-sandbox/lsb-nodejs` to verify
+`Sandbox.start` is exported before the runtime boot smoke starts.
