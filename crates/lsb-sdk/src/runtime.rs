@@ -903,7 +903,6 @@ fn run_vm_loop(
                                 active_disk,
                                 source,
                                 virtual_size_bytes,
-                                true,
                             )?;
                         }
                         #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
@@ -1004,7 +1003,6 @@ mod tests {
                     &base.active_disk,
                     source,
                     base.virtual_size_bytes,
-                    false,
                 )?;
                 let paths = store.checkpoint_paths(&checkpoint_name);
                 assert!(paths.qcow2_path.is_file());

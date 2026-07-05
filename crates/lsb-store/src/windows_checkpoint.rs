@@ -130,11 +130,10 @@ impl WindowsCheckpointStore {
         active_disk: impl AsRef<Path>,
         source: &WindowsCheckpointSource,
         virtual_size_bytes: u64,
-        overwrite: bool,
     ) -> Result<WindowsCheckpointMetadata, WindowsCheckpointError> {
         validate_checkpoint_name(name)?;
         let paths = self.checkpoint_paths(name);
-        if !overwrite && (paths.qcow2_path.exists() || paths.metadata_path.exists()) {
+        if checkpoint_artifact_exists(&paths) {
             return Err(WindowsCheckpointError::AlreadyExists {
                 name: name.to_string(),
             });
@@ -157,19 +156,21 @@ impl WindowsCheckpointStore {
         let metadata =
             WindowsCheckpointMetadata::new(name, source, virtual_size_bytes, unix_timestamp()?);
         let invocation = qemu_img.convert_flat_invocation(active_disk, &tmp_disk);
+        let mut disk_installed = false;
 
         let result = (|| {
             run_qemu_img(&invocation)?;
             write_metadata_path(&tmp_metadata, &metadata)?;
-            install_temp_file(&tmp_disk, &paths.qcow2_path, overwrite)?;
-            install_temp_file(&tmp_metadata, &paths.metadata_path, overwrite)?;
+            install_new_checkpoint_file(&tmp_disk, &paths.qcow2_path)?;
+            disk_installed = true;
+            install_new_checkpoint_file(&tmp_metadata, &paths.metadata_path)?;
             Ok(metadata)
         })();
 
         if result.is_err() {
             let _ = fs::remove_file(&tmp_disk);
             let _ = fs::remove_file(&tmp_metadata);
-            if !paths.metadata_path.exists() {
+            if disk_installed {
                 let _ = fs::remove_file(&paths.qcow2_path);
             }
         }
@@ -612,6 +613,8 @@ impl QemuImg {
             program: self.program.clone(),
             args: vec![
                 OsString::from("convert"),
+                OsString::from("-f"),
+                OsString::from("qcow2"),
                 OsString::from("-O"),
                 OsString::from("qcow2"),
                 source.as_os_str().to_owned(),
@@ -918,6 +921,48 @@ fn install_temp_file(
     })
 }
 
+fn install_new_checkpoint_file(
+    tmp: &Path,
+    destination: &Path,
+) -> Result<(), WindowsCheckpointError> {
+    if destination.exists() {
+        return Err(WindowsCheckpointError::AlreadyExists {
+            name: destination
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("?")
+                .to_string(),
+        });
+    }
+    match fs::hard_link(tmp, destination) {
+        Ok(()) => {
+            let _ = fs::remove_file(tmp);
+            Ok(())
+        }
+        Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(WindowsCheckpointError::AlreadyExists {
+                name: destination
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or("?")
+                    .to_string(),
+            })
+        }
+        Err(source) => Err(WindowsCheckpointError::Io {
+            path: destination.to_path_buf(),
+            operation: "install checkpoint file without replacing existing artifact",
+            source,
+        }),
+    }
+}
+
+fn checkpoint_artifact_exists(paths: &WindowsCheckpointPaths) -> bool {
+    paths.qcow2_path.exists()
+        || paths.metadata_path.exists()
+        || paths.legacy_ext4_path.exists()
+        || paths.cas_index_path.exists()
+}
+
 fn remove_file_if_exists(path: &Path) -> Result<(), WindowsCheckpointError> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -1058,6 +1103,8 @@ mod tests {
             args,
             [
                 "convert",
+                "-f",
+                "qcow2",
                 "-O",
                 "qcow2",
                 tmp.path()
@@ -1070,6 +1117,60 @@ mod tests {
                     .as_ref()
             ]
         );
+    }
+
+    #[test]
+    fn save_flat_checkpoint_rejects_any_existing_checkpoint_artifact() {
+        for extension in ["qcow2", "json", "ext4", "idx"] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let store = store(tmp.path());
+            fs::create_dir_all(store.checkpoints_dir()).expect("checkpoints dir");
+            let paths = store.checkpoint_paths("dev");
+            let conflict = match extension {
+                "qcow2" => paths.qcow2_path,
+                "json" => paths.metadata_path,
+                "ext4" => paths.legacy_ext4_path,
+                "idx" => paths.cas_index_path,
+                _ => unreachable!(),
+            };
+            fs::write(&conflict, b"existing").expect("conflict artifact");
+
+            let err = store
+                .save_flat_checkpoint(
+                    "dev",
+                    tmp.path().join("active.qcow2"),
+                    &base_source(tmp.path()),
+                    4096,
+                )
+                .expect_err("existing artifact should reject checkpoint save");
+
+            assert!(
+                matches!(err, WindowsCheckpointError::AlreadyExists { ref name } if name == "dev"),
+                "unexpected error for .{extension} conflict: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn install_new_checkpoint_file_does_not_replace_existing_destination() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let source = tmp.path().join(".dev.qcow2.convert.tmp");
+        let destination = tmp.path().join("dev.qcow2");
+        fs::write(&source, b"new").expect("source temp");
+        fs::write(&destination, b"old").expect("existing destination");
+
+        let err = install_new_checkpoint_file(&source, &destination)
+            .expect_err("existing destination should reject install");
+
+        assert!(
+            matches!(err, WindowsCheckpointError::AlreadyExists { ref name } if name == "dev"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            fs::read(&destination).expect("destination should remain readable"),
+            b"old"
+        );
+        assert!(source.exists(), "failed install should leave temp source");
     }
 
     #[test]

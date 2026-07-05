@@ -50,7 +50,6 @@ pub(crate) fn create(
                 &prepared.work_rootfs,
                 source,
                 prepared.disk_size * 1024 * 1024,
-                false,
             )?;
         }
         #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
