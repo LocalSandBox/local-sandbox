@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use boring::ssl::{SslConnector, SslMethod};
@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info};
 
 use crate::config::ProxyConfig;
-use crate::dns;
+use crate::dns::{self, SharedDnsCache};
 use crate::stack::{ConnectionId, StackCommand, StackEvent, TcpConnection};
 use crate::stream::ChannelStream;
 use crate::tls::CertificateAuthority;
@@ -27,6 +27,7 @@ pub struct ProxyEngine {
     event_rx: mpsc::UnboundedReceiver<StackEvent>,
     cmd_tx: mpsc::UnboundedSender<StackCommand>,
     connections: HashMap<ConnectionId, mpsc::UnboundedSender<Vec<u8>>>,
+    dns_cache: SharedDnsCache,
     placeholders: Arc<HashMap<String, String>>,
     ca: Arc<tokio::sync::Mutex<CertificateAuthority>>,
     upstream_ssl: SslConnector,
@@ -51,6 +52,7 @@ impl ProxyEngine {
             event_rx,
             cmd_tx,
             connections: HashMap::new(),
+            dns_cache: dns::new_shared_dns_cache(),
             placeholders: Arc::new(placeholders),
             ca: Arc::new(tokio::sync::Mutex::new(ca)),
             upstream_ssl,
@@ -78,8 +80,9 @@ impl ProxyEngine {
                 StackEvent::DnsQuery { src, payload } => {
                     let cmd_tx = self.cmd_tx.clone();
                     let config = self.config.clone();
+                    let dns_cache = self.dns_cache.clone();
                     tokio::spawn(async move {
-                        dns::handle_dns_query(src, payload, cmd_tx, &config).await;
+                        dns::handle_dns_query(src, payload, cmd_tx, &config, dns_cache).await;
                     });
                 }
             }
@@ -92,6 +95,7 @@ impl ProxyEngine {
 
         let cmd_tx = self.cmd_tx.clone();
         let config = self.config.clone();
+        let dns_cache = self.dns_cache.clone();
         let ca = self.ca.clone();
         let placeholders = self.placeholders.clone();
         let upstream_ssl = self.upstream_ssl.clone();
@@ -103,6 +107,7 @@ impl ProxyEngine {
                 data_rx,
                 cmd_tx,
                 &config,
+                &dns_cache,
                 ca,
                 &placeholders,
                 upstream_ssl,
@@ -122,6 +127,7 @@ async fn handle_connection(
     mut data_rx: mpsc::UnboundedReceiver<Vec<u8>>,
     cmd_tx: mpsc::UnboundedSender<StackCommand>,
     config: &ProxyConfig,
+    dns_cache: &SharedDnsCache,
     ca: Arc<tokio::sync::Mutex<CertificateAuthority>>,
     placeholders: &HashMap<String, String>,
     upstream_ssl: SslConnector,
@@ -169,7 +175,7 @@ async fn handle_connection(
         let sni = extract_sni(&tls_buf);
         debug!("TLS to {dst}, SNI: {sni:?}");
 
-        enforce_domain_policy(config, sni.as_deref(), "TLS")?;
+        enforce_connection_policy(config, dns_cache, sni.as_deref(), dst, "TLS")?;
 
         if let Some(domain) = sni {
             let substitutions = config.secrets_for_domain(&domain, placeholders);
@@ -207,7 +213,7 @@ async fn handle_connection(
             .await
             .ok_or_else(|| anyhow::anyhow!("connection closed before data"))?;
         let host = extract_http_host(&first_chunk);
-        enforce_domain_policy(config, host.as_deref(), "TCP")?;
+        enforce_connection_policy(config, dns_cache, host.as_deref(), dst, "TCP")?;
 
         debug!("TCP tunnel to {dst}");
         let upstream = TcpStream::connect(dst).await?;
@@ -271,9 +277,11 @@ async fn blind_relay(
     Ok(())
 }
 
-fn enforce_domain_policy(
+fn enforce_connection_policy(
     config: &ProxyConfig,
+    dns_cache: &SharedDnsCache,
     domain: Option<&str>,
+    dst: SocketAddr,
     protocol: &str,
 ) -> anyhow::Result<()> {
     if !config.has_domain_allowlist() {
@@ -285,9 +293,30 @@ fn enforce_domain_policy(
     };
 
     if config.is_domain_allowed(domain) {
-        Ok(())
+        enforce_destination_policy(dns_cache, domain, dst, protocol)
     } else {
         anyhow::bail!("{protocol} connection denied by network policy for {domain}");
+    }
+}
+
+fn enforce_destination_policy(
+    dns_cache: &SharedDnsCache,
+    domain: &str,
+    dst: SocketAddr,
+    protocol: &str,
+) -> anyhow::Result<()> {
+    let IpAddr::V4(dst_ip) = dst.ip() else {
+        anyhow::bail!(
+            "{protocol} connection denied: IPv6 destination {dst} is not supported by the IPv4 proxy policy"
+        );
+    };
+
+    if dns::destination_matches_dns_answer(dns_cache, domain, dst_ip)? {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "{protocol} connection denied: policy-visible domain {domain} did not resolve to destination {dst}"
+        );
     }
 }
 
@@ -494,8 +523,28 @@ fn strip_host_port(host: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     use super::*;
+
+    fn allowed_config(domain: &str) -> ProxyConfig {
+        ProxyConfig {
+            network: crate::config::NetworkConfig {
+                allow: vec![domain.into()],
+            },
+            ..Default::default()
+        }
+    }
+
+    fn cache_answer(domain: &str, addr: Ipv4Addr) -> SharedDnsCache {
+        let cache = dns::new_shared_dns_cache();
+        dns::record_allowed_dns_answer(&cache, domain, &[addr]);
+        cache
+    }
+
+    fn dst(addr: Ipv4Addr, port: u16) -> SocketAddr {
+        SocketAddr::new(IpAddr::V4(addr), port)
+    }
 
     #[test]
     fn test_extract_sni_none_for_non_tls() {
@@ -523,46 +572,87 @@ mod tests {
 
     #[test]
     fn allowlist_policy_allows_visible_allowed_domain() {
-        let config = ProxyConfig {
-            network: crate::config::NetworkConfig {
-                allow: vec!["api.example.test".into()],
-            },
-            ..Default::default()
-        };
+        let config = allowed_config("api.example.test");
+        let allowed_ip = Ipv4Addr::new(203, 0, 113, 10);
+        let cache = cache_answer("api.example.test", allowed_ip);
 
-        enforce_domain_policy(&config, Some("api.example.test"), "TLS")
-            .expect("allowed domain should pass");
+        enforce_connection_policy(
+            &config,
+            &cache,
+            Some("api.example.test"),
+            dst(allowed_ip, 443),
+            "TLS",
+        )
+        .expect("allowed domain should pass");
     }
 
     #[test]
     fn allowlist_policy_blocks_direct_ip_or_missing_domain() {
-        let config = ProxyConfig {
-            network: crate::config::NetworkConfig {
-                allow: vec!["api.example.test".into()],
-            },
-            ..Default::default()
-        };
+        let config = allowed_config("api.example.test");
+        let cache = dns::new_shared_dns_cache();
 
-        let err = enforce_domain_policy(&config, None, "TCP")
-            .expect_err("missing domain should be blocked");
+        let err = enforce_connection_policy(
+            &config,
+            &cache,
+            None,
+            dst(Ipv4Addr::new(203, 0, 113, 10), 80),
+            "TCP",
+        )
+        .expect_err("missing domain should be blocked");
 
         assert!(err.to_string().contains("no policy-visible domain"));
     }
 
     #[test]
     fn allowlist_policy_blocks_unlisted_sni() {
-        let config = ProxyConfig {
-            network: crate::config::NetworkConfig {
-                allow: vec!["api.example.test".into()],
-            },
-            ..Default::default()
-        };
+        let config = allowed_config("api.example.test");
+        let cache = dns::new_shared_dns_cache();
 
-        let err = enforce_domain_policy(&config, Some("blocked.example.test"), "TLS")
-            .expect_err("blocked domain should fail");
+        let err = enforce_connection_policy(
+            &config,
+            &cache,
+            Some("blocked.example.test"),
+            dst(Ipv4Addr::new(203, 0, 113, 10), 443),
+            "TLS",
+        )
+        .expect_err("blocked domain should fail");
 
         assert!(err.to_string().contains("denied by network policy"));
         assert!(err.to_string().contains("blocked.example.test"));
+    }
+
+    #[test]
+    fn allowlist_policy_blocks_forged_http_host_to_arbitrary_ip() {
+        let config = allowed_config("api.example.test");
+        let cache = cache_answer("api.example.test", Ipv4Addr::new(203, 0, 113, 10));
+
+        let err = enforce_connection_policy(
+            &config,
+            &cache,
+            Some("api.example.test"),
+            dst(Ipv4Addr::new(198, 51, 100, 42), 80),
+            "TCP",
+        )
+        .expect_err("forged Host header must not authorize arbitrary destination IP");
+
+        assert!(err.to_string().contains("did not resolve to destination"));
+    }
+
+    #[test]
+    fn allowlist_policy_blocks_forged_sni_to_arbitrary_ip() {
+        let config = allowed_config("api.example.test");
+        let cache = cache_answer("api.example.test", Ipv4Addr::new(203, 0, 113, 10));
+
+        let err = enforce_connection_policy(
+            &config,
+            &cache,
+            Some("api.example.test"),
+            dst(Ipv4Addr::new(198, 51, 100, 42), 443),
+            "TLS",
+        )
+        .expect_err("forged SNI must not authorize arbitrary destination IP");
+
+        assert!(err.to_string().contains("did not resolve to destination"));
     }
 
     #[test]
@@ -577,12 +667,7 @@ mod tests {
 
     #[test]
     fn secret_substitution_is_reachable_only_after_domain_policy_allows() {
-        let mut config = ProxyConfig {
-            network: crate::config::NetworkConfig {
-                allow: vec!["api.example.test".into()],
-            },
-            ..Default::default()
-        };
+        let mut config = allowed_config("api.example.test");
         config.secrets.insert(
             "API_KEY".into(),
             crate::config::SecretConfig {
@@ -591,15 +676,30 @@ mod tests {
             },
         );
         let placeholders = HashMap::from([("API_KEY".into(), "lsb_tok_placeholder".into())]);
+        let allowed_ip = Ipv4Addr::new(203, 0, 113, 10);
+        let cache = cache_answer("api.example.test", allowed_ip);
 
-        enforce_domain_policy(&config, Some("api.example.test"), "TLS")
-            .expect("secret host is allowed");
+        enforce_connection_policy(
+            &config,
+            &cache,
+            Some("api.example.test"),
+            dst(allowed_ip, 443),
+            "TLS",
+        )
+        .expect("secret host is allowed");
         assert_eq!(
             config.secrets_for_domain("api.example.test", &placeholders),
             vec![("lsb_tok_placeholder".into(), "real-secret".into())]
         );
 
-        assert!(enforce_domain_policy(&config, Some("blocked.example.test"), "TLS").is_err());
+        assert!(enforce_connection_policy(
+            &config,
+            &cache,
+            Some("blocked.example.test"),
+            dst(allowed_ip, 443),
+            "TLS",
+        )
+        .is_err());
         assert!(config
             .secrets_for_domain("blocked.example.test", &placeholders)
             .is_empty());

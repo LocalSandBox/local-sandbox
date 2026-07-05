@@ -1,4 +1,7 @@
+use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, ToSocketAddrs};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use simple_dns::Packet;
 use smoltcp::wire::IpEndpoint;
@@ -8,6 +11,79 @@ use tracing::debug;
 use crate::config::ProxyConfig;
 use crate::stack::StackCommand;
 
+const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
+
+pub(crate) type SharedDnsCache = Arc<Mutex<DnsResolutionCache>>;
+
+#[derive(Debug, Default)]
+pub(crate) struct DnsResolutionCache {
+    records: HashMap<String, CachedDnsRecord>,
+}
+
+#[derive(Debug)]
+struct CachedDnsRecord {
+    addresses: HashSet<Ipv4Addr>,
+    expires_at: Instant,
+}
+
+impl DnsResolutionCache {
+    fn record(&mut self, domain: &str, addresses: &[Ipv4Addr]) {
+        self.purge_expired();
+
+        let domain = normalize_domain(domain);
+        if addresses.is_empty() {
+            self.records.remove(&domain);
+            return;
+        }
+
+        self.records.insert(
+            domain,
+            CachedDnsRecord {
+                addresses: addresses.iter().copied().collect(),
+                expires_at: Instant::now() + DNS_CACHE_TTL,
+            },
+        );
+    }
+
+    fn allows_destination(&mut self, domain: &str, addr: Ipv4Addr) -> bool {
+        self.purge_expired();
+        self.records
+            .get(&normalize_domain(domain))
+            .is_some_and(|record| record.addresses.contains(&addr))
+    }
+
+    fn purge_expired(&mut self) {
+        let now = Instant::now();
+        self.records.retain(|_, record| record.expires_at > now);
+    }
+}
+
+pub(crate) fn new_shared_dns_cache() -> SharedDnsCache {
+    Arc::new(Mutex::new(DnsResolutionCache::default()))
+}
+
+pub(crate) fn record_allowed_dns_answer(
+    cache: &SharedDnsCache,
+    domain: &str,
+    addresses: &[Ipv4Addr],
+) {
+    match cache.lock() {
+        Ok(mut cache) => cache.record(domain, addresses),
+        Err(_) => debug!("DNS policy cache lock poisoned; answer not recorded"),
+    }
+}
+
+pub(crate) fn destination_matches_dns_answer(
+    cache: &SharedDnsCache,
+    domain: &str,
+    addr: Ipv4Addr,
+) -> anyhow::Result<bool> {
+    let mut cache = cache
+        .lock()
+        .map_err(|_| anyhow::anyhow!("DNS policy cache unavailable"))?;
+    Ok(cache.allows_destination(domain, addr))
+}
+
 /// Handle a DNS query from the guest.
 ///
 /// Resolves the query on the host and sends the response back via the stack.
@@ -16,9 +92,15 @@ pub async fn handle_dns_query(
     payload: Vec<u8>,
     cmd_tx: mpsc::UnboundedSender<StackCommand>,
     config: &ProxyConfig,
+    dns_cache: SharedDnsCache,
 ) {
     let response = match resolve_query(&payload, &config).await {
-        Ok(resp) => resp,
+        Ok(resolved) => {
+            if let Some(answer) = &resolved.allowed_answer {
+                record_allowed_dns_answer(&dns_cache, &answer.domain, &answer.addresses);
+            }
+            resolved.response
+        }
         Err(e) => {
             debug!("DNS resolution failed: {e}");
             return;
@@ -31,9 +113,24 @@ pub async fn handle_dns_query(
     });
 }
 
-async fn resolve_query(query_bytes: &[u8], config: &ProxyConfig) -> anyhow::Result<Vec<u8>> {
+struct ResolvedQuery {
+    response: Vec<u8>,
+    allowed_answer: Option<AllowedDnsAnswer>,
+}
+
+struct AllowedDnsAnswer {
+    domain: String,
+    addresses: Vec<Ipv4Addr>,
+}
+
+async fn resolve_query(query_bytes: &[u8], config: &ProxyConfig) -> anyhow::Result<ResolvedQuery> {
     let domain = match classify_query(query_bytes, config)? {
-        QueryAction::Respond(response) => return Ok(response),
+        QueryAction::Respond(response) => {
+            return Ok(ResolvedQuery {
+                response,
+                allowed_answer: None,
+            })
+        }
         QueryAction::ResolveA(domain) => domain,
     };
 
@@ -51,7 +148,10 @@ async fn resolve_query(query_bytes: &[u8], config: &ProxyConfig) -> anyhow::Resu
         }
     };
 
-    build_a_responses(query_bytes, &addresses)
+    Ok(ResolvedQuery {
+        response: build_a_responses(query_bytes, &addresses)?,
+        allowed_answer: Some(AllowedDnsAnswer { domain, addresses }),
+    })
 }
 
 #[cfg(test)]
@@ -63,8 +163,25 @@ fn resolve_query_with_resolver<F>(
 where
     F: FnOnce(&str) -> anyhow::Result<Vec<Ipv4Addr>>,
 {
+    Ok(resolve_query_with_resolver_result(query_bytes, config, resolver)?.response)
+}
+
+#[cfg(test)]
+fn resolve_query_with_resolver_result<F>(
+    query_bytes: &[u8],
+    config: &ProxyConfig,
+    resolver: F,
+) -> anyhow::Result<ResolvedQuery>
+where
+    F: FnOnce(&str) -> anyhow::Result<Vec<Ipv4Addr>>,
+{
     let domain = match classify_query(query_bytes, config)? {
-        QueryAction::Respond(response) => return Ok(response),
+        QueryAction::Respond(response) => {
+            return Ok(ResolvedQuery {
+                response,
+                allowed_answer: None,
+            })
+        }
         QueryAction::ResolveA(domain) => domain,
     };
 
@@ -75,7 +192,10 @@ where
             Vec::new()
         }
     };
-    build_a_responses(query_bytes, &addresses)
+    Ok(ResolvedQuery {
+        response: build_a_responses(query_bytes, &addresses)?,
+        allowed_answer: Some(AllowedDnsAnswer { domain, addresses }),
+    })
 }
 
 enum QueryAction {
@@ -120,7 +240,11 @@ fn classify_query(query_bytes: &[u8], config: &ProxyConfig) -> anyhow::Result<Qu
         return Ok(QueryAction::Respond(build_empty_response(query_bytes)?));
     }
 
-    Ok(QueryAction::ResolveA(domain.to_string()))
+    Ok(QueryAction::ResolveA(normalize_domain(domain)))
+}
+
+fn normalize_domain(domain: &str) -> String {
+    domain.trim_end_matches('.').to_ascii_lowercase()
 }
 
 fn system_ipv4_lookup(domain: &str) -> anyhow::Result<Vec<Ipv4Addr>> {
@@ -241,6 +365,36 @@ mod tests {
             a_addresses(&response),
             vec![Ipv4Addr::new(10, 134, 2, 6), Ipv4Addr::new(10, 134, 2, 7)]
         );
+    }
+
+    #[test]
+    fn records_allowed_answers_for_destination_policy() {
+        let query = build_query("Api.Example.Test", 1);
+        let resolved =
+            resolve_query_with_resolver_result(&query, &ProxyConfig::default(), |domain| {
+                assert_eq!(domain, "api.example.test");
+                Ok(vec![Ipv4Addr::new(203, 0, 113, 10)])
+            })
+            .expect("resolve query");
+        let answer = resolved
+            .allowed_answer
+            .expect("allowed A answer should be policy-visible");
+        let cache = new_shared_dns_cache();
+
+        record_allowed_dns_answer(&cache, &answer.domain, &answer.addresses);
+
+        assert!(destination_matches_dns_answer(
+            &cache,
+            "api.example.test",
+            Ipv4Addr::new(203, 0, 113, 10)
+        )
+        .expect("DNS cache should be available"));
+        assert!(!destination_matches_dns_answer(
+            &cache,
+            "api.example.test",
+            Ipv4Addr::new(198, 51, 100, 42)
+        )
+        .expect("DNS cache should be available"));
     }
 
     #[test]
