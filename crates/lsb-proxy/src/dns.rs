@@ -8,7 +8,7 @@ use smoltcp::wire::IpEndpoint;
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use crate::config::ProxyConfig;
+use crate::config::{ProxyConfig, GUEST_GATEWAY_IP, HOST_LSB_INTERNAL};
 use crate::stack::StackCommand;
 
 const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
@@ -215,16 +215,37 @@ fn classify_query(query_bytes: &[u8], config: &ProxyConfig) -> anyhow::Result<Qu
     let domain = qname.trim_end_matches('.');
 
     let qtype = question.qtype;
-    if qtype == simple_dns::QTYPE::TYPE(simple_dns::TYPE::AAAA) {
+    let is_a_query = qtype == simple_dns::QTYPE::TYPE(simple_dns::TYPE::A);
+    let is_aaaa_query = qtype == simple_dns::QTYPE::TYPE(simple_dns::TYPE::AAAA);
+
+    if config.is_mount_only_smb() {
+        if domain == HOST_LSB_INTERNAL {
+            if is_a_query {
+                debug!("DNS host.lsb.internal -> 10.0.0.1");
+                return Ok(QueryAction::Respond(build_a_response(
+                    query_bytes,
+                    GUEST_GATEWAY_IP,
+                )?));
+            }
+
+            debug!("DNS host.lsb.internal empty non-A response");
+            return Ok(QueryAction::Respond(build_empty_response(query_bytes)?));
+        }
+
+        debug!("DNS blocked by mount-only SMB mode: {domain}");
+        return Ok(QueryAction::Respond(build_refused_response(query_bytes)?));
+    }
+
+    if is_aaaa_query {
         debug!("DNS AAAA empty (IPv4-only): {domain}");
         return Ok(QueryAction::Respond(build_empty_response(query_bytes)?));
     }
 
-    if domain == "host.lsb.internal" {
+    if domain == HOST_LSB_INTERNAL {
         debug!("DNS host.lsb.internal -> 10.0.0.1");
         return Ok(QueryAction::Respond(build_a_response(
             query_bytes,
-            Ipv4Addr::new(10, 0, 0, 1),
+            GUEST_GATEWAY_IP,
         )?));
     }
 
@@ -235,7 +256,7 @@ fn classify_query(query_bytes: &[u8], config: &ProxyConfig) -> anyhow::Result<Qu
         return Ok(QueryAction::Respond(build_refused_response(query_bytes)?));
     }
 
-    if qtype != simple_dns::QTYPE::TYPE(simple_dns::TYPE::A) {
+    if !is_a_query {
         debug!("DNS unsupported query type for IPv4 proxy: {domain}");
         return Ok(QueryAction::Respond(build_empty_response(query_bytes)?));
     }
@@ -431,6 +452,51 @@ mod tests {
         .expect("resolve query");
 
         assert_eq!(a_addresses(&response), vec![Ipv4Addr::new(10, 0, 0, 1)]);
+    }
+
+    #[test]
+    fn mount_only_smb_keeps_host_internal_but_refuses_other_dns() {
+        let config = ProxyConfig::mount_only_smb();
+        let host_query = build_query("host.lsb.internal", 1);
+        let host_response = resolve_query_with_resolver(&host_query, &config, |_domain| {
+            panic!("host.lsb.internal should not use host resolver");
+        })
+        .expect("resolve host alias");
+
+        assert_eq!(
+            a_addresses(&host_response),
+            vec![crate::config::GUEST_GATEWAY_IP]
+        );
+
+        let blocked_query = build_query("api.example.test", 1);
+        let blocked_response = resolve_query_with_resolver(&blocked_query, &config, |_domain| {
+            panic!("mount-only SMB mode should not forward arbitrary DNS");
+        })
+        .expect("resolve blocked query");
+        let packet = Packet::parse(&blocked_response).expect("parse DNS response");
+
+        assert_eq!(packet.rcode(), RCODE::Refused);
+        assert!(packet.answers.is_empty());
+    }
+
+    #[test]
+    fn combined_smb_mode_preserves_dns_network_policy() {
+        let query = build_query("api.example.test", 1);
+        let config = ProxyConfig {
+            network: crate::config::NetworkConfig {
+                allow: vec!["api.example.test".into()],
+            },
+            ..Default::default()
+        }
+        .with_smb_mount_relay();
+
+        let response = resolve_query_with_resolver(&query, &config, |domain| {
+            assert_eq!(domain, "api.example.test");
+            Ok(vec![Ipv4Addr::new(203, 0, 113, 10)])
+        })
+        .expect("resolve allowed query");
+
+        assert_eq!(a_addresses(&response), vec![Ipv4Addr::new(203, 0, 113, 10)]);
     }
 
     #[test]

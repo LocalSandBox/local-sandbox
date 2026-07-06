@@ -5,22 +5,21 @@ and validation results synchronized while implementing `PLAN.md`.
 
 ## Current Status
 
-- Overall status: Slice 2 foundation implemented; workspace compilation restored
+- Overall status: Slice 3 mount-only SMB proxy implemented; scoped validation passing
 - Current owner: Codex
 - Current branch: codex/lsb-direct-mnt
 - Last updated: 2026-07-06
-- Latest validated commit: 0febf44 plus uncommitted Slice 2 foundation edits
+- Latest validated commit: 0febf44 plus uncommitted Slice 3 proxy edits
 
 ## Active Focus
 
-- Current task: Slice 2 protocol, guest, kernel, and rootfs foundation
-- Relevant files: `crates/lsb-proto/src/lib.rs`,
-  `crates/lsb-guest/src/main.rs`, `crates/lsb-vm/src/sandbox.rs`,
-  `kernel/lsb_defconfig`, `kernel/lsb_x86_64_defconfig`,
-  `xtask/src/rootfs.rs`, `STATE.md`
-- Immediate next step: Begin Slice 3 mount-only SMB proxy implementation after
+- Current task: Slice 3 mount-only SMB proxy implementation
+- Relevant files: `crates/lsb-proxy/src/config.rs`,
+  `crates/lsb-proxy/src/dns.rs`, `crates/lsb-proxy/src/proxy.rs`,
+  `STATE.md`
+- Immediate next step: Begin Slice 4 CLI/SDK proxy startup detection after
   review.
-- Blockers: None for Slice 2.
+- Blockers: None for Slice 3.
 
 ## Maintainer Decisions
 
@@ -47,7 +46,7 @@ and validation results synchronized while implementing `PLAN.md`.
 - [x] Add `cifs_mount` guest capability.
 - [x] Add protocol redaction tests for SMB credentials.
 - [x] Implement guest `mount.cifs` path using `PASSWD_FD`.
-- [ ] Add mount-only SMB proxy mode.
+- [x] Add mount-only SMB proxy mode.
 - [ ] Add CLI detection/startup for mount-only SMB proxy.
 - [ ] Add SDK detection/startup for mount-only SMB proxy.
 - [ ] Preserve Node API shape and direct flag mapping.
@@ -63,7 +62,7 @@ and validation results synchronized while implementing `PLAN.md`.
 - [ ] Wire cleanup into `Sandbox::stop`.
 - [ ] Add stale cleanup manifest/recovery.
 - [ ] Add QEMU argv golden tests.
-- [ ] Add proxy policy tests.
+- [x] Add proxy policy tests.
 - [ ] Add guest mount tests.
 - [ ] Add Windows unit tests.
 - [ ] Add Windows WHPX smoke tests.
@@ -77,6 +76,7 @@ and validation results synchronized while implementing `PLAN.md`.
 | 2026-07-06 | 0febf44 + working tree | `cargo fmt --check`; `cargo test -p lsb-proto`; `cargo test -p lsb-guest`; `cargo test -p xtask rootfs` | Pass | Scoped Slice 2 formatting and directly related tests pass. |
 | 2026-07-06 | 0febf44 + working tree | `cargo check --workspace` | Blocked | Fails because `crates/lsb-vm/src/sandbox.rs` has an exhaustive `MountRequest` match missing `Smb`; `lsb-vm` is outside the requested touch list. |
 | 2026-07-06 | 0febf44 + working tree | `cargo fmt --check`; `cargo check --workspace`; `cargo test -p lsb-vm` | Pass | Minimal `lsb-vm` exhaustiveness update restored workspace compilation without SMB lifecycle/startup behavior. |
+| 2026-07-06 | 0febf44 + working tree | `cargo fmt --check`; `cargo test -p lsb-proxy`; `git diff --check` | Pass | Slice 3 proxy policy tests cover mount-only SMB relay, arbitrary TCP/DNS denial, no secret substitutions in mount-only mode, and combined network-plus-SMB behavior. |
 
 ## Open Blockers
 
@@ -110,6 +110,9 @@ artifacts unless they are intentionally checked in.
 | `kernel/lsb_x86_64_defconfig` | Updated | Enabled built-in CIFS client support. |
 | `xtask/src/rootfs.rs` | Updated | Installs `cifs-utils`, checks for `mount.cifs`, and tests generated rootfs scripts. |
 | `crates/lsb-vm/src/sandbox.rs` | Updated | Minimal exhaustiveness handling for `MountRequest::Smb` so the workspace compiles; no SMB lifecycle/startup implementation. |
+| `crates/lsb-proxy/src/config.rs` | Updated | Added `ProxyMode`, mount-only SMB config helpers, gateway/SMB constants, and policy tests. |
+| `crates/lsb-proxy/src/dns.rs` | Updated | Mount-only SMB mode answers `host.lsb.internal` locally and refuses arbitrary DNS without host resolver forwarding. |
+| `crates/lsb-proxy/src/proxy.rs` | Updated | Routes only guest `10.0.0.1:445` to host `127.0.0.1:445` in SMB modes and denies other mount-only TCP flows. |
 
 ## Cleanup/Redaction Audit
 

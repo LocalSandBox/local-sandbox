@@ -8,7 +8,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 
-use crate::config::ProxyConfig;
+use crate::config::{ProxyConfig, SMB_MOUNT_PORT};
 use crate::dns::{self, SharedDnsCache};
 use crate::stack::{ConnectionId, StackCommand, StackEvent, TcpConnection};
 use crate::stream::ChannelStream;
@@ -120,6 +120,36 @@ impl ProxyEngine {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectionRoute {
+    SmbMountRelay(SocketAddr),
+    ExposeHost(SocketAddr),
+    DenyMountOnly,
+    Outbound,
+}
+
+fn classify_connection_route(config: &ProxyConfig, dst: SocketAddr) -> ConnectionRoute {
+    if let IpAddr::V4(ipv4) = dst.ip() {
+        if config.permits_smb_mount_relay(ipv4, dst.port()) {
+            return ConnectionRoute::SmbMountRelay(host_loopback_socket(SMB_MOUNT_PORT));
+        }
+
+        if let Some(host_port) = config.exposed_host_port(ipv4, dst.port()) {
+            return ConnectionRoute::ExposeHost(host_loopback_socket(host_port));
+        }
+    }
+
+    if config.is_mount_only_smb() {
+        ConnectionRoute::DenyMountOnly
+    } else {
+        ConnectionRoute::Outbound
+    }
+}
+
+fn host_loopback_socket(port: u16) -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), port)
+}
+
 /// Handle a single proxied TCP connection.
 async fn handle_connection(
     id: ConnectionId,
@@ -132,21 +162,28 @@ async fn handle_connection(
     placeholders: &HashMap<String, String>,
     upstream_ssl: SslConnector,
 ) -> anyhow::Result<()> {
-    if let std::net::IpAddr::V4(ipv4) = dst.ip() {
-        if let Some(host_port) = config.exposed_host_port(ipv4, dst.port()) {
+    match classify_connection_route(config, dst) {
+        ConnectionRoute::SmbMountRelay(local_dst) => {
+            debug!("SMB mount relay: guest 10.0.0.1:445 -> localhost:445");
+            let upstream = TcpStream::connect(local_dst).await?;
+            let (mut upstream_rd, mut upstream_wr) = upstream.into_split();
+            return blind_relay(id, &mut upstream_rd, &mut upstream_wr, data_rx, cmd_tx).await;
+        }
+        ConnectionRoute::ExposeHost(local_dst) => {
             debug!(
                 "expose-host: guest :{} -> localhost:{}",
                 dst.port(),
-                host_port
-            );
-            let local_dst = SocketAddr::new(
-                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-                host_port,
+                local_dst.port()
             );
             let upstream = TcpStream::connect(local_dst).await?;
             let (mut upstream_rd, mut upstream_wr) = upstream.into_split();
             return blind_relay(id, &mut upstream_rd, &mut upstream_wr, data_rx, cmd_tx).await;
         }
+        ConnectionRoute::DenyMountOnly => {
+            let _ = cmd_tx.send(StackCommand::Close { id });
+            anyhow::bail!("mount-only SMB proxy denied TCP connection to {dst}");
+        }
+        ConnectionRoute::Outbound => {}
     }
 
     let is_tls = dst.port() == 443;
@@ -284,6 +321,10 @@ fn enforce_connection_policy(
     dst: SocketAddr,
     protocol: &str,
 ) -> anyhow::Result<()> {
+    if !config.permits_network_policy() {
+        anyhow::bail!("{protocol} connection denied by mount-only SMB policy");
+    }
+
     if !config.has_domain_allowlist() {
         return Ok(());
     }
@@ -546,6 +587,10 @@ mod tests {
         SocketAddr::new(IpAddr::V4(addr), port)
     }
 
+    fn loopback(port: u16) -> SocketAddr {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
+    }
+
     #[test]
     fn test_extract_sni_none_for_non_tls() {
         assert_eq!(extract_sni(b"GET / HTTP/1.1\r\n"), None);
@@ -584,6 +629,69 @@ mod tests {
             "TLS",
         )
         .expect("allowed domain should pass");
+    }
+
+    #[test]
+    fn mount_only_smb_route_allows_only_gateway_smb_to_host_loopback() {
+        let config = ProxyConfig::mount_only_smb();
+
+        assert_eq!(
+            classify_connection_route(&config, dst(crate::config::GUEST_GATEWAY_IP, 445)),
+            ConnectionRoute::SmbMountRelay(loopback(445))
+        );
+        assert_eq!(
+            classify_connection_route(&config, dst(crate::config::GUEST_GATEWAY_IP, 80)),
+            ConnectionRoute::DenyMountOnly
+        );
+        assert_eq!(
+            classify_connection_route(&config, dst(Ipv4Addr::new(203, 0, 113, 10), 445)),
+            ConnectionRoute::DenyMountOnly
+        );
+    }
+
+    #[test]
+    fn mount_only_smb_route_ignores_expose_host_and_network_policy() {
+        let mut config = ProxyConfig::mount_only_smb();
+        config.expose_host.push(crate::config::ExposeHostMapping {
+            host_port: 3000,
+            guest_port: 8080,
+        });
+        config.network.allow.push("api.example.test".into());
+
+        assert_eq!(
+            classify_connection_route(&config, dst(crate::config::GUEST_GATEWAY_IP, 8080)),
+            ConnectionRoute::DenyMountOnly
+        );
+        assert!(enforce_connection_policy(
+            &config,
+            &dns::new_shared_dns_cache(),
+            Some("api.example.test"),
+            dst(Ipv4Addr::new(203, 0, 113, 10), 443),
+            "TLS",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn combined_smb_route_preserves_network_and_expose_host_behavior() {
+        let mut config = allowed_config("api.example.test").with_smb_mount_relay();
+        config.expose_host.push(crate::config::ExposeHostMapping {
+            host_port: 3000,
+            guest_port: 8080,
+        });
+
+        assert_eq!(
+            classify_connection_route(&config, dst(crate::config::GUEST_GATEWAY_IP, 445)),
+            ConnectionRoute::SmbMountRelay(loopback(445))
+        );
+        assert_eq!(
+            classify_connection_route(&config, dst(crate::config::GUEST_GATEWAY_IP, 8080)),
+            ConnectionRoute::ExposeHost(loopback(3000))
+        );
+        assert_eq!(
+            classify_connection_route(&config, dst(Ipv4Addr::new(203, 0, 113, 10), 443)),
+            ConnectionRoute::Outbound
+        );
     }
 
     #[test]
