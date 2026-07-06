@@ -525,17 +525,46 @@ fn run_command_inner(
 }
 
 fn parse_mount_spec(s: &str) -> Result<MountConfig> {
-    let parts: Vec<&str> = s.splitn(3, ':').collect();
-    if parts.len() < 2 {
-        bail!("expected HOST:GUEST[:ro|rw] format (e.g. ./src:/workspace:rw)");
-    }
+    let (host, guest, mode) = split_mount_spec(s)?;
 
-    let host_path = std::fs::canonicalize(parts[0])
-        .with_context(|| format!("host path does not exist: '{}'", parts[0]))?
+    let host_path = std::fs::canonicalize(host)
+        .with_context(|| format!("host path does not exist: '{}'", host))?
         .to_string_lossy()
         .to_string();
 
-    parse_mount_parts(&host_path, parts[1], parts.get(2).copied())
+    parse_mount_parts(&host_path, guest, mode)
+}
+
+fn split_mount_spec(s: &str) -> Result<(&str, &str, Option<&str>)> {
+    let separator = s
+        .char_indices()
+        .find_map(|(index, ch)| {
+            if ch == ':' && s[index + ch.len_utf8()..].starts_with('/') {
+                Some(index)
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!("expected HOST:GUEST[:ro|rw] format (e.g. ./src:/workspace:rw)")
+        })?;
+
+    let host = &s[..separator];
+    let mut guest = &s[separator + 1..];
+    let mut mode = None;
+    if let Some(path) = guest.strip_suffix(":ro") {
+        guest = path;
+        mode = Some("ro");
+    } else if let Some(path) = guest.strip_suffix(":rw") {
+        guest = path;
+        mode = Some("rw");
+    }
+
+    if host.is_empty() || guest.is_empty() {
+        bail!("expected HOST:GUEST[:ro|rw] format (e.g. ./src:/workspace:rw)");
+    }
+
+    Ok((host, guest, mode))
 }
 
 fn parse_mount_parts(host: &str, guest: &str, mode: Option<&str>) -> Result<MountConfig> {
@@ -677,6 +706,31 @@ mod tests {
     #[test]
     fn mount_rejects_relative_guest_path() {
         assert!(parse_mount_parts("/some/host", "workspace", None).is_err());
+    }
+
+    #[test]
+    fn split_mount_spec_preserves_windows_drive_colon() {
+        let (host, guest, mode) =
+            split_mount_spec(r"C:\Users\me\project:/workspace").expect("mount should split");
+
+        assert_eq!(host, r"C:\Users\me\project");
+        assert_eq!(guest, "/workspace");
+        assert_eq!(mode, None);
+    }
+
+    #[test]
+    fn split_mount_spec_extracts_mode_suffix_after_guest_path() {
+        let (host, guest, mode) =
+            split_mount_spec(r"C:\Users\me\project:/workspace:ro").expect("mount should split");
+
+        assert_eq!(host, r"C:\Users\me\project");
+        assert_eq!(guest, "/workspace");
+        assert_eq!(mode, Some("ro"));
+    }
+
+    #[test]
+    fn split_mount_spec_rejects_missing_guest_path() {
+        assert!(split_mount_spec(r"C:\Users\me\project").is_err());
     }
 
     #[test]
