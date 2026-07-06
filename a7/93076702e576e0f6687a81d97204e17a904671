@@ -1,0 +1,48 @@
+skills/lsb/SKILL.md
+  s_5e6e6ea1876994::t_5df39baedb618c 188
+install.ps1
+  s_5e6e6ea1876994::t_1968dd94d3f24b 1-74
+crates/lsb-platform/src/lib.rs
+  s_5e6e6ea1876994::t_a05a65dff37943 68-75,386,411,438
+README.md
+  s_5e6e6ea1876994::t_cd0779695671d3 38
+  s_5e6e6ea1876994::t_d1f35d14d2085c 23,29-37,85
+.github/workflows/release.yml
+  s_5e6e6ea1876994::t_77c4626d13fe36 71,74,77,88
+  s_5e6e6ea1876994::t_8397719e56611b 75-76,79-81,97-98,103
+justfile
+  s_5e6e6ea1876994::t_27de064bf8b054 60
+  s_5e6e6ea1876994::t_8bd95cdbfba109 19,21-28,30,40-41,45-46,59,62-71
+docs/windows-port/mvp-handoff.md
+  s_5e6e6ea1876994::t_c19ad0f22a6d7f 10-12,34,119-120
+crates/lsb-cli/src/assets.rs
+  s_5e6e6ea1876994::t_48887a9684ddb7 66,70-72
+  s_5e6e6ea1876994::t_2f9755e3f168e5 129,135,145
+  s_5e6e6ea1876994::t_320eeb954db2e7 65,67-69
+xtask/src/release.rs
+  s_5e6e6ea1876994::t_9a2c294f243317 69,95-99
+install.sh
+  s_5e6e6ea1876994::t_5e231924b5727c 15,19-23,57-60,63,75-79
+docs/windows-port/README.md
+  s_5e6e6ea1876994::t_206a0f97b3134d 13-14
+docs/windows-port/future-work.md
+  s_5e6e6ea1876994::t_1a09826cf2a8a2 11-12
+docs/windows-port/risk-register.md
+  s_5e6e6ea1876994::t_c20e0e7762982e 14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a793076702e576e0f6687a81d97204e17a904671",
+  "prompts": {},
+  "sessions": {
+    "s_5e6e6ea1876994": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f363f-1743-7f31-8670-905ec5d7637b",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
