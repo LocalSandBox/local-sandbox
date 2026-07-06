@@ -1,0 +1,19 @@
+scripts/windows-e2e.ps1
+  s_13f02dc9e790bc::t_c02e67f199fdaf 613-614,619-620,634-637,642-647
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f3a32ec4f58419739c39d42dae6fd1ee61b8da5a",
+  "prompts": {},
+  "sessions": {
+    "s_13f02dc9e790bc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f35df-58d1-7c81-bceb-258109d4358b",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
