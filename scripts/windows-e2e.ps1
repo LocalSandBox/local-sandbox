@@ -646,26 +646,18 @@ function Test-PortForwardWorkflow {
   $guestPort = 18180
   $responseBody = "lsb-e2e-port-ok"
   $responseLength = [System.Text.Encoding]::ASCII.GetByteCount($responseBody)
-  $portScript = @'
-set -eu
-ready=/tmp/lsb-e2e-port-ready
-rm -f "$ready"
-response="$(printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: __RESPONSE_LENGTH__\r\nConnection: close\r\n\r\n__RESPONSE_BODY__')"
-/usr/bin/lsb-init --lsb-test-tcp-server __GUEST_PORT__ "$response" "$ready" >/tmp/lsb-e2e-port.log 2>&1 &
-server=$!
-for i in $(seq 1 100); do
-  if [ -f "$ready" ]; then
-    printf "port-server-ready\n"
-    break
-  fi
-  sleep 0.1
-done
-if [ ! -f "$ready" ]; then
-  cat /tmp/lsb-e2e-port.log >&2 || true
-  exit 1
-fi
-wait "$server"
-'@.
+  $portScript = @(
+    'set -eu',
+    'ready=/tmp/lsb-e2e-port-ready',
+    'rm -f "$ready"',
+    'response="$(printf ''HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: __RESPONSE_LENGTH__\r\nConnection: close\r\n\r\n__RESPONSE_BODY__'')"',
+    '/usr/bin/lsb-init --lsb-test-tcp-server __GUEST_PORT__ "$response" "$ready" >/tmp/lsb-e2e-port.log 2>&1 &',
+    'server=$!',
+    'for i in $(seq 1 100); do if [ -f "$ready" ]; then printf "port-server-ready\n"; break; fi; sleep 0.1; done',
+    'if [ ! -f "$ready" ]; then cat /tmp/lsb-e2e-port.log >&2 || true; exit 1; fi',
+    'wait "$server"'
+  ) -join '; '
+  $portScript = $portScript.
     Replace("__GUEST_PORT__", $guestPort.ToString()).
     Replace("__RESPONSE_BODY__", $responseBody).
     Replace("__RESPONSE_LENGTH__", $responseLength.ToString())
