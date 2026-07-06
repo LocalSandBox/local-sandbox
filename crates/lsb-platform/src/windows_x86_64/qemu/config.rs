@@ -7,7 +7,9 @@ pub(crate) const DEFAULT_ROOT_DEVICE: &str = "/dev/vda";
 pub(crate) const CONTROL_BUS_ID: &str = "lsbserial0";
 pub(crate) const CONTROL_CHARDEV_ID: &str = "lsbctl";
 pub(crate) const FORWARD_CHARDEV_ID: &str = "lsbfwd";
+#[cfg(test)]
 pub(crate) const CONTROL_PORT_NAME: &str = lsb_proto::VIRTIO_SERIAL_CONTROL_PORT_NAME;
+#[cfg(test)]
 pub(crate) const FORWARD_PORT_NAME: &str = lsb_proto::VIRTIO_SERIAL_FORWARD_PORT_NAME;
 pub(crate) const ROOT_DRIVE_ID: &str = "root";
 pub(crate) const PROXY_NETDEV_ID: &str = "lsbproxy0";
@@ -183,15 +185,11 @@ impl QemuKernelAppend {
             guest_transport: None,
         }
     }
-
-    pub(crate) fn with_guest_transport(mut self, transport: QemuGuestTransport) -> Self {
-        self.guest_transport = Some(transport);
-        self
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QemuRootMode {
+    #[cfg(test)]
     ReadOnly,
     ReadWrite,
 }
@@ -199,6 +197,7 @@ pub(crate) enum QemuRootMode {
 impl QemuRootMode {
     pub(crate) fn as_kernel_arg(self) -> &'static str {
         match self {
+            #[cfg(test)]
             Self::ReadOnly => "ro",
             Self::ReadWrite => "rw",
         }
@@ -221,7 +220,6 @@ impl QemuGuestTransport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum QemuSerialConfig {
     File(PathBuf),
-    Null,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -231,6 +229,7 @@ pub(crate) struct QemuControlChannelConfig {
 }
 
 impl QemuControlChannelConfig {
+    #[cfg(test)]
     pub(crate) fn named_pipe(pipe_name: impl Into<String>) -> Self {
         Self {
             pipe_name: pipe_name.into(),
@@ -238,6 +237,7 @@ impl QemuControlChannelConfig {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn forwarding_named_pipe(pipe_name: impl Into<String>) -> Self {
         Self {
             pipe_name: pipe_name.into(),
@@ -246,12 +246,14 @@ impl QemuControlChannelConfig {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum QemuQmpEndpoint {
     NamedPipe { pipe_name: String },
 }
 
 impl QemuQmpEndpoint {
+    #[cfg(test)]
     pub(crate) fn named_pipe(pipe_name: impl Into<String>) -> Self {
         Self::NamedPipe {
             pipe_name: pipe_name.into(),

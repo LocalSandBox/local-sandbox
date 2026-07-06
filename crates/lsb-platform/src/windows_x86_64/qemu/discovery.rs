@@ -91,6 +91,7 @@ where
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn with_configured_qemu(mut self, path: impl Into<PathBuf>) -> Self {
         self.configured_qemu = Some(path.into());
         self

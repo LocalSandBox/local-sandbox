@@ -116,37 +116,25 @@ impl QemuBootArtifacts {
 pub(crate) struct WindowsQemuBoot {
     supervisor: QemuSupervisor,
     artifacts: QemuBootArtifacts,
-    observation_timeout: Duration,
-    control_endpoint: Option<VirtioSerialControlEndpoint>,
     control_stream: Option<crate::PlatformControlStream>,
     forward_stream: Option<crate::PlatformControlStream>,
     guest_ready: Option<GuestReady>,
+    #[cfg(test)]
     guest_ready_elapsed: Option<Duration>,
 }
 
 impl WindowsQemuBoot {
-    pub(crate) fn state(&self) -> QemuProcessState {
-        self.supervisor.state()
-    }
-
     pub(crate) fn artifacts(&self) -> &QemuBootArtifacts {
         &self.artifacts
-    }
-
-    pub(crate) fn observation_timeout(&self) -> Duration {
-        self.observation_timeout
     }
 
     pub(crate) fn guest_ready(&self) -> Option<&GuestReady> {
         self.guest_ready.as_ref()
     }
 
+    #[cfg(test)]
     pub(crate) fn guest_ready_elapsed(&self) -> Option<Duration> {
         self.guest_ready_elapsed
-    }
-
-    pub(crate) fn control_endpoint(&self) -> Option<&VirtioSerialControlEndpoint> {
-        self.control_endpoint.as_ref()
     }
 
     pub(crate) fn open_control(
@@ -191,7 +179,6 @@ impl WindowsQemuBoot {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum QemuBootErrorKind {
     AssetMissing,
-    UnsupportedConfig,
     InvalidConfig,
     ArtifactIo,
     Preflight,
@@ -213,7 +200,6 @@ impl QemuBootErrorKind {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::AssetMissing => "asset_missing",
-            Self::UnsupportedConfig => "unsupported_config",
             Self::InvalidConfig => "invalid_config",
             Self::ArtifactIo => "artifact_io",
             Self::Preflight => "preflight",
@@ -239,11 +225,6 @@ pub(crate) enum QemuBootError {
         asset: &'static str,
         path: PathBuf,
         reason: String,
-        artifacts: QemuBootArtifacts,
-    },
-    UnsupportedConfig {
-        capability: &'static str,
-        detail: &'static str,
         artifacts: QemuBootArtifacts,
     },
     InvalidConfig {
@@ -330,7 +311,6 @@ impl QemuBootError {
     pub(crate) fn kind(&self) -> QemuBootErrorKind {
         match self {
             Self::AssetMissing { .. } => QemuBootErrorKind::AssetMissing,
-            Self::UnsupportedConfig { .. } => QemuBootErrorKind::UnsupportedConfig,
             Self::InvalidConfig { .. } => QemuBootErrorKind::InvalidConfig,
             Self::ArtifactIo { .. } => QemuBootErrorKind::ArtifactIo,
             Self::Preflight { .. } => QemuBootErrorKind::Preflight,
@@ -354,7 +334,6 @@ impl QemuBootError {
     fn artifacts(&self) -> Option<&QemuBootArtifacts> {
         match self {
             Self::AssetMissing { artifacts, .. }
-            | Self::UnsupportedConfig { artifacts, .. }
             | Self::Preflight { artifacts, .. }
             | Self::Argv { artifacts, .. }
             | Self::ProcessStart { artifacts, .. }
@@ -393,15 +372,6 @@ impl fmt::Display for QemuBootError {
                 f,
                 "missing Windows QEMU boot asset {asset} at '{}': {reason}. Run `lsb init` or check the configured asset paths.{}",
                 path.display(),
-                self.artifact_sentence()
-            ),
-            Self::UnsupportedConfig {
-                capability,
-                detail,
-                ..
-            } => write!(
-                f,
-                "Windows direct boot cannot start because {capability} is unsupported: {detail}.{}",
                 self.artifact_sentence()
             ),
             Self::InvalidConfig { field, reason, .. } => write!(
@@ -755,6 +725,7 @@ pub(crate) fn launch_windows_qemu_boot(
     };
 
     let mut guest_ready = None;
+    #[cfg(test)]
     let mut guest_ready_elapsed = None;
     if let Some(stream) = control_stream.as_ref() {
         let ready_reader = match stream.try_clone() {
@@ -793,7 +764,10 @@ pub(crate) fn launch_windows_qemu_boot(
                     None,
                     None,
                 )?;
-                guest_ready_elapsed = Some(result.elapsed);
+                #[cfg(test)]
+                {
+                    guest_ready_elapsed = Some(result.elapsed);
+                }
                 guest_ready = Some(result.message);
             }
             Err(error) => {
@@ -835,11 +809,10 @@ pub(crate) fn launch_windows_qemu_boot(
     Ok(WindowsQemuBoot {
         supervisor,
         artifacts,
-        observation_timeout: config.boot_observation_timeout,
-        control_endpoint: config.control_endpoint,
         control_stream,
         forward_stream,
         guest_ready,
+        #[cfg(test)]
         guest_ready_elapsed,
     })
 }

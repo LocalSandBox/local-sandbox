@@ -2,6 +2,22 @@
 
 > Historical note: JavaScript and TypeScript support now ships from [`bindings/nodejs`](bindings/nodejs) as `@local-sandbox/lsb-nodejs`. Older `@superhq/lsb` entries below describe archived SDK releases.
 
+## Unreleased
+
+### Windows 11 x64 backend and Node package MVP
+
+- Added a native Windows 11 x64 backend using QEMU with WHPX to boot the existing
+  Linux guest model.
+- Added Windows support for sandbox start/stop, non-interactive exec, guest file
+  APIs, overlay mount import, loopback port forwarding, policy-mediated proxy
+  networking, and qcow2 checkpoint save/restore.
+- Added the `@local-sandbox/lsb-nodejs-win32-x64-msvc` native package target for
+  `@local-sandbox/lsb-nodejs`.
+- Windows production runs require WHPX. TCG fallback, QEMU user networking,
+  `hostfwd`, TAP/bridge networking, direct writable host mounts, streaming
+  `spawn`, interactive shells, `watch`, CAS/NBD checkpoint transport, Windows
+  ARM64, and public Windows CLI release/install remain unsupported in this MVP.
+
 ## 0.4.1
 
 ### CLI (`lsb-cli` 0.4.1)

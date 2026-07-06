@@ -10,7 +10,8 @@ OS="$(uname -s)"
 ARCH="$(uname -m)"
 
 if [ "$OS" != "Darwin" ]; then
-    echo "Error: lsb only supports macOS. Detected: $OS" >&2
+    echo "Error: this installer currently ships macOS CLI release artifacts only. Detected: $OS" >&2
+    echo "Windows 11 x64 backend and Node package support exist, but Windows CLI release/install artifacts are not shipped yet." >&2
     exit 1
 fi
 

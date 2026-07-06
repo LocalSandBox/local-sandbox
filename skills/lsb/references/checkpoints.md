@@ -1,6 +1,6 @@
 # Checkpoints
 
-Checkpoints save the full ext4 disk state after a command finishes. They use APFS copy-on-write clones, so a checkpoint only consumes disk space for blocks that differ from the base image.
+Checkpoints save the full disk state after a command finishes. On macOS they use APFS copy-on-write clones/CAS indexes, so a checkpoint only consumes disk space for blocks that differ from the base image. On Windows they are stored as qcow2 checkpoint artifacts over immutable base images.
 
 ## Creating a Checkpoint
 
@@ -14,7 +14,7 @@ If `--from` is specified, the VM boots from that checkpoint instead of the base 
 
 ## Stacking
 
-Checkpoints can be layered. Each layer only stores its diff from the parent:
+Checkpoints can branch from existing checkpoints:
 
 ```bash
 lsb checkpoint create base --allow-net -- apt-get install -y build-essential git
@@ -22,7 +22,7 @@ lsb checkpoint create node --from base --allow-net -- apt-get install -y nodejs 
 lsb checkpoint create deps --from node --allow-net --mount .:/app -- sh -c 'cd /app && npm ci'
 ```
 
-`lsb checkpoint list` shows actual disk usage per checkpoint (allocated blocks, not apparent size).
+`lsb checkpoint list` shows actual disk usage per checkpoint where the host backend can report it.
 
 ## Booting from a Checkpoint
 
@@ -41,6 +41,6 @@ The VM gets a fresh clone of the checkpoint — changes during the run are disca
 
 ## Disk Usage
 
-Checkpoints use APFS clonefile. A fresh checkpoint from a 512MB base image might only use 10-50MB of actual disk space depending on what changed. Use `checkpoint list` to see real usage.
+On macOS, checkpoints use APFS clonefile/CAS behavior. A fresh checkpoint from a 512MB base image might only use 10-50MB of actual disk space depending on what changed. On Windows, checkpoints are qcow2 artifacts and may have different apparent and allocated sizes. Use `checkpoint list` to see reported usage.
 
 If you're running low on disk, delete unused checkpoints with `checkpoint delete`.

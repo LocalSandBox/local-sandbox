@@ -135,12 +135,6 @@ where
         }
     }
 
-    /// Run the poll loop. Blocks the current thread.
-    #[allow(dead_code)]
-    pub fn run(&mut self) {
-        self.run_loop(|| false);
-    }
-
     /// Run the poll loop until `shutdown` is set. Blocks the current thread.
     pub fn run_until_shutdown(&mut self, shutdown: &AtomicBool) {
         self.run_loop(|| shutdown.load(Ordering::SeqCst));

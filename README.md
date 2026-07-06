@@ -1,34 +1,55 @@
 # lsb
 
-lsb (Local SandBox) is a local-first microVM sandbox for AI agents on macOS.
+lsb (Local SandBox) is a local-first microVM sandbox for AI agents on macOS and
+Windows 11 x64.
 
-lsb boots lightweight Linux VMs using Apple's Virtualization.framework. Each sandbox is ephemeral: the rootfs resets on every run, giving agents a disposable environment to execute code, install packages, and run tools without touching your host.
+lsb boots lightweight Linux VMs using Apple's Virtualization.framework on macOS
+and QEMU with WHPX on Windows. Each sandbox is ephemeral: the rootfs resets on
+every run, giving agents a disposable environment to execute code, install
+packages, and run tools without touching your host.
 
 ## Requirements
 
-- macOS 14 (Sonoma) or later on Apple Silicon or Intel
-- `cmake` is required when building from source because `lsb-proxy` now links BoringSSL for upstream TLS
+- macOS 14 (Sonoma) or later on Apple Silicon or Intel, or Windows 11 on x64.
+- Windows requires Windows Hypervisor Platform, `qemu-system-x86_64.exe`, and
+  `qemu-img.exe`. Set `LSB_QEMU` to the full QEMU executable path or put QEMU on
+  `PATH`. Production Windows runs require WHPX and do not fall back to TCG.
+- `cmake` is required when building from source because `lsb-proxy` links
+  BoringSSL for upstream TLS.
+- Windows source builds require the Rust MSVC toolchain and native build tools.
 
 ## Install
+
+The release install script currently ships macOS CLI artifacts only:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/LocalSandBox/local-sandbox/main/install.sh | sh
 ```
 
-Or build from source:
+Windows CLI release artifacts and a Windows CLI installer are not shipped yet.
+Windows users can use the Node.js package on Windows x64 or build the CLI from
+source.
+
+Build the macOS CLI from source:
 
 ```sh
 cargo build -p lsb-cli --release
 codesign --entitlements lsb.entitlements --force -s - target/release/lsb
 ```
 
+Build the Windows CLI from source:
+
+```sh
+cargo build -p lsb-cli --release
+```
+
 ## Usage
 
 ```sh
-# Interactive shell
+# Interactive shell (macOS)
 lsb run
 
-# Run a command
+# Run a command (macOS and Windows)
 lsb run -- echo hello
 
 # With network access
@@ -41,6 +62,22 @@ lsb run --allow-net --allow-host api.openai.com --allow-host registry.npmjs.org
 lsb run --cpus 4 --memory 4096 --disk-size 8192 -- make -j4
 ```
 
+## Platform Support
+
+| Host | Runtime backend | Status |
+| --- | --- | --- |
+| macOS 14+ Apple Silicon | Apple Virtualization.framework | Supported |
+| macOS 14+ Intel x64 | Apple Virtualization.framework | Supported |
+| Windows 11 x64 | QEMU with WHPX | Supported backend and Node package |
+| Windows ARM64 | Not available | Planned |
+
+Windows support covers sandbox start/stop, non-interactive `exec`, guest file
+APIs, overlay mounts, loopback port forwarding, policy-mediated proxy
+networking, and qcow2 checkpoint save/restore. Direct writable host mounts,
+live shared mount coherence, streaming `spawn`, interactive shells, `watch`,
+CAS/NBD checkpoints, and public Windows CLI release/install are not part of the
+Windows MVP.
+
 With `--allow-net`, the guest resolves DNS through the host-side proxy at
 `10.0.0.1`. Leave `/etc/resolv.conf` pointed at that proxy; the proxy performs
 lookups with the host system resolver, including VPN or split-DNS rules.
@@ -49,7 +86,12 @@ and can fail because the guest has no general UDP or host VPN route access.
 
 ### Directory mounts
 
-Share host directories into the VM using VirtioFS. The host directory is read-only; guest writes go to a tmpfs overlay layer (discarded when the VM exits).
+Mount host directories into the VM while keeping the host source read-only from
+the product perspective. On macOS, lsb uses VirtioFS with a guest overlay. On
+Windows, lsb imports a snapshot of the host directory into guest-owned staging
+storage and mounts that snapshot through the same overlay model. Guest writes do
+not modify the host source and are discarded when the VM exits unless you save
+or export them through an explicit API.
 
 ```sh
 # Mount a directory (guest can write, host is untouched)
@@ -65,7 +107,9 @@ Mounts can also be set in `lsb.json` (see [Config file](#config-file)).
 
 ### Port forwarding
 
-Forward host ports to guest ports over vsock. Works without `--allow-net` — the guest needs no network device.
+Forward host ports to guest ports over a private host/guest channel. macOS uses
+vsock; Windows uses a private virtio-serial channel. Port forwarding works
+without `--allow-net`; the guest needs no general network device.
 
 ```sh
 # Install python3 into a checkpoint, then serve with port forwarding
@@ -84,10 +128,11 @@ Port forwards can also be set in `lsb.json` (see [Config file](#config-file)).
 ### Checkpoints
 
 Checkpoints save the disk state so you can reuse an environment across runs.
-By default, checkpoints are CAS/NBD indexes that reference a pinned base rootfs
-by runtime asset version. After `rootfs.ext4` is updated, new sandboxes use the
-new base and existing checkpoints continue to use the base they were created
-from.
+On macOS, checkpoints are CAS/NBD indexes that reference a pinned base rootfs by
+runtime asset version. On Windows, checkpoints are flattened qcow2 disk
+artifacts over immutable base images. After `rootfs.ext4` is updated, new
+sandboxes use the new base and existing checkpoints continue to use the base
+they were created from.
 
 ```sh
 # Initialize the current CLI version and boot from that current base
@@ -160,7 +205,9 @@ The `network.allow` list restricts which hosts the guest can reach. Omit it to a
 
 ## Node.js Binding
 
-Use lsb programmatically from Node.js or TypeScript with the [`@local-sandbox/lsb-nodejs`](https://www.npmjs.com/package/@local-sandbox/lsb-nodejs) package.
+Use lsb programmatically from Node.js or TypeScript with the
+[`@local-sandbox/lsb-nodejs`](https://www.npmjs.com/package/@local-sandbox/lsb-nodejs)
+package. The package supports macOS arm64/x64 and Windows x64.
 
 ```sh
 npm install @local-sandbox/lsb-nodejs

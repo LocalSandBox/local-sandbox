@@ -62,7 +62,7 @@ impl VirtioSerialControlEndpoint {
         )
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn with_pipe_name(
         pipe_name: impl Into<String>,
     ) -> Result<Self, VirtioSerialControlError> {
@@ -84,13 +84,7 @@ impl VirtioSerialControlEndpoint {
         })
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn with_connect_timeout(mut self, timeout: Duration) -> Self {
-        self.connect_timeout = timeout;
-        self
-    }
-
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn pipe_name(&self) -> &str {
         &self.pipe_name
     }
@@ -99,14 +93,9 @@ impl VirtioSerialControlEndpoint {
         &self.pipe_path
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn port_name(&self) -> &str {
         &self.port_name
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn connect_timeout(&self) -> Duration {
-        self.connect_timeout
     }
 
     pub(crate) fn qemu_config(&self) -> QemuControlChannelConfig {
@@ -131,7 +120,7 @@ pub(crate) enum VirtioSerialControlError {
         detail: String,
     },
     EndpointUnavailable,
-    #[allow(dead_code)]
+    #[cfg(not(windows))]
     HostPipeUnsupported,
     ConnectTimeout {
         timeout: Duration,
@@ -154,6 +143,7 @@ impl VirtioSerialControlError {
             Self::EndpointUnavailable => {
                 "Start the Windows QEMU VM and wait for guest-ready before opening the guest control channel."
             }
+            #[cfg(not(windows))]
             Self::HostPipeUnsupported => {
                 "Run the Windows QEMU backend on Windows; non-Windows hosts can only run unit tests for this transport."
             }
@@ -186,6 +176,7 @@ impl fmt::Display for VirtioSerialControlError {
                 "Windows virtio-serial control endpoint is not configured for this VM. {}",
                 self.remediation()
             ),
+            #[cfg(not(windows))]
             Self::HostPipeUnsupported => write!(
                 f,
                 "Windows virtio-serial control pipe opening is unavailable on this host. {}",
@@ -253,7 +244,6 @@ fn open_pipe_with_timeout(
     Err(VirtioSerialControlError::HostPipeUnsupported)
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
 fn should_retry_pipe_open(error: &std::io::Error) -> bool {
     const ERROR_FILE_NOT_FOUND: i32 = 2;
     const ERROR_PIPE_BUSY: i32 = 231;

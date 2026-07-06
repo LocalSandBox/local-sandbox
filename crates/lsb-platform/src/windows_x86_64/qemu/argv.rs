@@ -19,6 +19,7 @@ pub(crate) struct QemuCommand {
 }
 
 impl QemuCommand {
+    #[cfg(test)]
     pub(crate) fn sanitized_argv(&self) -> &[String] {
         &self.diagnostic_argv
     }
@@ -335,7 +336,6 @@ fn push_serial(
                 "file:<serial-log>",
             );
         }
-        QemuSerialConfig::Null => push_pair(command, "-serial", "null"),
     }
     Ok(())
 }

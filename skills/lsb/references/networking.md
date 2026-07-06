@@ -61,7 +61,7 @@ See [config.md](config.md#secrets) for details on injecting API keys via the pro
 
 ## Port Forwarding
 
-Forward host ports to guest ports with `-p HOST:GUEST`. Port forwarding uses vsock and works **without** `--allow-net`:
+Forward host ports to guest ports with `-p HOST:GUEST`. Port forwarding uses a private host/guest control channel: vsock on macOS and virtio-serial on Windows. It works **without** `--allow-net`:
 
 ```bash
 # Forward host 8080 to guest 80

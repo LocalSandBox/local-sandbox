@@ -1,11 +1,11 @@
 ---
 name: lsb
-description: Run commands in an isolated Linux microVM sandbox using the lsb CLI. Use when the user asks to execute untrusted code, install packages safely, test in a clean environment, or needs Linux-specific tooling on macOS.
+description: Run commands in an isolated Linux microVM sandbox using the lsb CLI. Use when the user asks to execute untrusted code, install packages safely, test in a clean environment, or needs Linux-specific tooling on supported macOS or Windows hosts.
 ---
 
 # Sandboxed Execution with lsb
 
-lsb boots an ephemeral Linux microVM (Debian, ARM64) on macOS. Each `lsb run` gets a fresh disk clone - all changes are discarded on exit. Use it whenever you need to run commands in isolation from the host.
+lsb boots an ephemeral Debian Linux microVM on supported macOS hosts and Windows 11 x64. Each `lsb run` gets a fresh disk clone - all changes are discarded on exit. Use it whenever you need to run commands in isolation from the host.
 
 ## Core Workflow
 
@@ -43,7 +43,7 @@ lsb run --mount .:/workspace -- sh -c 'cd /workspace && ls -la && cat README.md'
 ```bash
 lsb run [flags] [-- command...]
 
-# Interactive shell (default when no command given)
+# Interactive shell (macOS; on Windows prefer non-interactive command form)
 lsb run
 
 # Run a single command
@@ -119,7 +119,7 @@ lsb run -- sh -c 'echo "malicious script here" && rm -rf / 2>/dev/null; echo "ho
 
 ### Build and Test
 
-Mount source, build inside the VM, results appear on host via the mount:
+Mount source read-only from the host perspective and build inside the VM:
 
 ```bash
 lsb run --mount .:/workspace --cpus 4 --memory 4096 -- sh -c '
@@ -181,10 +181,11 @@ CLI flags override config values. When `secrets` are configured, the guest recei
 ## Important Constraints
 
 - **Networking is off by default.** You must pass `--allow-net` to install packages or make HTTP requests.
-- **The guest is Debian Linux (aarch64).** Use `apt-get install` for packages.
+- **The guest is Debian Linux.** Use `apt-get install` for packages.
 - **Ephemeral by default.** Everything is discarded on exit unless you checkpoint.
-- **Mounts are read-write.** Changes to mounted directories are visible on the host immediately.
-- **macOS only** (Apple Silicon). Uses Apple Virtualization.framework.
+- **CLI mounts are overlay-style.** The host source is kept read-only from the product perspective; guest writes are isolated and discarded unless saved through a checkpoint or explicit copy/export path. Windows mounts are snapshot imports and do not provide live host sync.
+- **Supported hosts:** macOS 14+ on arm64/x64 and Windows 11 x64. macOS uses Apple Virtualization.framework. Windows uses QEMU with WHPX and requires `qemu-system-x86_64.exe` plus `qemu-img.exe`.
+- **Windows feature limits:** use non-interactive commands on Windows. Streaming `spawn`, interactive shell, file `watch`, direct writable host mounts, CAS/NBD checkpoints, Windows ARM64, and public Windows CLI release/install are not supported there yet.
 - **Default resources:** 2 CPUs, 2048 MB RAM, 4096 MB disk. Override with `--cpus`, `--memory`, `--disk-size`.
 
 ## Deep-Dive Documentation

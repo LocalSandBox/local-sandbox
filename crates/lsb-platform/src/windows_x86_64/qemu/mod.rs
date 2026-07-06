@@ -1,5 +1,3 @@
-#![allow(dead_code)] // Some QEMU diagnostics helpers are used only by Windows validation paths.
-
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};

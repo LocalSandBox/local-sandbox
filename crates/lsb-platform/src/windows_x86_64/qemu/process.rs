@@ -124,6 +124,7 @@ impl fmt::Display for QemuExitStatus {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QemuProcessDiagnostics {
     pub state: QemuProcessState,
@@ -134,6 +135,7 @@ pub(crate) struct QemuProcessDiagnostics {
     pub diagnostic_label: Option<String>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum QemuProcessErrorKind {
@@ -219,6 +221,7 @@ pub(crate) enum QemuProcessError {
 }
 
 impl QemuProcessError {
+    #[cfg(test)]
     pub(crate) fn kind(&self) -> QemuProcessErrorKind {
         match self {
             Self::AlreadyStarted { .. } => QemuProcessErrorKind::AlreadyStarted,
@@ -431,14 +434,17 @@ impl QemuSupervisor {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn state(&self) -> QemuProcessState {
         self.state
     }
 
+    #[cfg(test)]
     pub(crate) fn artifacts(&self) -> &QemuProcessArtifacts {
         &self.config.artifacts
     }
 
+    #[cfg(test)]
     pub(crate) fn pid(&self) -> Option<u32> {
         self.pid
     }
@@ -447,6 +453,7 @@ impl QemuSupervisor {
         self.exit_status.as_ref()
     }
 
+    #[cfg(test)]
     pub(crate) fn diagnostics(&self) -> QemuProcessDiagnostics {
         QemuProcessDiagnostics {
             state: self.state,
@@ -546,6 +553,7 @@ impl QemuSupervisor {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn wait(&mut self, timeout: Duration) -> Result<QemuExitStatus, QemuProcessError> {
         if self.child.is_none() {
             return self.exit_status.clone().ok_or(QemuProcessError::NotStarted);
@@ -591,6 +599,7 @@ impl QemuSupervisor {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn kill(&mut self) -> Result<Option<QemuExitStatus>, QemuProcessError> {
         self.terminate()
     }

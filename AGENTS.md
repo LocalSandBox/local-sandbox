@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository is a Rust workspace for `lsb`, a macOS local microVM sandbox. Core crates live under `crates/`: `lsb-cli`, `lsb-sdk`, `lsb-vm`, `lsb-proxy`, `lsb-store`, `lsb-proto`, `lsb-platform`, and `lsb-guest`. Build automation is in `xtask/`, kernel configuration is in `kernel/`, docs are in `README.md` and `docs/`, and the agent skill is in `skills/lsb/`. Node.js bindings are isolated in `bindings/nodejs/`, with Rust binding code in `src/` and AVA specs in `test/`.
+This repository is a Rust workspace for `lsb`, a local Linux microVM sandbox for macOS and Windows hosts. Core crates live under `crates/`: `lsb-cli`, `lsb-sdk`, `lsb-vm`, `lsb-proxy`, `lsb-store`, `lsb-proto`, `lsb-platform`, and `lsb-guest`. Build automation is in `xtask/`, kernel configuration is in `kernel/`, docs are in `README.md` and `docs/`, and the agent skill is in `skills/lsb/`. Node.js bindings are isolated in `bindings/nodejs/`, with Rust binding code in `src/` and AVA specs in `test/`.
 
 ## Build, Test, and Development Commands
 
@@ -22,7 +22,7 @@ Use `cargo fmt` for Rust. Keep crate names lowercase with hyphens, and modules, 
 
 ## Testing Guidelines
 
-Place Rust unit tests near the implementation in `mod tests` blocks. Use targeted commands such as `cargo test -p lsb-proxy dns` while developing, then run `cargo test --workspace` before submitting broad changes. Node tests live in `bindings/nodejs/test/**/*.spec.ts`. VM smoke tests may require initialized runtime assets and a codesigned Node binary; use `corepack yarn test:signed-node` for real VM startup.
+Place Rust unit tests near the implementation in `mod tests` blocks. Use targeted commands such as `cargo test -p lsb-proxy dns` while developing, then run `cargo test --workspace` before submitting broad changes. Node tests live in `bindings/nodejs/test/**/*.spec.ts`. VM smoke tests may require initialized runtime assets, a codesigned Node binary on macOS, or QEMU/WHPX on Windows; use `corepack yarn test:signed-node` for real macOS VM startup.
 
 Windows hardware testing:
 
