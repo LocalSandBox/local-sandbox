@@ -418,8 +418,16 @@ impl Sandbox {
             };
             if !resp.ok {
                 let (source, target) = match req {
-                    MountRequest::Overlay { source, target } => (source, target),
-                    MountRequest::Direct { source, target, .. } => (source, target),
+                    MountRequest::Overlay { source, target } => (source.clone(), target.as_str()),
+                    MountRequest::Direct { source, target, .. } => {
+                        (source.clone(), target.as_str())
+                    }
+                    MountRequest::Smb {
+                        server,
+                        share,
+                        target,
+                        ..
+                    } => (format!("//{server}/{share}"), target.as_str()),
                 };
                 bail!(
                     "mount failed: {} -> {}: {}",
@@ -2086,7 +2094,9 @@ mod tests {
                 assert_eq!(source, "mount0");
                 assert_eq!(target, "/workspace");
             }
-            MountRequest::Direct { .. } => panic!("expected overlay request"),
+            MountRequest::Direct { .. } | MountRequest::Smb { .. } => {
+                panic!("expected overlay request")
+            }
         }
     }
 
@@ -2121,7 +2131,9 @@ mod tests {
                 assert_eq!(target, "/rw");
                 assert_eq!(*flags, 0);
             }
-            MountRequest::Overlay { .. } => panic!("expected direct request"),
+            MountRequest::Overlay { .. } | MountRequest::Smb { .. } => {
+                panic!("expected direct request")
+            }
         }
 
         match &mount_plan.mount_requests[1] {
@@ -2134,7 +2146,9 @@ mod tests {
                 assert_eq!(target, "/ro");
                 assert_eq!(*flags, MS_RDONLY);
             }
-            MountRequest::Overlay { .. } => panic!("expected direct request"),
+            MountRequest::Overlay { .. } | MountRequest::Smb { .. } => {
+                panic!("expected direct request")
+            }
         }
     }
 
@@ -2163,7 +2177,9 @@ mod tests {
                 assert_eq!(source, "/tmp/lsb/mounts/mount0/source");
                 assert_eq!(target, "/workspace");
             }
-            MountRequest::Direct { .. } => panic!("expected overlay request"),
+            MountRequest::Direct { .. } | MountRequest::Smb { .. } => {
+                panic!("expected overlay request")
+            }
         }
 
         let _ = std::fs::remove_dir_all(root);

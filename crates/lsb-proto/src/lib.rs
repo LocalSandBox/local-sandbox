@@ -11,6 +11,7 @@ pub mod frame;
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const CAP_FILE_RANGE_IO: &str = "file_range_io";
 pub const CAP_PORT_FORWARD: &str = "port_forward";
+pub const CAP_CIFS_MOUNT: &str = "cifs_mount";
 pub const FILE_TRANSFER_CHUNK_SIZE: usize = 512 * 1024;
 
 // --- Guest lifecycle protocol ---
@@ -131,8 +132,8 @@ pub fn decode_forward_close(payload: &[u8]) -> Result<u64, ForwardPayloadError> 
 
 // --- Mount protocol ---
 
-/// Sent by the host over vsock to instruct the guest to mount a virtiofs device.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Sent by the host over vsock to instruct the guest to mount a filesystem.
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MountRequest {
     /// Mount a VirtioFS source as the lower layer of a tmpfs-backed overlay.
@@ -143,6 +144,102 @@ pub enum MountRequest {
         target: String,
         flags: u64,
     },
+    /// Mount a Windows SMB/CIFS share directly.
+    Smb {
+        server: String,
+        share: String,
+        target: String,
+        username: String,
+        password: String,
+        domain: String,
+        read_only: bool,
+        uid: u32,
+        gid: u32,
+        file_mode: u32,
+        dir_mode: u32,
+        #[serde(default)]
+        options: Vec<String>,
+    },
+}
+
+impl std::fmt::Debug for MountRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Overlay { source, target } => f
+                .debug_struct("Overlay")
+                .field("source", source)
+                .field("target", target)
+                .finish(),
+            Self::Direct {
+                source,
+                target,
+                flags,
+            } => f
+                .debug_struct("Direct")
+                .field("source", source)
+                .field("target", target)
+                .field("flags", flags)
+                .finish(),
+            Self::Smb {
+                server,
+                share,
+                target,
+                domain,
+                read_only,
+                uid,
+                gid,
+                file_mode,
+                dir_mode,
+                options,
+                ..
+            } => f
+                .debug_struct("Smb")
+                .field("server", server)
+                .field("share", share)
+                .field("target", target)
+                .field("username", &"<redacted>")
+                .field("password", &"<redacted>")
+                .field("domain", domain)
+                .field("read_only", read_only)
+                .field("uid", uid)
+                .field("gid", gid)
+                .field("file_mode", file_mode)
+                .field("dir_mode", dir_mode)
+                .field("options", options)
+                .finish(),
+        }
+    }
+}
+
+impl std::fmt::Display for MountRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Overlay { source, target } => {
+                write!(f, "overlay mount source={source} target={target}")
+            }
+            Self::Direct {
+                source,
+                target,
+                flags,
+            } => write!(f, "direct mount source={source} target={target} flags={flags}"),
+            Self::Smb {
+                server,
+                share,
+                target,
+                domain,
+                read_only,
+                uid,
+                gid,
+                file_mode,
+                dir_mode,
+                options,
+                ..
+            } => write!(
+                f,
+                "smb mount server={server} share={share} target={target} username=<redacted> password=<redacted> domain={domain} read_only={read_only} uid={uid} gid={gid} file_mode={file_mode:o} dir_mode={dir_mode:o} options={options:?}"
+            ),
+        }
+    }
 }
 
 /// Sent by the guest in response to a MountRequest.
@@ -380,7 +477,9 @@ mod tests {
                 assert_eq!(source, "mount0");
                 assert_eq!(target, "/workspace");
             }
-            MountRequest::Direct { .. } => panic!("expected overlay request"),
+            MountRequest::Direct { .. } | MountRequest::Smb { .. } => {
+                panic!("expected overlay request")
+            }
         }
     }
 
@@ -404,8 +503,95 @@ mod tests {
                 assert_eq!(target, "/workspace");
                 assert_eq!(flags, 1);
             }
-            MountRequest::Overlay { .. } => panic!("expected direct request"),
+            MountRequest::Overlay { .. } | MountRequest::Smb { .. } => {
+                panic!("expected direct request")
+            }
         }
+    }
+
+    #[test]
+    fn mount_request_round_trips_smb() {
+        let req = MountRequest::Smb {
+            server: "10.0.0.1".into(),
+            share: "lsb-test-m0-abcd".into(),
+            target: "/workspace".into(),
+            username: "lsb_123456789abc".into(),
+            password: "SecretPassword123!".into(),
+            domain: "WINHOST".into(),
+            read_only: false,
+            uid: 0,
+            gid: 0,
+            file_mode: 0o666,
+            dir_mode: 0o777,
+            options: vec!["echo_interval=30".into()],
+        };
+
+        let json = serde_json::to_string(&req).expect("mount request should serialize");
+        assert!(json.contains(r#""type":"smb""#));
+        assert!(json.contains("SecretPassword123!"));
+
+        let req2: MountRequest =
+            serde_json::from_str(&json).expect("mount request should deserialize");
+        match req2 {
+            MountRequest::Smb {
+                server,
+                share,
+                target,
+                username,
+                password,
+                domain,
+                read_only,
+                uid,
+                gid,
+                file_mode,
+                dir_mode,
+                options,
+            } => {
+                assert_eq!(server, "10.0.0.1");
+                assert_eq!(share, "lsb-test-m0-abcd");
+                assert_eq!(target, "/workspace");
+                assert_eq!(username, "lsb_123456789abc");
+                assert_eq!(password, "SecretPassword123!");
+                assert_eq!(domain, "WINHOST");
+                assert!(!read_only);
+                assert_eq!(uid, 0);
+                assert_eq!(gid, 0);
+                assert_eq!(file_mode, 0o666);
+                assert_eq!(dir_mode, 0o777);
+                assert_eq!(options, ["echo_interval=30"]);
+            }
+            MountRequest::Overlay { .. } | MountRequest::Direct { .. } => {
+                panic!("expected smb request")
+            }
+        }
+    }
+
+    #[test]
+    fn mount_request_smb_debug_and_display_redact_password() {
+        let req = MountRequest::Smb {
+            server: "10.0.0.1".into(),
+            share: "lsb-test-m0-abcd".into(),
+            target: "/workspace".into(),
+            username: "lsb_123456789abc".into(),
+            password: "DoNotLeakThisPassword".into(),
+            domain: "WINHOST".into(),
+            read_only: true,
+            uid: 0,
+            gid: 0,
+            file_mode: 0o644,
+            dir_mode: 0o755,
+            options: Vec::new(),
+        };
+
+        let debug = format!("{req:?}");
+        let display = req.to_string();
+
+        assert!(!debug.contains("DoNotLeakThisPassword"));
+        assert!(!display.contains("DoNotLeakThisPassword"));
+        assert!(!debug.contains("lsb_123456789abc"));
+        assert!(!display.contains("lsb_123456789abc"));
+        assert!(debug.contains("<redacted>"));
+        assert!(display.contains("<redacted>"));
     }
 
     #[test]

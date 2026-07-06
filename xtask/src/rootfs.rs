@@ -84,7 +84,9 @@ DPKGEOF
 chroot /mnt/rootfs apt-get update -qq
 chroot /mnt/rootfs apt-get install -y -qq --no-install-recommends \
     ca-certificates curl git iproute2 \
-    openssh-client jq less procps xz-utils libgomp1 libatomic1 > /dev/null 2>&1
+    openssh-client jq less procps xz-utils libgomp1 libatomic1 \
+    cifs-utils > /dev/null 2>&1
+test -x /mnt/rootfs/sbin/mount.cifs || test -x /mnt/rootfs/usr/sbin/mount.cifs
 
 ROOTFS_DIR="/mnt/rootfs"
 "#;
@@ -246,7 +248,8 @@ chroot "$MOUNT_DIR" apt-get update -qq
 chroot "$MOUNT_DIR" apt-get install -y -qq --no-install-recommends \
     ca-certificates curl git iproute2 \
     openssh-client jq less procps xz-utils libgomp1 libatomic1 \
-    ffmpeg > /dev/null 2>&1
+    ffmpeg cifs-utils > /dev/null 2>&1
+test -x "$MOUNT_DIR/sbin/mount.cifs" || test -x "$MOUNT_DIR/usr/sbin/mount.cifs"
 
 ROOTFS_DIR="$MOUNT_DIR"
 "#;
@@ -473,4 +476,25 @@ pub fn prepare_rootfs_for_platform(platform: &PlatformSpec) -> Result<()> {
     println!("             ./target/debug/lsb run -- echo hello");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{linux_rootfs_script, macos_rootfs_docker_script};
+
+    #[test]
+    fn macos_rootfs_script_installs_and_checks_cifs_utils() {
+        let script = macos_rootfs_docker_script();
+
+        assert!(script.contains("cifs-utils"));
+        assert!(script.contains("mount.cifs"));
+    }
+
+    #[test]
+    fn linux_rootfs_script_installs_and_checks_cifs_utils() {
+        let script = linux_rootfs_script();
+
+        assert!(script.contains("cifs-utils"));
+        assert!(script.contains("mount.cifs"));
+    }
 }

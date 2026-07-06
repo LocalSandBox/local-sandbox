@@ -35,6 +35,9 @@ mod control_transport {
                 ready
                     .capabilities
                     .push(lsb_proto::CAP_PORT_FORWARD.to_string());
+                ready
+                    .capabilities
+                    .push(lsb_proto::CAP_CIFS_MOUNT.to_string());
                 Some(ready)
             }
         }
@@ -104,7 +107,11 @@ mod control_transport {
             assert_eq!(ready.guest_version, env!("CARGO_PKG_VERSION"));
             assert_eq!(
                 ready.capabilities,
-                [lsb_proto::CAP_FILE_RANGE_IO, lsb_proto::CAP_PORT_FORWARD]
+                [
+                    lsb_proto::CAP_FILE_RANGE_IO,
+                    lsb_proto::CAP_PORT_FORWARD,
+                    lsb_proto::CAP_CIFS_MOUNT
+                ]
             );
         }
 
@@ -314,6 +321,277 @@ mod file_transfer {
     }
 }
 
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+mod smb_mount {
+    use lsb_proto::MountRequest;
+
+    pub(crate) const MOUNT_CIFS: &str = "/sbin/mount.cifs";
+
+    const RESERVED_OPTION_KEYS: &[&str] = &[
+        "actimeo",
+        "cache",
+        "cred",
+        "credentials",
+        "dir_mode",
+        "domain",
+        "file_mode",
+        "forcegid",
+        "forceuid",
+        "gid",
+        "guest",
+        "iocharset",
+        "mfsymlinks",
+        "noperm",
+        "pass",
+        "password",
+        "password2",
+        "passwd",
+        "port",
+        "ro",
+        "rw",
+        "sec",
+        "serverino",
+        "uid",
+        "user",
+        "username",
+        "vers",
+    ];
+
+    pub(crate) fn service_path(server: &str, share: &str) -> String {
+        format!("//{server}/{share}")
+    }
+
+    pub(crate) fn options_for_request(req: &MountRequest) -> Result<Vec<String>, String> {
+        let MountRequest::Smb {
+            server,
+            share,
+            username,
+            domain,
+            read_only,
+            uid,
+            gid,
+            file_mode,
+            dir_mode,
+            options,
+            ..
+        } = req
+        else {
+            return Err("expected SMB mount request".to_string());
+        };
+
+        validate_required_component("server", server)?;
+        validate_required_component("share", share)?;
+        validate_option_value("username", username)?;
+        validate_option_value("domain", domain)?;
+        validate_mode("file_mode", *file_mode)?;
+        validate_mode("dir_mode", *dir_mode)?;
+
+        let mut mount_options = vec![
+            "vers=3.1.1".to_string(),
+            "sec=ntlmssp".to_string(),
+            format!("username={username}"),
+            format!("domain={domain}"),
+            "port=445".to_string(),
+            format!("uid={uid}"),
+            format!("gid={gid}"),
+            "forceuid".to_string(),
+            "forcegid".to_string(),
+            "cache=strict".to_string(),
+            "actimeo=1".to_string(),
+            "iocharset=utf8".to_string(),
+            "serverino".to_string(),
+            if *read_only { "ro" } else { "rw" }.to_string(),
+            format!("file_mode={file_mode:04o}"),
+            format!("dir_mode={dir_mode:04o}"),
+        ];
+
+        for option in options {
+            validate_extra_option(option)?;
+            mount_options.push(option.clone());
+        }
+
+        Ok(mount_options)
+    }
+
+    pub(crate) fn option_string(options: &[String]) -> String {
+        options.join(",")
+    }
+
+    fn validate_required_component(name: &str, value: &str) -> Result<(), String> {
+        if value.is_empty() {
+            return Err(format!("SMB mount {name} must not be empty"));
+        }
+        if value
+            .chars()
+            .any(|ch| matches!(ch, '/' | '\\' | '\0' | '\n' | '\r'))
+        {
+            return Err(format!("SMB mount {name} contains unsupported characters"));
+        }
+        Ok(())
+    }
+
+    fn validate_option_value(name: &str, value: &str) -> Result<(), String> {
+        if value.is_empty() {
+            return Err(format!("SMB mount {name} must not be empty"));
+        }
+        if contains_option_separator(value) {
+            return Err(format!("SMB mount {name} contains unsupported characters"));
+        }
+        Ok(())
+    }
+
+    fn validate_mode(name: &str, mode: u32) -> Result<(), String> {
+        if mode > 0o7777 {
+            return Err(format!("SMB mount {name} is out of range"));
+        }
+        Ok(())
+    }
+
+    fn validate_extra_option(option: &str) -> Result<(), String> {
+        if option.is_empty() {
+            return Err("SMB mount option must not be empty".to_string());
+        }
+        if contains_option_separator(option) {
+            return Err("SMB mount option contains unsupported characters".to_string());
+        }
+
+        let key = option
+            .split_once('=')
+            .map_or(option, |(key, _)| key)
+            .to_ascii_lowercase();
+        if key.is_empty()
+            || RESERVED_OPTION_KEYS.contains(&key.as_str())
+            || key.starts_with("password")
+            || key.starts_with("passwd")
+        {
+            return Err(format!("SMB mount option '{key}' is not allowed"));
+        }
+
+        Ok(())
+    }
+
+    fn contains_option_separator(value: &str) -> bool {
+        value
+            .chars()
+            .any(|ch| matches!(ch, ',' | '\0' | '\n' | '\r'))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn smb_request(options: Vec<String>) -> MountRequest {
+            MountRequest::Smb {
+                server: "10.0.0.1".to_string(),
+                share: "lsb-test-m0-abcd".to_string(),
+                target: "/workspace".to_string(),
+                username: "lsb_123456789abc".to_string(),
+                password: "SecretPassword123!".to_string(),
+                domain: "WINHOST".to_string(),
+                read_only: false,
+                uid: 0,
+                gid: 0,
+                file_mode: 0o666,
+                dir_mode: 0o777,
+                options,
+            }
+        }
+
+        #[test]
+        fn service_path_uses_unc_style_mount_source() {
+            assert_eq!(MOUNT_CIFS, "/sbin/mount.cifs");
+            assert_eq!(
+                service_path("10.0.0.1", "lsb-test-m0-abcd"),
+                "//10.0.0.1/lsb-test-m0-abcd"
+            );
+        }
+
+        #[test]
+        fn smb_options_include_required_mount_cifs_options() {
+            let req = smb_request(vec!["echo_interval=30".to_string()]);
+
+            let options = options_for_request(&req).expect("SMB options should build");
+            let option_string = option_string(&options);
+
+            assert!(option_string.contains("vers=3.1.1"));
+            assert!(option_string.contains("sec=ntlmssp"));
+            assert!(option_string.contains("username=lsb_123456789abc"));
+            assert!(option_string.contains("domain=WINHOST"));
+            assert!(option_string.contains("port=445"));
+            assert!(option_string.contains("uid=0"));
+            assert!(option_string.contains("gid=0"));
+            assert!(option_string.contains("forceuid"));
+            assert!(option_string.contains("forcegid"));
+            assert!(option_string.contains("cache=strict"));
+            assert!(option_string.contains("actimeo=1"));
+            assert!(option_string.contains("iocharset=utf8"));
+            assert!(option_string.contains("serverino"));
+            assert!(option_string.contains("rw"));
+            assert!(option_string.contains("file_mode=0666"));
+            assert!(option_string.contains("dir_mode=0777"));
+            assert!(option_string.contains("echo_interval=30"));
+            assert!(!option_string.contains("SecretPassword123!"));
+        }
+
+        #[test]
+        fn smb_options_use_read_only_flag_and_modes() {
+            let mut req = smb_request(Vec::new());
+            let MountRequest::Smb {
+                read_only,
+                file_mode,
+                dir_mode,
+                ..
+            } = &mut req
+            else {
+                unreachable!();
+            };
+            *read_only = true;
+            *file_mode = 0o644;
+            *dir_mode = 0o755;
+
+            let options = options_for_request(&req).expect("SMB options should build");
+            let option_string = option_string(&options);
+
+            assert!(option_string.contains("ro"));
+            assert!(option_string.contains("file_mode=0644"));
+            assert!(option_string.contains("dir_mode=0755"));
+        }
+
+        #[test]
+        fn smb_options_reject_secret_bearing_options() {
+            for option in [
+                "password=secret",
+                "passwd=secret",
+                "credentials=/tmp/creds",
+                "user=someone",
+                "username=someone",
+                "domain=OTHER",
+            ] {
+                let err = options_for_request(&smb_request(vec![option.to_string()]))
+                    .expect_err("secret-bearing option should be rejected");
+                assert!(err.contains("not allowed"));
+            }
+        }
+
+        #[test]
+        fn smb_options_reject_disabled_v1_options() {
+            for option in ["mfsymlinks", "noperm"] {
+                let err = options_for_request(&smb_request(vec![option.to_string()]))
+                    .expect_err("disabled SMB option should be rejected");
+                assert!(err.contains("not allowed"));
+            }
+        }
+
+        #[test]
+        fn smb_options_reject_comma_injection() {
+            let err = options_for_request(&smb_request(vec!["echo_interval=30,password=x".into()]))
+                .expect_err("comma injection should be rejected");
+
+            assert!(err.contains("unsupported characters"));
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod guest {
     use std::fs::{File, OpenOptions};
@@ -327,6 +605,7 @@ mod guest {
 
     use super::control_transport::{self, GuestControlTransport};
     use super::file_transfer;
+    use super::smb_mount;
     use lsb_proto::frame;
     use lsb_proto::{
         ChmodRequest, CopyRequest, DirEntry, ExecRequest, ForwardRequest, ForwardResponse,
@@ -417,13 +696,19 @@ mod guest {
 
     fn process_mount(req: &MountRequest) -> MountResponse {
         let (source, target) = match req {
-            MountRequest::Overlay { source, target } => (source.as_str(), target.as_str()),
-            MountRequest::Direct { source, target, .. } => (source.as_str(), target.as_str()),
+            MountRequest::Overlay { source, target } => (source.clone(), target.as_str()),
+            MountRequest::Direct { source, target, .. } => (source.clone(), target.as_str()),
+            MountRequest::Smb {
+                server,
+                share,
+                target,
+                ..
+            } => (smb_mount::service_path(server, share), target.as_str()),
         };
 
         if let Err(e) = std::fs::create_dir_all(target) {
             return MountResponse {
-                source: source.to_string(),
+                source,
                 target: target.to_string(),
                 ok: false,
                 error: Some(format!("failed to create mount point {}: {}", target, e)),
@@ -437,17 +722,18 @@ mod guest {
                 target,
                 flags,
             } => mount_direct(source, target, *flags),
+            MountRequest::Smb { .. } => mount_smb(req),
         };
 
         match result {
             Ok(()) => MountResponse {
-                source: source.to_string(),
+                source,
                 target: target.to_string(),
                 ok: true,
                 error: None,
             },
             Err(msg) => MountResponse {
-                source: source.to_string(),
+                source,
                 target: target.to_string(),
                 ok: false,
                 error: Some(msg),
@@ -534,6 +820,106 @@ mod guest {
             "lsb-guest: mounted {} -> {} (overlay)",
             source_label, target
         );
+        Ok(())
+    }
+
+    fn mount_smb(req: &MountRequest) -> Result<(), String> {
+        let MountRequest::Smb {
+            server,
+            share,
+            target,
+            password,
+            ..
+        } = req
+        else {
+            return Err("expected SMB mount request".to_string());
+        };
+
+        let service = smb_mount::service_path(server, share);
+        let options = smb_mount::options_for_request(req)?;
+        run_mount_cifs_with_passwd_fd(&service, target, &options, password)?;
+
+        eprintln!("lsb-guest: mounted SMB share at {}", target);
+        Ok(())
+    }
+
+    fn run_mount_cifs_with_passwd_fd(
+        service: &str,
+        target: &str,
+        options: &[String],
+        password: &str,
+    ) -> Result<(), String> {
+        let mut pipe_fds = [0; 2];
+        if unsafe { libc::pipe(pipe_fds.as_mut_ptr()) } != 0 {
+            return Err(format!(
+                "failed to prepare SMB password pipe for {}: {}",
+                target,
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let read_fd = pipe_fds[0];
+        let write_fd = pipe_fds[1];
+        let read_file = unsafe { File::from_raw_fd(read_fd) };
+        let mut write_file = unsafe { File::from_raw_fd(write_fd) };
+
+        set_fd_cloexec(read_file.as_raw_fd(), false)
+            .map_err(|err| format!("failed to prepare SMB password fd for {}: {}", target, err))?;
+        set_fd_cloexec(write_file.as_raw_fd(), true).map_err(|err| {
+            format!(
+                "failed to prepare SMB password writer for {}: {}",
+                target, err
+            )
+        })?;
+
+        write_file
+            .write_all(password.as_bytes())
+            .and_then(|_| write_file.flush())
+            .map_err(|err| format!("failed to write SMB password for {}: {}", target, err))?;
+        drop(write_file);
+
+        let passwd_fd = read_file.as_raw_fd().to_string();
+        let output = Command::new(smb_mount::MOUNT_CIFS)
+            .arg(service)
+            .arg(target)
+            .arg("-o")
+            .arg(smb_mount::option_string(options))
+            .env_clear()
+            .env("PASSWD_FD", passwd_fd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|err| format!("failed to execute mount.cifs for {}: {}", target, err))?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let status = output.status.code().map_or_else(
+            || "terminated by signal".to_string(),
+            |code| code.to_string(),
+        );
+        Err(format!(
+            "failed to mount SMB share at {}: mount.cifs exited with status {}",
+            target, status
+        ))
+    }
+
+    fn set_fd_cloexec(fd: RawFd, enabled: bool) -> std::io::Result<()> {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        if flags < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        let next_flags = if enabled {
+            flags | libc::FD_CLOEXEC
+        } else {
+            flags & !libc::FD_CLOEXEC
+        };
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, next_flags) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
         Ok(())
     }
 

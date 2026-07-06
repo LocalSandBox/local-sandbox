@@ -5,21 +5,22 @@ and validation results synchronized while implementing `PLAN.md`.
 
 ## Current Status
 
-- Overall status: Slice 1 complete; documentation/planning only
+- Overall status: Slice 2 foundation implemented; workspace compilation restored
 - Current owner: Codex
 - Current branch: codex/lsb-direct-mnt
 - Last updated: 2026-07-06
-- Latest validated commit: 092d163 plus uncommitted Slice 1 docs edits
+- Latest validated commit: 0febf44 plus uncommitted Slice 2 foundation edits
 
 ## Active Focus
 
-- Current task: Slice 1 decisions and planning docs
-- Relevant files: `docs/windows-port/decisions.md`,
-  `docs/windows-port/README.md`, `docs/windows-port/mvp-handoff.md`,
-  `docs/windows-port/security-checklist.md`,
-  `docs/windows-port/future-work.md`, `PLAN.md`, `STATE.md`
-- Immediate next step: Begin Slice 2 after review if implementation proceeds.
-- Blockers: None for Slice 1.
+- Current task: Slice 2 protocol, guest, kernel, and rootfs foundation
+- Relevant files: `crates/lsb-proto/src/lib.rs`,
+  `crates/lsb-guest/src/main.rs`, `crates/lsb-vm/src/sandbox.rs`,
+  `kernel/lsb_defconfig`, `kernel/lsb_x86_64_defconfig`,
+  `xtask/src/rootfs.rs`, `STATE.md`
+- Immediate next step: Begin Slice 3 mount-only SMB proxy implementation after
+  review.
+- Blockers: None for Slice 2.
 
 ## Maintainer Decisions
 
@@ -40,12 +41,12 @@ and validation results synchronized while implementing `PLAN.md`.
 ## Progress Checklist
 
 - [x] Update Windows decision docs to supersede the old no-direct-rw decision.
-- [ ] Enable CIFS client support in both kernel configs.
-- [ ] Add `cifs-utils` to the rootfs package list.
-- [ ] Add `MountRequest::Smb`.
-- [ ] Add `cifs_mount` guest capability.
-- [ ] Add protocol redaction tests for SMB credentials.
-- [ ] Implement guest `mount.cifs` path using `PASSWD_FD`.
+- [x] Enable CIFS client support in both kernel configs.
+- [x] Add `cifs-utils` to the rootfs package list.
+- [x] Add `MountRequest::Smb`.
+- [x] Add `cifs_mount` guest capability.
+- [x] Add protocol redaction tests for SMB credentials.
+- [x] Implement guest `mount.cifs` path using `PASSWD_FD`.
 - [ ] Add mount-only SMB proxy mode.
 - [ ] Add CLI detection/startup for mount-only SMB proxy.
 - [ ] Add SDK detection/startup for mount-only SMB proxy.
@@ -73,6 +74,9 @@ and validation results synchronized while implementing `PLAN.md`.
 | Date | Commit | Command | Result | Notes |
 | --- | --- | --- | --- | --- |
 | 2026-07-06 | 092d163 + working tree | `rg -n 'SMB/CIFS|CLI .*:ro|Administrator|D024|allow_net|public API shape|Superseded' docs/windows-port/decisions.md docs/windows-port/README.md docs/windows-port/mvp-handoff.md docs/windows-port/security-checklist.md docs/windows-port/future-work.md PLAN.md STATE.md`; stale-limitation `rg` check; `git diff --check` | Pass | Required Slice 1 claims present, stale exact limitations absent, whitespace clean. No code or tests by scope. |
+| 2026-07-06 | 0febf44 + working tree | `cargo fmt --check`; `cargo test -p lsb-proto`; `cargo test -p lsb-guest`; `cargo test -p xtask rootfs` | Pass | Scoped Slice 2 formatting and directly related tests pass. |
+| 2026-07-06 | 0febf44 + working tree | `cargo check --workspace` | Blocked | Fails because `crates/lsb-vm/src/sandbox.rs` has an exhaustive `MountRequest` match missing `Smb`; `lsb-vm` is outside the requested touch list. |
+| 2026-07-06 | 0febf44 + working tree | `cargo fmt --check`; `cargo check --workspace`; `cargo test -p lsb-vm` | Pass | Minimal `lsb-vm` exhaustiveness update restored workspace compilation without SMB lifecycle/startup behavior. |
 
 ## Open Blockers
 
@@ -100,19 +104,25 @@ artifacts unless they are intentionally checked in.
 | `docs/windows-port/future-work.md` | Updated | Moved SMB/CIFS direct mounts into accepted follow-up work with constraints. |
 | `PLAN.md` | Updated | Avoided duplicate future decision work now that D024 exists. |
 | `STATE.md` | Updated | Recorded Slice 1 status and docs-only validation scope. |
+| `crates/lsb-proto/src/lib.rs` | Updated | Added `CAP_CIFS_MOUNT`, `MountRequest::Smb`, redacted formatting, and protocol tests. |
+| `crates/lsb-guest/src/main.rs` | Updated | Advertises `cifs_mount`, builds sanitized CIFS options, and invokes `mount.cifs` with `PASSWD_FD`. |
+| `kernel/lsb_defconfig` | Updated | Enabled built-in CIFS client support. |
+| `kernel/lsb_x86_64_defconfig` | Updated | Enabled built-in CIFS client support. |
+| `xtask/src/rootfs.rs` | Updated | Installs `cifs-utils`, checks for `mount.cifs`, and tests generated rootfs scripts. |
+| `crates/lsb-vm/src/sandbox.rs` | Updated | Minimal exhaustiveness handling for `MountRequest::Smb` so the workspace compiles; no SMB lifecycle/startup implementation. |
 
 ## Cleanup/Redaction Audit
 
 - [ ] Generated SMB passwords absent from CLI output.
 - [ ] Generated SMB passwords absent from SDK/Node errors.
-- [ ] Generated SMB passwords absent from Rust `Debug`/`Display`.
+- [x] Generated SMB passwords absent from Rust `Debug`/`Display`.
 - [ ] Generated SMB passwords absent from QEMU argv.
-- [ ] Generated SMB passwords absent from guest process argv.
-- [ ] Generated SMB passwords absent from guest environment except fd number.
+- [x] Generated SMB passwords absent from guest process argv.
+- [x] Generated SMB passwords absent from guest environment except fd number.
 - [ ] Generated SMB passwords absent from proxy diagnostics.
-- [ ] Generated SMB passwords absent from mount response errors.
+- [x] Generated SMB passwords absent from mount response errors.
 - [ ] Generated SMB passwords absent from cleanup manifests.
-- [ ] Generated SMB passwords absent from test snapshots.
+- [x] Generated SMB passwords absent from test snapshots.
 - [ ] Generated SMB passwords absent from logs.
 
 ## Smoke Test State

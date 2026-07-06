@@ -178,7 +178,7 @@ CONFIG_RTC_DRV_PL031=y
 # CONFIG_AUDIT is not set
 # CONFIG_SWAP is not set
 # CONFIG_NFS_FS is not set
-# CONFIG_CIFS is not set
+CONFIG_CIFS=y
 # CONFIG_BTRFS_FS is not set
 # CONFIG_XFS_FS is not set
 # CONFIG_BLK_DEV_LOOP is not set
