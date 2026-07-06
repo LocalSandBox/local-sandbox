@@ -66,6 +66,7 @@ pub fn package_release(args: &[String]) -> Result<()> {
 fn print_env(platform: &PlatformSpec, version: Option<&str>) {
     println!("LSB_PLATFORM_ID={}", platform.id);
     println!("LSB_HOST_TARGET={}", platform.host_target);
+    println!("LSB_CLI_BINARY={}", platform.cli_binary_name());
     println!("LSB_GUEST_TARGET={}", platform.guest_target);
     println!("LSB_DOCKER_PLATFORM={}", platform.docker_platform);
     println!("LSB_KERNEL_ARCH={}", platform.kernel_arch);
@@ -91,7 +92,11 @@ fn package_cli(
     output_dir: &Path,
 ) -> Result<()> {
     let tarball = output_dir.join(platform.cli_tarball_name(version));
-    run_tar(root, &tarball, &["-C", "target/release", "lsb"])
+    run_tar(
+        root,
+        &tarball,
+        &["-C", "target/release", platform.cli_binary_name()],
+    )
 }
 
 fn package_os_image(platform: &PlatformSpec, version: &str, output_dir: &Path) -> Result<()> {

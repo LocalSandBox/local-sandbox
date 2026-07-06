@@ -20,15 +20,22 @@ packages, and run tools without touching your host.
 
 ## Install
 
-The release install script currently ships macOS CLI artifacts only:
+Install the latest CLI release on macOS:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/LocalSandBox/local-sandbox/main/install.sh | sh
 ```
 
-Windows CLI release artifacts and a Windows CLI installer are not shipped yet.
-Windows users can use the Node.js package on Windows x64 or build the CLI from
-source.
+Install the latest CLI release on Windows 11 x64 from PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/LocalSandBox/local-sandbox/main/install.ps1 | iex
+```
+
+The shell installer also supports Windows x64 when run from Git Bash, MSYS2, or
+Cygwin. QEMU is not bundled with the CLI; install QEMU separately and make
+`qemu-system-x86_64.exe` and `qemu-img.exe` discoverable with `LSB_QEMU` or
+`PATH`. To update a Windows CLI install, rerun the PowerShell installer.
 
 Build the macOS CLI from source:
 
@@ -75,8 +82,7 @@ Windows support covers sandbox start/stop, non-interactive `exec`, guest file
 APIs, overlay mounts, loopback port forwarding, policy-mediated proxy
 networking, and qcow2 checkpoint save/restore. Direct writable host mounts,
 live shared mount coherence, streaming `spawn`, interactive shells, `watch`,
-CAS/NBD checkpoints, and public Windows CLI release/install are not part of the
-Windows MVP.
+and CAS/NBD checkpoints are not part of the Windows MVP.
 
 With `--allow-net`, the guest resolves DNS through the host-side proxy at
 `10.0.0.1`. Leave `/etc/resolv.conf` pointed at that proxy; the proxy performs

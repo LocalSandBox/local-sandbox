@@ -62,6 +62,14 @@ pub fn upgrade(data_dir: &str) -> Result<()> {
         }
     }
 
+    if cfg!(windows) {
+        bail!(
+            "`lsb upgrade` cannot replace a running Windows executable yet. \
+             Re-run the PowerShell installer instead: \
+             irm https://raw.githubusercontent.com/LocalSandBox/local-sandbox/main/install.ps1 | iex"
+        );
+    }
+
     eprintln!("lsb: checking for updates...");
 
     let api_url = format!(
@@ -118,12 +126,13 @@ pub fn upgrade(data_dir: &str) -> Result<()> {
     let reader = ProgressReader::new(response.into_body().into_reader(), total_bytes);
     let decoder = GzDecoder::new(reader);
     let mut archive = Archive::new(decoder);
+    let cli_binary_name = platform.cli_binary_name();
 
     // Extract to a temp file next to the current binary
     let tmp_path = current_exe.with_extension("new");
     for entry in archive.entries().context("failed to read CLI archive")? {
         let mut entry = entry.context("failed to read archive entry")?;
-        if entry.path()?.to_str() == Some("lsb") {
+        if entry.path()?.to_str() == Some(cli_binary_name) {
             let mut out = fs::File::create(&tmp_path).context("failed to create temp binary")?;
             io::copy(&mut entry, &mut out)?;
             break;
@@ -133,7 +142,7 @@ pub fn upgrade(data_dir: &str) -> Result<()> {
     eprintln!();
 
     if !tmp_path.exists() {
-        bail!("'lsb' binary not found in CLI archive");
+        bail!("'{}' binary not found in CLI archive", cli_binary_name);
     }
 
     // Set executable permission

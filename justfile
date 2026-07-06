@@ -1,5 +1,3 @@
-binary := "target/debug/lsb"
-
 # List available recipes
 default:
     @just --list
@@ -18,11 +16,18 @@ build-kernel:
 build-cli:
     cargo build -p lsb-cli
 
-# Codesign the CLI binary with the selected platform entitlement.
+# Codesign the CLI binary when the selected platform requires it.
 codesign:
-    codesign --entitlements "$(LSB_PLATFORM="${LSB_PLATFORM:-}" cargo run -q -p xtask -- platform-meta --format env | sed -n 's/^LSB_CODESIGN_ENTITLEMENTS=//p')" --force -s - {{ binary }}
+    @meta="$(LSB_PLATFORM="${LSB_PLATFORM:-}" cargo run -q -p xtask -- platform-meta --format env)"; \
+    entitlements="$(printf '%s\n' "$meta" | sed -n 's/^LSB_CODESIGN_ENTITLEMENTS=//p')"; \
+    binary_name="$(printf '%s\n' "$meta" | sed -n 's/^LSB_CLI_BINARY=//p')"; \
+    if [ -n "$entitlements" ]; then \
+        codesign --entitlements "$entitlements" --force -s - "target/debug/$binary_name"; \
+    else \
+        echo "No codesign entitlements for selected platform; skipping codesign"; \
+    fi
 
-# Build everything: guest + CLI + codesign
+# Build everything: guest + CLI + platform signing when needed
 build: build-guest build-cli codesign
 
 # Prepare the rootfs, kernel, and initramfs (requires Docker).
@@ -32,11 +37,13 @@ prepare-rootfs:
 
 # Run a command inside the VM
 run *args:
-    {{ binary }} run -- {{ args }}
+    @binary_name="$(LSB_PLATFORM="${LSB_PLATFORM:-}" cargo run -q -p xtask -- platform-meta --format env | sed -n 's/^LSB_CLI_BINARY=//p')"; \
+    "target/debug/$binary_name" run -- {{ args }}
 
 # Open an interactive shell in the VM
 shell:
-    {{ binary }} run -- sh
+    @binary_name="$(LSB_PLATFORM="${LSB_PLATFORM:-}" cargo run -q -p xtask -- platform-meta --format env | sed -n 's/^LSB_CLI_BINARY=//p')"; \
+    "target/debug/$binary_name" run -- sh
 
 # Full setup from scratch: rootfs + build
 setup: prepare-rootfs build
@@ -49,12 +56,19 @@ check:
 clippy:
     cargo clippy --workspace
 
-# Install the binary to ~/.local/bin with codesign
-install: build-guest
+# Install the binary to ~/.local/bin with platform signing when needed
+install:
     cargo build -p lsb-cli --release
-    codesign --entitlements "$(LSB_PLATFORM="${LSB_PLATFORM:-}" cargo run -q -p xtask -- platform-meta --format env | sed -n 's/^LSB_CODESIGN_ENTITLEMENTS=//p')" --force -s - target/release/lsb
-    mkdir -p ~/.local/bin
-    cp target/release/lsb ~/.local/bin/lsb
+    @meta="$(LSB_PLATFORM="${LSB_PLATFORM:-}" cargo run -q -p xtask -- platform-meta --format env)"; \
+    entitlements="$(printf '%s\n' "$meta" | sed -n 's/^LSB_CODESIGN_ENTITLEMENTS=//p')"; \
+    binary_name="$(printf '%s\n' "$meta" | sed -n 's/^LSB_CLI_BINARY=//p')"; \
+    if [ -n "$entitlements" ]; then \
+        codesign --entitlements "$entitlements" --force -s - "target/release/$binary_name"; \
+    else \
+        echo "No codesign entitlements for selected platform; skipping codesign"; \
+    fi; \
+    mkdir -p ~/.local/bin; \
+    cp "target/release/$binary_name" "$HOME/.local/bin/$binary_name"
 
 # Tag and push a release (triggers GitHub Actions)
 release version:

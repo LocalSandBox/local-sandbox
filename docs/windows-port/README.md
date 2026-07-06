@@ -10,7 +10,8 @@ the existing Linux guest, uses virtio-serial for LocalSandbox control, supports
 non-interactive exec, guest file transfer, staged mount imports, host-to-guest
 port forwarding without a guest NIC, policy-mediated `--allow-net`, flattened
 qcow2 checkpoints, Windows x64 Node package metadata, and hosted/self-hosted CI
-coverage.
+coverage. The release path now includes a Windows x64 CLI artifact and native
+PowerShell installer while continuing to require a user-installed QEMU.
 
 The MVP is complete for upstream review, but it is not a production-readiness
 certification. See `mvp-handoff.md` before planning follow-up work.

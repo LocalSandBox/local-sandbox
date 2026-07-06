@@ -65,6 +65,14 @@ impl PlatformSpec {
         )
     }
 
+    pub fn cli_binary_name(&self) -> &'static str {
+        if self.target_os == "windows" {
+            "lsb.exe"
+        } else {
+            "lsb"
+        }
+    }
+
     pub fn os_image_tarball_name(&self, version: &str) -> String {
         format!(
             "lsb-os-{}-{}.tar.gz",
@@ -375,6 +383,7 @@ mod tests {
             spec.cli_tarball_name("0.5.2"),
             "lsb-v0.5.2-darwin-aarch64.tar.gz"
         );
+        assert_eq!(spec.cli_binary_name(), "lsb");
         assert_eq!(
             spec.cli_tarball_name("v0.5.2"),
             "lsb-v0.5.2-darwin-aarch64.tar.gz"
@@ -399,6 +408,7 @@ mod tests {
             spec.cli_tarball_name("0.5.2"),
             "lsb-v0.5.2-darwin-x86_64.tar.gz"
         );
+        assert_eq!(spec.cli_binary_name(), "lsb");
         assert_eq!(
             spec.cli_tarball_name("v0.5.2"),
             "lsb-v0.5.2-darwin-x86_64.tar.gz"
@@ -425,6 +435,7 @@ mod tests {
             spec.cli_tarball_name("0.5.2"),
             "lsb-v0.5.2-windows-x86_64.tar.gz"
         );
+        assert_eq!(spec.cli_binary_name(), "lsb.exe");
     }
 
     #[test]

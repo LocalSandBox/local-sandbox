@@ -11,7 +11,7 @@ Track Windows backend risks here. Update this file when evidence changes a risk.
 | R005 | Windows proxy attachment could bypass LocalSandbox policy | High | Medium | Windows uses LocalSandbox-owned loopback stream netdev, rejects legacy fd/socketpair/non-loopback paths, and tests direct-IP/forged-host denial | Mitigating | TBD |
 | R006 | Windows checkpoint store lacks CAS/NBD parity | Medium | High | MVP uses flattened qcow2 artifacts; future storage work must choose CAS/NBD, qcow2 chains, or another deduplicated format | Accepted | TBD |
 | R007 | Hosted CI cannot run WHPX | Medium | High | Hosted CI is compile/unit/golden only; manual self-hosted Windows 11 runner covers WHPX runtime | Accepted | Maintainer |
-| R008 | QEMU binary provenance/security if user-installed | Medium | Medium | Discovery diagnostics record path/version; decide bundling/signing or provenance policy before public release | Open | TBD |
+| R008 | QEMU binary provenance/security if user-installed | Medium | Medium | Discovery diagnostics record path/version; decide bundling/signing or a stronger provenance policy before broader release hardening | Open | TBD |
 | R009 | Process cleanup leaves QEMU running after host crash/test timeout | High | Medium | Windows Job Object cleanup; fake process tests; periodic runner process checks | Mitigating | TBD |
 | R010 | Network policy bypass through accidental NIC/user networking | High | Medium | Golden/unit/smoke coverage asserts `-nic none` by default, stream proxy only for allow-net, no QEMU user networking/hostfwd/TAP/bridge | Mitigating | TBD |
 | R011 | Public API drift while adding Windows capability errors | Medium | Medium | API-shape tests; keep platform-specific detail below SDK/CLI/Node surfaces | Open | TBD |

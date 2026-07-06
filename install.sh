@@ -9,18 +9,18 @@ INSTALL_DIR="$HOME/.local/bin"
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
-if [ "$OS" != "Darwin" ]; then
-    echo "Error: this installer currently ships macOS CLI release artifacts only. Detected: $OS" >&2
-    echo "Windows 11 x64 backend and Node package support exist, but Windows CLI release/install artifacts are not shipped yet." >&2
-    exit 1
-fi
-
 case "$OS:$ARCH" in
     Darwin:arm64)
         CLI_SUFFIX="darwin-aarch64"
+        CLI_BINARY="lsb"
         ;;
     Darwin:x86_64)
         CLI_SUFFIX="darwin-x86_64"
+        CLI_BINARY="lsb"
+        ;;
+    MINGW*:x86_64 | MSYS*:x86_64 | CYGWIN*:x86_64 | MINGW*:amd64 | MSYS*:amd64 | CYGWIN*:amd64)
+        CLI_SUFFIX="windows-x86_64"
+        CLI_BINARY="lsb.exe"
         ;;
     *)
         echo "Error: lsb does not support this platform yet. Detected: $OS/$ARCH" >&2
@@ -54,11 +54,13 @@ curl -fsSL "$URL" -o "$TMPDIR/$TARBALL"
 
 mkdir -p "$INSTALL_DIR"
 tar -xzf "$TMPDIR/$TARBALL" -C "$INSTALL_DIR"
-chmod +x "$INSTALL_DIR/lsb"
-xattr -d com.apple.quarantine "$INSTALL_DIR/lsb" 2>/dev/null || true
+chmod +x "$INSTALL_DIR/$CLI_BINARY"
+if [ "$OS" = "Darwin" ] && command -v xattr >/dev/null 2>&1; then
+    xattr -d com.apple.quarantine "$INSTALL_DIR/$CLI_BINARY" 2>/dev/null || true
+fi
 
 echo ""
-echo "Installed lsb $VERSION to $INSTALL_DIR/lsb"
+echo "Installed lsb $VERSION to $INSTALL_DIR/$CLI_BINARY"
 
 ##### PATH check
 
@@ -70,6 +72,10 @@ case ":$PATH:" in
         echo ""
         echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
         echo ""
-        echo "Add the line above to your ~/.zshrc to make it permanent."
+        if [ "$OS" = "Darwin" ]; then
+            echo "Add the line above to your ~/.zshrc to make it permanent."
+        else
+            echo "Add the line above to your shell profile to make it permanent."
+        fi
         ;;
 esac

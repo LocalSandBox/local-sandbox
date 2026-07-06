@@ -7,7 +7,9 @@ Last updated: 2026-07-06
 The Windows port MVP implements a native Windows 11 x64 LocalSandbox backend
 using QEMU with WHPX. The implementation keeps the existing Linux guest model
 and public LocalSandbox API shape while replacing the macOS Apple
-Virtualization.framework backend with a supervised QEMU process.
+Virtualization.framework backend with a supervised QEMU process. Release
+packaging now includes Windows x64 CLI install artifacts and the Windows x64
+Node package.
 
 This handoff replaces the completed sprint workspace and milestone prompt files.
 It is the current status source for future agents.
@@ -29,6 +31,7 @@ It is the current status source for future agents.
 | Networking | Default argv remains `-nic none`. Existing allow-net/proxy configuration attaches a QEMU stream netdev only to a LocalSandbox-owned loopback proxy path. |
 | Secrets | Guest environment values are placeholders. Host-side proxy policy performs substitution only for configured destinations. Diagnostics redact secret-bearing values. |
 | Checkpoints | Windows checkpoints use private per-instance qcow2 overlays and flattened qcow2 checkpoint artifacts plus JSON metadata. macOS CAS/NBD behavior is unchanged. |
+| CLI release/install | Release CI builds a Windows x64 CLI archive containing `lsb.exe`. `install.ps1` supports native PowerShell installs, and `install.sh` supports Git Bash/MSYS/Cygwin installs. QEMU is still discovered from `LSB_QEMU` or `PATH` rather than bundled. |
 | Node binding | Windows x64 package metadata and `x86_64-pc-windows-msvc` NAPI target wiring exist. Node `Sandbox.start()` surfaces Rust backend/preflight error chains. |
 | CI | Hosted Windows CI runs compile/unit/golden coverage without QEMU/WHPX. The self-hosted Windows 11 WHPX workflow runs e2e on trusted `main` pushes and supports manual check, unit, smoke, and e2e lanes. |
 | Diagnostics | QEMU argv, stdout/stderr, serial log, preflight, boot status, environment summary, and manifest are collected through a redacted diagnostic collector. |
@@ -37,7 +40,6 @@ It is the current status source for future agents.
 
 - No Windows ARM64 support.
 - No bundled QEMU or QEMU installer.
-- No public Windows CLI installer/release artifact yet.
 - No normal TCG fallback. Production Windows execution requires WHPX.
 - No direct writable host mounts on Windows.
 - No live host/guest mount synchronization, VirtioFS, 9p, SMB, or custom sync.
@@ -114,8 +116,8 @@ head.
 - Rerun self-hosted WHPX smoke at final branch head after diagnostics collector
   scoping changes.
 - Decide and document QEMU minimum supported version.
-- Decide whether QEMU remains user-installed for first public Windows release or
-  whether to bundle/sign a known QEMU distribution.
+- Decide whether to bundle/sign a known QEMU distribution in a later Windows
+  release.
 - Add a Windows diagnostic command such as `lsb doctor windows`.
 - Decide dedicated self-hosted runner labels before adding more Windows runners
   with the default `self-hosted, Windows, X64` labels.

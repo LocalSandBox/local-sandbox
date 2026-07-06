@@ -8,12 +8,11 @@ deleted sprint workspace.
 - Rerun `./scripts/win-gh-test smoke` at final branch head after diagnostics
   collector scoping changes.
 - Decide and document the minimum supported QEMU version.
-- Decide whether first public Windows release uses user-installed QEMU or a
-  bundled/signed QEMU distribution.
+- Evaluate whether a later Windows release should bundle/sign a known QEMU
+  distribution instead of continuing with user-installed QEMU.
 - Add a user-facing Windows diagnostics command such as `lsb doctor windows`.
 - Decide whether to keep default self-hosted labels or add a dedicated WHPX
   runner label before growing the runner pool.
-- Define public Windows CLI install/release artifacts.
 
 ## Runtime capabilities
 

@@ -185,7 +185,7 @@ CLI flags override config values. When `secrets` are configured, the guest recei
 - **Ephemeral by default.** Everything is discarded on exit unless you checkpoint.
 - **CLI mounts are overlay-style.** The host source is kept read-only from the product perspective; guest writes are isolated and discarded unless saved through a checkpoint or explicit copy/export path. Windows mounts are snapshot imports and do not provide live host sync.
 - **Supported hosts:** macOS 14+ on arm64/x64 and Windows 11 x64. macOS uses Apple Virtualization.framework. Windows uses QEMU with WHPX and requires `qemu-system-x86_64.exe` plus `qemu-img.exe`.
-- **Windows feature limits:** use non-interactive commands on Windows. Streaming `spawn`, interactive shell, file `watch`, direct writable host mounts, CAS/NBD checkpoints, Windows ARM64, and public Windows CLI release/install are not supported there yet.
+- **Windows feature limits:** use non-interactive commands on Windows. Streaming `spawn`, interactive shell, file `watch`, direct writable host mounts, CAS/NBD checkpoints, and Windows ARM64 are not supported there yet. Windows x64 CLI release/install artifacts are available, but QEMU must still be installed separately.
 - **Default resources:** 2 CPUs, 2048 MB RAM, 4096 MB disk. Override with `--cpus`, `--memory`, `--disk-size`.
 
 ## Deep-Dive Documentation
