@@ -1,0 +1,41 @@
+crates/lsb-platform/src/windows_x86_64/fs/mod.rs
+  s_95cb14fe9cd074::t_2fe5175f6ae833 14-16
+crates/lsb-vm/src/sandbox.rs
+  s_95cb14fe9cd074::t_3e7ef53d195287 97
+  s_95cb14fe9cd074::t_94b677949c98d8 2436
+  s_95cb14fe9cd074::t_2af978cfe27650 1407,1427
+  s_95cb14fe9cd074::t_6899bc48354ff3 224-225,244-249,265-270,282-283
+  s_95cb14fe9cd074::t_56282ae86be051 32-36,45-46
+  s_95cb14fe9cd074::t_cea1bd91f1a9fa 53-54,1741
+  s_95cb14fe9cd074::t_7ddf4805db8b40 382
+  s_95cb14fe9cd074::t_c6ddcc29c05fe3 1408-1414,1428-1434,1637-1642,1649-1651
+  s_95cb14fe9cd074::t_a0f8a212cec78f 1436,1521-1624,1632-1636,1643,1647-1648,1652
+  s_95cb14fe9cd074::t_ac9fef95610024 1742-1751
+  s_95cb14fe9cd074::t_9bca7fd701a26b 392-400,405,413-431
+  s_95cb14fe9cd074::t_f60e87ceea2197 2265-2270
+  s_95cb14fe9cd074::t_34da08adc95693 1437,1520,2391-2430,2432,2434,2441-2444
+  s_95cb14fe9cd074::t_d232d8f7401c4f 1435
+  s_95cb14fe9cd074::t_b3cb3035c99912 1438
+crates/lsb-platform/src/windows_x86_64/fs/mount_plan.rs
+  s_95cb14fe9cd074::t_caebbe7de873d7 341,344,358-359
+  s_95cb14fe9cd074::t_f10b9b875f3e6a 304-305,309-340,346,348,352-353
+  s_95cb14fe9cd074::t_2573ac4b1f357e 8,15,63,82,101,103,121,163-178,185,210-215,220-239
+  s_95cb14fe9cd074::t_56282ae86be051 306-308,355-357
+  s_95cb14fe9cd074::t_8f985afc8692bf 240
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "850e2f9dcffd77e3ce93673c5ece0e35e6f6f77f",
+  "prompts": {},
+  "sessions": {
+    "s_95cb14fe9cd074": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f37ae-b538-75c1-9372-3b47b800e6d8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
