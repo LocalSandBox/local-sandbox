@@ -39,11 +39,10 @@ corepack yarn install
   `qemu-system-x86_64.exe` and `qemu-img.exe`, enable Windows Hypervisor Platform, and make QEMU
   discoverable through `LSB_QEMU` or `PATH`. The Windows backend requires WHPX; it does not fall
   back to TCG for production Node users.
-- Windows support is currently limited to the non-streaming backend paths implemented by the
-  Windows MVP: sandbox start/stop, non-interactive `exec()` / `execShell()`, guest file APIs,
-  overlay mounts, loopback port forwarding, policy-mediated proxy networking, and checkpoint
-  restore/save. Direct writable host mounts, streaming `spawn()`, interactive shells, and
-  `watch()` are macOS-only until the later Windows mux/watch work lands.
+- Windows support covers sandbox start/stop, non-interactive `exec()` / `execShell()`, guest file
+  APIs, overlay mounts, loopback port forwarding, policy-mediated proxy networking, and checkpoint
+  restore/save. Direct writable host mounts, streaming `spawn()`, interactive shells, and `watch()`
+  remain macOS-only.
 
 ## Usage
 
@@ -189,9 +188,8 @@ await sandbox.stop()
 | `overlay` | `{ type: 'overlay'; hostPath: string; guestPath: string }`               | Host is read-only; guest writes go to overlay |
 | `direct`  | `{ type: 'direct'; hostPath: string; guestPath: string; flags: number }` | macOS VirtioFS direct mount with libc flags   |
 
-For direct mounts on macOS, `flags: 0` is read-write and `flags: 1` is `MS_RDONLY`. Windows MVP
-mounts are overlay/snapshot imports only; direct writable host mounts return a backend capability
-error.
+For direct mounts on macOS, `flags: 0` is read-write and `flags: 1` is `MS_RDONLY`. Windows mounts
+are overlay/snapshot imports only; direct writable host mounts return a backend capability error.
 
 `network` enables proxy networking when present. It accepts:
 

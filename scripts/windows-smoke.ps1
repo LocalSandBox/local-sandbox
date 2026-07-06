@@ -193,8 +193,8 @@ if ($missingBootVars.Count -eq 0) {
   Invoke-NativeCommand "cargo" @("test", "-p", "lsb-vm", "windows_qemu_exec_smoke", "--", "--ignored", "--nocapture")
   Write-Host "== Windows guest copy transfer smoke =="
   Invoke-NativeCommand "cargo" @("test", "-p", "lsb-vm", "windows_qemu_copy_transfer_smoke", "--", "--ignored", "--nocapture")
-  Write-Host "== Windows mount MVP smoke =="
-  Invoke-NativeCommand "cargo" @("test", "-p", "lsb-vm", "windows_qemu_mount_mvp_smoke", "--", "--ignored", "--nocapture")
+  Write-Host "== Windows mount smoke =="
+  Invoke-NativeCommand "cargo" @("test", "-p", "lsb-vm", "windows_qemu_mount_smoke", "--", "--ignored", "--nocapture")
   Write-Host "== Windows port-forward smoke =="
   Invoke-NativeCommand "cargo" @("test", "-p", "lsb-vm", "windows_qemu_port_forward_smoke", "--", "--ignored", "--nocapture")
   Write-Host "== Windows checkpoint/store smoke =="
@@ -202,7 +202,7 @@ if ($missingBootVars.Count -eq 0) {
   Write-Host "== Windows network policy/proxy smoke =="
   Invoke-NativeCommand "cargo" @("test", "-p", "lsb-sdk", "windows_qemu_network_policy_proxy_smoke", "--", "--ignored", "--nocapture")
 } else {
-  Write-Warning "Skipping Windows Node binding, QEMU direct boot, guest exec, guest copy transfer, mount MVP, port-forward, checkpoint/store, and network policy/proxy smokes. Set $($missingBootVars -join ', ') to disposable LocalSandbox boot asset paths."
+  Write-Warning "Skipping Windows Node binding, QEMU direct boot, guest exec, guest copy transfer, mount, port-forward, checkpoint/store, and network policy/proxy smokes. Set $($missingBootVars -join ', ') to disposable LocalSandbox boot asset paths."
 }
 
 # Later:

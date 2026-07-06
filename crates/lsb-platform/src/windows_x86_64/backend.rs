@@ -64,13 +64,13 @@ impl WindowsVm {
         if self.config.nbd_requested {
             return Err(unsupported(
                 "NBD/CAS root storage",
-                "M13 checkpoint/store MVP uses qcow2/raw disk artifacts; Unix-socket NBD/CAS root storage remains unsupported on Windows",
+                "Windows checkpoint/store uses qcow2/raw disk artifacts; Unix-socket NBD/CAS root storage remains unsupported on Windows",
             ));
         }
         if self.config.shared_dir_count > 0 {
             return Err(unsupported(
                 "live shared directory devices",
-                "M10 mount MVP uses lsb-vm copy-import staging after guest-ready; the Windows QEMU backend does not attach VirtioFS, 9p, virtual FAT, or other live host shared-directory devices",
+                "Windows mounts use lsb-vm copy-import staging after guest-ready; the Windows QEMU backend does not attach VirtioFS, 9p, virtual FAT, or other live host shared-directory devices",
             ));
         }
         Ok(())
@@ -196,7 +196,7 @@ impl PlatformVm for WindowsVm {
     fn connect_to_vsock_port(&self, _port: u32) -> Result<TcpStream> {
         Err(unsupported(
             "guest control transport",
-            "M07 waits for guest-ready over PlatformVm::connect_control using virtio-serial; macOS-style vsock guest control remains unsupported on Windows",
+            "Windows guest control uses PlatformVm::connect_control over virtio-serial; macOS-style vsock guest control remains unsupported on Windows",
         ))
     }
 }
@@ -227,7 +227,7 @@ fn root_disk_format_for_path(rootfs_path: &str) -> Result<QemuDiskImageFormat> {
         Some(extension) => Err(unsupported(
             "Windows root disk image format",
             &format!(
-                "M13 supports QEMU-compatible raw .ext4 disks and qcow2 .qcow2 overlays, but '{}' has unsupported extension '.{}'",
+                "Windows supports QEMU-compatible raw .ext4 disks and qcow2 .qcow2 overlays, but '{}' has unsupported extension '.{}'",
                 path.display(),
                 extension
             ),
@@ -235,7 +235,7 @@ fn root_disk_format_for_path(rootfs_path: &str) -> Result<QemuDiskImageFormat> {
         None => Err(unsupported(
             "Windows root disk image format",
             &format!(
-                "M13 supports QEMU-compatible raw .ext4 disks and qcow2 .qcow2 overlays, but '{}' has no file extension",
+                "Windows supports QEMU-compatible raw .ext4 disks and qcow2 .qcow2 overlays, but '{}' has no file extension",
                 path.display()
             ),
         )),
@@ -295,8 +295,8 @@ mod tests {
     }
 
     #[test]
-    fn windows_stub_vm_exposes_initial_stopped_state() {
-        let vm = create_vm(test_config()).expect("stub vm should be constructible");
+    fn windows_vm_exposes_initial_stopped_state() {
+        let vm = create_vm(test_config()).expect("vm should be constructible");
         assert_eq!(vm.state_channel().try_recv().ok(), Some(VmState::Stopped));
     }
 
@@ -317,7 +317,7 @@ mod tests {
 
         assert!(message.contains("live shared directory devices"));
         assert!(message.contains("copy-import staging"));
-        assert!(message.contains("M10"));
+        assert!(message.contains("Windows mounts"));
     }
 
     #[test]

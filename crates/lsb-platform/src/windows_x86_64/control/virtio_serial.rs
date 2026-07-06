@@ -152,7 +152,7 @@ impl VirtioSerialControlError {
                 "Retry on a host with an available OS random source; LocalSandbox uses random control pipe names to avoid local collisions and guessing."
             }
             Self::EndpointUnavailable => {
-                "Start the Windows QEMU VM and wait for the M07 guest-ready handshake before opening the guest control channel."
+                "Start the Windows QEMU VM and wait for guest-ready before opening the guest control channel."
             }
             Self::HostPipeUnsupported => {
                 "Run the Windows QEMU backend on Windows; non-Windows hosts can only run unit tests for this transport."

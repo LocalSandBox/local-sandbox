@@ -63,7 +63,7 @@ use lsb_proto::{VSOCK_PORT, VSOCK_PORT_FORWARD};
 #[derive(Debug)]
 struct UnsupportedWindowsRuntime {
     capability: &'static str,
-    milestone: &'static str,
+    detail: &'static str,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -71,8 +71,8 @@ impl std::fmt::Display for UnsupportedWindowsRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Windows support is in progress: {} is not implemented yet ({}); current Windows runtime support includes VM startup through the M07 guest-ready handshake, non-interactive exec through M08, guest file copy transfer primitives through M09, overlay mount copy-import semantics through M10, host-to-guest loopback port forwarding through M11, policy-mediated proxy networking through M12, and qcow2 checkpoint/store MVP semantics through M13",
-            self.capability, self.milestone
+            "LocalSandbox does not support {} on this host. {} Supported Windows x86_64 runtime operations include QEMU boot, guest-ready, non-interactive exec, guest file copy, overlay mount import/export, loopback port forwarding, policy-mediated proxy networking, and qcow2 checkpoint/store semantics.",
+            self.capability, self.detail
         )
     }
 }
@@ -81,12 +81,8 @@ impl std::fmt::Display for UnsupportedWindowsRuntime {
 impl std::error::Error for UnsupportedWindowsRuntime {}
 
 #[cfg(not(target_os = "macos"))]
-fn unsupported_runtime(capability: &'static str, milestone: &'static str) -> anyhow::Error {
-    UnsupportedWindowsRuntime {
-        capability,
-        milestone,
-    }
-    .into()
+fn unsupported_runtime(capability: &'static str, detail: &'static str) -> anyhow::Error {
+    UnsupportedWindowsRuntime { capability, detail }.into()
 }
 
 // --- Mount types ---
@@ -769,7 +765,10 @@ impl Sandbox {
         let destination = validate_copy_out_destination(host_destination.as_ref(), overwrite)?;
         let stat = self.stat(guest_source)?;
         if stat.is_symlink {
-            bail!("copy-out guest source '{}' is a symlink; symlink export is unsupported in the Windows MVP", guest_source);
+            bail!(
+                "copy-out guest source '{}' is a symlink; symlink export is unsupported on Windows",
+                guest_source
+            );
         }
 
         if stat.is_file {
@@ -956,7 +955,7 @@ impl Sandbox {
             let stat = self.stat(&guest_child)?;
             if stat.is_symlink {
                 bail!(
-                    "copy-out guest entry '{}' is a symlink; symlink export is unsupported in the Windows MVP",
+                    "copy-out guest entry '{}' is a symlink; symlink export is unsupported on Windows",
                     guest_child
                 );
             }
@@ -993,7 +992,7 @@ impl Sandbox {
             let _ = (argv, env, cwd);
             return Err(unsupported_runtime(
                 "streaming exec stdin/kill",
-                "M11 transport multiplexer; M08 supports non-interactive exec through Sandbox::exec",
+                "Use Sandbox::exec for non-interactive commands; streaming stdin/kill requires a multiplexed guest control session.",
             ));
         }
 
@@ -1176,13 +1175,13 @@ impl Sandbox {
         Ok(code)
     }
 
-    /// Interactive shell support on Windows depends on the future control
-    /// transport and PTY work; M01 only guarantees compile-time scaffolding.
+    /// Interactive shell support on Windows needs PTY handling over the guest
+    /// control transport. Non-interactive exec is supported through `exec`.
     #[cfg(not(target_os = "macos"))]
     pub fn shell(&self, _argv: &[impl AsRef<str>], _env: &HashMap<String, String>) -> Result<i32> {
         Err(unsupported_runtime(
             "interactive shell",
-            "M06 virtio-serial control transport and M08 exec",
+            "Use Sandbox::exec for non-interactive commands; interactive shells require PTY support over the guest control transport.",
         ))
     }
 
@@ -1335,7 +1334,7 @@ impl Sandbox {
     pub fn start_port_forwarding(&self, _forwards: &[PortMapping]) -> Result<PortForwardHandle> {
         Err(unsupported_runtime(
             "port forwarding",
-            "M11 port forwarding targets Windows x86_64 and macOS only; no listener was opened",
+            "Port forwarding is available only on the macOS and Windows x86_64 backends; no listener was opened.",
         ))
     }
 
@@ -1419,7 +1418,7 @@ impl Sandbox {
     fn connect_vsock(&self) -> Result<TcpStream> {
         Err(unsupported_runtime(
             "macOS-style vsock guest control transport",
-            "Windows uses virtio-serial guest control for M08 exec and M09 file transfer primitives; watch, shell, streaming spawn, port forwarding, and muxed sessions are later milestones",
+            "Windows uses virtio-serial guest control for exec and file transfer; macOS-style vsock guest control is not available on Windows.",
         ))
     }
 
@@ -2176,7 +2175,7 @@ mod tests {
 
         let message = err.to_string();
         assert!(message.contains("direct host mounts"));
-        assert!(message.contains("Windows MVP"));
+        assert!(message.contains("unsupported on Windows"));
     }
 
     #[test]
@@ -2280,7 +2279,7 @@ mod tests {
     #[test]
     fn exec_request_frame_includes_argv_env_and_cwd() {
         let mut env = HashMap::new();
-        env.insert("LSB_M08_ENV".to_string(), "present".to_string());
+        env.insert("LSB_TEST_ENV".to_string(), "present".to_string());
         let req = build_exec_request(
             &["/bin/sh", "-c", "printf test"],
             &env,
@@ -2302,7 +2301,7 @@ mod tests {
         assert_eq!(msg_type, frame::EXEC_REQ);
         assert_eq!(decoded.argv, ["/bin/sh", "-c", "printf test"]);
         assert_eq!(
-            decoded.env.get("LSB_M08_ENV").map(String::as_str),
+            decoded.env.get("LSB_TEST_ENV").map(String::as_str),
             Some("present")
         );
         assert_eq!(decoded.cwd.as_deref(), Some("/workspace"));
@@ -2602,9 +2601,9 @@ mod tests {
                 stdout.clear();
                 stderr.clear();
                 let mut env = HashMap::new();
-                env.insert("LSB_M08_ENV".to_string(), "present".to_string());
+                env.insert("LSB_TEST_ENV".to_string(), "present".to_string());
                 let code = sandbox.exec_with_env_and_cwd(
-                    &["/bin/sh", "-c", "printf '%s:%s' \"$PWD\" \"$LSB_M08_ENV\""],
+                    &["/bin/sh", "-c", "printf '%s:%s' \"$PWD\" \"$LSB_TEST_ENV\""],
                     &env,
                     Some("/tmp"),
                     &mut stdout,
@@ -2726,10 +2725,10 @@ mod tests {
 
     #[test]
     #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU, and disposable LocalSandbox assets"]
-    fn windows_qemu_mount_mvp_smoke() {
+    fn windows_qemu_mount_smoke() {
         #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
         {
-            eprintln!("skipping Windows QEMU mount MVP smoke on non-Windows host");
+            eprintln!("skipping Windows QEMU mount smoke on non-Windows host");
         }
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -2740,7 +2739,7 @@ mod tests {
             let host_root = rootfs
                 .parent()
                 .expect("rootfs should live in a work directory")
-                .join("mount-mvp-fixture");
+                .join("mount-fixture");
             let _ = std::fs::remove_dir_all(&host_root);
             let source = host_root.join("source");
             let export = host_root.join("export");
@@ -2787,7 +2786,7 @@ mod tests {
                     .expect("host source live update fixture");
                 assert!(
                     sandbox.read_file("/workspace/after-start.txt").is_err(),
-                    "Windows MVP mounts expose a startup snapshot, not live host synchronization"
+                    "Windows mounts expose a startup snapshot, not live host synchronization"
                 );
 
                 sandbox.copy_to_host("/workspace/guest.txt", export.join("guest.txt"), false)?;
@@ -2815,7 +2814,7 @@ mod tests {
 
             let stop_result = sandbox.stop();
             let _ = std::fs::remove_dir_all(&host_root);
-            result.expect("Windows mount MVP smoke should pass");
+            result.expect("Windows mount smoke should pass");
             stop_result.expect("Windows mount smoke QEMU should stop cleanly");
         }
     }

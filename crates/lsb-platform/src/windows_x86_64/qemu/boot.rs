@@ -243,7 +243,7 @@ pub(crate) enum QemuBootError {
     },
     UnsupportedConfig {
         capability: &'static str,
-        milestone: &'static str,
+        detail: &'static str,
         artifacts: QemuBootArtifacts,
     },
     InvalidConfig {
@@ -397,11 +397,11 @@ impl fmt::Display for QemuBootError {
             ),
             Self::UnsupportedConfig {
                 capability,
-                milestone,
+                detail,
                 ..
             } => write!(
                 f,
-                "Windows direct boot cannot start because {capability} is not implemented until {milestone}.{}",
+                "Windows direct boot cannot start because {capability} is unsupported: {detail}.{}",
                 self.artifact_sentence()
             ),
             Self::InvalidConfig { field, reason, .. } => write!(
@@ -531,8 +531,10 @@ impl fmt::Display for QemuBootError {
                 ..
             } => write!(
                 f,
-                "the Windows guest advertised unsupported runtime capabilities during readiness: {}. The current Windows backend accepts the base guest-ready handshake, M08 exec, M09 file_range_io, and M11 port_forward capabilities; unknown capabilities require later mux/network/checkpoint milestones. serial excerpt: {}.{}",
+                "the Windows guest advertised unsupported runtime capabilities during readiness: {}. The Windows backend currently accepts the base guest-ready handshake plus '{}' and '{}' capabilities. Update lsb-proto and host handling before advertising additional capabilities. serial excerpt: {}.{}",
                 capability_summary(capabilities),
+                lsb_proto::CAP_FILE_RANGE_IO,
+                lsb_proto::CAP_PORT_FORWARD,
                 empty_as_placeholder(serial_excerpt),
                 self.artifact_sentence()
             ),
@@ -540,7 +542,7 @@ impl fmt::Display for QemuBootError {
                 stderr_excerpt, ..
             } => write!(
                 f,
-                "Windows QEMU stayed alive for the M05 boot observation window, but serial.log remained empty. Treat this as inconclusive boot evidence; inspect QEMU stderr and kernel console configuration. stderr excerpt: {}.{}",
+                "Windows QEMU stayed alive for the boot observation window, but serial.log remained empty. Treat this as inconclusive boot evidence; inspect QEMU stderr and kernel console configuration. stderr excerpt: {}.{}",
                 empty_as_placeholder(stderr_excerpt),
                 self.artifact_sentence()
             ),
@@ -1796,7 +1798,7 @@ mod tests {
         supervisor.start().expect("fake supervisor should start");
 
         let err = observe_boot(&mut supervisor, &artifacts, Duration::from_millis(100))
-            .expect_err("empty serial should fail M05 observation");
+            .expect_err("empty serial should fail boot observation");
         assert_eq!(err.kind(), QemuBootErrorKind::SerialOutputMissing);
         assert!(err.to_string().contains("serial.log remained empty"));
 
@@ -2118,7 +2120,7 @@ mod tests {
             );
             assert!(
                 argv.contains("-nic none"),
-                "redacted argv should preserve no guest NIC for the Windows MVP: {argv}"
+                "redacted argv should preserve no guest NIC by default: {argv}"
             );
             let ready = boot
                 .guest_ready()

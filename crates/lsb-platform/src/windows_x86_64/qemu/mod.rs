@@ -1,4 +1,4 @@
-#![allow(dead_code)] // M02 scaffolding is wired into VM startup in later milestones.
+#![allow(dead_code)] // Some QEMU diagnostics helpers are used only by Windows validation paths.
 
 use std::fmt;
 use std::io;
@@ -681,7 +681,7 @@ mod tests {
 
         let report = QemuPreflight::new(QemuDiscovery::new(&host), &runner)
             .run()
-            .expect("unknown Windows version is reported, not fatal in M02");
+            .expect("unknown Windows version is reported, not fatal");
 
         assert_eq!(report.host.windows_major_version, None);
         assert!(!report.host.windows_version_verified);

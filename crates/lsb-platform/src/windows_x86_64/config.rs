@@ -43,7 +43,7 @@ mod tests {
     use crate::{PlatformSharedDir, PlatformVmConfig};
 
     #[test]
-    fn windows_config_records_requested_future_capabilities() {
+    fn windows_config_records_requested_backend_options() {
         let config = PlatformVmConfig {
             kernel_path: "Image".into(),
             rootfs_path: "rootfs.ext4".into(),

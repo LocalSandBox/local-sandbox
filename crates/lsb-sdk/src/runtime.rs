@@ -409,7 +409,7 @@ impl AsyncSandbox {
     }
 
     /// Save the current rootfs state as a named checkpoint.
-    /// Future VMs can boot from this checkpoint via `SandboxConfig::from`.
+    /// New VMs can boot from this checkpoint via `SandboxConfig::from`.
     pub async fn checkpoint(&self, name: &str) -> Result<()> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.cmd_tx
@@ -969,13 +969,13 @@ mod tests {
             use crate::types::SandboxConfig;
 
             let data_dir = prepare_checkpoint_smoke_data_dir();
-            let checkpoint_name = format!("m13-checkpoint-{}", std::process::id());
+            let checkpoint_name = format!("checkpoint-smoke-{}", std::process::id());
             let store = lsb_store::WindowsCheckpointStore::new(&data_dir);
             let _ = store.delete_checkpoint(&checkpoint_name);
 
             let base = super::boot_vm(SandboxConfig {
                 data_dir: Some(data_dir.display().to_string()),
-                instance_id: Some(format!("m13-base-{}", std::process::id())),
+                instance_id: Some(format!("checkpoint-base-{}", std::process::id())),
                 ..Default::default()
             })
             .expect("Windows base sandbox should boot with qcow2 active overlay");
@@ -1014,7 +1014,7 @@ mod tests {
                 let restored = super::boot_vm(SandboxConfig {
                     data_dir: Some(data_dir.display().to_string()),
                     from: Some(checkpoint_name.clone()),
-                    instance_id: Some(format!("m13-restored-{}", std::process::id())),
+                    instance_id: Some(format!("checkpoint-restored-{}", std::process::id())),
                     ..Default::default()
                 })
                 .expect("Windows sandbox should restore from checkpoint");
@@ -1041,7 +1041,7 @@ mod tests {
 
                 let fresh = super::boot_vm(SandboxConfig {
                     data_dir: Some(data_dir.display().to_string()),
-                    instance_id: Some(format!("m13-fresh-{}", std::process::id())),
+                    instance_id: Some(format!("checkpoint-fresh-{}", std::process::id())),
                     ..Default::default()
                 })
                 .expect("fresh Windows sandbox should boot from base");
@@ -1070,7 +1070,7 @@ mod tests {
                 let deleted_restore = super::boot_vm(SandboxConfig {
                     data_dir: Some(data_dir.display().to_string()),
                     from: Some(checkpoint_name.clone()),
-                    instance_id: Some(format!("m13-deleted-{}", std::process::id())),
+                    instance_id: Some(format!("checkpoint-deleted-{}", std::process::id())),
                     ..Default::default()
                 });
                 assert!(deleted_restore.is_err());
@@ -1087,12 +1087,12 @@ mod tests {
                 let kernel = required_env_path("LSB_WINDOWS_BOOT_KERNEL");
                 let initrd = required_env_path("LSB_WINDOWS_BOOT_INITRD");
                 let rootfs = required_env_path("LSB_WINDOWS_BOOT_ROOTFS");
-                let root = std::env::temp_dir()
-                    .join(format!("lsb-sdk-m13-checkpoint-{}", std::process::id()));
+                let root =
+                    std::env::temp_dir().join(format!("lsb-sdk-checkpoint-{}", std::process::id()));
                 let _ = std::fs::remove_dir_all(&root);
                 std::fs::create_dir_all(root.join("instances")).expect("create instances dir");
                 std::fs::create_dir_all(root.join("checkpoints")).expect("create checkpoints dir");
-                std::fs::write(root.join("VERSION"), b"m13-smoke\n").expect("write VERSION");
+                std::fs::write(root.join("VERSION"), b"checkpoint-smoke\n").expect("write VERSION");
                 std::fs::copy(kernel, root.join("Image")).expect("copy kernel asset");
                 std::fs::copy(initrd, root.join("initramfs.cpio.gz")).expect("copy initrd asset");
                 std::fs::copy(rootfs, root.join("rootfs.ext4")).expect("copy rootfs asset");
@@ -1126,10 +1126,10 @@ mod tests {
 
             let _storage_guard = EnvVarGuard::set("LSB_STORAGE", "direct");
             let data_dir = prepare_smoke_data_dir();
-            let secret_value = "m12-real-secret-never-in-guest".to_string();
+            let secret_value = "network-policy-real-secret-never-in-guest".to_string();
             let mut secrets = HashMap::new();
             secrets.insert(
-                "M12_SECRET".to_string(),
+                "NETWORK_POLICY_SECRET".to_string(),
                 SecretConfig {
                     value: secret_value.clone(),
                     hosts: vec!["example.com".to_string()],
@@ -1141,7 +1141,7 @@ mod tests {
                 allow_net: true,
                 allowed_hosts: vec!["example.com".to_string()],
                 secrets,
-                instance_id: Some(format!("m12-network-policy-{}", std::process::id())),
+                instance_id: Some(format!("network-policy-{}", std::process::id())),
                 ..Default::default()
             };
 
@@ -1156,7 +1156,7 @@ mod tests {
                     .expect("allow-net should keep a proxy handle alive");
                 let placeholder = proxy_handle
                     .placeholders
-                    .get("M12_SECRET")
+                    .get("NETWORK_POLICY_SECRET")
                     .expect("secret placeholder should be generated");
                 assert_ne!(placeholder, &secret_value);
                 assert!(
@@ -1175,7 +1175,7 @@ mod tests {
                 )?;
 
                 let mut env = HashMap::new();
-                env.insert("M12_SECRET".to_string(), placeholder.clone());
+                env.insert("NETWORK_POLICY_SECRET".to_string(), placeholder.clone());
                 let allowed = sandbox.exec_with_env(
                     &[
                         "/usr/bin/curl",
@@ -1193,7 +1193,7 @@ mod tests {
                 let mut secret_stdout = Vec::new();
                 let mut secret_stderr = Vec::new();
                 let secret_env = sandbox.exec_with_env(
-                    &["/bin/sh", "-c", "printf '%s' \"$M12_SECRET\""],
+                    &["/bin/sh", "-c", "printf '%s' \"$NETWORK_POLICY_SECRET\""],
                     &env,
                     &mut secret_stdout,
                     &mut secret_stderr,
@@ -1335,8 +1335,8 @@ mod tests {
                 let kernel = required_env_path("LSB_WINDOWS_BOOT_KERNEL");
                 let initrd = required_env_path("LSB_WINDOWS_BOOT_INITRD");
                 let rootfs = required_env_path("LSB_WINDOWS_BOOT_ROOTFS");
-                let root = std::env::temp_dir()
-                    .join(format!("lsb-sdk-m12-network-{}", std::process::id()));
+                let root =
+                    std::env::temp_dir().join(format!("lsb-sdk-network-{}", std::process::id()));
                 let _ = std::fs::remove_dir_all(&root);
                 std::fs::create_dir_all(root.join("instances")).expect("create instances dir");
                 std::fs::create_dir_all(root.join("checkpoints")).expect("create checkpoints dir");

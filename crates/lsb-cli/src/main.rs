@@ -130,7 +130,7 @@ fn process_alive(pid: i32) -> Result<bool> {
 #[cfg(not(unix))]
 fn process_alive(_pid: i32) -> Result<bool> {
     anyhow::bail!(
-        "Windows support is in progress: orphaned instance pruning is not implemented yet; M01 only provides compile stubs"
+        "orphaned instance pruning is not available on this host; remove stale instance metadata manually"
     )
 }
 

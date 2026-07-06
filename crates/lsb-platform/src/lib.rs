@@ -132,7 +132,7 @@ pub fn supported_runtime_platform() -> Result<&'static PlatformSpec> {
         Ok(platform)
     } else {
         Err(anyhow!(
-            "lsb runtime is not implemented for {} yet",
+            "lsb runtime is not implemented for {}",
             platform.id
         ))
     }
@@ -360,7 +360,7 @@ pub fn create_vm(_config: PlatformVmConfig) -> Result<Arc<dyn PlatformVm>> {
         .map(|platform| platform.id)
         .unwrap_or("unknown host target");
     Err(anyhow!(
-        "LocalSandbox runtime is not implemented for {platform}; M01 only provides Windows x86_64 compile stubs"
+        "LocalSandbox runtime is not implemented for {platform}; supported hosts are macOS arm64/x64 and Windows x86_64"
     ))
 }
 
@@ -414,9 +414,9 @@ mod tests {
     }
 
     #[test]
-    fn windows_x86_64_is_registered_as_planned_m01_target() {
+    fn windows_x86_64_is_registered_as_supported_target() {
         let spec = platform_by_id("windows-x86_64").expect("platform should exist");
-        assert_eq!(spec.status, PlatformStatus::Planned);
+        assert_eq!(spec.status, PlatformStatus::Supported);
         assert_eq!(spec.target_os, "windows");
         assert_eq!(spec.target_arch, "x86_64");
         assert_eq!(spec.host_target, "x86_64-pc-windows-msvc");

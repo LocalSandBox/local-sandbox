@@ -171,7 +171,7 @@ pub fn start_cas_nbd_server(
     _disk_size: u64,
 ) -> Result<NbdHandle> {
     Err(anyhow::anyhow!(
-        "Windows support is in progress: NBD/CAS storage transport is not implemented yet; M13 uses qcow2/raw checkpoint disk artifacts and does not port Unix-socket NBD/CAS"
+        "NBD/CAS storage transport is not available on Windows; Windows uses qcow2/raw checkpoint disk artifacts instead of Unix-socket NBD/CAS"
     ))
 }
 
@@ -180,13 +180,13 @@ mod non_unix_tests {
     use super::*;
 
     #[test]
-    fn nbd_stub_reports_windows_checkpoint_milestone() {
+    fn nbd_stub_reports_windows_checkpoint_mode() {
         let message = match start_cas_nbd_server("rootfs.ext4", "cas", "index.idx", "nbd.sock", 0) {
             Ok(_) => panic!("NBD should be unsupported"),
             Err(error) => error.to_string(),
         };
 
         assert!(message.contains("NBD/CAS storage transport"));
-        assert!(message.contains("M13"));
+        assert!(message.contains("qcow2/raw checkpoint disk artifacts"));
     }
 }

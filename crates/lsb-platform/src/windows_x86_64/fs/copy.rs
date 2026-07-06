@@ -149,7 +149,7 @@ impl CaseFoldSet {
     }
 }
 
-/// Best-effort Unicode fold for Windows MVP copy collision checks.
+/// Best-effort Unicode fold for Windows copy collision checks.
 ///
 /// This catches common non-ASCII case pairs that ASCII folding misses, but it
 /// does not attempt NTFS upcase-table matching or Unicode normalization.
@@ -287,7 +287,7 @@ pub fn validate_windows_host_path_lexical(
             return Err(CopyPathError::new(
                 operation,
                 raw,
-                "UNC paths are not supported in the Windows MVP",
+                "UNC paths are not supported on Windows",
             ));
         }
         verbatim
@@ -299,14 +299,14 @@ pub fn validate_windows_host_path_lexical(
         return Err(CopyPathError::new(
             operation,
             raw,
-            "device paths are not supported in the Windows MVP",
+            "device paths are not supported on Windows",
         ));
     }
     if lexical.starts_with("\\\\") {
         return Err(CopyPathError::new(
             operation,
             raw,
-            "UNC paths are not supported in the Windows MVP",
+            "UNC paths are not supported on Windows",
         ));
     }
 
@@ -567,7 +567,7 @@ fn reject_reparse_point(
         return Err(CopyPathError::new(
             operation,
             path.display().to_string(),
-            "symlinks and junction/reparse-point paths are not followed in the Windows MVP",
+            "symlinks and junction/reparse-point paths are not followed on Windows",
         ));
     }
     Ok(metadata)
@@ -712,7 +712,7 @@ fn validate_copy_in_file_info(
         return Err(CopyPathError::new(
             CopyPathOperation::CopyInSource,
             path_text,
-            "symlinks and junction/reparse-point paths are not followed in the Windows MVP",
+            "symlinks and junction/reparse-point paths are not followed on Windows",
         ));
     }
     if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
@@ -726,7 +726,7 @@ fn validate_copy_in_file_info(
         return Err(CopyPathError::new(
             CopyPathOperation::CopyInSource,
             path_text,
-            "hardlinked files are not copied in the Windows MVP",
+            "hardlinked files are not copied on Windows",
         ));
     }
     if let Some(expected_len) = expected_len {
@@ -1051,7 +1051,7 @@ mod tests {
             CopyPathOperation::CopyOutGuestEntry,
             "/workspace",
         )
-        .expect("Windows MVP copy folding does not perform Unicode normalization");
+        .expect("Windows copy folding does not perform Unicode normalization");
     }
 
     #[test]

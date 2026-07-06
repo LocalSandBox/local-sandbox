@@ -273,13 +273,13 @@ impl QemuProcessError {
                 "Check whether host policy prevents assigning QEMU to a Job Object; LocalSandbox fails closed to avoid orphaned QEMU helper processes."
             }
             Self::ProcessAlreadyInJob { .. } => {
-                "Run LocalSandbox outside the conflicting parent Job Object or configure the runner to allow nested/breakaway jobs; this milestone fails closed when containment cannot be guaranteed."
+                "Run LocalSandbox outside the conflicting parent Job Object or configure the runner to allow nested/breakaway jobs; LocalSandbox fails closed when containment cannot be guaranteed."
             }
             Self::JobObjectTerminateFailed { .. } => {
                 "Check whether QEMU already exited or whether host policy blocked Job Object termination, then inspect the process id and diagnostics."
             }
             Self::WhpxPreflightMismatch { .. } => {
-                "Rerun QEMU preflight and confirm Windows Hypervisor Platform is enabled; M02 preflight can report WHPX support in the binary before runtime WHPX initialization is proven."
+                "Rerun QEMU preflight and confirm Windows Hypervisor Platform is enabled; preflight can report WHPX support in the binary before runtime WHPX initialization is proven."
             }
             Self::EarlyExit { .. } => {
                 "Inspect the redacted argv and QEMU stderr log for invalid argv, missing assets, unsupported devices, or WHPX runtime failures."
@@ -562,8 +562,8 @@ impl QemuSupervisor {
             return Ok(self.exit_status.clone());
         }
 
-        // M04 has no QMP/control channel yet, so termination is forced cleanup.
-        // M05/MQMP should insert graceful QEMU shutdown before this fallback.
+        // There is no QMP shutdown channel, so termination falls back to Job
+        // Object/process cleanup.
         let terminate_result = self.request_child_termination("terminate");
         let wait_result = self.wait_for_exit_without_status(self.config.terminate_timeout);
 

@@ -17,7 +17,7 @@ const windowsMissingMessage = [
 
 const unsupportedWindowsMessage = [
   'Windows Node support is limited to win32-x64-msvc.',
-  'Windows ARM64 and IA32 native packages are not published for this MVP.',
+  'Windows ARM64 and IA32 native packages are not published.',
   'Use Windows 11 x64, or install only the root package metadata on unsupported Windows hosts.',
 ].join(' ')
 

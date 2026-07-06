@@ -272,7 +272,7 @@ impl WindowsCheckpointStore {
             return Err(WindowsCheckpointError::UnsupportedMode {
                 mode: "CAS/NBD checkpoint index".to_string(),
                 detail: format!(
-                    "checkpoint '{name}' is stored as '{}', but the Windows MVP uses qcow2/raw disk artifacts and does not support Unix-socket NBD/CAS restore",
+                    "checkpoint '{name}' is stored as '{}', but Windows uses qcow2/raw disk artifacts and does not support Unix-socket NBD/CAS restore",
                     paths.cas_index_path.display()
                 ),
             });
@@ -717,7 +717,7 @@ impl fmt::Display for WindowsCheckpointError {
             ),
             Self::QemuImgNotFound { detail } => write!(
                 f,
-                "qemu-img.exe is required for the Windows checkpoint/store MVP but was not found: {detail}. Install QEMU for Windows or set LSB_QEMU_IMG"
+                "qemu-img.exe is required for the Windows checkpoint/store backend but was not found: {detail}. Install QEMU for Windows or set LSB_QEMU_IMG"
             ),
             Self::QemuImgFailed {
                 program,
@@ -1204,7 +1204,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_source_rejects_cas_index_with_windows_mvp_error() {
+    fn resolve_source_rejects_cas_index_with_windows_error() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = store(tmp.path());
         fs::create_dir_all(store.checkpoints_dir()).expect("checkpoints dir");
@@ -1221,7 +1221,7 @@ mod tests {
 
         let message = err.to_string();
         assert!(message.contains("CAS/NBD checkpoint index"));
-        assert!(message.contains("Windows MVP"));
+        assert!(message.contains("Windows uses qcow2/raw"));
         assert!(message.contains("qcow2/raw"));
     }
 

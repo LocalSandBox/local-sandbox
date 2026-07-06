@@ -267,7 +267,7 @@ pub fn create_socketpair() -> anyhow::Result<(PlatformNetworkFd, PlatformNetwork
     Ok((fds[0], fds[1]))
 }
 
-/// Windows networking requires the future QEMU/proxy attachment strategy.
+/// Windows networking uses QEMU stream attachments instead of fd socketpairs.
 #[cfg(not(unix))]
 pub fn create_socketpair() -> anyhow::Result<(PlatformNetworkFd, PlatformNetworkFd)> {
     Err(anyhow::anyhow!(
@@ -414,7 +414,7 @@ mod non_unix_tests {
     use super::*;
 
     #[test]
-    fn socketpair_stub_rejects_legacy_fd_path() {
+    fn socketpair_rejects_legacy_fd_path() {
         let message = match create_socketpair() {
             Ok(_) => panic!("socketpair should be unsupported"),
             Err(error) => error.to_string(),

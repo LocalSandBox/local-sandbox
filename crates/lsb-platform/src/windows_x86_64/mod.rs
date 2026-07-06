@@ -28,5 +28,5 @@ pub const SPEC: PlatformSpec = PlatformSpec {
     debootstrap_arch: "amd64",
     default_data_subdir: "AppData/Local/lsb",
     codesign_entitlements: None,
-    status: PlatformStatus::Planned,
+    status: PlatformStatus::Supported,
 };

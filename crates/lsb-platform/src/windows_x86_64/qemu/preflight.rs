@@ -66,7 +66,7 @@ where
                 required_accelerator: PRODUCTION_ACCELERATOR,
                 reported_by_qemu: true,
                 probe: "qemu-system-x86_64.exe -accel help",
-                limitation: "M02 does not start a VM; this proves the QEMU binary reports WHPX support, but firmware and Windows Hypervisor Platform runtime readiness are finally proven by a later boot smoke test.",
+                limitation: "Preflight does not start a VM; this proves the QEMU binary reports WHPX support, but firmware and Windows Hypervisor Platform runtime readiness are proven by boot validation.",
             },
         })
     }

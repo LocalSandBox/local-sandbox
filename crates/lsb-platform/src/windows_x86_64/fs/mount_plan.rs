@@ -97,7 +97,7 @@ impl fmt::Display for WindowsMountPlanError {
             ),
             Self::UnsupportedDirectMount { target, flags } => write!(
                 f,
-                "Windows mount target '{target}' uses direct mount flags {flags}; direct host mounts, including direct read-write host mounts, are unsupported in the Windows MVP. Use overlay/ro mounts for copy-import semantics."
+                "Windows mount target '{target}' uses direct mount flags {flags}; direct host mounts, including direct read-write host mounts, are unsupported on Windows. Use overlay/ro mounts for copy-import semantics."
             ),
         }
     }

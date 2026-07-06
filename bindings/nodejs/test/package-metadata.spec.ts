@@ -26,11 +26,7 @@ const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const npmDir = join(projectRoot, 'npm')
 const rootPackage = require(join(projectRoot, 'package.json')) as RootPackageJson
 
-const expectedTargets = [
-  'aarch64-apple-darwin',
-  'x86_64-apple-darwin',
-  'x86_64-pc-windows-msvc',
-]
+const expectedTargets = ['aarch64-apple-darwin', 'x86_64-apple-darwin', 'x86_64-pc-windows-msvc']
 
 const expectedPlatformPackages: Record<
   string,
@@ -84,7 +80,7 @@ test('platform package metadata matches supported native artifacts', (t) => {
   }
 })
 
-test('Windows packaging remains x64-only for the MVP', (t) => {
+test('Windows packaging remains x64-only', (t) => {
   const packageDirs = readdirSync(npmDir)
 
   t.true(packageDirs.includes('win32-x64-msvc'))
@@ -108,11 +104,7 @@ test('generated loader explains unsupported Windows architectures', (t) => {
   t.true(generatedLoader.includes("if (process.platform === 'win32')"))
   t.true(generatedLoader.includes("if (process.arch === 'x64')"))
   t.true(generatedLoader.includes('Windows Node support is limited to win32-x64-msvc'))
-  t.true(
-    generatedLoader.includes(
-      'Windows ARM64 and IA32 native packages are not published for this MVP',
-    ),
-  )
+  t.true(generatedLoader.includes('Windows ARM64 and IA32 native packages are not published'))
   t.true(generatedLoader.includes("' Current host is win32-'"))
   t.true(generatedLoader.includes('process.arch'))
 })
