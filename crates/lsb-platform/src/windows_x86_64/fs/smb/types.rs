@@ -96,6 +96,8 @@ pub enum WindowsSmbLifecyclePhase {
     ShareRemove,
     ComputerName,
     UserGroupAdd,
+    UserNetworkLogonGrant,
+    UserNetworkLogonRevoke,
     CleanupManifest,
     SmbLoopbackPreflight,
 }
@@ -115,6 +117,8 @@ impl WindowsSmbLifecyclePhase {
             Self::ShareRemove => "SMB share removal",
             Self::ComputerName => "computer name lookup",
             Self::UserGroupAdd => "user group membership",
+            Self::UserNetworkLogonGrant => "network logon right grant",
+            Self::UserNetworkLogonRevoke => "network logon right revoke",
             Self::CleanupManifest => "cleanup manifest",
             Self::SmbLoopbackPreflight => "SMB loopback preflight",
         }

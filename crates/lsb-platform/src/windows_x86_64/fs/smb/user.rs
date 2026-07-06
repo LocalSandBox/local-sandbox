@@ -112,6 +112,10 @@ impl WindowsSmbUserManager for NativeWindowsSmbUserManager {
             let _ = delete_local_user(name);
             return Err(error);
         }
+        if let Err(error) = grant_network_logon_right(&principal) {
+            let _ = delete_local_user(name);
+            return Err(error);
+        }
         Ok(WindowsSmbUserAccount {
             name: name.clone(),
             domain,
@@ -123,7 +127,13 @@ impl WindowsSmbUserManager for NativeWindowsSmbUserManager {
         &mut self,
         account: &WindowsSmbUserAccount,
     ) -> Result<(), WindowsSmbLifecycleError> {
-        delete_local_user(&account.name)
+        let revoke_result = revoke_network_logon_right(&account.principal);
+        let delete_result = delete_local_user(&account.name);
+        match (revoke_result, delete_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) => Err(error),
+            (_, Err(error)) => Err(error),
+        }
     }
 }
 
@@ -256,6 +266,186 @@ fn builtin_users_group_name() -> Result<String, WindowsSmbLifecycleError> {
         ));
     }
     Ok(String::from_utf16_lossy(&name))
+}
+
+#[cfg(windows)]
+fn grant_network_logon_right(principal: &str) -> Result<(), WindowsSmbLifecycleError> {
+    update_network_logon_right(principal, true)
+}
+
+#[cfg(windows)]
+fn revoke_network_logon_right(principal: &str) -> Result<(), WindowsSmbLifecycleError> {
+    update_network_logon_right(principal, false)
+}
+
+#[cfg(windows)]
+fn update_network_logon_right(
+    principal: &str,
+    grant: bool,
+) -> Result<(), WindowsSmbLifecycleError> {
+    use windows_sys::Win32::Security::Authentication::Identity::{
+        LsaAddAccountRights, LsaClose, LsaNtStatusToWinError, LsaRemoveAccountRights,
+        LSA_UNICODE_STRING,
+    };
+
+    let phase = if grant {
+        WindowsSmbLifecyclePhase::UserNetworkLogonGrant
+    } else {
+        WindowsSmbLifecyclePhase::UserNetworkLogonRevoke
+    };
+    let Some(mut sid) = lookup_account_sid(principal, phase)? else {
+        return Ok(());
+    };
+    let policy = open_lsa_policy(phase)?;
+    let mut right_name_w = wide_null("SeNetworkLogonRight");
+    let right_name = LSA_UNICODE_STRING {
+        Length: ((right_name_w.len() - 1) * 2) as u16,
+        MaximumLength: (right_name_w.len() * 2) as u16,
+        Buffer: right_name_w.as_mut_ptr(),
+    };
+    let status = if grant {
+        unsafe { LsaAddAccountRights(policy, sid.as_mut_ptr().cast(), &right_name, 1) }
+    } else {
+        unsafe { LsaRemoveAccountRights(policy, sid.as_mut_ptr().cast(), false, &right_name, 1) }
+    };
+    let close_status = unsafe { LsaClose(policy) };
+    if status != 0 {
+        let code = unsafe { LsaNtStatusToWinError(status) };
+        return Err(WindowsSmbLifecycleError::operation_failed(
+            phase,
+            format!(
+                "{} SeNetworkLogonRight failed with win32 error {code}",
+                if grant { "granting" } else { "revoking" }
+            ),
+        ));
+    }
+    if close_status != 0 {
+        let code = unsafe { LsaNtStatusToWinError(close_status) };
+        return Err(WindowsSmbLifecycleError::operation_failed(
+            phase,
+            format!("closing LSA policy handle failed with win32 error {code}"),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn open_lsa_policy(
+    phase: WindowsSmbLifecyclePhase,
+) -> Result<
+    windows_sys::Win32::Security::Authentication::Identity::LSA_HANDLE,
+    WindowsSmbLifecycleError,
+> {
+    use std::mem;
+    use std::ptr;
+
+    use windows_sys::Win32::Security::Authentication::Identity::{
+        LsaNtStatusToWinError, LsaOpenPolicy, LSA_HANDLE, LSA_OBJECT_ATTRIBUTES,
+        POLICY_CREATE_ACCOUNT, POLICY_LOOKUP_NAMES,
+    };
+
+    let mut attrs = LSA_OBJECT_ATTRIBUTES {
+        Length: mem::size_of::<LSA_OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: ptr::null_mut(),
+        ObjectName: ptr::null_mut(),
+        Attributes: 0,
+        SecurityDescriptor: ptr::null_mut(),
+        SecurityQualityOfService: ptr::null_mut(),
+    };
+    let mut policy: LSA_HANDLE = 0;
+    let status = unsafe {
+        LsaOpenPolicy(
+            ptr::null(),
+            &mut attrs,
+            (POLICY_LOOKUP_NAMES | POLICY_CREATE_ACCOUNT) as u32,
+            &mut policy,
+        )
+    };
+    if status != 0 {
+        let code = unsafe { LsaNtStatusToWinError(status) };
+        return Err(WindowsSmbLifecycleError::operation_failed(
+            phase,
+            format!("LsaOpenPolicy failed with win32 error {code}"),
+        ));
+    }
+    Ok(policy)
+}
+
+#[cfg(windows)]
+fn lookup_account_sid(
+    principal: &str,
+    phase: WindowsSmbLifecyclePhase,
+) -> Result<Option<Vec<u8>>, WindowsSmbLifecycleError> {
+    use std::ptr;
+
+    use windows_sys::Win32::Foundation::{
+        GetLastError, ERROR_INSUFFICIENT_BUFFER, ERROR_NONE_MAPPED,
+    };
+    use windows_sys::Win32::Security::{LookupAccountNameW, SidTypeUser, SID_NAME_USE};
+
+    let principal_w = wide_null(principal);
+    let mut sid_len = 0;
+    let mut domain_len = 0;
+    let mut sid_use: SID_NAME_USE = 0;
+    let sized = unsafe {
+        LookupAccountNameW(
+            ptr::null(),
+            principal_w.as_ptr(),
+            ptr::null_mut(),
+            &mut sid_len,
+            ptr::null_mut(),
+            &mut domain_len,
+            &mut sid_use,
+        )
+    };
+    if sized != 0 {
+        return Err(WindowsSmbLifecycleError::operation_failed(
+            phase,
+            "LookupAccountNameW unexpectedly succeeded without buffers",
+        ));
+    }
+    let code = unsafe { GetLastError() };
+    if code == ERROR_NONE_MAPPED {
+        return Ok(None);
+    }
+    if code != ERROR_INSUFFICIENT_BUFFER {
+        return Err(WindowsSmbLifecycleError::operation_failed(
+            phase,
+            format!("LookupAccountNameW failed to size account SID: win32 error {code}"),
+        ));
+    }
+
+    let mut sid = vec![0u8; sid_len as usize];
+    let mut domain = vec![0u16; domain_len as usize];
+    let looked_up = unsafe {
+        LookupAccountNameW(
+            ptr::null(),
+            principal_w.as_ptr(),
+            sid.as_mut_ptr().cast(),
+            &mut sid_len,
+            domain.as_mut_ptr(),
+            &mut domain_len,
+            &mut sid_use,
+        )
+    };
+    if looked_up == 0 {
+        let code = unsafe { GetLastError() };
+        if code == ERROR_NONE_MAPPED {
+            return Ok(None);
+        }
+        return Err(WindowsSmbLifecycleError::operation_failed(
+            phase,
+            format!("LookupAccountNameW failed for account SID: win32 error {code}"),
+        ));
+    }
+    if sid_use != SidTypeUser {
+        return Err(WindowsSmbLifecycleError::operation_failed(
+            phase,
+            format!("account resolved to unexpected SID type {sid_use}"),
+        ));
+    }
+    sid.truncate(sid_len as usize);
+    Ok(Some(sid))
 }
 
 #[cfg(windows)]
