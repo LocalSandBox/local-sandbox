@@ -1,0 +1,23 @@
+STATE.md
+  s_a427c34be259ed::t_fb684e42aeadc3 11-12,111-112,158
+  s_a427c34be259ed::t_76b6aeef646766 10,109-110,194-195
+scripts/windows-smoke.ps1
+  s_a427c34be259ed::t_7d94a9c39cda9e 194
+  s_a427c34be259ed::t_4cdd0ea379506b 92-104,189-190
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "936eeeffb729eec8b4e371f589c7cc68ead5a0c9",
+  "prompts": {},
+  "sessions": {
+    "s_a427c34be259ed": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f37b8-d44f-7663-aec0-27782ca45efb",
+        "model": "gpt-5.5"
+      },
+      "human_author": null
+    }
+  }
+}
