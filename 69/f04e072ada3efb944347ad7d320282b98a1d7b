@@ -1,0 +1,79 @@
+crates/lsb-store/src/lib.rs
+  s_9cd344339fc6f6::t_2b69e31fd9a97c 174,183,190
+bindings/nodejs/test/package-metadata.spec.ts
+  s_9cd344339fc6f6::t_60fc3730f2bd9d 83
+  s_9cd344339fc6f6::t_9c44558e3becb7 29,107
+crates/lsb-cli/src/main.rs
+  s_9cd344339fc6f6::t_2b69e31fd9a97c 133
+crates/lsb-platform/src/windows_x86_64/mod.rs
+  s_9cd344339fc6f6::t_ea5fc0af42fde8 31
+crates/lsb-platform/src/windows_x86_64/qemu/process.rs
+  s_9cd344339fc6f6::t_47a7320e14c4a1 276,282,565-566
+crates/lsb-platform/src/windows_x86_64/qemu/mod.rs
+  s_9cd344339fc6f6::t_1aeadf91bcb0bd 684
+  s_9cd344339fc6f6::t_47a7320e14c4a1 1
+crates/lsb-platform/src/windows_x86_64/qemu/boot.rs
+  s_9cd344339fc6f6::t_6ee50aaabc3069 246,400,404,534,536-537,545
+  s_9cd344339fc6f6::t_dcfbb7d37702a2 1801,2123
+crates/lsb-platform/src/windows_x86_64/fs/copy.rs
+  s_9cd344339fc6f6::t_50e9c53ac101c2 570,715,729,1054
+  s_9cd344339fc6f6::t_b48fb9492a56a0 152,290,302,309
+crates/lsb-platform/src/windows_x86_64/config.rs
+  s_9cd344339fc6f6::t_87058d4ff2e2fd 46
+crates/lsb-sdk/src/runtime.rs
+  s_9cd344339fc6f6::t_2e28c47f36c6d3 1090-1091,1095,1338-1339
+  s_9cd344339fc6f6::t_ea5fc0af42fde8 1159,1178,1196
+  s_9cd344339fc6f6::t_96fccb4efb7b13 412
+  s_9cd344339fc6f6::t_ba1653d489990b 972,978,1017,1044,1073,1129,1132,1144
+crates/lsb-platform/src/windows_x86_64/fs/mount_plan.rs
+  s_9cd344339fc6f6::t_56d0d1f71aa813 100
+crates/lsb-platform/src/windows_x86_64/backend.rs
+  s_9cd344339fc6f6::t_87058d4ff2e2fd 298-299
+  s_9cd344339fc6f6::t_47a7320e14c4a1 67,73,199,230,238
+  s_9cd344339fc6f6::t_1aeadf91bcb0bd 320
+crates/lsb-platform/src/windows_x86_64/qemu/preflight.rs
+  s_9cd344339fc6f6::t_47a7320e14c4a1 69
+crates/lsb-store/src/windows_checkpoint.rs
+  s_9cd344339fc6f6::t_680c8973546710 275,720,1224
+  s_9cd344339fc6f6::t_ba1653d489990b 1207
+bindings/nodejs/scripts/patch-generated-loader.mjs
+  s_9cd344339fc6f6::t_60fc3730f2bd9d 20
+bindings/nodejs/README.md
+  s_9cd344339fc6f6::t_60fc3730f2bd9d 42-45,191-192
+crates/lsb-platform/src/windows_x86_64/errors.rs
+  s_9cd344339fc6f6::t_2b69e31fd9a97c 3,5
+crates/lsb-proxy/src/lib.rs
+  s_9cd344339fc6f6::t_87058d4ff2e2fd 270
+  s_9cd344339fc6f6::t_96fccb4efb7b13 417
+scripts/windows-smoke.ps1
+  s_9cd344339fc6f6::t_56d0d1f71aa813 196-197,205
+crates/lsb-platform/src/lib.rs
+  s_9cd344339fc6f6::t_616df6a96c0037 135
+  s_9cd344339fc6f6::t_ea5fc0af42fde8 417,419
+  s_9cd344339fc6f6::t_2b69e31fd9a97c 363
+crates/lsb-platform/src/windows_x86_64/control/virtio_serial.rs
+  s_9cd344339fc6f6::t_47a7320e14c4a1 155
+crates/lsb-vm/src/sandbox.rs
+  s_9cd344339fc6f6::t_2b69e31fd9a97c 66,74-75,84,995,1178-1179,1184,1337,1421
+  s_9cd344339fc6f6::t_50e9c53ac101c2 2282,2304,2604,2606
+  s_9cd344339fc6f6::t_b775ea5ff02517 85
+  s_9cd344339fc6f6::t_0edf6f41c273f0 768-771,958,2728,2731,2789,2817
+  s_9cd344339fc6f6::t_ba1653d489990b 2742
+  s_9cd344339fc6f6::t_56d0d1f71aa813 2178
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "69f04e072ada3efb944347ad7d320282b98a1d7b",
+  "prompts": {},
+  "sessions": {
+    "s_9cd344339fc6f6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f35d8-31ae-7061-93ad-140d3e100650",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
