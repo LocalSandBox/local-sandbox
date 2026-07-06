@@ -7,7 +7,9 @@ and validation results synchronized while implementing `PLAN.md`.
 
 - Overall status: Slice 7 implementation complete locally; self-hosted Windows
   smoke found readiness, SMB mount-preflight, CIFS UTF-8 kernel config, and SMB
-  loopback server-name gaps, fixed in working tree; rerun pending
+  loopback server-name gaps, SMB policy-deny gaps, and a CLI `:ro` smoke
+  fixture/script quoting gap; fixes are in the working tree and rerun is
+  pending
 - Current owner: Codex
 - Current branch: codex/lsb-direct-mnt
 - Last updated: 2026-07-07
@@ -104,6 +106,10 @@ and validation results synchronized while implementing `PLAN.md`.
 | 2026-07-07 | working tree | `cargo fmt --all -- --check`; `cargo test -p lsb-platform windows_x86_64::fs::smb`; `cargo check -p lsb-platform --target x86_64-pc-windows-msvc`; `cargo test -p lsb-guest smb_mount`; `cargo test -p lsb-platform windows_x86_64::qemu::boot`; `cargo check --workspace`; `git diff --check` | Pass | Native Windows SMB user creation now avoids built-in Users alias membership and relies on exact-account share/NTFS grants plus `SeNetworkLogonRight`, reducing exposure to broad local group deny policies. |
 | 2026-07-07 | working tree | `cargo fmt --all -- --check`; `cargo test -p lsb-platform windows_x86_64::fs::smb`; `cargo check -p lsb-platform --target x86_64-pc-windows-msvc`; `cargo run -p lsb-cli -- doctor windows-smb-policy --help`; `cargo test -p lsb-guest smb_mount`; `cargo test -p lsb-platform windows_x86_64::qemu::boot`; `cargo check -p lsb-cli`; `cargo check --workspace`; `git diff --check` | Pass | Added `lsb doctor windows-smb-policy` read-only diagnosis plus explicit `--fix --yes`, direct SMB policy preflight for `S-1-5-113`, and smoke-script policy repair before direct SMB lanes. |
 | 2026-07-07 | working tree | `cargo check -p lsb-cli --target x86_64-pc-windows-msvc` | Blocked | macOS host lacks MSVC/Windows C tooling and headers for transitive native deps (`ml64.exe`, `windows.h`, `assert.h`). Platform-only Windows target check passed for the new native LSA policy code. |
+| 2026-07-07 | 357e64c | GitHub Actions smoke run 28817227707 / job 85459867189 | Failed | Node direct read-only SMB smoke passed after the SMB policy doctor. The next CLI `:ro` overlay smoke failed with guest exit code 1 because the smoke fixture used PowerShell `Out-File`, which writes CRLF/trailing-newline content; Linux command substitution strips LF but leaves `\r`, so the exact string assertion failed. |
+| 2026-07-07 | working tree | `git diff --check`; PowerShell parser check for `scripts/windows-smoke.ps1` | Pass | CLI `:ro` smoke fixture now writes UTF-8 without BOM and without trailing newline, and the guest assertion script reports labelled failures plus workspace diagnostics. |
+| 2026-07-07 | 3bd3f97 | GitHub Actions smoke run 28818786154 / job 85465063670 | Failed | CLI `:ro` overlay smoke still failed, now with guest `/bin/sh` exit code 2. The multiline PowerShell here-string used for diagnostics introduced Windows line handling into the Linux `sh -c` payload. |
+| 2026-07-07 | working tree | `git diff --check`; PowerShell parser check for `scripts/windows-smoke.ps1`; `/bin/sh -n -c '<CLI ro smoke guest script>'` | Pass | CLI `:ro` smoke guest diagnostics now use a single-line POSIX shell payload with explicit semicolons. |
 
 ## Open Blockers
 
@@ -149,7 +155,7 @@ artifacts unless they are intentionally checked in.
 | `crates/lsb-platform/Cargo.toml` | Updated | Added Windows API feature gates required by native SMB admin, user, share, and ACL adapters. |
 | `crates/lsb-platform/src/windows_x86_64/fs/mod.rs` | Updated | Exposes the Windows SMB lifecycle module under the Windows fs namespace. |
 | `crates/lsb-platform/src/windows_x86_64/fs/smb/` | Added/Updated | Implements fakeable SMB admin/password/user/ACL/share components, native Windows adapters, host loopback and SMB policy preflight, policy diagnosis/fix helpers, lifecycle setup/cleanup, non-secret cleanup manifests, stale recovery, mount request generation with localhost UNC targets plus Windows computer-name auth domains, account-specific `SeNetworkLogonRight` grant/revoke without built-in Users alias membership, name validation, password redaction, and unit tests. |
-| `scripts/windows-smoke.ps1` | Updated | Runs `lsb doctor windows-smb-policy --fix --yes` before boot-asset smoke lanes and adds CLI `:ro` overlay plus direct SMB success/failure-cleanup ignored test invocations. |
+| `scripts/windows-smoke.ps1` | Updated | Runs `lsb doctor windows-smb-policy --fix --yes` before boot-asset smoke lanes, adds CLI `:ro` overlay plus direct SMB success/failure-cleanup ignored test invocations, writes newline-free CLI `:ro` fixtures, and uses a single-line POSIX guest script for labelled CLI overlay diagnostics. |
 | `bindings/nodejs/scripts/windows-preflight-smoke.mjs` | Updated | Adds Node direct read-only SMB smoke coverage. |
 | `README.md` | Updated | Documents final Windows SMB/CIFS direct mount behavior and SMB policy doctor command. |
 | `bindings/nodejs/README.md` | Updated | Documents Windows direct mount flags, Administrator requirement, and SMB policy doctor command. |
@@ -185,7 +191,8 @@ artifacts unless they are intentionally checked in.
 - SDK/Node direct read-only write denial: Node smoke covers
   `flags: MS_RDONLY`; hardware smoke pending.
 - CLI `:ro` overlay compatibility: `scripts/windows-smoke.ps1` runs a CLI
-  `:ro` overlay smoke; hardware smoke pending.
+  `:ro` overlay smoke with newline-free fixtures and labelled guest diagnostics;
+  hardware rerun pending after fixture fix.
 - Mount-only proxy no arbitrary outbound network: Covered by SDK direct SMB
   smoke and existing proxy policy tests; hardware smoke pending.
 - Cleanup leaves no LocalSandbox shares: Covered by SDK direct SMB smoke and

@@ -89,6 +89,19 @@ function Invoke-NpmPack {
   }
 }
 
+function Write-Utf8NoBomText {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Path,
+
+    [Parameter(Mandatory = $true)]
+    [string]$Value
+  )
+
+  $encoding = [System.Text.UTF8Encoding]::new($false)
+  [System.IO.File]::WriteAllText($Path, $Value, $encoding)
+}
+
 function Invoke-WindowsNodePackedInstallSmoke {
   Write-Host "== Windows Node packed package install/import smoke =="
 
@@ -173,12 +186,12 @@ function Invoke-WindowsCliRoOverlaySmoke {
   $source = Join-Path (Get-Location).Path "target\windows-smoke-cli-ro"
   Remove-Item -LiteralPath $source -Recurse -Force -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force -Path (Join-Path $source "src") | Out-Null
-  "cli-ro-host" | Out-File -FilePath (Join-Path $source "input.txt") -Encoding utf8NoBOM
-  "cli-ro-nested" | Out-File -FilePath (Join-Path $source "src\nested.txt") -Encoding utf8NoBOM
+  Write-Utf8NoBomText -Path (Join-Path $source "input.txt") -Value "cli-ro-host"
+  Write-Utf8NoBomText -Path (Join-Path $source "src\nested.txt") -Value "cli-ro-nested"
 
   try {
     $mountSpec = "${source}:/workspace:ro"
-    $guestScript = 'set -eu; test "$(cat /workspace/input.txt)" = "cli-ro-host"; test "$(cat /workspace/src/nested.txt)" = "cli-ro-nested"; printf "guest-output" > /workspace/guest.txt; printf "cli-ro-overlay-ok\n"'
+    $guestScript = 'set -u; dump_workspace() { echo "cli-ro: workspace listing" >&2; ls -la /workspace >&2 || true; echo "cli-ro: workspace files" >&2; find /workspace -maxdepth 3 -type f -print >&2 || true; }; input="$(cat /workspace/input.txt 2>/tmp/cli-ro-input.err)"; input_status=$?; if [ "$input_status" -ne 0 ] || [ "$input" != "cli-ro-host" ]; then echo "cli-ro: expected /workspace/input.txt to be cli-ro-host, got: [$input]" >&2; cat /tmp/cli-ro-input.err >&2 || true; dump_workspace; exit 11; fi; nested="$(cat /workspace/src/nested.txt 2>/tmp/cli-ro-nested.err)"; nested_status=$?; if [ "$nested_status" -ne 0 ] || [ "$nested" != "cli-ro-nested" ]; then echo "cli-ro: expected /workspace/src/nested.txt to be cli-ro-nested, got: [$nested]" >&2; cat /tmp/cli-ro-nested.err >&2 || true; dump_workspace; exit 12; fi; if ! printf "guest-output" > /workspace/guest.txt; then echo "cli-ro: failed to write overlay-only guest file" >&2; dump_workspace; exit 13; fi; printf "cli-ro-overlay-ok\n"'
     Invoke-NativeCommand "cargo" @(
       "run",
       "-p",
