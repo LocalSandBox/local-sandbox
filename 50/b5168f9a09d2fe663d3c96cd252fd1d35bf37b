@@ -1,0 +1,44 @@
+CHANGELOG.md
+  s_14cc6797cdd8f5::t_d1fa99bd5cf1e7 19
+bindings/nodejs/test/helpers.ts
+  s_14cc6797cdd8f5::t_d4ec96b4753f0f 18-31
+bindings/nodejs/test/index.spec.ts
+  s_14cc6797cdd8f5::t_d4ec96b4753f0f 18-31
+crates/lsb-platform/src/lib.rs
+  s_14cc6797cdd8f5::t_b59af8f0aeb4ad 158,161,164,169,174-180
+  s_14cc6797cdd8f5::t_adf27f4045d1b2 475-510
+  s_14cc6797cdd8f5::t_2e0da140ac7306 150-157,159-160,162-163,165-168,170,173,181-188
+bindings/nodejs/src/types.rs
+  s_14cc6797cdd8f5::t_36bc35e3664ec3 100
+crates/lsb-sdk/src/assets.rs
+  s_14cc6797cdd8f5::t_36bc35e3664ec3 18
+crates/lsb-cli/src/vm.rs
+  s_14cc6797cdd8f5::t_ab7c7362f03412 746-753
+  s_14cc6797cdd8f5::t_257cdae9b9a9fa 504,527-534
+  s_14cc6797cdd8f5::t_f3d38db36a4600 535
+  s_14cc6797cdd8f5::t_e6124f34373d34 745
+bindings/nodejs/README.md
+  s_14cc6797cdd8f5::t_4a9f558800e77b 54,57
+  s_14cc6797cdd8f5::t_9833781d562186 248
+  s_14cc6797cdd8f5::t_08ef14527c580c 247,249-250
+crates/lsb-sdk/src/types.rs
+  s_14cc6797cdd8f5::t_36bc35e3664ec3 11
+bindings/nodejs/index.d.ts
+  s_14cc6797cdd8f5::t_51f40649a0f559 13-15,46,181,183,237-243,306,358-361,366
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "50b5168f9a09d2fe663d3c96cd252fd1d35bf37b",
+  "prompts": {},
+  "sessions": {
+    "s_14cc6797cdd8f5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f365b-bb87-7833-a023-900fffc30b63",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
