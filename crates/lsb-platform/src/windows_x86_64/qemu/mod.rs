@@ -857,7 +857,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires Windows 11 x86_64 with QEMU installed; set LSB_TEST_REAL_QEMU=1"]
+    #[ignore = "requires Windows 11 x86_64 with managed or override QEMU available; set LSB_TEST_REAL_QEMU=1"]
     fn real_qemu_preflight_when_explicitly_enabled() {
         if std::env::var("LSB_TEST_REAL_QEMU").ok().as_deref() != Some("1") {
             eprintln!("skipping real QEMU preflight; set LSB_TEST_REAL_QEMU=1 to enable");

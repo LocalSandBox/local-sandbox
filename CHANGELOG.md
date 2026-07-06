@@ -15,8 +15,9 @@
   `@local-sandbox/lsb-nodejs`.
 - Windows production runs require WHPX. TCG fallback, QEMU user networking,
   `hostfwd`, TAP/bridge networking, direct writable host mounts, streaming
-  `spawn`, interactive shells, `watch`, CAS/NBD checkpoint transport, Windows
-  ARM64, and bundled QEMU installation remain unsupported in this MVP.
+  `spawn`, interactive shells, `watch`, CAS/NBD checkpoint transport, and
+  Windows ARM64 remain unsupported in this MVP. Windows users install managed
+  QEMU host tools with `lsb init`.
 
 ## 0.4.1
 

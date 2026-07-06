@@ -32,7 +32,7 @@ It is the current status source for future agents.
 | Networking | Default argv remains `-nic none`. Existing allow-net/proxy configuration attaches a QEMU stream netdev only to a LocalSandbox-owned loopback proxy path. |
 | Secrets | Guest environment values are placeholders. Host-side proxy policy performs substitution only for configured destinations. Diagnostics redact secret-bearing values. |
 | Checkpoints | Windows checkpoints use private per-instance qcow2 overlays and flattened qcow2 checkpoint artifacts plus JSON metadata. macOS CAS/NBD behavior is unchanged. |
-| CLI release/install | Release CI builds a Windows x64 CLI archive containing `lsb.exe`. `install.ps1` supports native PowerShell installs, and `install.sh` supports Git Bash/MSYS/Cygwin installs. QEMU is not bundled in the CLI archive; `lsb init` installs the managed host-tool package. |
+| CLI release/install | Release CI builds a Windows x64 CLI archive containing `lsb.exe`. `install.ps1` supports native PowerShell installs, and `install.sh` supports Git Bash/MSYS/Cygwin installs. After CLI installation, `lsb init` installs the managed QEMU host-tool package. |
 | Node binding | Windows x64 package metadata and `x86_64-pc-windows-msvc` NAPI target wiring exist. Node `Sandbox.start()` surfaces Rust backend/preflight error chains. |
 | CI | Hosted Windows CI runs compile/unit/golden coverage without QEMU/WHPX. The self-hosted Windows 11 WHPX workflow runs e2e on trusted `main` pushes and supports manual check, unit, smoke, and e2e lanes. |
 | Diagnostics | QEMU argv, stdout/stderr, serial log, preflight, boot status, environment summary, and manifest are collected through a redacted diagnostic collector. |

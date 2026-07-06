@@ -20,7 +20,7 @@ backend.
 Workflow: `.github/workflows/ci.yml`.
 
 Hosted Windows jobs must not require WHPX, nested virtualization, boot assets,
-or external QEMU downloads. They are for compile/unit/golden coverage only and
+or network QEMU artifact downloads. They are for compile/unit/golden coverage only and
 use local archive fixtures for managed-QEMU installer tests.
 
 Expected hosted coverage:

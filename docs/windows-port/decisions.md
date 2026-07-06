@@ -70,7 +70,8 @@ State the decision precisely.
 - Status: Accepted
 - Date: 2026-07-02
 - Decision: MVP discovers an installed `qemu-system-x86_64.exe` through explicit configuration/env/PATH. Bundling may be considered after the backend is stable.
-- Consequence: Preflight diagnostics must be strong enough for user-installed QEMU.
+- Consequence: Preflight diagnostics must be strong enough for env/config/PATH
+  override QEMU binaries.
 - Update: D023 changes the standard post-MVP path to a managed QEMU host-tool
   package installed by `lsb init`; env/config/PATH discovery remains supported
   as override and fallback behavior.
@@ -277,7 +278,7 @@ registers versioned JSON metadata only after conversion succeeds.
 
 #### Context
 
-The MVP required users and the self-hosted runner to provide QEMU separately.
+The original MVP discovery model relied on env/config/PATH-provisioned QEMU.
 That kept the first Windows backend small, but made fresh installs, support
 diagnostics, and CI less reproducible.
 
@@ -292,7 +293,7 @@ then `PATH`.
 
 #### Consequences
 
-- Fresh Windows users no longer install QEMU separately for the standard path.
+- Fresh Windows users no longer need manual QEMU setup for the standard path.
 - Diagnostics can distinguish managed QEMU from env/config/PATH overrides.
 - The maintained QEMU artifact must be published and hash-verifiable before
   product releases.
@@ -302,6 +303,6 @@ then `PATH`.
 
 - Bundle QEMU in CLI/npm/runtime assets: rejected to avoid large artifacts and
   mixing host tools with guest runtime assets.
-- Continue user-installed QEMU only: rejected for standard UX and CI
+- Continue env/config/PATH-only QEMU discovery: rejected for standard UX and CI
   reproducibility.
 - Add TCG fallback: rejected by D005.

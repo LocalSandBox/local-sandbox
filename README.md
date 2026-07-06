@@ -34,9 +34,9 @@ irm https://raw.githubusercontent.com/LocalSandBox/local-sandbox/main/install.ps
 ```
 
 The shell installer also supports Windows x64 when run from Git Bash, MSYS2, or
-Cygwin. QEMU is not bundled with the CLI archive; run `lsb init` after
-installation to download managed QEMU host tools and runtime assets. To update a
-Windows CLI install, rerun the PowerShell installer.
+Cygwin. After installation, run `lsb init` to download managed QEMU host tools
+and runtime assets. To update a Windows CLI install, rerun the PowerShell
+installer.
 
 Build the macOS CLI from source:
 

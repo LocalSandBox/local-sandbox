@@ -65,7 +65,7 @@ Key platform facts: Microsoft documents WHP as a user-mode API for third-party v
 - Replacing the Linux guest model.
 - Implementing a full VMM directly on raw WHP APIs.
 - Managing Hyper-V Manager, WMI, or HCS VMs for the MVP.
-- Requiring a bundled QEMU in the MVP.
+- Shipping QEMU inside CLI, npm, or runtime guest asset archives for the MVP.
 - Allowing TCG fallback for normal production runs.
 - Providing perfect POSIX live filesystem sharing in the MVP.
 - Supporting direct Windows host `:rw` mounts in the MVP.
@@ -1357,7 +1357,7 @@ Do not change: release publishing behavior without review.
 | Runner                            | Jobs                                                                                                                                              | Notes                                                                                                                               |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | GitHub-hosted `windows-latest`    | `cargo fmt`, `cargo check --target x86_64-pc-windows-msvc`, unit tests not requiring WHPX, golden argv tests, fake QEMU tests, Node build checks. | Do not assume WHPX/nested virtualization.                                                                                           |
-| Self-hosted `windows-11-x64-whpx` | QEMU preflight, boot smoke, guest ready, exec, copy-in mount, port forwarding, checkpoint MVP, proxy tests when implemented.                      | User will provision runner. Must have Windows Hypervisor Platform enabled, QEMU installed/discovered, and runtime assets available. |
+| Self-hosted `windows-11-x64-whpx` | QEMU preflight, boot smoke, guest ready, exec, copy-in mount, port forwarding, checkpoint MVP, proxy tests when implemented.                      | User will provision runner. Must have Windows Hypervisor Platform enabled, managed or override QEMU available, and runtime assets available. |
 | macOS existing runners            | Existing macOS runtime checks.                                                                                                                    | Must remain green.                                                                                                                  |
 
 ### 17.3 Required smoke sequence for self-hosted runner
@@ -1504,7 +1504,7 @@ Guest code may consume CPU, memory, disk, stdout, or port-forward bandwidth. MVP
 | Should Windows MVP expose file watch on imported mounts?                   | Current API includes watch.                       | SDK owner              | Define watch as guest-copy-only; test user expectations.                                                        | Non-blocking if capability-gated.                          |
 | What QEMU versions are supported?                                          | Reproducibility and support.                      | Release owner          | Test latest stable Windows QEMU build and pin minimum version.                                                  | Blocking for public release.                               |
 | Can Windows Firewall add useful defense-in-depth without admin friction?   | Network bypass mitigation.                        | Security owner         | Prototype per-process outbound block/allow rules and cleanup.                                                   | Non-blocking for MVP.                                      |
-| When to bundle QEMU?                                                       | UX, provenance, package size.                     | Release/security owner | After stable discovered-QEMU backend, evaluate signed bundled QEMU.                                             | Non-blocking for MVP.                                      |
+| How should managed QEMU be distributed?                                    | UX, provenance, package size.                     | Release/security owner | Use a pinned, hash-verified managed host-tool artifact installed by `lsb init`; continue evaluating signing and mirroring. | Non-blocking for MVP.                                      |
 
 ## 21. Alternatives Considered
 

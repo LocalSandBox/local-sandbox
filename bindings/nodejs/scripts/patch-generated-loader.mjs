@@ -11,7 +11,8 @@ const windowsMissingMessage = [
   'Cannot find native binding for win32-x64-msvc.',
   'Install @local-sandbox/lsb-nodejs-win32-x64-msvc or make',
   'lsb-nodejs.win32-x64-msvc.node available next to the root package entrypoint.',
-  'QEMU is not bundled; after the native module loads, Sandbox.start() reports',
+  'Run lsb init to install managed QEMU host tools.',
+  'After the native module loads, Sandbox.start() reports',
   'Windows QEMU/WHPX preflight errors from the Rust backend.',
 ].join(' ')
 
