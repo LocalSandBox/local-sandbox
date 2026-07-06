@@ -378,6 +378,22 @@ function Set-Utf8NoBomText {
   [System.IO.File]::WriteAllText($Path, $Value, $encoding)
 }
 
+function Set-ProcessEnvOrClear {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Name,
+
+    [AllowNull()]
+    [object]$Value
+  )
+
+  if ($null -eq $Value) {
+    [Environment]::SetEnvironmentVariable($Name, $null, "Process")
+  } else {
+    [Environment]::SetEnvironmentVariable($Name, [string]$Value, "Process")
+  }
+}
+
 function Get-FreeLoopbackPort {
   $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Parse("127.0.0.1"), 0)
   $listener.Start()
@@ -603,6 +619,60 @@ function Initialize-E2EWorkspace {
   Set-Content -LiteralPath $script:ConfigPath -Value "{}"
 }
 
+function Copy-E2EDiagnostics {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$DataDir,
+
+    [string]$DestinationRoot = $env:LSB_WINDOWS_BOOT_ARTIFACT_DIR
+  )
+
+  if (-not $DestinationRoot) {
+    Write-Warning "Skipping e2e diagnostic staging because LSB_WINDOWS_BOOT_ARTIFACT_DIR is not set."
+    return
+  }
+
+  $instancesDir = Join-Path $DataDir "instances"
+  if (-not (Test-Path -LiteralPath $instancesDir -PathType Container)) {
+    Write-Warning "Skipping e2e diagnostic staging because instances directory is missing: $instancesDir"
+    return
+  }
+
+  $allowedExtensions = @(".json", ".log", ".redacted", ".txt")
+  $stagedRoot = Join-Path $DestinationRoot "e2e-runtime"
+  $copied = 0
+
+  try {
+    New-Item -ItemType Directory -Force -Path $stagedRoot | Out-Null
+
+    Get-ChildItem -LiteralPath $instancesDir -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object {
+      $instance = $_
+      $diagnosticsDir = Join-Path $instance.FullName "diagnostics"
+      if (-not (Test-Path -LiteralPath $diagnosticsDir -PathType Container)) {
+        return
+      }
+
+      $instanceDestination = Join-Path $stagedRoot $instance.Name
+      Get-ChildItem -LiteralPath $diagnosticsDir -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object {
+        $file = $_
+        if ($allowedExtensions -notcontains $file.Extension.ToLowerInvariant()) {
+          return
+        }
+
+        $relative = [System.IO.Path]::GetRelativePath($diagnosticsDir, $file.FullName)
+        $destination = Join-Path $instanceDestination $relative
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+        Copy-Item -LiteralPath $file.FullName -Destination $destination -Force
+        $copied += 1
+      }
+    }
+
+    Write-Host "Staged $copied e2e diagnostic file(s) at $stagedRoot"
+  } catch {
+    Write-Warning "Failed to stage e2e diagnostics: $($_.Exception.Message)"
+  }
+}
+
 function Test-BasicRunAndNoNetwork {
   Write-Host "== E2E: boot, exec, stdout, and no-network default =="
 
@@ -770,10 +840,13 @@ function Invoke-WindowsCliE2E {
 
   $homeRoot = Join-Path ([System.IO.Path]::GetTempPath()) "lsb-cli-e2e-home-$PID"
   $workspaceRoot = Join-Path ([System.IO.Path]::GetTempPath()) "lsb-cli-e2e-workspace-$PID"
+  $localAppDataRoot = Join-Path $homeRoot "AppData\Local"
+  $dataDir = Join-Path $localAppDataRoot "lsb"
   Remove-Item -LiteralPath $homeRoot -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $workspaceRoot -Recurse -Force -ErrorAction SilentlyContinue
 
   $oldHome = [Environment]::GetEnvironmentVariable("HOME")
+  $oldLocalAppData = [Environment]::GetEnvironmentVariable("LOCALAPPDATA")
   try {
     $script:WorkspaceRoot = $workspaceRoot
     Initialize-E2EWorkspace `
@@ -782,19 +855,21 @@ function Invoke-WindowsCliE2E {
       -Kernel $kernel `
       -Initrd $initrd `
       -Rootfs $rootfs
+    Write-Host "E2E data dir: $dataDir"
     [Environment]::SetEnvironmentVariable("HOME", $homeRoot, "Process")
+    [Environment]::SetEnvironmentVariable("LOCALAPPDATA", $localAppDataRoot, "Process")
 
     Test-BasicRunAndNoNetwork
     Test-MountWorkflow
     Test-PortForwardWorkflow
     Test-ProxyExposeHostWorkflow
     Test-CheckpointWorkflow
+  } catch {
+    Copy-E2EDiagnostics -DataDir $dataDir
+    throw
   } finally {
-    if ($null -eq $oldHome) {
-      [Environment]::SetEnvironmentVariable("HOME", $null, "Process")
-    } else {
-      [Environment]::SetEnvironmentVariable("HOME", $oldHome, "Process")
-    }
+    Set-ProcessEnvOrClear -Name "LOCALAPPDATA" -Value $oldLocalAppData
+    Set-ProcessEnvOrClear -Name "HOME" -Value $oldHome
     Remove-Item -LiteralPath $homeRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $workspaceRoot -Recurse -Force -ErrorAction SilentlyContinue
   }
