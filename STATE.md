@@ -7,7 +7,7 @@ and validation results synchronized while implementing `PLAN.md`.
 
 - Overall status: Slice 7 implementation complete locally; self-hosted Windows
   smoke found readiness, SMB mount-preflight, CIFS UTF-8 kernel config, and SMB
-  server-name gaps, fixed in working tree; rerun pending
+  loopback server-name gaps, fixed in working tree; rerun pending
 - Current owner: Codex
 - Current branch: codex/lsb-direct-mnt
 - Last updated: 2026-07-07
@@ -94,6 +94,9 @@ and validation results synchronized while implementing `PLAN.md`.
 | 2026-07-07 | working tree | `rg -n "CONFIG_NLS|CONFIG_NLS_UTF8|CONFIG_CIFS" kernel/lsb_defconfig kernel/lsb_x86_64_defconfig`; `cargo test -p xtask boot_asset`; `cargo test -p lsb-guest smb_mount`; `cargo test -p lsb-platform windows_x86_64::fs::smb` | Pass | Added built-in `CONFIG_NLS=y` and `CONFIG_NLS_UTF8=y` to both kernels so CIFS `iocharset=utf8` works without loadable modules. |
 | 2026-07-07 | c902ff6 | GitHub Actions smoke run 28806371824 / job 85425815050 | Failed | Node direct read-only SMB smoke advanced to `mount error(5): Input/output error` while using `//10.0.0.1/<share>` as the SMB server name. |
 | 2026-07-07 | working tree | `cargo fmt --all -- --check`; `cargo test -p lsb-guest smb_mount`; `cargo test -p lsb-platform windows_x86_64::fs::smb`; `cargo test -p lsb-platform windows_x86_64::qemu::boot`; `cargo check -p lsb-platform --target x86_64-pc-windows-msvc`; `cargo check --workspace`; `git diff --check` | Pass | Windows SMB mount requests now use the real Windows computer name as the UNC server and force proxy transport with guest CIFS option `ip=10.0.0.1`. |
+| 2026-07-07 | 793c00f | GitHub Actions smoke run 28808688475 / job 85431712360 | Failed | Node direct read-only SMB smoke still failed with `mount error(5): Input/output error` while using `//CYW2LN3/<share>` as the SMB server name. |
+| 2026-07-07 | working tree | `cargo fmt --all -- --check`; `cargo test -p lsb-guest smb_mount`; `cargo test -p lsb-platform windows_x86_64::fs::smb`; `cargo check -p lsb-platform --target x86_64-pc-windows-msvc`; `cargo test -p lsb-platform windows_x86_64::qemu::boot`; `cargo check --workspace`; `cargo test -p xtask boot_asset`; `git diff --check` | Pass | Windows SMB mount requests now use `//localhost/<share>` as the UNC server, keep `domain=<host-computer-name>` for auth, keep `ip=10.0.0.1` for proxy transport, and include sanitized CIFS-related `dmesg` lines on guest mount failures. |
+| 2026-07-07 | working tree | `cargo check -p lsb-guest --target x86_64-unknown-linux-musl` | Blocked | Local Rust toolchain still does not have the Linux musl target installed; Windows smoke rebuilds this target during boot asset preparation. |
 
 ## Open Blockers
 
@@ -122,7 +125,7 @@ artifacts unless they are intentionally checked in.
 | `PLAN.md` | Updated | Avoided duplicate future decision work now that D024 exists. |
 | `STATE.md` | Updated | Recorded Slice 1 status and docs-only validation scope. |
 | `crates/lsb-proto/src/lib.rs` | Updated | Added `CAP_CIFS_MOUNT`, `MountRequest::Smb`, redacted formatting, and protocol tests. |
-| `crates/lsb-guest/src/main.rs` | Updated | Advertises `cifs_mount`, builds sanitized CIFS options, forces SMB transport through `ip=10.0.0.1`, invokes `mount.cifs` with `PASSWD_FD`, and reports sanitized bounded mount stderr on failures. |
+| `crates/lsb-guest/src/main.rs` | Updated | Advertises `cifs_mount`, builds sanitized CIFS options, forces SMB transport through `ip=10.0.0.1`, invokes `mount.cifs` with `PASSWD_FD`, and reports sanitized bounded mount stderr plus CIFS-related `dmesg` on failures. |
 | `kernel/lsb_defconfig` | Updated | Enabled built-in CIFS client support and UTF-8 NLS support required by CIFS `iocharset=utf8`. |
 | `kernel/lsb_x86_64_defconfig` | Updated | Enabled built-in CIFS client support and UTF-8 NLS support required by CIFS `iocharset=utf8`. |
 | `xtask/src/rootfs.rs` | Updated | Installs `cifs-utils`, checks for `mount.cifs`, and tests generated rootfs scripts. |
@@ -136,7 +139,7 @@ artifacts unless they are intentionally checked in.
 | `crates/lsb-platform/src/windows_x86_64/qemu/boot.rs` | Updated | Accepts the `cifs_mount` guest-ready capability now that the Windows host implements SMB direct mount handling. |
 | `crates/lsb-platform/Cargo.toml` | Updated | Added Windows API feature gates required by native SMB admin, user, share, and ACL adapters. |
 | `crates/lsb-platform/src/windows_x86_64/fs/mod.rs` | Updated | Exposes the Windows SMB lifecycle module under the Windows fs namespace. |
-| `crates/lsb-platform/src/windows_x86_64/fs/smb/` | Added/Updated | Implements fakeable SMB admin/password/user/ACL/share components, native Windows adapters, host loopback preflight, lifecycle setup/cleanup, non-secret cleanup manifests, stale recovery, mount request generation with Windows computer-name UNC targets, name validation, password redaction, and unit tests. |
+| `crates/lsb-platform/src/windows_x86_64/fs/smb/` | Added/Updated | Implements fakeable SMB admin/password/user/ACL/share components, native Windows adapters, host loopback preflight, lifecycle setup/cleanup, non-secret cleanup manifests, stale recovery, mount request generation with localhost UNC targets plus Windows computer-name auth domains, name validation, password redaction, and unit tests. |
 | `scripts/windows-smoke.ps1` | Updated | Adds CLI `:ro` overlay smoke plus direct SMB success and failure-cleanup ignored test invocations. |
 | `bindings/nodejs/scripts/windows-preflight-smoke.mjs` | Updated | Adds Node direct read-only SMB smoke coverage. |
 | `README.md` | Updated | Documents final Windows SMB/CIFS direct mount behavior. |

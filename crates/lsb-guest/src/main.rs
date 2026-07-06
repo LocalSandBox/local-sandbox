@@ -444,6 +444,27 @@ mod smb_mount {
         sanitized
     }
 
+    pub(crate) fn sanitized_kernel_cifs_messages(dmesg: &str) -> Option<String> {
+        let mut lines = dmesg
+            .lines()
+            .filter(|line| {
+                let lower = line.to_ascii_lowercase();
+                lower.contains("cifs") || lower.contains("smb")
+            })
+            .collect::<Vec<_>>();
+
+        if lines.is_empty() {
+            return None;
+        }
+
+        const MAX_LINES: usize = 8;
+        if lines.len() > MAX_LINES {
+            lines = lines.split_off(lines.len() - MAX_LINES);
+        }
+
+        Some(sanitized_command_stderr(lines.join(" | ").as_bytes()))
+    }
+
     fn validate_required_component(name: &str, value: &str) -> Result<(), String> {
         if value.is_empty() {
             return Err(format!("SMB mount {name} must not be empty"));
@@ -509,7 +530,7 @@ mod smb_mount {
 
         fn smb_request(options: Vec<String>) -> MountRequest {
             MountRequest::Smb {
-                server: "WINHOST".to_string(),
+                server: "localhost".to_string(),
                 share: "lsb-test-m0-abcd".to_string(),
                 target: "/workspace".to_string(),
                 username: "lsb_123456789abc".to_string(),
@@ -528,8 +549,8 @@ mod smb_mount {
         fn service_path_uses_unc_style_mount_source() {
             assert_eq!(MOUNT_CIFS, "/sbin/mount.cifs");
             assert_eq!(
-                service_path("WINHOST", "lsb-test-m0-abcd"),
-                "//WINHOST/lsb-test-m0-abcd"
+                service_path("localhost", "lsb-test-m0-abcd"),
+                "//localhost/lsb-test-m0-abcd"
             );
         }
 
@@ -632,6 +653,23 @@ mod smb_mount {
             let long = sanitized_command_stderr(&vec![b'x'; 600]);
             assert!(long.ends_with("..."));
             assert!(long.len() <= 515);
+        }
+
+        #[test]
+        fn kernel_cifs_messages_are_filtered_and_bounded() {
+            let dmesg = [
+                "[0.1] unrelated",
+                "[1.1] CIFS: VFS: parse_server_interfaces: malformed interface info",
+                "[1.2] smb3: reconnect failed",
+            ]
+            .join("\n");
+
+            let sanitized =
+                sanitized_kernel_cifs_messages(&dmesg).expect("CIFS lines should be kept");
+
+            assert!(sanitized.contains("CIFS: VFS"));
+            assert!(sanitized.contains("smb3"));
+            assert!(!sanitized.contains("unrelated"));
         }
     }
 }
@@ -945,10 +983,15 @@ mod guest {
             |code| code.to_string(),
         );
         let stderr = smb_mount::sanitized_command_stderr(&output.stderr);
-        Err(format!(
+        let mut message = format!(
             "failed to mount SMB share at {}: mount.cifs exited with status {}; stderr: {}",
             target, status, stderr
-        ))
+        );
+        if let Some(dmesg) = recent_cifs_dmesg() {
+            message.push_str("; dmesg: ");
+            message.push_str(&dmesg);
+        }
+        Err(message)
     }
 
     fn set_fd_cloexec(fd: RawFd, enabled: bool) -> std::io::Result<()> {
@@ -966,6 +1009,21 @@ mod guest {
             return Err(std::io::Error::last_os_error());
         }
         Ok(())
+    }
+
+    fn recent_cifs_dmesg() -> Option<String> {
+        let output = Command::new("/bin/dmesg")
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        smb_mount::sanitized_kernel_cifs_messages(&text)
     }
 
     fn overlay_id(source: &str) -> String {

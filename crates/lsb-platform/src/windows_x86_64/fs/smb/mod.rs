@@ -32,7 +32,7 @@ pub use types::{
     generate_smb_share_name, generate_smb_user_name, validate_smb_share_name,
     validate_smb_user_name, WindowsSmbAccess, WindowsSmbCleanupFailure, WindowsSmbLifecycleConfig,
     WindowsSmbLifecycleError, WindowsSmbLifecyclePhase, WindowsSmbMount,
-    WINDOWS_SMB_GATEWAY_SERVER,
+    WINDOWS_SMB_GATEWAY_SERVER, WINDOWS_SMB_UNC_SERVER,
 };
 #[cfg(windows)]
 pub use user::NativeWindowsSmbUserManager;

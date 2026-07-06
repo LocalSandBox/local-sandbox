@@ -9,6 +9,7 @@ use super::share::WindowsSmbShareName;
 use super::user::WindowsSmbUserName;
 
 pub const WINDOWS_SMB_GATEWAY_SERVER: &str = "10.0.0.1";
+pub const WINDOWS_SMB_UNC_SERVER: &str = "localhost";
 pub const WINDOWS_SMB_USER_PREFIX: &str = "lsb_";
 pub const WINDOWS_SMB_USER_HEX_LEN: usize = 12;
 pub const WINDOWS_SMB_MAX_USER_NAME_LEN: usize = 20;

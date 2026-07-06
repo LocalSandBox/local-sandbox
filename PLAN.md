@@ -150,8 +150,9 @@ CLI / SDK / Node
   -> QEMU starts with stream netdev to lsb-proxy
   -> lsb-vm sends MountRequest::Smb over guest control channel
   -> lsb-guest invokes mount.cifs
-  -> guest accesses host path via //<host-computer-name>/<share>
-     with CIFS ip=10.0.0.1 for proxy transport
+  -> guest accesses host path via //localhost/<share>
+     with CIFS ip=10.0.0.1 for proxy transport and
+     domain=<host-computer-name> for auth
 ```
 
 ```text
@@ -387,7 +388,7 @@ Recommended submodules:
 
   ```text
   MountRequest::Smb {
-      server: "10.0.0.1",
+      server: "localhost",
       share: "<non-secret share name>",
       target: "<guest absolute target>",
       username: "<ephemeral local user>",
@@ -415,7 +416,7 @@ Recommended submodules:
 - Add `process_mount` handling for `MountRequest::Smb`.
 - Create target directory as current mount handling does.
 - Build `mount.cifs` invocation:
-  - service: `//<host-computer-name>/<share>`
+  - service: `//localhost/<share>`
   - target: guest target path
   - options include:
     - `vers=3.1.1`
@@ -578,9 +579,11 @@ host user credential.
 
 Guest service path:
 
-- Use `//<host-computer-name>/<share>` for the mount service path.
+- Use `//localhost/<share>` for the mount service path so Windows sees a
+  loopback SMB server name.
 - Use `ip=10.0.0.1` to force the TCP connection through the LocalSandbox SMB
   proxy.
+- Keep `domain=<host-computer-name>` for the ephemeral local Windows account.
 - Keep `host.lsb.internal` as a stable name for other local-host semantics, but
   SMB mounting should not depend on DNS.
 
