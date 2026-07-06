@@ -2,6 +2,7 @@ mod acl;
 mod admin;
 mod lifecycle;
 mod password;
+mod policy;
 mod share;
 mod types;
 mod user;
@@ -22,6 +23,12 @@ pub use lifecycle::{
 };
 pub use password::{
     NativeWindowsSmbPasswordGenerator, WindowsSmbPassword, WindowsSmbPasswordGenerator,
+};
+pub use policy::{
+    diagnose_windows_smb_policy, ensure_windows_smb_policy_allows_generated_users,
+    fix_windows_smb_policy, WindowsSmbPolicyDiagnosis, WindowsSmbPolicyFixReport,
+    WindowsSmbPolicyPrincipal, WINDOWS_SMB_GUESTS_SID, WINDOWS_SMB_LOCAL_ACCOUNT_SID,
+    WINDOWS_SMB_LOCAL_ADMIN_ACCOUNT_SID,
 };
 #[cfg(windows)]
 pub use share::NativeWindowsSmbShareManager;

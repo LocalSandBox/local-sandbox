@@ -352,6 +352,10 @@ implementation.
 - Public CLI, Rust SDK, and Node API shape remains unchanged.
 - Windows direct mounts require Administrator privileges and actionable
   non-admin preflight errors.
+- Windows direct mounts also preflight local user-rights policy because
+  `SeDenyNetworkLogonRight` for `NT AUTHORITY\Local account` blocks generated
+  local SMB users even when LocalSandbox grants account-specific
+  `SeNetworkLogonRight`.
 - Default Windows sandboxes still use `-nic none` when no explicit networking
   or direct SMB mount is requested.
 - SMB credentials and generated resource identifiers require strict redaction,

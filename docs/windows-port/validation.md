@@ -104,6 +104,8 @@ through a user-facing workflow.
 - CLI starts.
 - Managed QEMU installs and reports `current.json` paths.
 - Real QEMU/WHPX preflight.
+- Windows SMB policy doctor repair via
+  `lsb doctor windows-smb-policy --fix --yes` before direct-SMB lanes.
 - Windows Node source build/import smoke.
 - Packed root npm package plus `@local-sandbox/lsb-nodejs-win32-x64-msvc`
   install/import smoke.
@@ -133,6 +135,12 @@ $env:LSB_WINDOWS_GUEST_READY_SECS="30" # optional readiness timeout override
 
 If the asset variables are absent, smoke lanes must print an explicit skip
 message and must not claim direct boot validation.
+
+To check the runner policy without changing it:
+
+```powershell
+cargo run -p lsb-cli -- doctor windows-smb-policy
+```
 
 ## E2E coverage
 

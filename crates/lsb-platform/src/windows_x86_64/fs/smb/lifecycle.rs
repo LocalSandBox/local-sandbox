@@ -53,6 +53,8 @@ where
         config: &WindowsSmbLifecycleConfig,
     ) -> Result<WindowsSmbActiveResources, WindowsSmbLifecycleError> {
         self.admin.ensure_elevated_admin()?;
+        self.admin
+            .ensure_windows_smb_policy_allows_generated_users()?;
         self.admin.ensure_smb_loopback_available()?;
 
         let user_name = generate_smb_user_name(&mut self.passwords)?;
@@ -570,6 +572,27 @@ mod tests {
             Err(WindowsSmbLifecycleError::operation_failed(
                 WindowsSmbLifecyclePhase::SmbLoopbackPreflight,
                 "Windows SMB server is unavailable on host loopback port 445",
+            ))
+        }
+    }
+
+    struct PolicyFailAdmin {
+        log: EventLog,
+    }
+
+    impl WindowsSmbAdmin for PolicyFailAdmin {
+        fn ensure_elevated_admin(&mut self) -> Result<(), WindowsSmbLifecycleError> {
+            self.log.push("admin");
+            Ok(())
+        }
+
+        fn ensure_windows_smb_policy_allows_generated_users(
+            &mut self,
+        ) -> Result<(), WindowsSmbLifecycleError> {
+            self.log.push("smb_policy");
+            Err(WindowsSmbLifecycleError::operation_failed(
+                WindowsSmbLifecyclePhase::SmbPolicyPreflight,
+                "Windows direct SMB mounts are blocked by local security policy",
             ))
         }
     }
@@ -1196,6 +1219,45 @@ mod tests {
             .to_string()
             .contains("Windows SMB server is unavailable on host loopback port 445"));
         assert_eq!(log.snapshot(), ["admin", "smb_loopback"]);
+    }
+
+    #[test]
+    fn smb_policy_preflight_failure_creates_nothing() {
+        let log = EventLog::default();
+        let mut manager = WindowsSmbLifecycleManager::new(
+            PolicyFailAdmin { log: log.clone() },
+            FakePasswords::new(log.clone(), [vec![0, 1, 2, 3, 4, 5]]),
+            FakeUsers {
+                log: log.clone(),
+                create_fail: false,
+                delete_fail: false,
+            },
+            FakeAcls {
+                log: log.clone(),
+                fail_grant_index: None,
+                fail_revoke: false,
+                grants: 0,
+            },
+            FakeShares {
+                log: log.clone(),
+                fail_create_index: None,
+                fail_remove: false,
+                creates: 0,
+            },
+        );
+
+        let error = manager
+            .prepare(&config())
+            .expect_err("SMB policy preflight should fail");
+
+        assert!(matches!(
+            error,
+            WindowsSmbLifecycleError::OperationFailed {
+                phase: WindowsSmbLifecyclePhase::SmbPolicyPreflight,
+                ..
+            }
+        ));
+        assert_eq!(log.snapshot(), ["admin", "smb_policy"]);
     }
 
     #[test]

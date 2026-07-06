@@ -11,7 +11,8 @@ deleted sprint workspace.
 - Decide and document the support policy for user-supplied QEMU overrides.
 - Evaluate signing, SBOM, or mirroring improvements for the managed QEMU
   artifact.
-- Add a user-facing Windows diagnostics command such as `lsb doctor windows`.
+- Expand the current `lsb doctor windows-smb-policy` command into a broader
+  Windows diagnostics namespace if more host checks need one entrypoint.
 - Decide whether to keep default self-hosted labels or add a dedicated WHPX
   runner label before growing the runner pool.
 
@@ -51,6 +52,8 @@ Preserve these constraints:
   imply arbitrary outbound `allow_net`.
 - Host resources are ephemeral and must be cleaned up: local user, SMB shares,
   generated credentials, NTFS/share ACL grants, and stale cleanup manifests.
+- Keep `lsb doctor windows-smb-policy` focused on read-only diagnosis by
+  default, with machine-policy changes only behind explicit `--fix`.
 - Expand performance and large-tree validation after functional WHPX smoke
   evidence is current.
 

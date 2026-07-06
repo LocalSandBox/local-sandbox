@@ -53,9 +53,11 @@ It is the current status source for future agents.
 - No CAS/NBD checkpoint parity on Windows.
 - Windows SDK `checkpoint()` stops the VM before flattening the active qcow2
   overlay into a checkpoint artifact. This is not live checkpointing.
-- Managed QEMU is pinned to QEMU 11.0.50 package `qemu-11.0.50-lsb0.4.0`; broader minimum-version policy for overrides remains future work.
-- No `lsb doctor windows` command yet, though preflight internals and
-  diagnostics support that future command.
+- Managed QEMU is pinned to QEMU 11.0.50 package `qemu-11.0.50-lsb0.4.0`;
+  broader minimum-version policy for overrides remains future work.
+- No broad `lsb doctor windows` namespace yet.
+- `lsb doctor windows-smb-policy` diagnoses direct-SMB user-rights policy and
+  can apply the local runner repair with `--fix --yes`.
 - Native Windows build-number probing is deferred.
 - Self-hosted runner labels still use the default `self-hosted, Windows, X64`
   set and assume one persistent WHPX runner for smoke/e2e cache reuse.
@@ -73,6 +75,10 @@ unchanged:
   mounts.
 - SMB direct mounts must not imply arbitrary outbound `allow_net`; they use the
   LocalSandbox-controlled proxy path.
+- Direct SMB preflight rejects hosts whose `SeDenyNetworkLogonRight` contains
+  `NT AUTHORITY\Local account` because that blocks generated local SMB users.
+  `lsb doctor windows-smb-policy --fix` replaces that broad deny with the
+  narrower local-Administrator-account deny while leaving Guests denied.
 - LocalSandbox writes a non-secret cleanup manifest into the instance directory
   after resources are prepared. Normal cleanup removes the manifest; stale
   startup recovery scans manifests and retries share, ACL, and user cleanup.
@@ -137,7 +143,8 @@ head.
 - Decide and document the support policy for user override QEMU versions.
 - Decide whether managed QEMU artifacts need additional signing or mirroring in
   a later Windows release.
-- Add a Windows diagnostic command such as `lsb doctor windows`.
+- Expand `lsb doctor` beyond Windows SMB policy if future Windows diagnostics
+  need a single umbrella command.
 - Decide dedicated self-hosted runner labels before adding more Windows runners
   with the default `self-hosted, Windows, X64` labels.
 - Define the mux/session model before enabling Windows interactive shell,

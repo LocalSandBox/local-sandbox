@@ -122,6 +122,12 @@ pub(crate) enum Commands {
         action: CheckpointCommands,
     },
 
+    /// Diagnose host configuration issues
+    Doctor {
+        #[command(subcommand)]
+        action: DoctorCommands,
+    },
+
     /// Remove leftover instance data from crashed VMs
     Prune,
 }
@@ -164,5 +170,19 @@ pub(crate) enum CheckpointCommands {
     Pull {
         /// Checkpoint name
         name: String,
+    },
+}
+
+#[derive(clap::Subcommand)]
+pub(crate) enum DoctorCommands {
+    /// Diagnose or repair Windows direct SMB mount policy
+    WindowsSmbPolicy {
+        /// Apply the recommended local security policy repair
+        #[arg(long)]
+        fix: bool,
+
+        /// Confirm the repair without prompting
+        #[arg(long)]
+        yes: bool,
     },
 }

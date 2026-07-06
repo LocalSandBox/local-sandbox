@@ -42,6 +42,9 @@ Rust SDK, or Node API shape.
 - LocalSandbox creates ephemeral Windows users, shares, credentials, and
   reversible ACL grants, then records a non-secret cleanup manifest for stale
   recovery.
+- `lsb doctor windows-smb-policy` diagnoses local policy that blocks generated
+  SMB users; `--fix` replaces the broad `NT AUTHORITY\Local account`
+  network-logon deny with the narrower local-Administrator-account deny.
 
 See `decisions.md` D024 and the implementation tracker in the repository
 `STATE.md`.

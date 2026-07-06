@@ -192,7 +192,10 @@ await sandbox.stop()
 
 For direct mounts, `flags: 0` is read-write and `flags: 1` is `MS_RDONLY`. On Windows, direct mounts
 use SMB/CIFS, require an elevated Administrator shell, and use LocalSandbox-controlled proxy
-networking without enabling arbitrary outbound network access.
+networking without enabling arbitrary outbound network access. If Windows local security policy
+denies network logon to `NT AUTHORITY\Local account`, direct mounts fail preflight; use
+`lsb doctor windows-smb-policy` to diagnose or `lsb doctor windows-smb-policy --fix` to apply the
+recommended local policy repair.
 
 `network` enables proxy networking when present. It accepts:
 

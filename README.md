@@ -115,7 +115,10 @@ Windows CLI `:rw` mounts use SMB/CIFS direct read-write sharing and require both
 mounts use the existing `Direct` API: `flags: 0` is SMB/CIFS read-write and
 `flags: 1` (`MS_RDONLY`) is SMB/CIFS read-only. Direct SMB mounts use the
 LocalSandbox-controlled proxy path and do not imply arbitrary outbound
-`--allow-net`.
+`--allow-net`. If local Windows policy denies network logon to
+`NT AUTHORITY\Local account`, direct SMB mounts fail before boot with an
+actionable preflight error; diagnose or repair that policy with
+`lsb doctor windows-smb-policy`.
 
 ```sh
 # Mount a directory (guest can write, host is untouched)

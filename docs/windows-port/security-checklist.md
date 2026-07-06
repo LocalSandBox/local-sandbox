@@ -79,9 +79,14 @@ Before merging Windows backend work, answer:
 - Overlay/import host source data is read-only from the product perspective.
 - CLI `:ro` remains overlay on Windows and must not create a direct SMB mount.
 - Explicit Windows SMB direct mounts require Administrator preflight,
-  recursive source validation, ephemeral users/shares/credentials, reversible
-  NTFS/share ACL grants, non-secret cleanup manifests, startup stale recovery,
-  and best-effort cleanup.
+  local SMB network-logon policy preflight, recursive source validation,
+  ephemeral users/shares/credentials, reversible NTFS/share ACL grants,
+  non-secret cleanup manifests, startup stale recovery, and best-effort
+  cleanup.
+- `lsb doctor windows-smb-policy --fix` must only remove
+  `NT AUTHORITY\Local account` from the network-logon deny right after checking
+  for broad allow entries, and must keep local Administrator accounts and
+  Guests denied from network logon.
 - Reject path traversal in copy-in/copy-out and export paths.
 - Reject or explicitly define symlink/junction/reparse behavior before following
   links on Windows.

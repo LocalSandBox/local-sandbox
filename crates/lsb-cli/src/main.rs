@@ -2,6 +2,7 @@ mod assets;
 mod checkpoint;
 mod cli;
 mod config;
+mod doctor;
 mod stdio;
 mod vm;
 
@@ -12,7 +13,7 @@ use clap::Parser;
 
 use lsb_vm::{default_data_dir, VmState};
 
-use cli::{CheckpointCommands, Cli, Commands};
+use cli::{CheckpointCommands, Cli, Commands, DoctorCommands};
 use config::load_config;
 
 fn main() -> Result<()> {
@@ -120,6 +121,9 @@ fn main() -> Result<()> {
             CheckpointCommands::Pull { name: _ } => {
                 anyhow::bail!("checkpoint pull is not yet implemented")
             }
+        },
+        Commands::Doctor { action } => match action {
+            DoctorCommands::WindowsSmbPolicy { fix, yes } => doctor::windows_smb_policy(fix, yes)?,
         },
     }
 

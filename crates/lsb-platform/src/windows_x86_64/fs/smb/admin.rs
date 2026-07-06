@@ -3,6 +3,12 @@ use super::types::{WindowsSmbLifecycleError, WindowsSmbLifecyclePhase};
 pub trait WindowsSmbAdmin {
     fn ensure_elevated_admin(&mut self) -> Result<(), WindowsSmbLifecycleError>;
 
+    fn ensure_windows_smb_policy_allows_generated_users(
+        &mut self,
+    ) -> Result<(), WindowsSmbLifecycleError> {
+        Ok(())
+    }
+
     fn ensure_smb_loopback_available(&mut self) -> Result<(), WindowsSmbLifecycleError> {
         Ok(())
     }
@@ -67,6 +73,12 @@ impl WindowsSmbAdmin for NativeWindowsSmbAdmin {
             return Err(WindowsSmbLifecycleError::NotElevated);
         }
         Ok(())
+    }
+
+    fn ensure_windows_smb_policy_allows_generated_users(
+        &mut self,
+    ) -> Result<(), WindowsSmbLifecycleError> {
+        super::policy::ensure_windows_smb_policy_allows_generated_users()
     }
 
     fn ensure_smb_loopback_available(&mut self) -> Result<(), WindowsSmbLifecycleError> {

@@ -74,7 +74,7 @@ and validation results synchronized while implementing `PLAN.md`.
 
 | Date | Commit | Command | Result | Notes |
 | --- | --- | --- | --- | --- |
-| 2026-07-06 | 092d163 + working tree | `rg -n 'SMB/CIFS|CLI .*:ro|Administrator|D024|allow_net|public API shape|Superseded' docs/windows-port/decisions.md docs/windows-port/README.md docs/windows-port/mvp-handoff.md docs/windows-port/security-checklist.md docs/windows-port/future-work.md PLAN.md STATE.md`; stale-limitation `rg` check; `git diff --check` | Pass | Required Slice 1 claims present, stale exact limitations absent, whitespace clean. No code or tests by scope. |
+| 2026-07-06 | 092d163 + working tree | `rg -n 'SMB/CIFS|CLI .*:ro|Administrator|D023|allow_net|public API shape|Superseded' docs/windows-port/decisions.md docs/windows-port/README.md docs/windows-port/mvp-handoff.md docs/windows-port/security-checklist.md docs/windows-port/future-work.md PLAN.md STATE.md`; stale-limitation `rg` check; `git diff --check` | Pass | Required Slice 1 claims present, stale exact limitations absent, whitespace clean. No code or tests by scope. |
 | 2026-07-06 | 0febf44 + working tree | `cargo fmt --check`; `cargo test -p lsb-proto`; `cargo test -p lsb-guest`; `cargo test -p xtask rootfs` | Pass | Scoped Slice 2 formatting and directly related tests pass. |
 | 2026-07-06 | 0febf44 + working tree | `cargo check --workspace` | Blocked | Fails because `crates/lsb-vm/src/sandbox.rs` has an exhaustive `MountRequest` match missing `Smb`; `lsb-vm` is outside the requested touch list. |
 | 2026-07-06 | 0febf44 + working tree | `cargo fmt --check`; `cargo check --workspace`; `cargo test -p lsb-vm` | Pass | Minimal `lsb-vm` exhaustiveness update restored workspace compilation without SMB lifecycle/startup behavior. |
@@ -100,6 +100,10 @@ and validation results synchronized while implementing `PLAN.md`.
 | 2026-07-07 | fbbd7f1 | GitHub Actions smoke run 28811434918 / job 85441710757 | Failed | Node direct read-only SMB smoke reached `//localhost/<share>` and CIFS reported `STATUS_LOGON_TYPE_NOT_GRANTED`, showing Windows rejected the generated account for network logon. |
 | 2026-07-07 | local spike | PowerShell SMB spike with generated local user in built-in Users alias | Failed | `net use \\localhost\<share>` failed with system error 1385, confirming built-in Users membership is not sufficient on this Windows policy. |
 | 2026-07-07 | working tree | `cargo fmt --all -- --check`; `cargo test -p lsb-guest smb_mount`; `cargo test -p lsb-platform windows_x86_64::fs::smb`; `cargo check -p lsb-platform --target x86_64-pc-windows-msvc`; `cargo test -p lsb-platform windows_x86_64::qemu::boot`; `cargo check --workspace`; `git diff --check` | Pass | Native Windows SMB user creation now grants account-specific `SeNetworkLogonRight` through LSA, revokes it before account deletion, keeps built-in Users alias membership setup, and deletes the account if post-create setup fails. |
+| 2026-07-07 | bb0ff1b | GitHub Actions smoke run 28813667279 / job 85448218972 | Failed | Node direct read-only SMB smoke still reported `STATUS_LOGON_TYPE_NOT_GRANTED` after the account-specific `SeNetworkLogonRight` grant while the account was also added to the built-in Users alias. |
+| 2026-07-07 | working tree | `cargo fmt --all -- --check`; `cargo test -p lsb-platform windows_x86_64::fs::smb`; `cargo check -p lsb-platform --target x86_64-pc-windows-msvc`; `cargo test -p lsb-guest smb_mount`; `cargo test -p lsb-platform windows_x86_64::qemu::boot`; `cargo check --workspace`; `git diff --check` | Pass | Native Windows SMB user creation now avoids built-in Users alias membership and relies on exact-account share/NTFS grants plus `SeNetworkLogonRight`, reducing exposure to broad local group deny policies. |
+| 2026-07-07 | working tree | `cargo fmt --all -- --check`; `cargo test -p lsb-platform windows_x86_64::fs::smb`; `cargo check -p lsb-platform --target x86_64-pc-windows-msvc`; `cargo run -p lsb-cli -- doctor windows-smb-policy --help`; `cargo test -p lsb-guest smb_mount`; `cargo test -p lsb-platform windows_x86_64::qemu::boot`; `cargo check -p lsb-cli`; `cargo check --workspace`; `git diff --check` | Pass | Added `lsb doctor windows-smb-policy` read-only diagnosis plus explicit `--fix --yes`, direct SMB policy preflight for `S-1-5-113`, and smoke-script policy repair before direct SMB lanes. |
+| 2026-07-07 | working tree | `cargo check -p lsb-cli --target x86_64-pc-windows-msvc` | Blocked | macOS host lacks MSVC/Windows C tooling and headers for transitive native deps (`ml64.exe`, `windows.h`, `assert.h`). Platform-only Windows target check passed for the new native LSA policy code. |
 
 ## Open Blockers
 
@@ -120,12 +124,12 @@ artifacts unless they are intentionally checked in.
 
 | File | Status | Notes |
 | --- | --- | --- |
-| `docs/windows-port/decisions.md` | Updated | Added D024, superseded D011, and scoped D010 for explicit SMB direct mounts. |
-| `docs/windows-port/README.md` | Updated | Documents implemented Windows SMB/CIFS direct mount behavior and stale cleanup manifests. |
-| `docs/windows-port/mvp-handoff.md` | Updated | Documents current SMB/CIFS direct mount support, limitations, and recovery behavior. |
-| `docs/windows-port/security-checklist.md` | Updated | Added D024 guardrails for explicit SMB direct host writes. |
-| `docs/windows-port/future-work.md` | Updated | Moves SMB/CIFS direct mounts from implementation work to follow-up hardening. |
-| `PLAN.md` | Updated | Avoided duplicate future decision work now that D024 exists. |
+| `docs/windows-port/decisions.md` | Updated | Added D023, superseded D011, and scoped D010 for explicit SMB direct mounts. |
+| `docs/windows-port/README.md` | Updated | Documents implemented Windows SMB/CIFS direct mount behavior, stale cleanup manifests, and SMB policy doctor command. |
+| `docs/windows-port/mvp-handoff.md` | Updated | Documents current SMB/CIFS direct mount support, limitations, recovery behavior, and SMB policy doctor command. |
+| `docs/windows-port/security-checklist.md` | Updated | Added D023 guardrails for explicit SMB direct host writes and SMB policy repair. |
+| `docs/windows-port/future-work.md` | Updated | Moves SMB/CIFS direct mounts from implementation work to follow-up hardening and notes future doctor command expansion. |
+| `PLAN.md` | Updated | Avoided duplicate future decision work now that D023 exists. |
 | `STATE.md` | Updated | Recorded Slice 1 status and docs-only validation scope. |
 | `crates/lsb-proto/src/lib.rs` | Updated | Added `CAP_CIFS_MOUNT`, `MountRequest::Smb`, redacted formatting, and protocol tests. |
 | `crates/lsb-guest/src/main.rs` | Updated | Advertises `cifs_mount`, builds sanitized CIFS options, forces SMB transport through `ip=10.0.0.1`, invokes `mount.cifs` with `PASSWD_FD`, and reports sanitized bounded mount stderr plus CIFS-related `dmesg` on failures. |
@@ -137,22 +141,24 @@ artifacts unless they are intentionally checked in.
 | `crates/lsb-proxy/src/dns.rs` | Updated | Mount-only SMB mode answers `host.lsb.internal` locally and refuses arbitrary DNS without host resolver forwarding. |
 | `crates/lsb-proxy/src/proxy.rs` | Updated | Routes only guest `10.0.0.1:445` to host `127.0.0.1:445` in SMB modes and denies other mount-only TCP flows. |
 | `crates/lsb-cli/src/vm.rs` | Updated | Detects Windows direct mounts and selects mount-only SMB proxy config when `allow_net` is false, or merges SMB relay into the normal proxy when `allow_net` is true; CLI `:ro` remains overlay. |
+| `crates/lsb-cli/src/cli.rs` | Updated | Adds the `doctor windows-smb-policy` command surface with explicit `--fix` and `--yes` flags. |
+| `crates/lsb-cli/src/doctor.rs` | Added | Prints Windows SMB policy diagnosis, blocks broad-risk automatic repair, prompts for `--fix`, and supports CI-safe `--fix --yes`. |
 | `crates/lsb-sdk/src/runtime.rs` | Updated | Mirrors CLI proxy selection for SDK/Node callers, runs stale SMB recovery before instance reuse, and adds direct SMB rw/no-network/cleanup smoke coverage. |
 | `crates/lsb-platform/src/windows_x86_64/qemu/argv.rs` | Updated | Extended stream-network argv assertions to exclude `-nic`, QEMU user networking, `hostfwd`, TAP, bridge, and NAT tokens. |
 | `crates/lsb-platform/src/windows_x86_64/qemu/boot.rs` | Updated | Accepts the `cifs_mount` guest-ready capability now that the Windows host implements SMB direct mount handling. |
 | `crates/lsb-platform/Cargo.toml` | Updated | Added Windows API feature gates required by native SMB admin, user, share, and ACL adapters. |
 | `crates/lsb-platform/src/windows_x86_64/fs/mod.rs` | Updated | Exposes the Windows SMB lifecycle module under the Windows fs namespace. |
-| `crates/lsb-platform/src/windows_x86_64/fs/smb/` | Added/Updated | Implements fakeable SMB admin/password/user/ACL/share components, native Windows adapters, host loopback preflight, lifecycle setup/cleanup, non-secret cleanup manifests, stale recovery, mount request generation with localhost UNC targets plus Windows computer-name auth domains, account-specific `SeNetworkLogonRight` grant/revoke, name validation, password redaction, and unit tests. |
-| `scripts/windows-smoke.ps1` | Updated | Adds CLI `:ro` overlay smoke plus direct SMB success and failure-cleanup ignored test invocations. |
+| `crates/lsb-platform/src/windows_x86_64/fs/smb/` | Added/Updated | Implements fakeable SMB admin/password/user/ACL/share components, native Windows adapters, host loopback and SMB policy preflight, policy diagnosis/fix helpers, lifecycle setup/cleanup, non-secret cleanup manifests, stale recovery, mount request generation with localhost UNC targets plus Windows computer-name auth domains, account-specific `SeNetworkLogonRight` grant/revoke without built-in Users alias membership, name validation, password redaction, and unit tests. |
+| `scripts/windows-smoke.ps1` | Updated | Runs `lsb doctor windows-smb-policy --fix --yes` before boot-asset smoke lanes and adds CLI `:ro` overlay plus direct SMB success/failure-cleanup ignored test invocations. |
 | `bindings/nodejs/scripts/windows-preflight-smoke.mjs` | Updated | Adds Node direct read-only SMB smoke coverage. |
-| `README.md` | Updated | Documents final Windows SMB/CIFS direct mount behavior. |
-| `bindings/nodejs/README.md` | Updated | Documents Windows direct mount flags and Administrator requirement. |
+| `README.md` | Updated | Documents final Windows SMB/CIFS direct mount behavior and SMB policy doctor command. |
+| `bindings/nodejs/README.md` | Updated | Documents Windows direct mount flags, Administrator requirement, and SMB policy doctor command. |
 | `docs/windows-port/architecture.md` | Updated | Records SMB/CIFS direct mount lifecycle and cleanup manifest architecture. |
-| `docs/windows-port/diagnostics.md` | Updated | Documents SMB cleanup manifest diagnostics and redaction rules. |
-| `docs/windows-port/validation.md` | Updated | Lists new direct SMB, CLI `:ro`, Node ro, cleanup, and redaction smoke coverage. |
+| `docs/windows-port/diagnostics.md` | Updated | Documents SMB cleanup manifest diagnostics, policy preflight, and redaction rules. |
+| `docs/windows-port/validation.md` | Updated | Lists new direct SMB, SMB policy doctor repair, CLI `:ro`, Node ro, cleanup, and redaction smoke coverage. |
 | `docs/windows-port/risk-register.md` | Updated | Adds stale SMB resource cleanup risk and mitigation. |
-| `docs/windows-port/runner-setup.md` | Updated | Describes direct SMB smoke scope. |
-| `docs/windows-port/review-checklist.md` | Updated | Updates direct mount review rule for D024 SMB/CIFS path. |
+| `docs/windows-port/runner-setup.md` | Updated | Describes direct SMB smoke scope and smoke-time SMB policy repair. |
+| `docs/windows-port/review-checklist.md` | Updated | Updates direct mount review rule for D023 SMB/CIFS path. |
 
 ## Cleanup/Redaction Audit
 

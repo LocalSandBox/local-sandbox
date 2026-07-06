@@ -231,6 +231,8 @@ $bootVars = @(
 )
 $missingBootVars = @($bootVars | Where-Object { -not [Environment]::GetEnvironmentVariable($_) })
 if ($missingBootVars.Count -eq 0) {
+  Write-Host "== Windows SMB policy doctor =="
+  Invoke-NativeCommand "cargo" @("run", "-p", "lsb-cli", "--", "doctor", "windows-smb-policy", "--fix", "--yes")
   Invoke-WindowsNodeSmoke
   Invoke-WindowsCliRoOverlaySmoke
   Write-Host "== Windows QEMU direct boot smoke =="
