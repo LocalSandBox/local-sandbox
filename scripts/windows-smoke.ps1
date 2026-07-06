@@ -167,6 +167,51 @@ function Invoke-WindowsNodeSmoke {
   }
 }
 
+function Invoke-WindowsCliRoOverlaySmoke {
+  Write-Host "== Windows CLI :ro overlay compatibility smoke =="
+
+  $source = Join-Path (Get-Location).Path "target\windows-smoke-cli-ro"
+  Remove-Item -LiteralPath $source -Recurse -Force -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Force -Path (Join-Path $source "src") | Out-Null
+  "cli-ro-host" | Out-File -FilePath (Join-Path $source "input.txt") -Encoding utf8NoBOM
+  "cli-ro-nested" | Out-File -FilePath (Join-Path $source "src\nested.txt") -Encoding utf8NoBOM
+
+  try {
+    $mountSpec = "${source}:/workspace:ro"
+    $guestScript = 'set -eu; test "$(cat /workspace/input.txt)" = "cli-ro-host"; test "$(cat /workspace/src/nested.txt)" = "cli-ro-nested"; printf "guest-output" > /workspace/guest.txt; printf "cli-ro-overlay-ok\n"'
+    Invoke-NativeCommand "cargo" @(
+      "run",
+      "-p",
+      "lsb-cli",
+      "--",
+      "run",
+      "--kernel",
+      $env:LSB_WINDOWS_BOOT_KERNEL,
+      "--initrd",
+      $env:LSB_WINDOWS_BOOT_INITRD,
+      "--rootfs",
+      $env:LSB_WINDOWS_BOOT_ROOTFS,
+      "--memory",
+      "2048",
+      "--disk-size",
+      "4096",
+      "--mount",
+      $mountSpec,
+      "--",
+      "/bin/sh",
+      "-c",
+      $guestScript
+    )
+
+    $hostGuestWrite = Join-Path $source "guest.txt"
+    if (Test-Path -LiteralPath $hostGuestWrite) {
+      throw "CLI :ro overlay mount leaked guest write to host path $hostGuestWrite"
+    }
+  } finally {
+    Remove-Item -LiteralPath $source -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
 Write-Host "== Windows QEMU preflight smoke =="
 $env:LSB_TEST_REAL_QEMU = "1"
 Invoke-NativeCommand "cargo" @(
@@ -187,6 +232,7 @@ $bootVars = @(
 $missingBootVars = @($bootVars | Where-Object { -not [Environment]::GetEnvironmentVariable($_) })
 if ($missingBootVars.Count -eq 0) {
   Invoke-WindowsNodeSmoke
+  Invoke-WindowsCliRoOverlaySmoke
   Write-Host "== Windows QEMU direct boot smoke =="
   Invoke-NativeCommand "cargo" @("test", "-p", "lsb-platform", "windows_qemu_boot_smoke", "--", "--ignored", "--nocapture")
   Write-Host "== Windows guest exec smoke =="
@@ -195,10 +241,14 @@ if ($missingBootVars.Count -eq 0) {
   Invoke-NativeCommand "cargo" @("test", "-p", "lsb-vm", "windows_qemu_copy_transfer_smoke", "--", "--ignored", "--nocapture")
   Write-Host "== Windows mount smoke =="
   Invoke-NativeCommand "cargo" @("test", "-p", "lsb-vm", "windows_qemu_mount_smoke", "--", "--ignored", "--nocapture")
+  Write-Host "== Windows direct SMB failure cleanup smoke =="
+  Invoke-NativeCommand "cargo" @("test", "-p", "lsb-vm", "windows_qemu_direct_smb_failure_cleanup_smoke", "--", "--ignored", "--nocapture")
   Write-Host "== Windows port-forward smoke =="
   Invoke-NativeCommand "cargo" @("test", "-p", "lsb-vm", "windows_qemu_port_forward_smoke", "--", "--ignored", "--nocapture")
   Write-Host "== Windows checkpoint/store smoke =="
   Invoke-NativeCommand "cargo" @("test", "-p", "lsb-sdk", "windows_qemu_checkpoint_store_smoke", "--", "--ignored", "--nocapture")
+  Write-Host "== Windows direct SMB mount smoke =="
+  Invoke-NativeCommand "cargo" @("test", "-p", "lsb-sdk", "windows_qemu_direct_smb_mount_smoke", "--", "--ignored", "--nocapture")
   Write-Host "== Windows network policy/proxy smoke =="
   Invoke-NativeCommand "cargo" @("test", "-p", "lsb-sdk", "windows_qemu_network_policy_proxy_smoke", "--", "--ignored", "--nocapture")
 } else {

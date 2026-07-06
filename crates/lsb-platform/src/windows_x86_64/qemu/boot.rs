@@ -503,10 +503,11 @@ impl fmt::Display for QemuBootError {
                 ..
             } => write!(
                 f,
-                "the Windows guest advertised unsupported runtime capabilities during readiness: {}. The Windows backend currently accepts the base guest-ready handshake plus '{}' and '{}' capabilities. Update lsb-proto and host handling before advertising additional capabilities. serial excerpt: {}.{}",
+                "the Windows guest advertised unsupported runtime capabilities during readiness: {}. The Windows backend currently accepts the base guest-ready handshake plus '{}', '{}', and '{}' capabilities. Update lsb-proto and host handling before advertising additional capabilities. serial excerpt: {}.{}",
                 capability_summary(capabilities),
                 lsb_proto::CAP_FILE_RANGE_IO,
                 lsb_proto::CAP_PORT_FORWARD,
+                lsb_proto::CAP_CIFS_MOUNT,
                 empty_as_placeholder(serial_excerpt),
                 self.artifact_sentence()
             ),
@@ -1495,7 +1496,9 @@ fn unsupported_guest_capabilities(capabilities: &[String]) -> Vec<String> {
         .filter(|capability| {
             !matches!(
                 capability.as_str(),
-                lsb_proto::CAP_FILE_RANGE_IO | lsb_proto::CAP_PORT_FORWARD
+                lsb_proto::CAP_FILE_RANGE_IO
+                    | lsb_proto::CAP_PORT_FORWARD
+                    | lsb_proto::CAP_CIFS_MOUNT
             )
         })
         .cloned()
@@ -1745,6 +1748,9 @@ mod tests {
         ready
             .capabilities
             .push(lsb_proto::CAP_PORT_FORWARD.to_string());
+        ready
+            .capabilities
+            .push(lsb_proto::CAP_CIFS_MOUNT.to_string());
         guest_ready_frame(&ready)
     }
 
@@ -1835,7 +1841,8 @@ mod tests {
             result.message.capabilities,
             [
                 lsb_proto::CAP_FILE_RANGE_IO.to_string(),
-                lsb_proto::CAP_PORT_FORWARD.to_string()
+                lsb_proto::CAP_PORT_FORWARD.to_string(),
+                lsb_proto::CAP_CIFS_MOUNT.to_string()
             ]
         );
 
@@ -2110,7 +2117,8 @@ mod tests {
                 ready.capabilities,
                 [
                     lsb_proto::CAP_FILE_RANGE_IO.to_string(),
-                    lsb_proto::CAP_PORT_FORWARD.to_string()
+                    lsb_proto::CAP_PORT_FORWARD.to_string(),
+                    lsb_proto::CAP_CIFS_MOUNT.to_string()
                 ]
             );
             let status = fs::read_to_string(&boot.artifacts().boot_status)

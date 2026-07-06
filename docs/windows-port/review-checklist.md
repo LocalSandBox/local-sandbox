@@ -26,8 +26,8 @@ used by Windows.
 - [ ] Host listeners are loopback/private only.
 - [ ] QMP/control/forwarding endpoints are private.
 - [ ] Host filesystem exposure is minimized.
-- [ ] Direct `:rw` host mounts remain unsupported unless a new decision approves
-      them.
+- [ ] Direct `:rw` host mounts on Windows use only the D024 SMB/CIFS path with
+      Administrator preflight, cleanup, and redaction.
 - [ ] Failure modes fail closed.
 
 ## Testing

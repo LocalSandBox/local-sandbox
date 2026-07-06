@@ -155,9 +155,5 @@ pub(crate) fn wide_null(value: &str) -> Vec<u16> {
 
 #[cfg(windows)]
 pub(crate) fn zero_wide(value: &mut [u16]) {
-    for word in value {
-        unsafe {
-            std::ptr::write_volatile(word, 0);
-        }
-    }
+    value.fill(0);
 }

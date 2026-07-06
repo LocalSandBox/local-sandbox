@@ -326,6 +326,7 @@ mod smb_mount {
     use lsb_proto::MountRequest;
 
     pub(crate) const MOUNT_CIFS: &str = "/sbin/mount.cifs";
+    pub(crate) const WINDOWS_SMB_GATEWAY_IP: &str = "10.0.0.1";
 
     const RESERVED_OPTION_KEYS: &[&str] = &[
         "actimeo",
@@ -340,6 +341,7 @@ mod smb_mount {
         "gid",
         "guest",
         "iocharset",
+        "ip",
         "mfsymlinks",
         "noperm",
         "pass",
@@ -389,6 +391,7 @@ mod smb_mount {
         let mut mount_options = vec![
             "vers=3.1.1".to_string(),
             "sec=ntlmssp".to_string(),
+            format!("ip={WINDOWS_SMB_GATEWAY_IP}"),
             format!("username={username}"),
             format!("domain={domain}"),
             "port=445".to_string(),
@@ -415,6 +418,30 @@ mod smb_mount {
 
     pub(crate) fn option_string(options: &[String]) -> String {
         options.join(",")
+    }
+
+    pub(crate) fn sanitized_command_stderr(stderr: &[u8]) -> String {
+        let text = String::from_utf8_lossy(stderr);
+        let mut sanitized = text
+            .chars()
+            .map(|ch| {
+                if ch == '\n' || ch == '\r' || ch == '\t' || !ch.is_control() {
+                    ch
+                } else {
+                    ' '
+                }
+            })
+            .collect::<String>();
+        sanitized = sanitized.trim().to_string();
+        if sanitized.is_empty() {
+            return "<empty>".to_string();
+        }
+        const MAX_LEN: usize = 512;
+        if sanitized.len() > MAX_LEN {
+            sanitized.truncate(MAX_LEN);
+            sanitized.push_str("...");
+        }
+        sanitized
     }
 
     fn validate_required_component(name: &str, value: &str) -> Result<(), String> {
@@ -482,7 +509,7 @@ mod smb_mount {
 
         fn smb_request(options: Vec<String>) -> MountRequest {
             MountRequest::Smb {
-                server: "10.0.0.1".to_string(),
+                server: "WINHOST".to_string(),
                 share: "lsb-test-m0-abcd".to_string(),
                 target: "/workspace".to_string(),
                 username: "lsb_123456789abc".to_string(),
@@ -501,8 +528,8 @@ mod smb_mount {
         fn service_path_uses_unc_style_mount_source() {
             assert_eq!(MOUNT_CIFS, "/sbin/mount.cifs");
             assert_eq!(
-                service_path("10.0.0.1", "lsb-test-m0-abcd"),
-                "//10.0.0.1/lsb-test-m0-abcd"
+                service_path("WINHOST", "lsb-test-m0-abcd"),
+                "//WINHOST/lsb-test-m0-abcd"
             );
         }
 
@@ -515,6 +542,7 @@ mod smb_mount {
 
             assert!(option_string.contains("vers=3.1.1"));
             assert!(option_string.contains("sec=ntlmssp"));
+            assert!(option_string.contains("ip=10.0.0.1"));
             assert!(option_string.contains("username=lsb_123456789abc"));
             assert!(option_string.contains("domain=WINHOST"));
             assert!(option_string.contains("port=445"));
@@ -566,6 +594,7 @@ mod smb_mount {
                 "user=someone",
                 "username=someone",
                 "domain=OTHER",
+                "ip=192.0.2.1",
             ] {
                 let err = options_for_request(&smb_request(vec![option.to_string()]))
                     .expect_err("secret-bearing option should be rejected");
@@ -588,6 +617,21 @@ mod smb_mount {
                 .expect_err("comma injection should be rejected");
 
             assert!(err.contains("unsupported characters"));
+        }
+
+        #[test]
+        fn mount_cifs_stderr_is_sanitized_and_bounded() {
+            let stderr = b"mount error(13): Permission denied\0\nRefer to mount.cifs(8)";
+            let sanitized = sanitized_command_stderr(stderr);
+
+            assert_eq!(
+                sanitized,
+                "mount error(13): Permission denied \nRefer to mount.cifs(8)"
+            );
+
+            let long = sanitized_command_stderr(&vec![b'x'; 600]);
+            assert!(long.ends_with("..."));
+            assert!(long.len() <= 515);
         }
     }
 }
@@ -900,9 +944,10 @@ mod guest {
             || "terminated by signal".to_string(),
             |code| code.to_string(),
         );
+        let stderr = smb_mount::sanitized_command_stderr(&output.stderr);
         Err(format!(
-            "failed to mount SMB share at {}: mount.cifs exited with status {}",
-            target, status
+            "failed to mount SMB share at {}: mount.cifs exited with status {}; stderr: {}",
+            target, status, stderr
         ))
     }
 

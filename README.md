@@ -91,10 +91,10 @@ lsb run --cpus 4 --memory 4096 --disk-size 8192 -- make -j4
 | Windows ARM64 | Not available | Planned |
 
 Windows support covers sandbox start/stop, non-interactive `exec`, guest file
-APIs, overlay mounts, loopback port forwarding, policy-mediated proxy
-networking, and qcow2 checkpoint save/restore. Direct writable host mounts,
-live shared mount coherence, streaming `spawn`, interactive shells, `watch`,
-and CAS/NBD checkpoints are not part of the Windows MVP.
+APIs, overlay mounts, explicit SMB/CIFS direct mounts, loopback port
+forwarding, policy-mediated proxy networking, and qcow2 checkpoint save/restore.
+Streaming `spawn`, interactive shells, `watch`, and CAS/NBD checkpoints are not
+part of the Windows MVP.
 
 With `--allow-net`, the guest resolves DNS through the host-side proxy at
 `10.0.0.1`. Leave `/etc/resolv.conf` pointed at that proxy; the proxy performs
@@ -104,16 +104,25 @@ and can fail because the guest has no general UDP or host VPN route access.
 
 ### Directory mounts
 
-Mount host directories into the VM while keeping the host source read-only from
-the product perspective. On macOS, lsb uses VirtioFS with a guest overlay. On
-Windows, lsb imports a snapshot of the host directory into guest-owned staging
-storage and mounts that snapshot through the same overlay model. Guest writes do
-not modify the host source and are discarded when the VM exits unless you save
-or export them through an explicit API.
+Mount host directories into the VM. On macOS, lsb uses VirtioFS with a guest
+overlay. On Windows, CLI mounts without a suffix and CLI `:ro` mounts import a
+snapshot into guest-owned staging storage; guest writes do not modify the host
+source and are discarded when the VM exits unless you save or export them
+through an explicit API.
+
+Windows CLI `:rw` mounts use SMB/CIFS direct read-write sharing and require both
+`--allow-host-writes` and an elevated Administrator shell. SDK and Node direct
+mounts use the existing `Direct` API: `flags: 0` is SMB/CIFS read-write and
+`flags: 1` (`MS_RDONLY`) is SMB/CIFS read-only. Direct SMB mounts use the
+LocalSandbox-controlled proxy path and do not imply arbitrary outbound
+`--allow-net`.
 
 ```sh
 # Mount a directory (guest can write, host is untouched)
 lsb run --mount ./src:/workspace -- ls /workspace
+
+# Windows explicit direct read-write mount (requires Administrator)
+lsb run --allow-host-writes --mount ./src:/workspace:rw -- sh
 
 # Multiple mounts
 lsb run --mount ./src:/workspace --mount ./data:/data -- sh

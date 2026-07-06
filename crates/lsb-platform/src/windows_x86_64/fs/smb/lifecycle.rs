@@ -1,17 +1,23 @@
 use std::fmt;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use lsb_proto::MountRequest;
+use serde::{Deserialize, Serialize};
 
 use super::acl::{WindowsSmbAclGrant, WindowsSmbAclGrantRequest, WindowsSmbAclManager};
 use super::admin::WindowsSmbAdmin;
 use super::password::{WindowsSmbPassword, WindowsSmbPasswordGenerator};
-use super::share::{WindowsSmbShare, WindowsSmbShareCreateRequest, WindowsSmbShareManager};
+use super::share::{
+    WindowsSmbShare, WindowsSmbShareCreateRequest, WindowsSmbShareManager, WindowsSmbShareName,
+};
 use super::types::{
     generate_smb_share_name, generate_smb_user_name, WindowsSmbCleanupFailure,
     WindowsSmbLifecycleConfig, WindowsSmbLifecycleError, WindowsSmbLifecyclePhase,
-    WINDOWS_SMB_GATEWAY_SERVER,
 };
-use super::user::{WindowsSmbUserAccount, WindowsSmbUserManager};
+use super::user::{WindowsSmbUserAccount, WindowsSmbUserManager, WindowsSmbUserName};
+
+pub const WINDOWS_SMB_CLEANUP_MANIFEST_FILE: &str = "windows-smb-cleanup.json";
 
 pub struct WindowsSmbLifecycleManager<A, P, U, L, S> {
     admin: A,
@@ -46,6 +52,7 @@ where
         config: &WindowsSmbLifecycleConfig,
     ) -> Result<WindowsSmbActiveResources, WindowsSmbLifecycleError> {
         self.admin.ensure_elevated_admin()?;
+        self.admin.ensure_smb_loopback_available()?;
 
         let user_name = generate_smb_user_name(&mut self.passwords)?;
         let password = self.passwords.generate_password()?;
@@ -124,6 +131,16 @@ where
         }
     }
 
+    pub fn recover_cleanup_manifest(
+        &mut self,
+        path: &Path,
+    ) -> Result<(), WindowsSmbLifecycleError> {
+        let manifest = read_windows_smb_cleanup_manifest(path)?;
+        let resources = manifest.into_active_resources()?;
+        self.cleanup(resources)?;
+        remove_windows_smb_cleanup_manifest(path)
+    }
+
     fn cleanup_created(
         &mut self,
         account: &WindowsSmbUserAccount,
@@ -158,6 +175,19 @@ where
         }
 
         failures
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WindowsSmbRecoveryReport {
+    pub attempted: usize,
+    pub recovered: usize,
+    pub failures: Vec<WindowsSmbCleanupFailure>,
+}
+
+impl WindowsSmbRecoveryReport {
+    pub fn has_failures(&self) -> bool {
+        !self.failures.is_empty()
     }
 }
 
@@ -207,6 +237,257 @@ impl fmt::Debug for WindowsSmbActiveResources {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WindowsSmbCleanupManifest {
+    pub schema_version: u32,
+    pub instance_id: String,
+    pub account: WindowsSmbCleanupAccount,
+    pub acl_grants: Vec<WindowsSmbCleanupAclGrant>,
+    pub shares: Vec<WindowsSmbCleanupShare>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WindowsSmbCleanupAccount {
+    pub name: String,
+    pub domain: String,
+    pub principal: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WindowsSmbCleanupAclGrant {
+    pub path: PathBuf,
+    pub principal: String,
+    pub access: super::types::WindowsSmbAccess,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WindowsSmbCleanupShare {
+    pub name: String,
+    pub path: PathBuf,
+    pub principal: String,
+    pub access: super::types::WindowsSmbAccess,
+}
+
+impl WindowsSmbCleanupManifest {
+    pub fn from_active_resources(
+        instance_id: impl Into<String>,
+        resources: &WindowsSmbActiveResources,
+    ) -> Self {
+        Self {
+            schema_version: 1,
+            instance_id: instance_id.into(),
+            account: WindowsSmbCleanupAccount {
+                name: resources.account.name.as_str().to_string(),
+                domain: resources.account.domain.clone(),
+                principal: resources.account.principal.clone(),
+            },
+            acl_grants: resources
+                .acl_grants
+                .iter()
+                .map(|grant| WindowsSmbCleanupAclGrant {
+                    path: grant.path.clone(),
+                    principal: grant.principal.clone(),
+                    access: grant.access,
+                })
+                .collect(),
+            shares: resources
+                .shares
+                .iter()
+                .map(|share| WindowsSmbCleanupShare {
+                    name: share.name.as_str().to_string(),
+                    path: share.path.clone(),
+                    principal: share.principal.clone(),
+                    access: share.access,
+                })
+                .collect(),
+        }
+    }
+
+    fn into_active_resources(self) -> Result<WindowsSmbActiveResources, WindowsSmbLifecycleError> {
+        if self.schema_version != 1 {
+            return Err(WindowsSmbLifecycleError::operation_failed(
+                WindowsSmbLifecyclePhase::CleanupManifest,
+                format!(
+                    "unsupported Windows SMB cleanup manifest schema version {}",
+                    self.schema_version
+                ),
+            ));
+        }
+        super::types::validate_smb_user_name(&self.account.name)?;
+        for share in &self.shares {
+            super::types::validate_smb_share_name(&share.name)?;
+        }
+
+        Ok(WindowsSmbActiveResources {
+            account: WindowsSmbUserAccount {
+                name: WindowsSmbUserName::new_unchecked(self.account.name),
+                domain: self.account.domain,
+                principal: self.account.principal,
+            },
+            acl_grants: self
+                .acl_grants
+                .into_iter()
+                .map(|grant| WindowsSmbAclGrant {
+                    path: grant.path,
+                    principal: grant.principal,
+                    access: grant.access,
+                })
+                .collect(),
+            shares: self
+                .shares
+                .into_iter()
+                .map(|share| WindowsSmbShare {
+                    name: WindowsSmbShareName::new_unchecked(share.name),
+                    path: share.path,
+                    principal: share.principal,
+                    access: share.access,
+                })
+                .collect(),
+            mount_requests: Vec::new(),
+        })
+    }
+}
+
+pub fn write_windows_smb_cleanup_manifest(
+    path: &Path,
+    instance_id: &str,
+    resources: &WindowsSmbActiveResources,
+) -> Result<(), WindowsSmbLifecycleError> {
+    let manifest = WindowsSmbCleanupManifest::from_active_resources(instance_id, resources);
+    let json = serde_json::to_vec_pretty(&manifest).map_err(|error| {
+        WindowsSmbLifecycleError::operation_failed(
+            WindowsSmbLifecyclePhase::CleanupManifest,
+            format!("failed to serialize cleanup manifest: {error}"),
+        )
+    })?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            WindowsSmbLifecycleError::operation_failed(
+                WindowsSmbLifecyclePhase::CleanupManifest,
+                format!(
+                    "failed to create cleanup manifest directory '{}': {error}",
+                    parent.display()
+                ),
+            )
+        })?;
+    }
+
+    let temp_path = path.with_extension("json.tmp");
+    fs::write(&temp_path, json).map_err(|error| {
+        WindowsSmbLifecycleError::operation_failed(
+            WindowsSmbLifecyclePhase::CleanupManifest,
+            format!(
+                "failed to write cleanup manifest '{}': {error}",
+                temp_path.display()
+            ),
+        )
+    })?;
+    if path.exists() {
+        fs::remove_file(path).map_err(|error| {
+            WindowsSmbLifecycleError::operation_failed(
+                WindowsSmbLifecyclePhase::CleanupManifest,
+                format!(
+                    "failed to replace cleanup manifest '{}': {error}",
+                    path.display()
+                ),
+            )
+        })?;
+    }
+    fs::rename(&temp_path, path).map_err(|error| {
+        WindowsSmbLifecycleError::operation_failed(
+            WindowsSmbLifecyclePhase::CleanupManifest,
+            format!(
+                "failed to commit cleanup manifest '{}': {error}",
+                path.display()
+            ),
+        )
+    })
+}
+
+pub fn read_windows_smb_cleanup_manifest(
+    path: &Path,
+) -> Result<WindowsSmbCleanupManifest, WindowsSmbLifecycleError> {
+    let bytes = fs::read(path).map_err(|error| {
+        WindowsSmbLifecycleError::operation_failed(
+            WindowsSmbLifecyclePhase::CleanupManifest,
+            format!(
+                "failed to read cleanup manifest '{}': {error}",
+                path.display()
+            ),
+        )
+    })?;
+    serde_json::from_slice(&bytes).map_err(|error| {
+        WindowsSmbLifecycleError::operation_failed(
+            WindowsSmbLifecyclePhase::CleanupManifest,
+            format!(
+                "failed to parse cleanup manifest '{}': {error}",
+                path.display()
+            ),
+        )
+    })
+}
+
+pub fn remove_windows_smb_cleanup_manifest(path: &Path) -> Result<(), WindowsSmbLifecycleError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(WindowsSmbLifecycleError::operation_failed(
+            WindowsSmbLifecyclePhase::CleanupManifest,
+            format!(
+                "failed to remove cleanup manifest '{}': {error}",
+                path.display()
+            ),
+        )),
+    }
+}
+
+pub fn windows_smb_cleanup_manifest_path(instance_dir: &Path) -> PathBuf {
+    instance_dir.join(WINDOWS_SMB_CLEANUP_MANIFEST_FILE)
+}
+
+#[cfg(windows)]
+pub fn recover_stale_windows_smb_cleanup_manifests(
+    instances_dir: &Path,
+) -> WindowsSmbRecoveryReport {
+    let mut report = WindowsSmbRecoveryReport::default();
+    let Ok(entries) = fs::read_dir(instances_dir) else {
+        return report;
+    };
+
+    for entry in entries {
+        let Ok(entry) = entry else {
+            report.failures.push(WindowsSmbCleanupFailure::new(
+                WindowsSmbLifecyclePhase::CleanupManifest,
+                "failed to read stale instance entry",
+            ));
+            continue;
+        };
+        let manifest_path = windows_smb_cleanup_manifest_path(&entry.path());
+        if !manifest_path.is_file() {
+            continue;
+        }
+
+        report.attempted += 1;
+        let mut manager = WindowsSmbLifecycleManager::native();
+        match manager.recover_cleanup_manifest(&manifest_path) {
+            Ok(()) => report.recovered += 1,
+            Err(error) => {
+                let cleanup_failures = error.cleanup_failures();
+                if cleanup_failures.is_empty() {
+                    report.failures.push(WindowsSmbCleanupFailure::new(
+                        WindowsSmbLifecyclePhase::CleanupManifest,
+                        error.to_string(),
+                    ));
+                } else {
+                    report.failures.extend(cleanup_failures.iter().cloned());
+                }
+            }
+        }
+    }
+
+    report
+}
+
 fn build_mount_request(
     account: &WindowsSmbUserAccount,
     password: &WindowsSmbPassword,
@@ -215,7 +496,7 @@ fn build_mount_request(
 ) -> MountRequest {
     let access = share.access;
     MountRequest::Smb {
-        server: WINDOWS_SMB_GATEWAY_SERVER.to_string(),
+        server: account.domain.clone(),
         share: share.name.as_str().to_string(),
         target: target.to_string(),
         username: account.name.as_str().to_string(),
@@ -236,6 +517,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::rc::Rc;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
     use crate::windows_x86_64::fs::smb::{
@@ -269,6 +551,25 @@ mod tests {
             } else {
                 Err(WindowsSmbLifecycleError::NotElevated)
             }
+        }
+    }
+
+    struct LoopbackFailAdmin {
+        log: EventLog,
+    }
+
+    impl WindowsSmbAdmin for LoopbackFailAdmin {
+        fn ensure_elevated_admin(&mut self) -> Result<(), WindowsSmbLifecycleError> {
+            self.log.push("admin");
+            Ok(())
+        }
+
+        fn ensure_smb_loopback_available(&mut self) -> Result<(), WindowsSmbLifecycleError> {
+            self.log.push("smb_loopback");
+            Err(WindowsSmbLifecycleError::operation_failed(
+                WindowsSmbLifecyclePhase::SmbLoopbackPreflight,
+                "Windows SMB server is unavailable on host loopback port 445",
+            ))
         }
     }
 
@@ -479,6 +780,17 @@ mod tests {
         )
     }
 
+    fn temp_dir(label: &str) -> PathBuf {
+        static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nonce = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "lsb-windows-smb-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
     #[test]
     fn lifecycle_success_creates_mount_requests_and_cleans_in_order() {
         let log = EventLog::default();
@@ -507,7 +819,7 @@ mod tests {
                 file_mode,
                 dir_mode,
                 ..
-            } if server == WINDOWS_SMB_GATEWAY_SERVER
+            } if server == "WINHOST"
                 && share == "lsb-instancemounts01-m0-aabbccdd"
                 && target == "/work"
                 && username == "lsb_000102030405"
@@ -559,6 +871,148 @@ mod tests {
                 "delete_user:lsb_000102030405",
             ]
         );
+    }
+
+    #[test]
+    fn cleanup_manifest_roundtrips_without_password_and_recovers_resources() {
+        let prepare_log = EventLog::default();
+        let mut prepare_manager = fake_manager(
+            prepare_log,
+            [
+                vec![0, 1, 2, 3, 4, 5],
+                vec![0xaa, 0xbb, 0xcc, 0xdd],
+                vec![0xee, 0xff, 0x10, 0x20],
+            ],
+        );
+        let resources = prepare_manager
+            .prepare(&config())
+            .expect("prepare succeeds");
+        let root = temp_dir("cleanup-manifest");
+        std::fs::create_dir_all(&root).expect("manifest dir");
+        let manifest_path = windows_smb_cleanup_manifest_path(&root);
+
+        write_windows_smb_cleanup_manifest(&manifest_path, "Instance Mounts 01", &resources)
+            .expect("cleanup manifest should write");
+
+        let manifest_text = std::fs::read_to_string(&manifest_path).expect("manifest text");
+        assert!(!manifest_text.contains("SecretPassword123!"));
+        assert!(!manifest_text.contains("password"));
+        assert!(!manifest_text.contains("mount_requests"));
+        assert!(manifest_text.contains("lsb_000102030405"));
+        assert!(manifest_text.contains("lsb-instancemounts01-m0-aabbccdd"));
+
+        let manifest =
+            read_windows_smb_cleanup_manifest(&manifest_path).expect("manifest should parse");
+        assert_eq!(manifest.schema_version, 1);
+        assert_eq!(manifest.shares.len(), 2);
+
+        let recover_log = EventLog::default();
+        let mut recover_manager = WindowsSmbLifecycleManager::new(
+            FakeAdmin {
+                log: recover_log.clone(),
+                elevated: true,
+            },
+            FakePasswords::new(recover_log.clone(), Vec::<Vec<u8>>::new()),
+            FakeUsers {
+                log: recover_log.clone(),
+                create_fail: false,
+                delete_fail: false,
+            },
+            FakeAcls {
+                log: recover_log.clone(),
+                fail_grant_index: None,
+                fail_revoke: false,
+                grants: 0,
+            },
+            FakeShares {
+                log: recover_log.clone(),
+                fail_create_index: None,
+                fail_remove: false,
+                creates: 0,
+            },
+        );
+
+        recover_manager
+            .recover_cleanup_manifest(&manifest_path)
+            .expect("manifest recovery should clean resources");
+
+        assert!(!manifest_path.exists());
+        assert_eq!(
+            recover_log.snapshot(),
+            [
+                "remove_share:lsb-instancemounts01-m1-eeff1020",
+                "remove_share:lsb-instancemounts01-m0-aabbccdd",
+                "revoke_acl:/host/b",
+                "revoke_acl:/host/a",
+                "delete_user:lsb_000102030405",
+            ]
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+        drop(resources);
+    }
+
+    #[test]
+    fn cleanup_manifest_recovery_keeps_manifest_when_cleanup_fails() {
+        let prepare_log = EventLog::default();
+        let mut prepare_manager = fake_manager(
+            prepare_log,
+            [
+                vec![0, 1, 2, 3, 4, 5],
+                vec![0xaa, 0xbb, 0xcc, 0xdd],
+                vec![0xee, 0xff, 0x10, 0x20],
+            ],
+        );
+        let resources = prepare_manager
+            .prepare(&config())
+            .expect("prepare succeeds");
+        let root = temp_dir("cleanup-manifest-failure");
+        std::fs::create_dir_all(&root).expect("manifest dir");
+        let manifest_path = windows_smb_cleanup_manifest_path(&root);
+        write_windows_smb_cleanup_manifest(&manifest_path, "Instance Mounts 01", &resources)
+            .expect("cleanup manifest should write");
+
+        let recover_log = EventLog::default();
+        let mut recover_manager = WindowsSmbLifecycleManager::new(
+            FakeAdmin {
+                log: recover_log.clone(),
+                elevated: true,
+            },
+            FakePasswords::new(recover_log.clone(), Vec::<Vec<u8>>::new()),
+            FakeUsers {
+                log: recover_log.clone(),
+                create_fail: false,
+                delete_fail: false,
+            },
+            FakeAcls {
+                log: recover_log.clone(),
+                fail_grant_index: None,
+                fail_revoke: false,
+                grants: 0,
+            },
+            FakeShares {
+                log: recover_log.clone(),
+                fail_create_index: None,
+                fail_remove: true,
+                creates: 0,
+            },
+        );
+
+        let error = recover_manager
+            .recover_cleanup_manifest(&manifest_path)
+            .expect_err("cleanup failure should be reported");
+
+        assert!(matches!(
+            error,
+            WindowsSmbLifecycleError::CleanupFailed { .. }
+        ));
+        assert!(
+            manifest_path.exists(),
+            "failed cleanup should keep manifest for a later retry"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+        drop(resources);
     }
 
     #[test]
@@ -706,6 +1160,41 @@ mod tests {
             "Windows direct mounts require an elevated Administrator shell"
         );
         assert_eq!(log.snapshot(), ["admin"]);
+    }
+
+    #[test]
+    fn smb_loopback_preflight_failure_creates_nothing() {
+        let log = EventLog::default();
+        let mut manager = WindowsSmbLifecycleManager::new(
+            LoopbackFailAdmin { log: log.clone() },
+            FakePasswords::new(log.clone(), [vec![0, 1, 2, 3, 4, 5]]),
+            FakeUsers {
+                log: log.clone(),
+                create_fail: false,
+                delete_fail: false,
+            },
+            FakeAcls {
+                log: log.clone(),
+                fail_grant_index: None,
+                fail_revoke: false,
+                grants: 0,
+            },
+            FakeShares {
+                log: log.clone(),
+                fail_create_index: None,
+                fail_remove: false,
+                creates: 0,
+            },
+        );
+
+        let error = manager
+            .prepare(&config())
+            .expect_err("SMB loopback preflight should fail");
+
+        assert!(error
+            .to_string()
+            .contains("Windows SMB server is unavailable on host loopback port 445"));
+        assert_eq!(log.snapshot(), ["admin", "smb_loopback"]);
     }
 
     #[test]

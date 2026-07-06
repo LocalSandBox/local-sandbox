@@ -67,11 +67,7 @@ impl WindowsSmbPassword {
 
 impl Drop for WindowsSmbPassword {
     fn drop(&mut self) {
-        for byte in &mut self.bytes {
-            unsafe {
-                std::ptr::write_volatile(byte, 0);
-            }
-        }
+        self.bytes.fill(0);
     }
 }
 

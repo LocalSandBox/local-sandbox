@@ -109,8 +109,9 @@ runs do not use the helper.
   `LSB_WINDOWS_BOOT_INITRD`, `LSB_WINDOWS_BOOT_ROOTFS`, and
   `LSB_WINDOWS_BOOT_ARTIFACT_DIR` through `GITHUB_ENV`.
 - `scripts/windows-smoke.ps1`: verifies CLI startup, managed QEMU/WHPX preflight,
-  Windows Node source and packed-package smoke, and boot/ready/exec/copy/mount/
-  port-forward/checkpoint/network smokes when boot assets are present.
+  Windows Node source and packed-package smoke, CLI `:ro` overlay behavior, and
+  boot/ready/exec/copy/mount/direct-SMB/port-forward/checkpoint/network smokes
+  when boot assets are present.
 - `scripts/windows-e2e.ps1`: current e2e entrypoint; it stages
   workflow-provisioned boot assets into an isolated temporary runtime directory
   and runs a user-facing CLI workflow covering boot/exec, default no-network

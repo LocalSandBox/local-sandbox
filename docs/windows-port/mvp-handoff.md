@@ -27,7 +27,7 @@ It is the current status source for future agents.
 | Readiness | Windows startup succeeds only after a valid LocalSandbox `GuestReady` frame over the established control stream. |
 | Exec | Non-interactive `exec` works through the existing product API and returns stdout, stderr, and exit status. |
 | File transfer | Copy-in/copy-out helpers stream guest file content over the control path with validation for path traversal, chunk sizes, final byte counts, and overwrite behavior. |
-| Mounts | Windows overlay-style mounts are snapshot imports: host directory data is copied into guest staging and used as the overlay lowerdir. Guest writes stay isolated. |
+| Mounts | Windows overlay-style mounts are snapshot imports for CLI no-suffix and `:ro`; explicit direct mounts use SMB/CIFS with ephemeral users, shares, credentials, ACL grants, and cleanup manifests. |
 | Port forwarding | Host-to-guest forwarding uses a dedicated private virtio-serial channel and host listeners bound to `127.0.0.1`. It does not enable a guest NIC or QEMU `hostfwd`. |
 | Networking | Default argv remains `-nic none`. Existing allow-net/proxy configuration attaches a QEMU stream netdev only to a LocalSandbox-owned loopback proxy path. |
 | Secrets | Guest environment values are placeholders. Host-side proxy policy performs substitution only for configured destinations. Diagnostics redact secret-bearing values. |
@@ -42,10 +42,9 @@ It is the current status source for future agents.
 - No Windows ARM64 support.
 - No QEMU bundled inside CLI archives, OS runtime assets, or npm packages.
 - No normal TCG fallback. Production Windows execution requires WHPX.
-- No direct writable host mounts are implemented in the current Windows MVP.
-  D024 accepts a follow-up SMB/CIFS direct-mount path.
 - No live host/guest mount synchronization for overlay, no-suffix, or CLI `:ro`
-  mounts. Planned SMB/CIFS direct mounts are the only approved live-sharing path.
+  mounts. SMB/CIFS direct mounts are the supported live-sharing path and require
+  Administrator privileges.
 - No file `watch` support for live host changes on imported mounts.
 - No interactive shell or streaming `spawn`/kill on Windows.
 - No general mux/session model yet. Non-interactive exec and file transfer are
@@ -61,22 +60,22 @@ It is the current status source for future agents.
 - Self-hosted runner labels still use the default `self-hosted, Windows, X64`
   set and assume one persistent WHPX runner for smoke/e2e cache reuse.
 
-## Accepted post-MVP direct-mount direction
+## Windows SMB/CIFS direct mounts
 
-Windows direct directory mounts will use SMB/CIFS once the follow-up
-implementation slices land. The public API shape remains unchanged:
+Windows direct directory mounts use SMB/CIFS. The public API shape remains
+unchanged:
 
 - CLI no-suffix mounts and CLI `:ro` mounts stay overlay snapshot imports.
-- CLI `:rw` plus `--allow-host-writes` becomes an SMB/CIFS direct read-write
-  mount and requires an elevated Administrator shell.
-- SDK and Node `Direct { flags: 0 }` become SMB/CIFS direct read-write mounts.
-- SDK and Node `Direct { flags: MS_RDONLY }` become SMB/CIFS direct read-only
+- CLI `:rw` plus `--allow-host-writes` is an SMB/CIFS direct read-write mount
+  and requires an elevated Administrator shell.
+- SDK and Node `Direct { flags: 0 }` are SMB/CIFS direct read-write mounts.
+- SDK and Node `Direct { flags: MS_RDONLY }` are SMB/CIFS direct read-only
   mounts.
 - SMB direct mounts must not imply arbitrary outbound `allow_net`; they use the
   LocalSandbox-controlled proxy path.
-
-Until implementation and WHPX smoke validation are complete, this section is a
-planning status update rather than a supported runtime behavior claim.
+- LocalSandbox writes a non-secret cleanup manifest into the instance directory
+  after resources are prepared. Normal cleanup removes the manifest; stale
+  startup recovery scans manifests and retries share, ACL, and user cleanup.
 
 ## Important implementation notes
 
@@ -134,7 +133,7 @@ head.
 ## Open production-readiness gaps
 
 - Rerun self-hosted WHPX smoke at final branch head after diagnostics collector
-  scoping changes.
+  scoping and direct SMB smoke coverage changes.
 - Decide and document the support policy for user override QEMU versions.
 - Decide whether managed QEMU artifacts need additional signing or mirroring in
   a later Windows release.
@@ -145,6 +144,5 @@ head.
   streaming spawn, kill, watch, or concurrent forwarding sessions.
 - Decide the post-MVP storage path: CAS/NBD migration, persistent qcow2 chains,
   or another deduplicated checkpoint format.
-- Implement and validate the accepted SMB/CIFS direct-mount plan, then revisit
-  broader live-sharing work such as Windows VirtioFS, 9p, or custom sync only if
-  needed.
+- Revisit broader live-sharing work such as Windows VirtioFS, 9p, or custom
+  sync only if SMB/CIFS direct mounts prove insufficient.

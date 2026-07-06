@@ -2,6 +2,8 @@ use std::error::Error;
 use std::fmt;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use super::password::WindowsSmbPasswordGenerator;
 use super::share::WindowsSmbShareName;
 use super::user::WindowsSmbUserName;
@@ -13,7 +15,7 @@ pub const WINDOWS_SMB_MAX_USER_NAME_LEN: usize = 20;
 pub const WINDOWS_SMB_SHARE_PREFIX: &str = "lsb-";
 pub const WINDOWS_SMB_MAX_SHARE_NAME_LEN: usize = 80;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WindowsSmbAccess {
     ReadOnly,
     ReadWrite,
@@ -92,6 +94,8 @@ pub enum WindowsSmbLifecyclePhase {
     ShareCreate,
     ShareRemove,
     ComputerName,
+    CleanupManifest,
+    SmbLoopbackPreflight,
 }
 
 impl WindowsSmbLifecyclePhase {
@@ -108,6 +112,8 @@ impl WindowsSmbLifecyclePhase {
             Self::ShareCreate => "SMB share creation",
             Self::ShareRemove => "SMB share removal",
             Self::ComputerName => "computer name lookup",
+            Self::CleanupManifest => "cleanup manifest",
+            Self::SmbLoopbackPreflight => "SMB loopback preflight",
         }
     }
 }

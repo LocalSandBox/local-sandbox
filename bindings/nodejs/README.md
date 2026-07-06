@@ -43,8 +43,8 @@ corepack yarn install
   Node users. `LSB_QEMU` and `LSB_QEMU_IMG` remain supported override/debug
   paths.
 - Windows support covers sandbox start/stop, non-interactive `exec()` / `execShell()`, guest file
-  APIs, overlay mounts, loopback port forwarding, policy-mediated proxy networking, and checkpoint
-  restore/save. Direct writable host mounts, streaming `spawn()`, interactive shells, and `watch()`
+  APIs, overlay mounts, SMB/CIFS direct mounts, loopback port forwarding, policy-mediated proxy
+  networking, and checkpoint restore/save. Streaming `spawn()`, interactive shells, and `watch()`
   remain macOS-only.
 
 ## Usage
@@ -188,10 +188,11 @@ await sandbox.stop()
 | Type      | Shape                                                                    | Behavior                                      |
 | --------- | ------------------------------------------------------------------------ | --------------------------------------------- |
 | `overlay` | `{ type: 'overlay'; hostPath: string; guestPath: string }`               | Host is read-only; guest writes go to overlay |
-| `direct`  | `{ type: 'direct'; hostPath: string; guestPath: string; flags: number }` | macOS VirtioFS direct mount with libc flags   |
+| `direct`  | `{ type: 'direct'; hostPath: string; guestPath: string; flags: number }` | Direct mount with libc flags                  |
 
-For direct mounts on macOS, `flags: 0` is read-write and `flags: 1` is `MS_RDONLY`. Windows mounts
-are overlay/snapshot imports only; direct writable host mounts return a backend capability error.
+For direct mounts, `flags: 0` is read-write and `flags: 1` is `MS_RDONLY`. On Windows, direct mounts
+use SMB/CIFS, require an elevated Administrator shell, and use LocalSandbox-controlled proxy
+networking without enabling arbitrary outbound network access.
 
 `network` enables proxy networking when present. It accepts:
 

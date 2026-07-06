@@ -40,7 +40,7 @@ transport and host backend, not the product model.
 | QEMU support | `crates/lsb-platform/src/windows_x86_64/qemu` | Discovery, version/preflight, argv, process, boot, and diagnostic artifacts. |
 | Managed host tools | `crates/lsb-platform/src/windows_x86_64/host_tools.rs`, `crates/lsb-sdk/src/host_tools.rs` | Pinned QEMU metadata, `%LOCALAPPDATA%\lsb\tools\qemu` paths, safe install/extraction, manifest validation, and `current.json`. |
 | Control and forwarding | `crates/lsb-platform/src/windows_x86_64/control`, `crates/lsb-proto`, `crates/lsb-guest` | Virtio-serial streams carry existing `lsb-proto` frames. Port forwarding uses a separate virtio-serial channel. |
-| File and mounts | `crates/lsb-platform/src/windows_x86_64/fs`, `crates/lsb-vm`, `crates/lsb-guest` | Copy-in/copy-out plus guest staging for mount MVP. No live host share. |
+| File and mounts | `crates/lsb-platform/src/windows_x86_64/fs`, `crates/lsb-vm`, `crates/lsb-guest` | Copy-in/copy-out plus guest staging for overlay mounts; SMB/CIFS lifecycle, cleanup manifests, and CIFS guest mounts for explicit direct mounts. |
 | Networking and secrets | `crates/lsb-proxy`, Windows platform network glue | LocalSandbox proxy policy remains authoritative. Windows uses QEMU stream netdev only for allow-net/proxy. |
 | Store/checkpoints | `crates/lsb-store`, `crates/lsb-sdk`, Windows platform disk handling | Windows uses qcow2 overlays and flattened qcow2 checkpoints. macOS CAS/NBD remains unchanged. |
 | CLI | `crates/lsb-cli` | Preserve public flags and product behavior; surface platform capability errors. |

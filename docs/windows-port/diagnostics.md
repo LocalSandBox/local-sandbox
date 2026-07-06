@@ -25,6 +25,7 @@ Use this guide to keep Windows backend failures actionable and repeatable.
 | Exec hangs | protocol framing bug, guest wait bug, stdout/stderr backpressure, timeout missing | redacted protocol trace, guest logs | small command, large stdout, timeout test |
 | Copy-in fails | Windows path normalization, symlink/junction policy, ACL denial, guest dir missing | source/target paths as safe, error kind | path traversal and reparse tests |
 | Mount differs | copy import rejected path, case collision, metadata loss, no live coherence | mount validation report, guest mount response | confirm snapshot/import semantics |
+| SMB direct mount fails | not elevated, SMB service unavailable, host path rejected, mount-only proxy missing, CIFS guest failure | sanitized guest mount error, cleanup manifest presence, resource cleanup result | confirm Administrator shell, SMB service, `mount.cifs`, and proxy stream argv |
 | Port forwarding fails | bind conflict, forwarding channel unavailable, guest service not listening, listener lifecycle bug | listener log, forward status, guest logs, argv | confirm `127.0.0.1`, `-nic none`, no `hostfwd` |
 | Network policy bypass | accidental NIC/user networking, proxy bypass, DNS/direct IP hole | redacted network config, argv, proxy logs | no-network default and direct-IP denial tests |
 | Checkpoint restore fails | base/writable mismatch, path locking, copy failure, disk corruption | checkpoint metadata, disk paths, QEMU stderr | restore immediately after create, verify base immutability |
@@ -62,6 +63,9 @@ Managed QEMU host-tool metadata lives under:
 `managed`, or `path`. `environment.summary.json` records the managed
 `current.json` path, package version, artifact SHA-256, and absolute executable
 paths when available.
+
+When SMB direct mounts are active, the instance directory root may also contain
+`windows-smb-cleanup.json`; it is non-secret and transient.
 
 For self-hosted workflow runs, the source diagnostics path is:
 
@@ -114,6 +118,19 @@ The collector:
 It must not upload raw environment dumps, boot assets, rootfs images, qcow2
 disks, npm caches, private keys, stale stage-root contents, historical runner
 log lines, persistent target-cache logs, or unredacted QEMU argv.
+
+## SMB direct mount diagnostics
+
+Windows SMB direct mounts create a transient `windows-smb-cleanup.json` file in
+the instance directory after host resources are prepared. The manifest is used
+only for stale recovery and contains generated user/share names, domains,
+principals, paths, and access modes. It must not contain generated SMB
+passwords, guest `MountRequest` payloads, proxy endpoints, or secret values.
+
+Normal stop removes the manifest after share removal, ACL revoke, and user
+delete complete. If cleanup fails or the host process exits before cleanup, a
+later Windows startup scans stale instance manifests and retries cleanup
+best-effort. Cleanup errors must stay sanitized and must not print passwords.
 
 ## Boot/readiness diagnostics
 
@@ -182,6 +199,8 @@ Treat as security bugs:
 - blocked domain/direct IP/missing domain succeeds,
 - forged allowed Host/SNI to unrelated destination IP succeeds,
 - secret appears in QEMU argv, guest env, serial log, proxy log, or diagnostics,
+- generated SMB password appears in cleanup manifests, QEMU argv, guest argv,
+  guest env, serial log, proxy log, or uploaded diagnostics,
 - proxy thread or host secret config survives VM teardown.
 
 Logs may include sanitized domain names, policy decision names, local ephemeral

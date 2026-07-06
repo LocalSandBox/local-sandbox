@@ -124,6 +124,12 @@ pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &LsbConfig, from: Option<&str>) -> Re
 
     let data_dir = lsb_vm::default_data_dir();
     let paths = asset_paths(&data_dir);
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        let _ = lsb_platform::windows_x86_64::fs::smb::recover_stale_windows_smb_cleanup_manifests(
+            Path::new(&paths.instances_dir),
+        );
+    }
     if from.is_some() && vm.base_version.is_some() {
         bail!("--from and --base-version cannot be used together");
     }
@@ -150,6 +156,19 @@ pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &LsbConfig, from: Option<&str>) -> Re
 
     // Create per-instance working copy (clean any stale dir from PID reuse)
     let instance_dir = format!("{}/{}", paths.instances_dir, std::process::id());
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        let stale_manifest =
+            lsb_platform::windows_x86_64::fs::smb::windows_smb_cleanup_manifest_path(Path::new(
+                &instance_dir,
+            ));
+        if stale_manifest.is_file() {
+            bail!(
+                "failed to recover stale Windows SMB mount resources for instance '{}'; rerun from an elevated Administrator shell or remove stale SMB resources manually before reusing this instance",
+                instance_dir
+            );
+        }
+    }
     let _ = std::fs::remove_dir_all(&instance_dir);
     std::fs::create_dir_all(&instance_dir)?;
 

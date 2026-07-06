@@ -12,7 +12,14 @@ pub use acl::{WindowsSmbAclGrant, WindowsSmbAclGrantRequest, WindowsSmbAclManage
 #[cfg(windows)]
 pub use admin::NativeWindowsSmbAdmin;
 pub use admin::WindowsSmbAdmin;
-pub use lifecycle::{WindowsSmbActiveResources, WindowsSmbLifecycleManager};
+#[cfg(windows)]
+pub use lifecycle::recover_stale_windows_smb_cleanup_manifests;
+pub use lifecycle::{
+    read_windows_smb_cleanup_manifest, remove_windows_smb_cleanup_manifest,
+    windows_smb_cleanup_manifest_path, write_windows_smb_cleanup_manifest,
+    WindowsSmbActiveResources, WindowsSmbCleanupManifest, WindowsSmbLifecycleManager,
+    WindowsSmbRecoveryReport, WINDOWS_SMB_CLEANUP_MANIFEST_FILE,
+};
 pub use password::{
     NativeWindowsSmbPasswordGenerator, WindowsSmbPassword, WindowsSmbPasswordGenerator,
 };

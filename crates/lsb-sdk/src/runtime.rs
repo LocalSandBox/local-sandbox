@@ -466,6 +466,12 @@ struct BootedVm {
 fn boot_vm(config: SandboxConfig) -> Result<BootedVm> {
     let data_dir = config.data_dir.unwrap_or_else(lsb_vm::default_data_dir);
     let paths = asset_paths(&data_dir);
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        let _ = lsb_platform::windows_x86_64::fs::smb::recover_stale_windows_smb_cleanup_manifests(
+            Path::new(&paths.instances_dir),
+        );
+    }
 
     let kernel_path = paths.kernel.clone();
     let rootfs_path = paths.rootfs.clone();
@@ -504,6 +510,19 @@ fn boot_vm(config: SandboxConfig) -> Result<BootedVm> {
             )
         }
     };
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        let stale_manifest =
+            lsb_platform::windows_x86_64::fs::smb::windows_smb_cleanup_manifest_path(Path::new(
+                &instance_dir,
+            ));
+        if stale_manifest.is_file() {
+            bail!(
+                "failed to recover stale Windows SMB mount resources for instance '{}'; rerun from an elevated Administrator shell or remove stale SMB resources manually before reusing this instance",
+                instance_dir
+            );
+        }
+    }
     let _ = std::fs::remove_dir_all(&instance_dir);
     std::fs::create_dir_all(&instance_dir)?;
 
@@ -1208,6 +1227,235 @@ mod tests {
                 std::env::var_os(name)
                     .map(PathBuf::from)
                     .unwrap_or_else(|| panic!("{name} must point to a disposable boot asset path"))
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires elevated Windows 11 x86_64 with WHPX, QEMU, SMB, and disposable LocalSandbox assets"]
+    fn windows_qemu_direct_smb_mount_smoke() {
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        {
+            eprintln!("skipping Windows QEMU direct SMB mount smoke on non-Windows host");
+        }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            use std::process::{Command, Stdio};
+            use std::time::{Duration, Instant};
+
+            use lsb_platform::windows_x86_64::fs::smb::{
+                read_windows_smb_cleanup_manifest, windows_smb_cleanup_manifest_path,
+            };
+
+            use crate::types::SandboxConfig;
+
+            let _storage_guard = EnvVarGuard::set("LSB_STORAGE", "direct");
+            let data_dir = prepare_direct_smb_smoke_data_dir();
+            let source = data_dir.join("direct-source");
+            std::fs::create_dir_all(&source).expect("direct source dir");
+            std::fs::write(source.join("hello.txt"), b"hello from host")
+                .expect("direct source file");
+
+            let config = SandboxConfig {
+                data_dir: Some(data_dir.display().to_string()),
+                mounts: vec![lsb_vm::MountConfig::Direct {
+                    host_path: source.display().to_string(),
+                    guest_path: "/direct".to_string(),
+                    flags: 0,
+                }],
+                instance_id: Some(format!("direct-smb-{}", std::process::id())),
+                ..Default::default()
+            };
+
+            let booted =
+                super::boot_vm(config).expect("Windows direct SMB sandbox should boot elevated");
+            let sandbox = booted.sandbox;
+            let instance_dir = booted.instance_dir;
+            let proxy_handle = booted.proxy_handle;
+            let manifest_path = windows_smb_cleanup_manifest_path(Path::new(&instance_dir));
+            let manifest_text =
+                std::fs::read_to_string(&manifest_path).expect("SMB cleanup manifest should exist");
+            assert!(!manifest_text.contains("password"));
+            assert!(!manifest_text.contains("mount_requests"));
+            let manifest = read_windows_smb_cleanup_manifest(&manifest_path)
+                .expect("SMB cleanup manifest should parse");
+            assert_eq!(manifest.shares.len(), 1);
+            assert!(
+                proxy_handle.is_some(),
+                "direct SMB mount should attach a mount-only proxy when allow_net is false"
+            );
+            assert!(windows_local_user_exists(&manifest.account.name));
+            for share in &manifest.shares {
+                assert!(windows_share_exists(&share.name));
+            }
+            assert!(windows_acl_contains(&source, &manifest.account.principal));
+
+            let result = (|| -> anyhow::Result<()> {
+                assert_eq!(sandbox.read_file("/direct/hello.txt")?, b"hello from host");
+
+                std::fs::write(source.join("host-live.txt"), b"host live update")?;
+                wait_for_guest_file(&sandbox, "/direct/host-live.txt", b"host live update")?;
+
+                sandbox.write_file("/direct/guest.txt", b"guest write")?;
+                sandbox.exec(&["/bin/sync"], &mut std::io::sink(), &mut std::io::sink())?;
+                wait_for_host_file(&source.join("guest.txt"), b"guest write")?;
+
+                let egress = sandbox.exec(
+                    &[
+                        "/bin/sh",
+                        "-c",
+                        "if curl -fsS --max-time 5 http://example.com/ >/tmp/smb-egress.out 2>/tmp/smb-egress.err; then exit 42; else exit 0; fi",
+                    ],
+                    &mut std::io::sink(),
+                    &mut std::io::sink(),
+                )?;
+                assert_eq!(
+                    egress, 0,
+                    "mount-only SMB proxy must not allow arbitrary outbound network"
+                );
+
+                let argv_path = Path::new(&instance_dir)
+                    .join("diagnostics")
+                    .join("qemu.argv.redacted.txt");
+                let argv = std::fs::read_to_string(&argv_path)
+                    .unwrap_or_else(|error| panic!("read {}: {error}", argv_path.display()));
+                assert!(argv.contains("-netdev"));
+                assert!(argv.contains("stream,id=lsbproxy0"));
+                assert!(argv.contains("virtio-net-pci,netdev=lsbproxy0"));
+                assert!(!argv.contains("-netdev user"));
+                assert!(!argv.contains("hostfwd"));
+                assert!(!argv.contains(&manifest.account.name));
+                for share in &manifest.shares {
+                    assert!(!argv.contains(&share.name));
+                }
+
+                Ok(())
+            })();
+
+            let stop_result = sandbox.stop();
+            let manifest_removed = !manifest_path.exists();
+            let user_removed = !windows_local_user_exists(&manifest.account.name);
+            let shares_removed = manifest
+                .shares
+                .iter()
+                .all(|share| !windows_share_exists(&share.name));
+            let acl_removed = !windows_acl_contains(&source, &manifest.account.principal);
+            let _ = std::fs::remove_dir_all(&data_dir);
+
+            result.expect("Windows direct SMB smoke should pass");
+            stop_result.expect("Windows direct SMB smoke QEMU should stop cleanly");
+            assert!(manifest_removed, "SMB cleanup manifest should be removed");
+            assert!(user_removed, "generated SMB user should be removed");
+            assert!(shares_removed, "generated SMB shares should be removed");
+            assert!(acl_removed, "generated SMB ACL grant should be removed");
+
+            struct EnvVarGuard {
+                name: &'static str,
+                old_value: Option<std::ffi::OsString>,
+            }
+
+            impl EnvVarGuard {
+                fn set(name: &'static str, value: &str) -> Self {
+                    let old_value = std::env::var_os(name);
+                    std::env::set_var(name, value);
+                    Self { name, old_value }
+                }
+            }
+
+            impl Drop for EnvVarGuard {
+                fn drop(&mut self) {
+                    if let Some(value) = self.old_value.take() {
+                        std::env::set_var(self.name, value);
+                    } else {
+                        std::env::remove_var(self.name);
+                    }
+                }
+            }
+
+            fn prepare_direct_smb_smoke_data_dir() -> std::path::PathBuf {
+                let kernel = required_env_path("LSB_WINDOWS_BOOT_KERNEL");
+                let initrd = required_env_path("LSB_WINDOWS_BOOT_INITRD");
+                let rootfs = required_env_path("LSB_WINDOWS_BOOT_ROOTFS");
+                let root =
+                    std::env::temp_dir().join(format!("lsb-sdk-direct-smb-{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&root);
+                std::fs::create_dir_all(root.join("instances")).expect("create instances dir");
+                std::fs::create_dir_all(root.join("checkpoints")).expect("create checkpoints dir");
+                std::fs::copy(kernel, root.join("Image")).expect("copy kernel asset");
+                std::fs::copy(initrd, root.join("initramfs.cpio.gz")).expect("copy initrd asset");
+                std::fs::copy(rootfs, root.join("rootfs.ext4")).expect("copy rootfs asset");
+                root
+            }
+
+            fn required_env_path(name: &str) -> std::path::PathBuf {
+                std::env::var_os(name)
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| panic!("{name} must point to a disposable boot asset path"))
+            }
+
+            fn wait_for_guest_file(
+                sandbox: &lsb_vm::Sandbox,
+                path: &str,
+                expected: &[u8],
+            ) -> anyhow::Result<()> {
+                let deadline = Instant::now() + Duration::from_secs(8);
+                loop {
+                    if matches!(sandbox.read_file(path), Ok(bytes) if bytes == expected) {
+                        return Ok(());
+                    }
+                    if Instant::now() >= deadline {
+                        anyhow::bail!("guest file {path} did not reach expected content");
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            }
+
+            fn wait_for_host_file(path: &std::path::Path, expected: &[u8]) -> anyhow::Result<()> {
+                let deadline = Instant::now() + Duration::from_secs(8);
+                loop {
+                    if matches!(std::fs::read(path), Ok(bytes) if bytes == expected) {
+                        return Ok(());
+                    }
+                    if Instant::now() >= deadline {
+                        anyhow::bail!(
+                            "host file {} did not reach expected content",
+                            path.display()
+                        );
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            }
+
+            fn windows_local_user_exists(name: &str) -> bool {
+                Command::new("net")
+                    .arg("user")
+                    .arg(name)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .is_ok_and(|status| status.success())
+            }
+
+            fn windows_share_exists(name: &str) -> bool {
+                Command::new("net")
+                    .arg("share")
+                    .arg(name)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .is_ok_and(|status| status.success())
+            }
+
+            fn windows_acl_contains(path: &std::path::Path, principal: &str) -> bool {
+                let Ok(output) = Command::new("icacls")
+                    .arg(path)
+                    .stderr(Stdio::null())
+                    .output()
+                else {
+                    return false;
+                };
+                String::from_utf8_lossy(&output.stdout).contains(principal)
             }
         }
     }

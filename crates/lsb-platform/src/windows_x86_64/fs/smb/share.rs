@@ -178,13 +178,17 @@ impl WindowsSmbShareManager for NativeWindowsSmbShareManager {
 #[cfg(windows)]
 fn share_access_mask(access: WindowsSmbAccess) -> u32 {
     use windows_sys::Win32::Storage::FileSystem::{
-        DELETE, FILE_DELETE_CHILD, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+        DELETE, FILE_DELETE_CHILD, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
     };
 
     match access {
-        WindowsSmbAccess::ReadOnly => FILE_GENERIC_READ,
+        WindowsSmbAccess::ReadOnly => FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
         WindowsSmbAccess::ReadWrite => {
-            FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_DELETE_CHILD | DELETE
+            FILE_GENERIC_READ
+                | FILE_GENERIC_EXECUTE
+                | FILE_GENERIC_WRITE
+                | FILE_DELETE_CHILD
+                | DELETE
         }
     }
 }

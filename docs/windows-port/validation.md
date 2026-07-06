@@ -111,9 +111,14 @@ through a user-facing workflow.
 - `windows_qemu_exec_smoke`.
 - `windows_qemu_copy_transfer_smoke`.
 - `windows_qemu_mount_smoke`.
+- `windows_qemu_direct_smb_failure_cleanup_smoke`.
 - `windows_qemu_port_forward_smoke`.
 - `windows_qemu_checkpoint_store_smoke`.
+- `windows_qemu_direct_smb_mount_smoke`.
 - `windows_qemu_network_policy_proxy_smoke`.
+- CLI `:ro` overlay compatibility through `scripts/windows-smoke.ps1`.
+- Node direct read-only SMB mount behavior through
+  `bindings/nodejs/scripts/windows-preflight-smoke.mjs`.
 
 Smoke tests require these environment variables, normally written by
 `scripts/prepare-windows-boot-assets.ps1`:
@@ -154,8 +159,10 @@ cargo test -p lsb-platform windows_qemu_boot_smoke -- --ignored --nocapture
 cargo test -p lsb-vm windows_qemu_exec_smoke -- --ignored --nocapture
 cargo test -p lsb-vm windows_qemu_copy_transfer_smoke -- --ignored --nocapture
 cargo test -p lsb-vm windows_qemu_mount_smoke -- --ignored --nocapture
+cargo test -p lsb-vm windows_qemu_direct_smb_failure_cleanup_smoke -- --ignored --nocapture
 cargo test -p lsb-vm windows_qemu_port_forward_smoke -- --ignored --nocapture
 cargo test -p lsb-sdk windows_qemu_checkpoint_store_smoke -- --ignored --nocapture
+cargo test -p lsb-sdk windows_qemu_direct_smb_mount_smoke -- --ignored --nocapture
 cargo test -p lsb-sdk windows_qemu_network_policy_proxy_smoke -- --ignored --nocapture
 ```
 
@@ -176,6 +183,8 @@ For failed integration tests, capture:
 - relevant control/forwarding/proxy/checkpoint logs when redacted,
 - allowlisted environment/tool summary,
 - diagnostic manifest showing collected and skipped files,
+- non-secret Windows SMB cleanup manifest content only while direct SMB
+  resources are active; it must not include passwords or mount requests,
 - test name and temp directory,
 - QEMU version/path,
 - Windows version/build where available.
@@ -185,7 +194,8 @@ qcow2 disks, npm caches, private keys, or unredacted QEMU argv.
 
 ## Current validation gap
 
-The last full self-hosted WHPX smoke pass recorded in the MVP handoff happened
-before later diagnostics scoping follow-up commits. Rerun
-`./scripts/win-gh-test smoke` at final branch head before treating the evidence
-as current for upstream review.
+Direct SMB mount smoke coverage has been added for rw, Node/SDK ro, CLI `:ro`
+overlay compatibility, no arbitrary outbound network, normal cleanup, failure
+cleanup, stale cleanup manifest recovery, and redaction scans. Rerun
+`./scripts/win-gh-test unit` and `./scripts/win-gh-test smoke` at final branch
+head before treating the evidence as current for upstream review.

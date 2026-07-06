@@ -2,6 +2,10 @@ use super::types::{WindowsSmbLifecycleError, WindowsSmbLifecyclePhase};
 
 pub trait WindowsSmbAdmin {
     fn ensure_elevated_admin(&mut self) -> Result<(), WindowsSmbLifecycleError>;
+
+    fn ensure_smb_loopback_available(&mut self) -> Result<(), WindowsSmbLifecycleError> {
+        Ok(())
+    }
 }
 
 #[cfg(windows)]
@@ -63,5 +67,23 @@ impl WindowsSmbAdmin for NativeWindowsSmbAdmin {
             return Err(WindowsSmbLifecycleError::NotElevated);
         }
         Ok(())
+    }
+
+    fn ensure_smb_loopback_available(&mut self) -> Result<(), WindowsSmbLifecycleError> {
+        use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+        use std::time::Duration;
+
+        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 445));
+        TcpStream::connect_timeout(&addr, Duration::from_secs(2))
+            .map(|_| ())
+            .map_err(|error| {
+                WindowsSmbLifecycleError::operation_failed(
+                    WindowsSmbLifecyclePhase::SmbLoopbackPreflight,
+                    format!(
+                        "Windows SMB server is unavailable on host loopback port 445: {error}. \
+                         Start the Server service and ensure local policy allows SMB on 127.0.0.1:445."
+                    ),
+                )
+            })
     }
 }

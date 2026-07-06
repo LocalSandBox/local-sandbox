@@ -80,7 +80,8 @@ Before merging Windows backend work, answer:
 - CLI `:ro` remains overlay on Windows and must not create a direct SMB mount.
 - Explicit Windows SMB direct mounts require Administrator preflight,
   recursive source validation, ephemeral users/shares/credentials, reversible
-  NTFS/share ACL grants, and best-effort cleanup.
+  NTFS/share ACL grants, non-secret cleanup manifests, startup stale recovery,
+  and best-effort cleanup.
 - Reject path traversal in copy-in/copy-out and export paths.
 - Reject or explicitly define symlink/junction/reparse behavior before following
   links on Windows.
@@ -100,6 +101,8 @@ Before merging Windows backend work, answer:
 - Guest receives placeholders only when policy allows.
 - Proxy substitutes secrets only for configured host patterns.
 - Logs must show placeholder IDs or redacted labels, not secret values.
+- Windows SMB cleanup manifests must not contain generated passwords, guest
+  mount requests, proxy endpoints, or host secret values.
 
 ## Sign-off template
 

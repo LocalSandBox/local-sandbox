@@ -25,22 +25,23 @@ and more complicated than the recommended release download path.
 The MVP is complete for upstream review, but it is not a production-readiness
 certification. See `mvp-handoff.md` before planning follow-up work.
 
-## Accepted direct-mount plan
+## Windows direct mounts
 
-The accepted post-MVP plan is to implement Windows direct directory mounts over
-SMB/CIFS without changing the public CLI, Rust SDK, or Node API shape. This is a
-planning decision until the implementation slices and Windows smoke validation
-land.
+Windows direct directory mounts use SMB/CIFS without changing the public CLI,
+Rust SDK, or Node API shape.
 
 - CLI no-suffix mounts and CLI `:ro` mounts remain overlay snapshot imports.
 - CLI `:rw` mounts continue to require `--allow-host-writes`; on Windows they
-  will become SMB/CIFS direct read-write mounts.
-- SDK and Node `Direct { flags: 0 }` will map to SMB/CIFS read-write direct
-  mounts, and `Direct { flags: MS_RDONLY }` will map to SMB/CIFS read-only
+  are SMB/CIFS direct read-write mounts.
+- SDK and Node `Direct { flags: 0 }` map to SMB/CIFS read-write direct
+  mounts, and `Direct { flags: MS_RDONLY }` maps to SMB/CIFS read-only
   direct mounts.
 - Windows SMB direct mounts require an elevated Administrator shell.
 - SMB direct mounts must use LocalSandbox-controlled proxy networking and must
   not imply arbitrary outbound `allow_net`.
+- LocalSandbox creates ephemeral Windows users, shares, credentials, and
+  reversible ACL grants, then records a non-secret cleanup manifest for stale
+  recovery.
 
 See `decisions.md` D024 and the implementation tracker in the repository
 `STATE.md`.

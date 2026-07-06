@@ -127,6 +127,61 @@ async function expectSandboxStart(Sandbox, initSandbox) {
   }
 }
 
+async function expectDirectReadOnlyMount(Sandbox) {
+  const dataDir = prepareDataDir('direct-ro')
+  const source = join(dataDir, 'direct-ro-source')
+  mkdirSync(source, { recursive: true })
+  writeFileSync(join(source, 'input.txt'), 'node-direct-ro-host')
+  let sandbox = null
+
+  try {
+    sandbox = await Sandbox.start({
+      dataDir,
+      instanceId: `node-direct-ro-${process.pid}`,
+      mounts: [{ type: 'direct', hostPath: source, guestPath: '/node-ro', flags: 1 }],
+    })
+
+    let result = await sandbox.exec(['/bin/cat', '/node-ro/input.txt'])
+    if (result.exitCode !== 0 || result.stdout !== 'node-direct-ro-host') {
+      throw new Error(
+        `direct read-only mount did not expose host file: exit=${result.exitCode} stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`,
+      )
+    }
+
+    writeFileSync(join(source, 'after-start.txt'), 'node-direct-ro-live-host')
+    result = await sandbox.exec([
+      '/bin/sh',
+      '-c',
+      'i=0; while [ "$i" -lt 8 ]; do test "$(cat /node-ro/after-start.txt 2>/dev/null || true)" = "node-direct-ro-live-host" && exit 0; i=$((i + 1)); sleep 1; done; exit 1',
+    ])
+    if (result.exitCode !== 0) {
+      throw new Error(`direct read-only mount did not expose live host update: ${result.stderr}`)
+    }
+
+    result = await sandbox.exec([
+      '/bin/sh',
+      '-c',
+      'if printf guest-write > /node-ro/guest.txt 2>/tmp/node-ro-write.err; then exit 42; fi; printf ro-denied',
+    ])
+    if (result.exitCode !== 0 || result.stdout !== 'ro-denied') {
+      throw new Error(
+        `direct read-only mount allowed guest write or failed unexpectedly: exit=${result.exitCode} stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`,
+      )
+    }
+
+    console.log('Node direct read-only SMB mount smoke passed')
+  } catch (error) {
+    const message = errorMessage(error)
+    assertNotNativeLoadError(message)
+    throw new Error(`Node direct read-only SMB mount smoke failed: ${message}`)
+  } finally {
+    if (sandbox) {
+      await sandbox.stop()
+    }
+    rmSync(dataDir, { recursive: true, force: true })
+  }
+}
+
 if (process.platform !== 'win32' || process.arch !== 'x64') {
   throw new Error(`Windows Node smoke requires win32/x64, got ${process.platform}/${process.arch}`)
 }
@@ -141,3 +196,4 @@ if (typeof initSandbox !== 'function') {
 
 await expectMissingQemuPreflight(Sandbox)
 await expectSandboxStart(Sandbox, initSandbox)
+await expectDirectReadOnlyMount(Sandbox)

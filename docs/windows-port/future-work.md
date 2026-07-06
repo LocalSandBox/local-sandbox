@@ -5,8 +5,9 @@ deleted sprint workspace.
 
 ## Release readiness
 
-- Rerun `./scripts/win-gh-test smoke` at final branch head after diagnostics
-  collector scoping changes.
+- Rerun `./scripts/win-gh-test unit` and `./scripts/win-gh-test smoke` at final
+  branch head after diagnostics collector scoping and direct SMB smoke coverage
+  changes.
 - Decide and document the support policy for user-supplied QEMU overrides.
 - Evaluate signing, SBOM, or mirroring improvements for the managed QEMU
   artifact.
@@ -34,22 +35,24 @@ deleted sprint workspace.
 
 ## Filesystem sharing experiments
 
-### SMB/CIFS direct mounts
+### SMB/CIFS direct mount follow-ups
 
-D024 accepts SMB/CIFS as the Windows direct directory mount path. Implement this
-through the slices tracked in the repository `PLAN.md` and `STATE.md`, then
-update user-facing docs only after Windows WHPX smoke validation passes.
+SMB/CIFS is the implemented Windows direct directory mount path under D024.
+Future work should focus on hardening and follow-up validation, not replacing
+the approved path without a new accepted decision.
 
-Required constraints:
+Preserve these constraints:
 
 - CLI no-suffix and CLI `:ro` mounts remain overlay snapshot imports.
-- CLI `:rw` plus `--allow-host-writes` becomes SMB/CIFS direct read-write and
+- CLI `:rw` plus `--allow-host-writes` is SMB/CIFS direct read-write and
   requires an elevated Administrator shell.
 - SDK and Node direct mounts use the existing public API shape.
 - SMB direct mounts use LocalSandbox-controlled proxy networking and must not
   imply arbitrary outbound `allow_net`.
 - Host resources are ephemeral and must be cleaned up: local user, SMB shares,
-  generated credentials, and NTFS/share ACL grants.
+  generated credentials, NTFS/share ACL grants, and stale cleanup manifests.
+- Expand performance and large-tree validation after functional WHPX smoke
+  evidence is current.
 
 ### VirtioFS on Windows
 

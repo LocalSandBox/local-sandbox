@@ -7,7 +7,7 @@ Track Windows backend risks here. Update this file when evidence changes a risk.
 | R001 | QEMU + WHPX availability varies across Windows machines | High | Medium | Strict preflight; actionable diagnostics; Windows 11 x64 support boundary | Open | TBD |
 | R002 | Virtio-serial named pipe behavior differs across QEMU versions | High | Medium | Self-hosted WHPX smoke proved current pipe ordering; host connects during boot and keeps established stream | Mitigating | TBD |
 | R003 | Guest transport regression from adding virtio-serial beside vsock | High | Low | Guest keeps macOS vsock path; Windows readiness/exec smokes validate virtio-serial | Retired | TBD |
-| R004 | Windows filesystem semantics differ from macOS VirtioFS overlay semantics | High | High | Snapshot import/export MVP; conservative reparse/hardlink/case-collision policy; document no live sync | Open | TBD |
+| R004 | Windows filesystem semantics differ from macOS VirtioFS overlay semantics | High | High | Snapshot import/export for overlay mounts; SMB/CIFS for explicit direct mounts; conservative reparse/hardlink/case-collision policy; document mode-specific semantics | Mitigating | TBD |
 | R005 | Windows proxy attachment could bypass LocalSandbox policy | High | Medium | Windows uses LocalSandbox-owned loopback stream netdev, rejects legacy fd/socketpair/non-loopback paths, and tests direct-IP/forged-host denial | Mitigating | TBD |
 | R006 | Windows checkpoint store lacks CAS/NBD parity | Medium | High | MVP uses flattened qcow2 artifacts; future storage work must choose CAS/NBD, qcow2 chains, or another deduplicated format | Accepted | TBD |
 | R007 | Hosted CI cannot run WHPX | Medium | High | Hosted CI is compile/unit/golden only; manual self-hosted Windows 11 runner covers WHPX runtime | Accepted | Maintainer |
@@ -19,6 +19,7 @@ Track Windows backend risks here. Update this file when evidence changes a risk.
 | R013 | Default self-hosted Windows labels can route cache probe and smoke jobs to different machines if runner pool grows | Medium | Medium | Current docs record the single-runner assumption, keep the workflow off pull requests, and limit automatic hardware execution to trusted `main` e2e runs. Add a dedicated label or disable local-cache skip path before adding runners. | Open | Maintainer |
 | R014 | Missing mux/session model blocks streaming spawn, shell, watch, and concurrent forwarding | Medium | High | Keep unsupported errors precise; design mux/session model before enabling those APIs | Open | TBD |
 | R015 | Override QEMU version policy is not finalized | Medium | Medium | Standard path pins managed QEMU 11.0.50; test and document support expectations for `LSB_QEMU`/PATH overrides | Open | Release owner |
+| R016 | Windows SMB direct mount host resources could remain after crash or partial failure | High | Medium | In-memory cleanup guards, non-secret cleanup manifests, startup stale recovery scan, fake cleanup tests, and WHPX smoke cleanup checks | Mitigating | TBD |
 
 ## Status values
 

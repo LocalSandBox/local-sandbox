@@ -348,8 +348,7 @@ implementation.
 
 #### Consequences
 
-- D011 is superseded for explicit Windows direct mounts once this feature is
-  implemented.
+- D011 is superseded for explicit Windows direct mounts.
 - Public CLI, Rust SDK, and Node API shape remains unchanged.
 - Windows direct mounts require Administrator privileges and actionable
   non-admin preflight errors.
@@ -357,13 +356,13 @@ implementation.
   or direct SMB mount is requested.
 - SMB credentials and generated resource identifiers require strict redaction,
   cleanup, and diagnostic rules.
-- Kernel/rootfs work must add CIFS client support and `mount.cifs` before the
-  SMB host lifecycle can be usable.
+- Kernel/rootfs assets include CIFS client support and `mount.cifs` for the
+  SMB guest mount path.
 
 #### Alternatives considered
 
-- Keep direct `:rw` unsupported: rejected because the approved follow-up goal is
-  macOS-like direct semantics on Windows.
+- Keep direct `:rw` unsupported: rejected because D024 approves macOS-like
+  direct semantics on Windows through SMB/CIFS.
 - QEMU user-mode SMB, QEMU user networking, `hostfwd`, TAP, bridge, NAT, or
   public listeners: rejected because they bypass or confuse LocalSandbox policy
   boundaries.

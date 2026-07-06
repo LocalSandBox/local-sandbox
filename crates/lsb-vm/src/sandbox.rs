@@ -30,8 +30,9 @@ use crossbeam_channel::Receiver;
 use lsb_platform::terminal;
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use lsb_platform::windows_x86_64::fs::smb::{
-    WindowsSmbActiveResources, WindowsSmbLifecycleConfig, WindowsSmbLifecycleManager,
-    WindowsSmbMount,
+    remove_windows_smb_cleanup_manifest, windows_smb_cleanup_manifest_path,
+    write_windows_smb_cleanup_manifest, WindowsSmbActiveResources, WindowsSmbLifecycleConfig,
+    WindowsSmbLifecycleManager, WindowsSmbMount,
 };
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use lsb_platform::windows_x86_64::fs::{
@@ -230,6 +231,9 @@ impl VmConfigBuilder {
         let mount_plan = build_mount_plan(&self.mounts)?;
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         let windows_smb_instance_id = windows_smb_instance_id(&rootfs_path);
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        let windows_smb_cleanup_manifest_path =
+            windows_smb_cleanup_manifest_path_from_rootfs(&rootfs_path)?;
 
         Ok(Sandbox {
             vm: lsb_platform::create_vm(PlatformVmConfig {
@@ -255,6 +259,8 @@ impl VmConfigBuilder {
             windows_smb_resources: Mutex::new(None),
             #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
             windows_smb_instance_id,
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            windows_smb_cleanup_manifest_path,
             #[cfg(not(target_os = "macos"))]
             control_session: Mutex::new(()),
             #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -276,6 +282,8 @@ pub struct Sandbox {
     windows_smb_resources: Mutex<Option<WindowsSmbActiveResources>>,
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     windows_smb_instance_id: String,
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    windows_smb_cleanup_manifest_path: PathBuf,
     #[cfg(not(target_os = "macos"))]
     control_session: Mutex<()>,
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -1559,7 +1567,32 @@ impl Sandbox {
         let config =
             WindowsSmbLifecycleConfig::new(self.windows_smb_instance_id.clone(), refreshed_mounts);
         let mut manager = WindowsSmbLifecycleManager::native();
+
+        if self.windows_smb_cleanup_manifest_path.is_file() {
+            manager
+                .recover_cleanup_manifest(&self.windows_smb_cleanup_manifest_path)
+                .with_context(|| {
+                    format!(
+                        "recovering stale Windows SMB cleanup manifest '{}'",
+                        self.windows_smb_cleanup_manifest_path.display()
+                    )
+                })?;
+        }
+
         let mut resources = manager.prepare(&config)?;
+        if let Err(error) = write_windows_smb_cleanup_manifest(
+            &self.windows_smb_cleanup_manifest_path,
+            &self.windows_smb_instance_id,
+            &resources,
+        ) {
+            let cleanup_result = manager.cleanup(resources);
+            if let Err(cleanup_error) = cleanup_result {
+                return Err(error).context(format!(
+                    "failed to write Windows SMB cleanup manifest; additionally failed to clean up prepared SMB resources: {cleanup_error}"
+                ));
+            }
+            return Err(error).context("failed to write Windows SMB cleanup manifest");
+        }
 
         {
             let mut pending_mounts = self
@@ -1593,6 +1626,7 @@ impl Sandbox {
 
         let mut manager = WindowsSmbLifecycleManager::native();
         manager.cleanup(resources)?;
+        remove_windows_smb_cleanup_manifest(&self.windows_smb_cleanup_manifest_path)?;
         Ok(())
     }
 
@@ -1755,6 +1789,17 @@ fn windows_smb_instance_id(rootfs_path: &str) -> String {
         .filter(|name| !name.is_empty())
         .unwrap_or("sandbox")
         .to_string()
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn windows_smb_cleanup_manifest_path_from_rootfs(rootfs_path: &str) -> Result<PathBuf> {
+    let instance_dir = Path::new(rootfs_path).parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Windows SMB rootfs path '{}' has no instance directory",
+            rootfs_path
+        )
+    })?;
+    Ok(windows_smb_cleanup_manifest_path(instance_dir))
 }
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -2238,6 +2283,8 @@ mod tests {
     use std::io::Cursor;
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     use std::path::PathBuf;
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    use std::process::{Command, Stdio};
 
     struct TestVm;
 
@@ -2276,6 +2323,9 @@ mod tests {
             windows_smb_resources: Mutex::new(None),
             #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
             windows_smb_instance_id: "test-instance".to_string(),
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            windows_smb_cleanup_manifest_path: temp_dir("test-instance")
+                .join("windows-smb-cleanup.json"),
             #[cfg(not(target_os = "macos"))]
             control_session: Mutex::new(()),
             #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -3066,23 +3116,6 @@ mod tests {
                 sandbox.copy_to_host("/workspace/guest.txt", export.join("guest.txt"), false)?;
                 assert_eq!(std::fs::read(export.join("guest.txt"))?, b"guest write");
 
-                let direct = Sandbox::builder()
-                    .kernel(kernel.display().to_string())
-                    .initrd(initrd.display().to_string())
-                    .rootfs(rootfs.display().to_string())
-                    .console(false)
-                    .mount(MountConfig::Direct {
-                        host_path: source.display().to_string(),
-                        guest_path: "/direct-rw".into(),
-                        flags: 0,
-                    })
-                    .build();
-                let direct_error = match direct {
-                    Ok(_) => panic!("direct read-write host mount should fail"),
-                    Err(error) => error,
-                };
-                assert!(direct_error.to_string().contains("direct host mounts"));
-
                 Ok(())
             })();
 
@@ -3090,6 +3123,63 @@ mod tests {
             let _ = std::fs::remove_dir_all(&host_root);
             result.expect("Windows mount smoke should pass");
             stop_result.expect("Windows mount smoke QEMU should stop cleanly");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires elevated Windows 11 x86_64 with WHPX, QEMU, SMB, and disposable LocalSandbox assets"]
+    fn windows_qemu_direct_smb_failure_cleanup_smoke() {
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        {
+            eprintln!("skipping Windows QEMU direct SMB failure cleanup smoke on non-Windows host");
+        }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            let kernel = required_env_path("LSB_WINDOWS_BOOT_KERNEL");
+            let initrd = required_env_path("LSB_WINDOWS_BOOT_INITRD");
+            let rootfs = required_env_path("LSB_WINDOWS_BOOT_ROOTFS");
+            let host_root = rootfs
+                .parent()
+                .expect("rootfs should live in a work directory")
+                .join("direct-smb-failure-fixture");
+            let _ = std::fs::remove_dir_all(&host_root);
+            let source = host_root.join("source");
+            std::fs::create_dir_all(&source).expect("direct SMB failure fixture dir");
+            std::fs::write(source.join("input.txt"), b"host input")
+                .expect("direct SMB failure fixture file");
+
+            let before = windows_lsb_smb_resource_snapshot();
+            let sandbox = Sandbox::builder()
+                .kernel(kernel.display().to_string())
+                .initrd(initrd.display().to_string())
+                .rootfs(rootfs.display().to_string())
+                .console(false)
+                .mount(MountConfig::Direct {
+                    host_path: source.display().to_string(),
+                    guest_path: "/direct-missing-proxy".into(),
+                    flags: 0,
+                })
+                .build()
+                .expect("Windows direct SMB failure sandbox should build");
+
+            let start_error = sandbox
+                .start()
+                .expect_err("direct SMB start without proxy should fail during guest mount");
+            assert!(
+                start_error.to_string().contains("Windows mounts")
+                    || start_error.to_string().contains("SMB")
+                    || start_error.to_string().contains("mount"),
+                "unexpected direct SMB failure: {start_error}"
+            );
+            let _ = sandbox.stop();
+
+            let after = windows_lsb_smb_resource_snapshot();
+            let _ = std::fs::remove_dir_all(&host_root);
+            assert_eq!(
+                after, before,
+                "failed direct SMB startup should not leave generated users or shares"
+            );
         }
     }
 
@@ -3203,6 +3293,37 @@ mod tests {
             result.expect("Windows port-forward smoke should pass");
             stop_result.expect("Windows port-forward smoke QEMU should stop cleanly");
         }
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[derive(Debug, PartialEq, Eq)]
+    struct WindowsLsbSmbResourceSnapshot {
+        users: HashSet<String>,
+        shares: HashSet<String>,
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn windows_lsb_smb_resource_snapshot() -> WindowsLsbSmbResourceSnapshot {
+        WindowsLsbSmbResourceSnapshot {
+            users: windows_command_tokens("net", &["user"], "lsb_"),
+            shares: windows_command_tokens("net", &["share"], "lsb-"),
+        }
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn windows_command_tokens(command: &str, args: &[&str], prefix: &str) -> HashSet<String> {
+        let Ok(output) = Command::new(command)
+            .args(args)
+            .stderr(Stdio::null())
+            .output()
+        else {
+            return HashSet::new();
+        };
+        String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .filter(|token| token.starts_with(prefix))
+            .map(str::to_string)
+            .collect()
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
