@@ -1,0 +1,27 @@
+docs/windows-port/agent-workspace/runner-setup.md
+  s_13f02dc9e790bc::t_015415bf4aefd1 120
+docs/windows-port/agent-workspace/validation.md
+  s_13f02dc9e790bc::t_7e942861e553d0 64-67
+scripts/windows-e2e.ps1
+  s_13f02dc9e790bc::t_cb8a143e05e7cb 13
+  s_13f02dc9e790bc::t_c0e781eb6b6649 5-11,14,16-24,30-34,37-47,49-50,53,59-177,180-190,193,212-213,238-679,681,694-700,703-707
+  s_13f02dc9e790bc::t_fe48cc750cd505 202-209
+  s_13f02dc9e790bc::t_ee300288d60b8c 12
+  s_13f02dc9e790bc::t_91419ccc321fa3 15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "10f543c8bd0924d112d5fc3cb6124059e9981267",
+  "prompts": {},
+  "sessions": {
+    "s_13f02dc9e790bc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f35df-58d1-7c81-bceb-258109d4358b",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
