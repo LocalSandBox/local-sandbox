@@ -1,0 +1,20 @@
+scripts/windows-e2e.ps1
+  s_97a2d521aab97a::t_6a706f0fd4bf32 381-396,622-665,667-675,843-844,849,858,860,867-869,871-872
+  s_97a2d521aab97a::t_204c3cdd6f8333 666
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ff0f4fba4fac11f27fb51dab1cc11fd438d532bf",
+  "prompts": {},
+  "sessions": {
+    "s_97a2d521aab97a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f36b9-f72b-7f83-8e6a-b49a0d1cbe67",
+        "model": "gpt-5.5"
+      },
+      "human_author": null
+    }
+  }
+}
