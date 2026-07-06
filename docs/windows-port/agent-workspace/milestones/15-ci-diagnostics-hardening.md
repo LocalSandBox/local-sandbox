@@ -44,7 +44,7 @@ The specific tests should match the implementation, but this milestone must incl
 
 - [x] Hosted Windows compile/golden job is defined in `.github/workflows/ci.yml` for `windows-latest` and is safe for PR/main CI because it does not require QEMU/WHPX.
 - [x] Self-hosted WHPX boot/smoke job is manual-only in `.github/workflows/windows-lsb-hardware.yml`, targets `[self-hosted, Windows, X64]`, verifies the runner contract, and passed in run `28743977168`.
-- [x] Failure artifacts include redacted argv, serial/QEMU/preflight artifacts when produced, allowlisted environment summary, diagnostic manifest, and redacted runner logs through `scripts/collect-windows-diagnostics.ps1`.
+- [x] Failure artifacts include redacted argv, serial/QEMU/preflight artifacts when produced, allowlisted environment summary, diagnostic manifest, and timestamp-bounded redacted runner logs through `scripts/collect-windows-diagnostics.ps1`.
 - [x] Runner setup documented in `../runner-setup.md`.
 
 ## Coding-agent prompt
@@ -69,8 +69,8 @@ Complete the checklist in `../security-checklist.md`. Record any new risk in `..
 ## Handoff
 
 - Branch/PR: `codex/windows-m15-ci-diagnostics`
-- Summary: Added hosted Windows Rust compile/unit/golden CI, preserved macOS CI, kept WHPX tests in a manual self-hosted Windows 11 workflow, added centralized redacted diagnostics collection/upload, wired stable Windows smoke coverage and packed Node npm install/import validation into the self-hosted smoke lane, and updated runner/validation/diagnostics/risk documentation.
-- Tests run: local macOS `cargo fmt --all -- --check`, Ruby YAML parse of `.github/workflows/*.yml`, `git diff --check`, `cargo check --workspace`, `cargo test -p lsb-platform windows_x86_64::qemu::argv`, `cargo test -p lsb-platform preflight`, `cargo test --workspace`; self-hosted `./scripts/win-gh-test smoke` passed in run `28743977168`.
+- Summary: Added hosted Windows Rust compile/unit/golden CI, preserved macOS CI, kept WHPX tests in a manual self-hosted Windows 11 workflow, added centralized redacted diagnostics collection/upload, wired stable Windows smoke coverage and packed Node npm install/import validation into the self-hosted smoke lane, and updated runner/validation/diagnostics/risk documentation. Review follow-up made the diagnostics stage root fresh per run, scoped asset diagnostics to the current run, and bounded optional runner `_diag` log collection.
+- Tests run: local macOS `cargo fmt --all -- --check`, Ruby YAML parse of `.github/workflows/*.yml`, `git diff --check`, `cargo check --workspace`, `cargo test -p lsb-platform windows_x86_64::qemu::argv`, `cargo test -p lsb-platform preflight`, `cargo test --workspace`; self-hosted `./scripts/win-gh-test smoke` passed in run `28743977168`; review follow-up ran a synthetic `pwsh` collector regression for stale stage cleanup, current-run asset scoping, and timestamp-filtered runner logs plus the hosted-CI-style collector probe.
 - Tests not run: hosted `CI` workflow did not run on the feature branch because it is configured for `main` pushes and pull requests; local `cargo check --workspace --target x86_64-pc-windows-msvc` remains blocked on this macOS host by missing Windows/MSVC headers/tooling (`assert.h`, `windows.h`, Visual Studio generator, `ml64.exe`); local PowerShell syntax checks were not run because `pwsh`/`powershell` are not installed on this host, but the self-hosted runner executed the PowerShell smoke and collector scripts.
 - Debug artifacts: failed smoke run `28743854654` uploaded `windows-lsb-diagnostics` artifact `8092669489`; final passing smoke run `28743977168` uploaded `windows-lsb-diagnostics` artifact `8092721984`.
 - New decisions: None.

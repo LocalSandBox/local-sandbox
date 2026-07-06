@@ -269,6 +269,10 @@ jobs:
           clean: false
           fetch-depth: 1
 
+      - name: Mark diagnostic collection start
+        run: |
+          "LSB_DIAGNOSTICS_RUN_STARTED_UTC=$((Get-Date).ToUniversalTime().ToString('o'))" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Verify self-hosted Windows runner contract
         run: |
           if ($env:RUNNER_ENVIRONMENT -and $env:RUNNER_ENVIRONMENT -ne "self-hosted") {
@@ -374,6 +378,10 @@ jobs:
           persist-credentials: false
           clean: false
           fetch-depth: 1
+
+      - name: Mark diagnostic collection start
+        run: |
+          "LSB_DIAGNOSTICS_RUN_STARTED_UTC=$((Get-Date).ToUniversalTime().ToString('o'))" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Verify self-hosted Windows runner contract
         run: |

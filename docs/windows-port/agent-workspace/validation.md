@@ -106,17 +106,21 @@ hosted and self-hosted Windows CI. It stages artifacts under:
 target\windows-lsb-diagnostics\
   environment.summary.json
   diagnostics-manifest.json
-  explicit-boot-artifact-dir\
-  lsb-assets-work\<run-id>-<attempt>\
-  actions-runner\                  # self-hosted workflow only
+  explicit-boot-artifact-dir\       # local paths outside C:\lsb-assets\work
+  lsb-assets-work\<run-id>-<attempt>\ # current run only
+  actions-runner\                  # self-hosted workflow only, timestamp bounded
   workspace-target-logs\
   cargo-target-logs\
 ```
 
 The collector copies only allowlisted text-like diagnostic files (`.json`,
 `.log`, `.redacted`, `.txt`) and redacts known secret environment values plus
-common token/private-key patterns before upload. Environment capture is
-allowlisted; it is not a raw environment dump.
+common token/private-key patterns before upload. It deletes and recreates
+`target\windows-lsb-diagnostics` for each run, does not scan historical
+`C:\lsb-assets\work\*` directories, and includes runner `_diag` logs only when
+the self-hosted workflow has set `LSB_DIAGNOSTICS_RUN_STARTED_UTC`; copied
+runner logs are filtered to timestamped lines inside that window.
+Environment capture is allowlisted; it is not a raw environment dump.
 
 ## Manual validation commands
 
@@ -216,7 +220,10 @@ message and must not claim direct boot validation.
 
 For manual Windows-side reproduction outside GitHub Actions, prepare equivalent
 assets from a trusted artifact manifest first, keep the pristine cache copy out
-of QEMU, and point `LSB_WINDOWS_BOOT_ROOTFS` at a disposable copy.
+of QEMU, point `LSB_WINDOWS_BOOT_ROOTFS` at a disposable copy, and set
+`LSB_WINDOWS_BOOT_ARTIFACT_DIR` to the diagnostics directory for that one
+manual run. The collector intentionally does not sweep all historical
+`C:\lsb-assets\work\*\diagnostics` directories.
 
 The hardware workflow stages external diagnostics into the checkout before
 uploading them:

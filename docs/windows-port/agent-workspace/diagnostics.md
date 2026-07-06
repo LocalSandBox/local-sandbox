@@ -98,19 +98,28 @@ M15 centralizes upload staging through:
 
 ```powershell
 .\scripts\collect-windows-diagnostics.ps1
+$env:LSB_WINDOWS_BOOT_ARTIFACT_DIR="C:\lsb-assets\work\<run-id>-<attempt>\diagnostics"
+.\scripts\collect-windows-diagnostics.ps1 -StageRoot C:\tmp\lsb-diag
+$env:LSB_DIAGNOSTICS_RUN_STARTED_UTC=(Get-Date).ToUniversalTime().AddMinutes(-30).ToString("o")
 .\scripts\collect-windows-diagnostics.ps1 -IncludeRunnerLogs
-.\scripts\collect-windows-diagnostics.ps1 -StageRoot C:\tmp\lsb-diag -AssetWorkRoot C:\lsb-assets\work
 ```
 
 The collector writes `environment.summary.json` and
-`diagnostics-manifest.json`, copies text-like diagnostic files from
-`LSB_WINDOWS_BOOT_ARTIFACT_DIR`, `C:\lsb-assets\work\*\diagnostics`, Cargo
-target logs, and optionally `C:\actions-runner\_diag`. It allowlists
+`diagnostics-manifest.json`, deletes and recreates its stage root at startup,
+and copies text-like diagnostic files only from the current run's
+`LSB_WINDOWS_BOOT_ARTIFACT_DIR` or the matching
+`C:\lsb-assets\work\<GITHUB_RUN_ID>-<GITHUB_RUN_ATTEMPT>\diagnostics` directory
+when those GitHub environment variables are present. It no longer scans every
+`C:\lsb-assets\work\*\diagnostics` directory. Runner `_diag` logs are copied
+only when `-IncludeRunnerLogs` is used with `LSB_DIAGNOSTICS_RUN_STARTED_UTC`
+or `-RunnerDiagSinceUtc`, and only files modified inside that bounded window
+are eligible; for those files, only timestamped log lines inside the bounded
+window and their continuation lines are copied. The collector allowlists
 environment variables and file extensions, redacts known secret values from
 environment variables whose names look secret-bearing, and also redacts common
 token/private-key patterns. It does not upload raw environment dumps, boot
-assets, rootfs images, qcow2 disks, npm caches, private keys, or unredacted QEMU
-argv.
+assets, rootfs images, qcow2 disks, npm caches, private keys, stale stage-root
+contents, historical runner log lines, or unredacted QEMU argv.
 
 For current M07 Windows boots, `boot.status.json` records state `guest_ready`
 and success definition
@@ -278,3 +287,5 @@ smoke/e2e bundle should contain, when present:
 If a failure needs a file not present in `diagnostics-manifest.json`, add a
 redacted text artifact at the producer first or extend the collector allowlist
 deliberately. Do not broaden the workflow to upload arbitrary directories.
+Do not inspect stale files from `target\windows-lsb-diagnostics`; the collector
+removes that directory before staging each bundle.
