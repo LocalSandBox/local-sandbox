@@ -5,13 +5,125 @@ $InstallDir = Join-Path $HOME ".local\bin"
 
 ##### Platform checks
 
+function ConvertTo-LsbWindowsArchitecture {
+    param([AllowNull()][object] $Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    $Text = "$Value".Trim()
+    if (-not $Text) {
+        return $null
+    }
+
+    switch -Regex ($Text.ToUpperInvariant()) {
+        "^(X64|AMD64|X86_64|9)$" { return "x64" }
+        "^(ARM64|AARCH64|12)$" { return "arm64" }
+        "^(X86|I386|I686|0)$" { return "x86" }
+        "^(ARM|5)$" { return "arm" }
+        default { return $Text }
+    }
+}
+
+function Get-LsbWindowsArchitecture {
+    $Candidates = @()
+
+    try {
+        $Candidates += [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+    } catch {
+    }
+
+    try {
+        $Processor = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop | Select-Object -First 1
+        if ($Processor) {
+            $Candidates += $Processor.Architecture
+        }
+    } catch {
+    }
+
+    try {
+        $MachineEnvironment = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" -ErrorAction Stop
+        $Candidates += $MachineEnvironment.PROCESSOR_ARCHITECTURE
+    } catch {
+    }
+
+    $Candidates += $env:PROCESSOR_ARCHITEW6432
+    $Candidates += $env:PROCESSOR_ARCHITECTURE
+
+    foreach ($Candidate in $Candidates) {
+        $Architecture = ConvertTo-LsbWindowsArchitecture $Candidate
+        if ($Architecture) {
+            return $Architecture
+        }
+    }
+
+    if ([System.Environment]::Is64BitOperatingSystem) {
+        return "unknown-64-bit"
+    }
+
+    return "unknown"
+}
+
+function Get-LsbWindowsBuildNumber {
+    try {
+        $OperatingSystem = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+        if ($OperatingSystem.BuildNumber) {
+            return [int]$OperatingSystem.BuildNumber
+        }
+    } catch {
+    }
+
+    try {
+        $CurrentVersion = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -ErrorAction Stop
+        if ($CurrentVersion.CurrentBuildNumber) {
+            return [int]$CurrentVersion.CurrentBuildNumber
+        }
+    } catch {
+    }
+
+    return $null
+}
+
+function Format-LsbWindowsPlatform {
+    param(
+        [string]$Architecture,
+        [AllowNull()][object]$BuildNumber
+    )
+
+    $BuildNumberValue = $null
+    if ($null -ne $BuildNumber) {
+        $BuildNumberValue = [int]$BuildNumber
+    }
+
+    if ($null -ne $BuildNumberValue -and $BuildNumberValue -ge 22000) {
+        $Version = "Windows 11 build $BuildNumberValue"
+    } elseif ($null -ne $BuildNumberValue) {
+        $Version = "Windows build $BuildNumberValue"
+    } else {
+        $Version = "Windows version unknown"
+    }
+
+    if (-not $Architecture) {
+        $Architecture = "unknown architecture"
+    }
+
+    return "$Version, $Architecture"
+}
+
 if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
     throw "This installer is for Windows. Use install.sh on macOS."
 }
 
-$Arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-if ($Arch -ne [System.Runtime.InteropServices.Architecture]::X64) {
-    throw "lsb Windows CLI releases currently support Windows 11 x64 only. Detected: $Arch"
+$Arch = Get-LsbWindowsArchitecture
+$BuildNumber = Get-LsbWindowsBuildNumber
+$DetectedPlatform = Format-LsbWindowsPlatform -Architecture $Arch -BuildNumber $BuildNumber
+if ($Arch -ne "x64" -or ($null -ne $BuildNumber -and $BuildNumber -lt 22000)) {
+    throw "lsb Windows CLI releases currently support Windows 11 x64 only. Detected: $DetectedPlatform"
+}
+
+if ($null -eq $BuildNumber) {
+    Write-Warning "Could not determine the Windows build number. Continuing because the detected architecture is x64."
 }
 
 if (-not (Get-Command tar -ErrorAction SilentlyContinue)) {
