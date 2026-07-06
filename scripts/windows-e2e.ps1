@@ -429,6 +429,40 @@ function Read-LoopbackTcpText {
   throw "timed out connecting to 127.0.0.1:$Port"
 }
 
+function Invoke-LoopbackHttpText {
+  param(
+    [Parameter(Mandatory = $true)]
+    [int]$Port,
+
+    [Parameter(Mandatory = $true)]
+    [object]$StartedCommand,
+
+    [int]$TimeoutSeconds = 30
+  )
+
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  $lastError = $null
+  while ([DateTime]::UtcNow -lt $deadline) {
+    if ($StartedCommand.Process.HasExited) {
+      $result = Wait-StartedCommand -Started $StartedCommand -AllowedExitCodes @(0..255)
+      throw "process exited before loopback HTTP port $Port responded. Exit code: $($result.ExitCode). Output: $($result.Text)"
+    }
+
+    try {
+      $curl = Invoke-NativeCommandOutput `
+        -FilePath "curl.exe" `
+        -Arguments @("-fsS", "--connect-timeout", "1", "--max-time", "5", "http://127.0.0.1:$Port/") `
+        -WorkingDirectory $script:WorkspaceRoot
+      return $curl.Text.Trim()
+    } catch {
+      $lastError = $_.Exception.Message
+      Start-Sleep -Milliseconds 200
+    }
+  }
+
+  throw "timed out fetching http://127.0.0.1:$Port/. Last error: $lastError. Process output: $(Get-StartedCommandText $StartedCommand)"
+}
+
 function Wait-ForFile {
   param(
     [Parameter(Mandatory = $true)]
@@ -638,12 +672,12 @@ wait "$server"
 
   $started = Start-LsbCli (@("run") + (Get-CommonVmArgs) + @("-p", "${hostPort}:$guestPort", "--", "/bin/sh", "-c", $portScript))
   try {
+    Wait-StartedCommandOutputContains `
+      -Started $started `
+      -Needle "lsb: forwarding 127.0.0.1:$hostPort -> guest:$guestPort" `
+      -TimeoutSeconds 120
     Wait-StartedCommandOutputContains -Started $started -Needle "port-server-ready" -TimeoutSeconds 120
-    $curl = Invoke-NativeCommandOutput `
-      -FilePath "curl.exe" `
-      -Arguments @("-fsS", "--max-time", "20", "http://127.0.0.1:$hostPort/") `
-      -WorkingDirectory $script:WorkspaceRoot
-    $response = $curl.Text.Trim()
+    $response = Invoke-LoopbackHttpText -Port $hostPort -StartedCommand $started -TimeoutSeconds 30
     if ($response -ne $responseBody) {
       throw "unexpected forwarded response: '$response'"
     }
