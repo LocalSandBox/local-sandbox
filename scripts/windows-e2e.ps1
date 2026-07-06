@@ -651,8 +651,7 @@ function Test-PortForwardWorkflow {
     'ready=/tmp/lsb-e2e-port-ready',
     'rm -f "$ready"',
     'response="$(printf ''HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: __RESPONSE_LENGTH__\r\nConnection: close\r\n\r\n__RESPONSE_BODY__'')"',
-    '/usr/bin/lsb-init --lsb-test-tcp-server __GUEST_PORT__ "$response" "$ready" >/tmp/lsb-e2e-port.log 2>&1 &',
-    'server=$!',
+    '/usr/bin/lsb-init --lsb-test-tcp-server __GUEST_PORT__ "$response" "$ready" >/tmp/lsb-e2e-port.log 2>&1 & server=$!',
     'for i in $(seq 1 100); do if [ -f "$ready" ]; then printf "port-server-ready\n"; break; fi; sleep 0.1; done',
     'if [ ! -f "$ready" ]; then cat /tmp/lsb-e2e-port.log >&2 || true; exit 1; fi',
     'wait "$server"'
