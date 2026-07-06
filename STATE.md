@@ -5,21 +5,22 @@ and validation results synchronized while implementing `PLAN.md`.
 
 ## Current Status
 
-- Overall status: Slice 3 mount-only SMB proxy implemented; scoped validation passing
+- Overall status: Slice 4 CLI/SDK/QEMU attachment integration implemented;
+  scoped validation passing
 - Current owner: Codex
 - Current branch: codex/lsb-direct-mnt
 - Last updated: 2026-07-06
-- Latest validated commit: 0febf44 plus uncommitted Slice 3 proxy edits
+- Latest validated commit: 9ab5fa9 plus uncommitted Slice 4 integration edits
 
 ## Active Focus
 
-- Current task: Slice 3 mount-only SMB proxy implementation
-- Relevant files: `crates/lsb-proxy/src/config.rs`,
-  `crates/lsb-proxy/src/dns.rs`, `crates/lsb-proxy/src/proxy.rs`,
+- Current task: Slice 4 CLI/SDK/QEMU attachment integration
+- Relevant files: `crates/lsb-cli/src/vm.rs`,
+  `crates/lsb-sdk/src/runtime.rs`,
+  `crates/lsb-platform/src/windows_x86_64/qemu/argv.rs`,
   `STATE.md`
-- Immediate next step: Begin Slice 4 CLI/SDK proxy startup detection after
-  review.
-- Blockers: None for Slice 3.
+- Immediate next step: Begin Slice 5 Windows SMB host lifecycle after review.
+- Blockers: None for Slice 4.
 
 ## Maintainer Decisions
 
@@ -47,9 +48,9 @@ and validation results synchronized while implementing `PLAN.md`.
 - [x] Add protocol redaction tests for SMB credentials.
 - [x] Implement guest `mount.cifs` path using `PASSWD_FD`.
 - [x] Add mount-only SMB proxy mode.
-- [ ] Add CLI detection/startup for mount-only SMB proxy.
-- [ ] Add SDK detection/startup for mount-only SMB proxy.
-- [ ] Preserve Node API shape and direct flag mapping.
+- [x] Add CLI detection/startup for mount-only SMB proxy.
+- [x] Add SDK detection/startup for mount-only SMB proxy.
+- [x] Preserve Node API shape and direct flag mapping.
 - [ ] Add Windows direct SMB mount planning.
 - [ ] Add recursive direct path validation.
 - [ ] Add Windows admin preflight.
@@ -61,7 +62,7 @@ and validation results synchronized while implementing `PLAN.md`.
 - [ ] Wire SMB lifecycle into `Sandbox::start`.
 - [ ] Wire cleanup into `Sandbox::stop`.
 - [ ] Add stale cleanup manifest/recovery.
-- [ ] Add QEMU argv golden tests.
+- [x] Add QEMU argv golden tests.
 - [x] Add proxy policy tests.
 - [ ] Add guest mount tests.
 - [ ] Add Windows unit tests.
@@ -77,6 +78,7 @@ and validation results synchronized while implementing `PLAN.md`.
 | 2026-07-06 | 0febf44 + working tree | `cargo check --workspace` | Blocked | Fails because `crates/lsb-vm/src/sandbox.rs` has an exhaustive `MountRequest` match missing `Smb`; `lsb-vm` is outside the requested touch list. |
 | 2026-07-06 | 0febf44 + working tree | `cargo fmt --check`; `cargo check --workspace`; `cargo test -p lsb-vm` | Pass | Minimal `lsb-vm` exhaustiveness update restored workspace compilation without SMB lifecycle/startup behavior. |
 | 2026-07-06 | 0febf44 + working tree | `cargo fmt --check`; `cargo test -p lsb-proxy`; `git diff --check` | Pass | Slice 3 proxy policy tests cover mount-only SMB relay, arbitrary TCP/DNS denial, no secret substitutions in mount-only mode, and combined network-plus-SMB behavior. |
+| 2026-07-06 | 9ab5fa9 + working tree | `cargo fmt --all -- --check`; `cargo test -p lsb-cli`; `cargo test -p lsb-sdk`; `cargo test -p lsb-platform windows_x86_64::qemu::argv::tests`; `cargo test -p lsb-platform windows_x86_64::network::tests`; `cargo check --workspace`; `git diff --check` | Pass | Slice 4 CLI/SDK tests cover mount-only SMB proxy selection, combined allow-net plus SMB relay, CLI `:ro` overlay parsing, and no-direct unchanged behavior. QEMU/network tests cover default `-nic none`, QEMU stream netdev attachment, loopback-only endpoints, and no user networking/hostfwd/TAP/bridge/NAT tokens. |
 
 ## Open Blockers
 
@@ -113,6 +115,9 @@ artifacts unless they are intentionally checked in.
 | `crates/lsb-proxy/src/config.rs` | Updated | Added `ProxyMode`, mount-only SMB config helpers, gateway/SMB constants, and policy tests. |
 | `crates/lsb-proxy/src/dns.rs` | Updated | Mount-only SMB mode answers `host.lsb.internal` locally and refuses arbitrary DNS without host resolver forwarding. |
 | `crates/lsb-proxy/src/proxy.rs` | Updated | Routes only guest `10.0.0.1:445` to host `127.0.0.1:445` in SMB modes and denies other mount-only TCP flows. |
+| `crates/lsb-cli/src/vm.rs` | Updated | Detects Windows direct mounts and selects mount-only SMB proxy config when `allow_net` is false, or merges SMB relay into the normal proxy when `allow_net` is true; CLI `:ro` remains overlay. |
+| `crates/lsb-sdk/src/runtime.rs` | Updated | Mirrors CLI proxy selection for SDK/Node callers without changing `SandboxConfig` or mount API shape. |
+| `crates/lsb-platform/src/windows_x86_64/qemu/argv.rs` | Updated | Extended stream-network argv assertions to exclude `-nic`, QEMU user networking, `hostfwd`, TAP, bridge, and NAT tokens. |
 
 ## Cleanup/Redaction Audit
 

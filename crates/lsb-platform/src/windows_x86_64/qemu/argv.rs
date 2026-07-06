@@ -727,8 +727,10 @@ mod tests {
             ]
         }));
         assert!(!argv.windows(2).any(|pair| pair == ["-nic", "none"]));
+        assert!(!argv.iter().any(|arg| arg == "-nic"));
         assert!(!argv.iter().any(|arg| arg.contains("hostfwd")));
         assert!(!argv.iter().any(|arg| arg.starts_with("user,")));
+        assert!(!argv.iter().any(|arg| arg.contains("nat")));
         assert!(!argv.iter().any(|arg| arg.contains("tap,")));
         assert!(!argv.iter().any(|arg| arg.contains("bridge")));
     }

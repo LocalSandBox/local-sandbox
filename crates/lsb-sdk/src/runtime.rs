@@ -535,12 +535,16 @@ fn boot_vm(config: SandboxConfig) -> Result<BootedVm> {
         None
     };
 
-    let (network_attachment, proxy_handle) = if config.allow_net {
-        let mut proxy_config = ProxyConfig::default();
-        proxy_config.secrets = config.secrets;
-        proxy_config.network.allow = config.allowed_hosts;
-        proxy_config.expose_host = config.expose_host;
+    let needs_smb_mount_proxy = windows_direct_mounts_need_smb_proxy(&config.mounts);
+    let proxy_config = build_runtime_proxy_config(
+        config.allow_net,
+        config.secrets,
+        config.allowed_hosts,
+        config.expose_host,
+        needs_smb_mount_proxy,
+    );
 
+    let (network_attachment, proxy_handle) = if let Some(proxy_config) = proxy_config {
         let link = lsb_proxy::create_proxy_link()?;
         let vm_attachment = platform_network_attachment(link.vm);
         let handle = lsb_proxy::start_link(link.host, proxy_config)?;
@@ -750,6 +754,41 @@ fn prepare_raw_or_nbd_work_rootfs(
     Ok(())
 }
 
+fn windows_direct_mounts_need_smb_proxy(mounts: &[lsb_vm::MountConfig]) -> bool {
+    cfg!(all(target_os = "windows", target_arch = "x86_64"))
+        && mounts
+            .iter()
+            .any(|mount| matches!(mount, lsb_vm::MountConfig::Direct { .. }))
+}
+
+fn build_runtime_proxy_config(
+    allow_net: bool,
+    secrets: HashMap<String, lsb_proxy::config::SecretConfig>,
+    allowed_hosts: Vec<String>,
+    expose_host: Vec<lsb_proxy::config::ExposeHostMapping>,
+    needs_smb_mount_proxy: bool,
+) -> Option<ProxyConfig> {
+    let proxy_config = if allow_net {
+        let mut proxy_config = ProxyConfig::default();
+        proxy_config.secrets = secrets;
+        proxy_config.network.allow = allowed_hosts;
+        proxy_config.expose_host = expose_host;
+        Some(proxy_config)
+    } else {
+        None
+    };
+
+    if !needs_smb_mount_proxy {
+        return proxy_config;
+    }
+
+    if allow_net {
+        Some(proxy_config.unwrap_or_default().with_smb_mount_relay())
+    } else {
+        Some(ProxyConfig::mount_only_smb())
+    }
+}
+
 fn platform_network_attachment(
     attachment: lsb_proxy::VmNetworkAttachment,
 ) -> PlatformNetworkAttachment {
@@ -955,6 +994,69 @@ fn exec_command(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_smb_mount_without_allow_net_uses_mount_only_proxy() {
+        let proxy = build_runtime_proxy_config(false, HashMap::new(), Vec::new(), Vec::new(), true)
+            .expect("direct SMB mount should attach a proxy");
+
+        assert!(proxy.is_mount_only_smb());
+        assert!(proxy.permits_smb_mount_relay(
+            lsb_proxy::config::GUEST_GATEWAY_IP,
+            lsb_proxy::config::SMB_MOUNT_PORT
+        ));
+        assert!(!proxy.is_domain_allowed("example.com"));
+    }
+
+    #[test]
+    fn direct_smb_mount_with_allow_net_preserves_network_policy_and_secrets() {
+        let mut secrets = HashMap::new();
+        secrets.insert(
+            "API_KEY".to_string(),
+            lsb_proxy::config::SecretConfig {
+                value: "real-secret".to_string(),
+                hosts: vec!["api.example.test".to_string()],
+            },
+        );
+
+        let proxy = build_runtime_proxy_config(
+            true,
+            secrets,
+            vec!["api.example.test".to_string()],
+            Vec::new(),
+            true,
+        )
+        .expect("allow-net direct SMB mount should attach a proxy");
+
+        assert!(!proxy.is_mount_only_smb());
+        assert!(proxy.permits_smb_mount_relay(
+            lsb_proxy::config::GUEST_GATEWAY_IP,
+            lsb_proxy::config::SMB_MOUNT_PORT
+        ));
+        assert!(proxy.is_domain_allowed("api.example.test"));
+        assert!(!proxy.is_domain_allowed("blocked.example.test"));
+        assert!(proxy.secrets.contains_key("API_KEY"));
+    }
+
+    #[test]
+    fn no_direct_smb_mount_keeps_allow_net_semantics() {
+        assert!(
+            build_runtime_proxy_config(false, HashMap::new(), Vec::new(), Vec::new(), false)
+                .is_none()
+        );
+
+        let proxy = build_runtime_proxy_config(true, HashMap::new(), Vec::new(), Vec::new(), false)
+            .expect("allow-net should attach a normal proxy");
+
+        assert!(!proxy.is_mount_only_smb());
+        assert!(!proxy.permits_smb_mount_relay(
+            lsb_proxy::config::GUEST_GATEWAY_IP,
+            lsb_proxy::config::SMB_MOUNT_PORT
+        ));
+        assert!(proxy.is_domain_allowed("example.com"));
+    }
+
     #[test]
     #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU/qemu-img, and disposable LocalSandbox assets"]
     fn windows_qemu_checkpoint_store_smoke() {

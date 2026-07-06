@@ -55,7 +55,7 @@ pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &LsbConfig, from: Option<&str>) -> Re
     let allow_host_writes = vm.allow_host_writes || cfg.allow_host_writes.unwrap_or(false);
     let verbose = vm.verbose;
 
-    let proxy_config = if allow_net {
+    let mut proxy_config = if allow_net {
         let mut proxy = cfg.to_proxy_config();
 
         // Merge --secret flags: NAME=VALUE@host1,host2
@@ -116,6 +116,11 @@ pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &LsbConfig, from: Option<&str>) -> Re
     if !mounts.is_empty() {
         validate_mounts(&mounts, allow_host_writes)?;
     }
+    proxy_config = configure_windows_smb_mount_proxy_config(
+        proxy_config,
+        allow_net,
+        windows_direct_mounts_need_smb_proxy(&mounts),
+    );
 
     let data_dir = lsb_vm::default_data_dir();
     let paths = asset_paths(&data_dir);
@@ -390,6 +395,29 @@ fn platform_network_attachment(
         lsb_proxy::VmNetworkAttachment::QemuStream { host, port } => {
             PlatformNetworkAttachment::qemu_stream(host, port)
         }
+    }
+}
+
+fn windows_direct_mounts_need_smb_proxy(mounts: &[MountConfig]) -> bool {
+    cfg!(all(target_os = "windows", target_arch = "x86_64"))
+        && mounts
+            .iter()
+            .any(|mount| matches!(mount, MountConfig::Direct { .. }))
+}
+
+fn configure_windows_smb_mount_proxy_config(
+    proxy_config: Option<lsb_proxy::config::ProxyConfig>,
+    allow_net: bool,
+    needs_smb_mount_proxy: bool,
+) -> Option<lsb_proxy::config::ProxyConfig> {
+    if !needs_smb_mount_proxy {
+        return proxy_config;
+    }
+
+    if allow_net {
+        Some(proxy_config.unwrap_or_default().with_smb_mount_relay())
+    } else {
+        Some(lsb_proxy::config::ProxyConfig::mount_only_smb())
     }
 }
 
@@ -709,6 +737,13 @@ mod tests {
     }
 
     #[test]
+    fn mount_ro_suffix_uses_overlay_mount() {
+        let mount =
+            parse_mount_parts("/some/host", "/workspace", Some("ro")).expect("mount should parse");
+        assert!(matches!(mount, MountConfig::Overlay { .. }));
+    }
+
+    #[test]
     fn mount_rejects_bad_mode() {
         assert!(parse_mount_parts("/some/host", "/workspace", Some("xx")).is_err());
     }
@@ -762,6 +797,54 @@ mod tests {
         }];
         let err = validate_mounts_with_cwd(&mounts, false, &cwd).expect_err("rw mount should fail");
         assert!(err.to_string().contains("--allow-host-writes"));
+    }
+
+    #[test]
+    fn smb_direct_mount_without_allow_net_selects_mount_only_proxy() {
+        let proxy = configure_windows_smb_mount_proxy_config(None, false, true)
+            .expect("direct SMB mount should attach a proxy");
+
+        assert!(proxy.is_mount_only_smb());
+        assert!(proxy.permits_smb_mount_relay(
+            lsb_proxy::config::GUEST_GATEWAY_IP,
+            lsb_proxy::config::SMB_MOUNT_PORT
+        ));
+        assert!(!proxy.is_domain_allowed("example.com"));
+    }
+
+    #[test]
+    fn smb_direct_mount_with_allow_net_preserves_network_policy() {
+        let mut network_proxy = lsb_proxy::config::ProxyConfig::default();
+        network_proxy.network.allow.push("api.example.test".into());
+
+        let proxy = configure_windows_smb_mount_proxy_config(Some(network_proxy), true, true)
+            .expect("allow-net direct SMB mount should attach a proxy");
+
+        assert!(!proxy.is_mount_only_smb());
+        assert!(proxy.permits_smb_mount_relay(
+            lsb_proxy::config::GUEST_GATEWAY_IP,
+            lsb_proxy::config::SMB_MOUNT_PORT
+        ));
+        assert!(proxy.is_domain_allowed("api.example.test"));
+        assert!(!proxy.is_domain_allowed("blocked.example.test"));
+    }
+
+    #[test]
+    fn no_direct_mount_leaves_proxy_selection_unchanged() {
+        assert!(configure_windows_smb_mount_proxy_config(None, false, false).is_none());
+
+        let proxy = configure_windows_smb_mount_proxy_config(
+            Some(lsb_proxy::config::ProxyConfig::default()),
+            true,
+            false,
+        )
+        .expect("existing allow-net proxy should remain");
+
+        assert!(!proxy.permits_smb_mount_relay(
+            lsb_proxy::config::GUEST_GATEWAY_IP,
+            lsb_proxy::config::SMB_MOUNT_PORT
+        ));
+        assert!(proxy.is_domain_allowed("example.com"));
     }
 
     #[test]
