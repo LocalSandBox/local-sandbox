@@ -1,0 +1,21 @@
+crates/lsb-cli/src/vm.rs
+  s_13f02dc9e790bc::t_f6ee5f51a9aec2 528,530-531,535-547,551-567
+  s_13f02dc9e790bc::t_aa76bc51b797e7 548-550
+  s_13f02dc9e790bc::t_9a9b2f30047bd6 711-735
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "739c60960a4206053a75241828e18f56ed208d8c",
+  "prompts": {},
+  "sessions": {
+    "s_13f02dc9e790bc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f35df-58d1-7c81-bceb-258109d4358b",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
