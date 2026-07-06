@@ -38,7 +38,8 @@ Workflow: `.github/workflows/windows-lsb-hardware.yml`
 
 Display name: `Windows LSB Hardware (self-hosted WHPX)`
 
-Trigger: manual `workflow_dispatch` only.
+Trigger: automatic `main` branch pushes for the e2e lane, plus manual
+`workflow_dispatch` for `check`, `unit`, `smoke`, and `e2e`.
 
 Runner labels:
 
@@ -48,7 +49,7 @@ runs-on: [self-hosted, Windows, X64]
 
 Do not add automatic `pull_request` triggers for this workflow.
 
-Use the helper from macOS/Linux:
+Use the helper from macOS/Linux for manual branch runs:
 
 ```bash
 ./scripts/win-gh-test check
@@ -81,6 +82,10 @@ persistent WHPX runner. Before adding another Windows self-hosted runner with
 the same labels, either add a dedicated label such as `whpx`/`local-sandbox` or
 disable the local-cache skip path.
 
+`scripts/windows-e2e.ps1` stages workflow-provisioned boot assets into an
+isolated temporary runtime data directory and runs the real `lsb run` CLI path
+through a user-facing workflow.
+
 ## Smoke coverage
 
 `scripts/windows-smoke.ps1` currently verifies:
@@ -111,6 +116,17 @@ $env:LSB_WINDOWS_GUEST_READY_SECS="30" # optional readiness timeout override
 
 If the asset variables are absent, smoke lanes must print an explicit skip
 message and must not claim direct boot validation.
+
+## E2E coverage
+
+`scripts/windows-e2e.ps1` currently verifies:
+
+- boot, guest command execution, stdout capture, and guest kernel visibility;
+- default no-network denial;
+- mounted project reads with isolated guest writes;
+- host-to-guest loopback port forwarding without `--allow-net`;
+- scoped `--allow-net` access to a host fixture through `host.lsb.internal`;
+- checkpoint create, list, resume isolation, branch, and delete.
 
 ## Direct ignored-test commands
 

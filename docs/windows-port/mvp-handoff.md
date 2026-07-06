@@ -30,7 +30,7 @@ It is the current status source for future agents.
 | Secrets | Guest environment values are placeholders. Host-side proxy policy performs substitution only for configured destinations. Diagnostics redact secret-bearing values. |
 | Checkpoints | Windows checkpoints use private per-instance qcow2 overlays and flattened qcow2 checkpoint artifacts plus JSON metadata. macOS CAS/NBD behavior is unchanged. |
 | Node binding | Windows x64 package metadata and `x86_64-pc-windows-msvc` NAPI target wiring exist. Node `Sandbox.start()` surfaces Rust backend/preflight error chains. |
-| CI | Hosted Windows CI runs compile/unit/golden coverage without QEMU/WHPX. Manual self-hosted Windows 11 WHPX workflow runs check, unit, smoke, and e2e lanes. |
+| CI | Hosted Windows CI runs compile/unit/golden coverage without QEMU/WHPX. The self-hosted Windows 11 WHPX workflow runs e2e on trusted `main` pushes and supports manual check, unit, smoke, and e2e lanes. |
 | Diagnostics | QEMU argv, stdout/stderr, serial log, preflight, boot status, environment summary, and manifest are collected through a redacted diagnostic collector. |
 
 ## Intentional MVP limitations
@@ -102,6 +102,7 @@ Key self-hosted WHPX evidence from the MVP sprint:
 | Checkpoints | Smoke run `28739351408` passed checkpoint/store smoke; artifact `8091364138`. |
 | Node runtime | Smoke run `28742090397` passed Windows Node build/import/start after preserving N-API error chains; artifact `8092196979`. |
 | M15 packed package smoke | Smoke run `28743977168` passed packed root + Windows optional npm package import and runtime smokes; artifact `8092721984`. |
+| CLI e2e workflow | E2E run `28771975549` passed the user-facing Windows CLI workflow covering boot/exec, no-network denial, mounts, port forwarding, scoped host exposure, and checkpoint operations. |
 
 The last full WHPX smoke pass, run `28743977168`, happened before later
 diagnostics scoping follow-up commits. Before treating the branch as fully

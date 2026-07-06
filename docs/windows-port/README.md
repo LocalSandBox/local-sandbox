@@ -25,7 +25,7 @@ certification. See `mvp-handoff.md` before planning follow-up work.
 | `architecture.md` | Current crate/module map, backend boundaries, and product invariants. |
 | `validation.md` | Test strategy, CI lanes, self-hosted runner commands, and smoke coverage. |
 | `diagnostics.md` | Failure triage, diagnostic artifacts, redaction rules, and collector behavior. |
-| `runner-setup.md` | Maintainer notes for the manual self-hosted Windows 11 WHPX runner. |
+| `runner-setup.md` | Maintainer notes for the self-hosted Windows 11 WHPX runner. |
 | `security-checklist.md` | Security checklist for Windows backend changes. |
 | `review-checklist.md` | PR review checklist for Windows backend changes. |
 | `risk-register.md` | Active, accepted, and retired Windows backend risks. |
@@ -54,7 +54,9 @@ cargo test --workspace
 ./scripts/win-gh-test check
 ./scripts/win-gh-test unit
 ./scripts/win-gh-test smoke
+./scripts/win-gh-test e2e
 ```
 
 The Windows helper dispatches `.github/workflows/windows-lsb-hardware.yml`,
-which is manual-only and requires a clean committed working tree.
+which also runs the e2e lane automatically on trusted `main` pushes and
+requires a clean committed working tree for manual branch runs.

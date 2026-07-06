@@ -2,9 +2,10 @@
 
 This document describes the maintainer-owned Windows 11 WHPX runner used by
 `.github/workflows/windows-lsb-hardware.yml`. The workflow display name is
-`Windows LSB Hardware (self-hosted WHPX)`. It is manual-only through
-`workflow_dispatch` so untrusted pull request code does not run automatically on
-self-hosted hardware.
+`Windows LSB Hardware (self-hosted WHPX)`. It runs the e2e lane automatically
+for trusted `main` branch pushes and still supports maintainer-triggered
+`workflow_dispatch` lanes. It must not run on pull requests because untrusted
+pull request code must not run automatically on self-hosted hardware.
 
 ## Runner labels
 
@@ -64,7 +65,9 @@ npm --version
 
 ## Workflow trigger
 
-The hardware workflow accepts one required `test_set` input:
+The hardware workflow runs automatically on every `main` branch push and treats
+that event as `test_set=e2e`. It also accepts one required `test_set` input for
+manual `workflow_dispatch` runs:
 
 - `check`: runs `cargo check --workspace --locked`.
 - `unit`: runs `cargo test --workspace --locked`.
@@ -80,7 +83,7 @@ copy. On cache miss, a hosted Linux job prepares `windows-x86_64` assets, upload
 them as a same-run artifact, and the Windows job hydrates the local cache before
 running.
 
-Coding agents on macOS should trigger the workflow through:
+Coding agents on macOS should trigger manual hardware runs through:
 
 ```bash
 ./scripts/win-gh-test check
@@ -90,7 +93,8 @@ Coding agents on macOS should trigger the workflow through:
 ```
 
 The helper requires GitHub CLI, an authenticated session, and a clean committed
-working tree. Use a WIP commit before invoking it.
+working tree. Use a WIP commit before invoking it. Automatic `main` push e2e
+runs do not use the helper.
 
 ## Windows script entrypoints
 
@@ -102,8 +106,13 @@ working tree. Use a WIP commit before invoking it.
 - `scripts/windows-smoke.ps1`: verifies CLI startup, real QEMU/WHPX preflight,
   Windows Node source and packed-package smoke, and boot/ready/exec/copy/mount/
   port-forward/checkpoint/network smokes when boot assets are present.
-- `scripts/windows-e2e.ps1`: current e2e entrypoint; expand this for broader
-  hardware integration.
+- `scripts/windows-e2e.ps1`: current e2e entrypoint; it stages
+  workflow-provisioned boot assets into an isolated temporary runtime directory
+  and runs a user-facing CLI workflow covering boot/exec, default no-network
+  denial, project mount read plus isolated guest writes, host-to-guest port
+  forwarding without `--allow-net`, scoped `--allow-net` access to a host
+  fixture through `host.lsb.internal`, and checkpoint create/resume/branch/
+  delete.
 - `scripts/collect-windows-diagnostics.ps1`: stages a redacted diagnostic
   bundle and optional timestamp-bounded runner logs.
 
@@ -111,7 +120,8 @@ working tree. Use a WIP commit before invoking it.
 
 - Do not run untrusted pull request code on the self-hosted runner unless
   repository policy explicitly allows it.
-- Keep `.github/workflows/windows-lsb-hardware.yml` manual-only.
+- Do not add automatic `pull_request` triggers to
+  `.github/workflows/windows-lsb-hardware.yml`.
 - Upload redacted artifacts only.
 - Periodically clean LocalSandbox debug/temp directories and stale
   `C:\lsb-assets\work\*` directories.
