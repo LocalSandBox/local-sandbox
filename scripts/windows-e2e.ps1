@@ -2,6 +2,54 @@ $ErrorActionPreference = "Stop"
 
 Write-Host "== Windows LSB e2e test =="
 
+if (-not ("LsbE2E.ProcessOutputCollector" -as [type])) {
+  Add-Type -TypeDefinition @'
+namespace LsbE2E {
+  using System;
+  using System.Diagnostics;
+  using System.Text;
+
+  public sealed class ProcessOutputCollector {
+    private readonly object gate = new object();
+    private readonly StringBuilder stdout = new StringBuilder();
+    private readonly StringBuilder stderr = new StringBuilder();
+
+    public void OnOutput(object sender, DataReceivedEventArgs args) {
+      if (args.Data == null) {
+        return;
+      }
+      lock (gate) {
+        stdout.AppendLine(args.Data);
+      }
+    }
+
+    public void OnError(object sender, DataReceivedEventArgs args) {
+      if (args.Data == null) {
+        return;
+      }
+      lock (gate) {
+        stderr.AppendLine(args.Data);
+      }
+    }
+
+    public string GetText() {
+      lock (gate) {
+        string outText = stdout.ToString();
+        string errText = stderr.ToString();
+        if (outText.Length == 0) {
+          return errText;
+        }
+        if (errText.Length == 0) {
+          return outText;
+        }
+        return outText + Environment.NewLine + errText;
+      }
+    }
+  }
+}
+'@
+}
+
 $script:RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $script:CargoManifest = Join-Path $script:RepoRoot "Cargo.toml"
 
@@ -62,8 +110,7 @@ function Start-NativeCommandOutput {
     [string]$WorkingDirectory
   )
 
-  $stdout = [System.Text.StringBuilder]::new()
-  $stderr = [System.Text.StringBuilder]::new()
+  $collector = [LsbE2E.ProcessOutputCollector]::new()
   $psi = [System.Diagnostics.ProcessStartInfo]::new()
   $psi.FileName = $FilePath
   $psi.WorkingDirectory = $WorkingDirectory
@@ -76,18 +123,8 @@ function Start-NativeCommandOutput {
 
   $process = [System.Diagnostics.Process]::new()
   $process.StartInfo = $psi
-  $outputHandler = [System.Diagnostics.DataReceivedEventHandler]{
-    param($sender, $eventArgs)
-    if ($null -ne $eventArgs.Data) {
-      [void]$stdout.AppendLine($eventArgs.Data)
-    }
-  }
-  $errorHandler = [System.Diagnostics.DataReceivedEventHandler]{
-    param($sender, $eventArgs)
-    if ($null -ne $eventArgs.Data) {
-      [void]$stderr.AppendLine($eventArgs.Data)
-    }
-  }
+  $outputHandler = [System.Diagnostics.DataReceivedEventHandler]$collector.OnOutput
+  $errorHandler = [System.Diagnostics.DataReceivedEventHandler]$collector.OnError
   $process.add_OutputDataReceived($outputHandler)
   $process.add_ErrorDataReceived($errorHandler)
 
@@ -97,8 +134,7 @@ function Start-NativeCommandOutput {
 
   return [pscustomobject]@{
     Process = $process
-    Stdout = $stdout
-    Stderr = $stderr
+    Collector = $collector
     OutputHandler = $outputHandler
     ErrorHandler = $errorHandler
     Command = "$FilePath $($Arguments -join ' ')"
@@ -111,7 +147,7 @@ function Get-StartedCommandText {
     [object]$Started
   )
 
-  return "$($Started.Stdout.ToString())`n$($Started.Stderr.ToString())"
+  return $Started.Collector.GetText()
 }
 
 function Stop-StartedCommand {
@@ -151,12 +187,11 @@ function Wait-StartedCommand {
   $Started.Process.remove_OutputDataReceived($Started.OutputHandler)
   $Started.Process.remove_ErrorDataReceived($Started.ErrorHandler)
 
-  $lines = @()
-  if ($Started.Stdout.Length -gt 0) {
-    $lines += $Started.Stdout.ToString().TrimEnd("`r", "`n") -split "\r?\n"
-  }
-  if ($Started.Stderr.Length -gt 0) {
-    $lines += $Started.Stderr.ToString().TrimEnd("`r", "`n") -split "\r?\n"
+  $text = Get-StartedCommandText $Started
+  if ($text.Length -gt 0) {
+    $lines = @($text.TrimEnd("`r", "`n") -split "\r?\n")
+  } else {
+    $lines = @()
   }
   $result = New-CommandResult -ExitCode $Started.Process.ExitCode -Output $lines
   if ($AllowedExitCodes -notcontains $result.ExitCode) {
