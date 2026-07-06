@@ -610,11 +610,14 @@ function Test-PortForwardWorkflow {
 
   $hostPort = Get-FreeLoopbackPort
   $guestPort = 18180
+  $responseBody = "lsb-e2e-port-ok"
+  $responseLength = [System.Text.Encoding]::ASCII.GetByteCount($responseBody)
   $portScript = @'
 set -eu
 ready=/tmp/lsb-e2e-port-ready
 rm -f "$ready"
-/usr/bin/lsb-init --lsb-test-tcp-server __GUEST_PORT__ lsb-e2e-port-ok "$ready" >/tmp/lsb-e2e-port.log 2>&1 &
+response="$(printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: __RESPONSE_LENGTH__\r\nConnection: close\r\n\r\n__RESPONSE_BODY__')"
+/usr/bin/lsb-init --lsb-test-tcp-server __GUEST_PORT__ "$response" "$ready" >/tmp/lsb-e2e-port.log 2>&1 &
 server=$!
 for i in $(seq 1 100); do
   if [ -f "$ready" ]; then
@@ -628,13 +631,20 @@ if [ ! -f "$ready" ]; then
   exit 1
 fi
 wait "$server"
-'@.Replace("__GUEST_PORT__", $guestPort.ToString())
+'@.
+    Replace("__GUEST_PORT__", $guestPort.ToString()).
+    Replace("__RESPONSE_BODY__", $responseBody).
+    Replace("__RESPONSE_LENGTH__", $responseLength.ToString())
 
   $started = Start-LsbCli (@("run") + (Get-CommonVmArgs) + @("-p", "${hostPort}:$guestPort", "--", "/bin/sh", "-c", $portScript))
   try {
     Wait-StartedCommandOutputContains -Started $started -Needle "port-server-ready" -TimeoutSeconds 120
-    $response = Read-LoopbackTcpText -Port $hostPort -TimeoutSeconds 30 -StartedCommand $started
-    if ($response -ne "lsb-e2e-port-ok") {
+    $curl = Invoke-NativeCommandOutput `
+      -FilePath "curl.exe" `
+      -Arguments @("-fsS", "--max-time", "20", "http://127.0.0.1:$hostPort/") `
+      -WorkingDirectory $script:WorkspaceRoot
+    $response = $curl.Text.Trim()
+    if ($response -ne $responseBody) {
       throw "unexpected forwarded response: '$response'"
     }
     [void](Wait-StartedCommand -Started $started -TimeoutSeconds 120)
