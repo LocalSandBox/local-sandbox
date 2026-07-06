@@ -259,8 +259,18 @@ fn install_managed_qemu_archive(
     let install_result = (|| {
         extract_managed_qemu_archive(archive_path, &temp_root, &metadata.top_level_dir)?;
         let extracted_package = temp_root.join(&metadata.top_level_dir);
-        let resolved =
-            validate_package_dir(&extracted_package, metadata, &paths.current_json, probe)?;
+        let staged =
+            validate_package_dir_contents(&extracted_package, metadata, &paths.current_json)?;
+        let qemu_system_relative = staged
+            .qemu_system_x86_64
+            .strip_prefix(&extracted_package)
+            .context("managed QEMU system emulator path is outside staged package")?
+            .to_path_buf();
+        let qemu_img_relative = staged
+            .qemu_img
+            .strip_prefix(&extracted_package)
+            .context("managed QEMU image utility path is outside staged package")?
+            .to_path_buf();
 
         if paths.package_dir.exists() {
             fs::remove_dir_all(&paths.package_dir).with_context(|| {
@@ -278,14 +288,11 @@ fn install_managed_qemu_archive(
             )
         })?;
 
+        let qemu_system_x86_64 = paths.package_dir.join(qemu_system_relative);
+        let qemu_img = paths.package_dir.join(qemu_img_relative);
+        probe.validate(&qemu_system_x86_64, &qemu_img)?;
+
         let manifest_path = paths.package_dir.join("manifest.json");
-        let manifest = read_managed_qemu_manifest(&manifest_path)?;
-        let qemu_system_x86_64 = paths
-            .package_dir
-            .join(validate_relative_path(&manifest.qemu_system_x86_64)?);
-        let qemu_img = paths
-            .package_dir
-            .join(validate_relative_path(&manifest.qemu_img)?);
         let current = ManagedQemuCurrent {
             schema_version: MANAGED_QEMU_CURRENT_SCHEMA_VERSION,
             package_version: metadata.package_version.clone(),
@@ -299,7 +306,7 @@ fn install_managed_qemu_archive(
         write_current_json(&paths.current_json, &current)?;
 
         Ok(ManagedQemuValidatedInstall {
-            package_version: resolved.package_version,
+            package_version: staged.package_version,
             qemu_system_x86_64: current.qemu_system_x86_64,
             qemu_img: current.qemu_img,
             current_json: paths.current_json.clone(),
@@ -368,6 +375,16 @@ fn validate_package_dir(
     current_json: &Path,
     probe: &impl ManagedQemuProbe,
 ) -> Result<ManagedQemuValidatedInstall> {
+    let resolved = validate_package_dir_contents(package_dir, metadata, current_json)?;
+    probe.validate(&resolved.qemu_system_x86_64, &resolved.qemu_img)?;
+    Ok(resolved)
+}
+
+fn validate_package_dir_contents(
+    package_dir: &Path,
+    metadata: &ManagedQemuInstallMetadata,
+    current_json: &Path,
+) -> Result<ManagedQemuValidatedInstall> {
     let manifest_path = package_dir.join("manifest.json");
     let manifest = read_managed_qemu_manifest(&manifest_path)?;
     validate_manifest_metadata(&manifest, metadata)?;
@@ -430,8 +447,6 @@ fn validate_package_dir(
             qemu_img.display()
         );
     }
-
-    probe.validate(&qemu_system_x86_64, &qemu_img)?;
 
     Ok(ManagedQemuValidatedInstall {
         package_version: manifest.package_version,
@@ -683,6 +698,7 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     use flate2::write::GzEncoder;
     use flate2::Compression;
@@ -695,6 +711,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct FakeProbe {
         calls: AtomicUsize,
+        paths: Mutex<Vec<(PathBuf, PathBuf)>>,
     }
 
     impl ManagedQemuProbe for FakeProbe {
@@ -706,6 +723,10 @@ mod tests {
             if !qemu_img.is_file() {
                 bail!("missing fake qemu-img path");
             }
+            self.paths
+                .lock()
+                .expect("fake probe paths lock")
+                .push((qemu_system_x86_64.to_path_buf(), qemu_img.to_path_buf()));
             Ok(())
         }
     }
@@ -874,6 +895,14 @@ mod tests {
         assert_eq!(current.qemu_system_x86_64, qemu_system);
         assert_eq!(current.qemu_img, qemu_img);
         assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            probe
+                .paths
+                .lock()
+                .expect("fake probe paths lock")
+                .as_slice(),
+            &[(qemu_system, qemu_img)]
+        );
 
         let _ = fs::remove_dir_all(root);
     }
