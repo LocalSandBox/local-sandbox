@@ -1,0 +1,19 @@
+crates/lsb-sdk/src/assets.rs
+  s_09f863a2106b47::t_64d2692041c88a 11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "61713cd6367024404da9925560e57d6dc9246a47",
+  "prompts": {},
+  "sessions": {
+    "s_09f863a2106b47": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3d25-4a3d-7db1-8c56-aa23fd7c6538",
+        "model": "gpt-5.5"
+      },
+      "human_author": null
+    }
+  }
+}
