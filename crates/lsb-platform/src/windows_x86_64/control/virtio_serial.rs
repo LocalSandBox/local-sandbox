@@ -129,6 +129,7 @@ pub(crate) enum VirtioSerialControlError {
     OpenFailed {
         detail: String,
     },
+    MuxActive,
 }
 
 impl VirtioSerialControlError {
@@ -152,6 +153,9 @@ impl VirtioSerialControlError {
             }
             Self::OpenFailed { .. } => {
                 "Inspect qemu.stderr.log for chardev creation errors and verify the current user can open the QEMU-created private named pipe."
+            }
+            Self::MuxActive => {
+                "Open a Windows mux virtual session instead of cloning the physical virtio-serial control pipe; the mux manager owns physical control I/O for this VM."
             }
         }
     }
@@ -195,6 +199,11 @@ impl fmt::Display for VirtioSerialControlError {
             Self::OpenFailed { detail } => write!(
                 f,
                 "failed to open the Windows virtio-serial control pipe: {detail}. {}",
+                self.remediation()
+            ),
+            Self::MuxActive => write!(
+                f,
+                "Windows virtio-serial control pipe is already owned by the session mux manager. {}",
                 self.remediation()
             ),
         }

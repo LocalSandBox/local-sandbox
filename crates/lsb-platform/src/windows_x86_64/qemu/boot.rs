@@ -9,7 +9,10 @@ use std::time::{Duration, Instant};
 use lsb_proto::{frame, GuestReady, GuestTransport};
 use serde::Serialize;
 
-use crate::windows_x86_64::control::{VirtioSerialControlEndpoint, VirtioSerialControlError};
+use crate::windows_x86_64::control::{
+    mux::{MuxManager, MuxSession, MuxSessionError, MuxSessionKind},
+    VirtioSerialControlEndpoint, VirtioSerialControlError,
+};
 
 use super::argv::{QemuArgvBuilder, QemuArgvError};
 use super::config::{QemuBootConfig as QemuArgvBootConfig, QemuDiskImageFormat, QemuNetworkConfig};
@@ -119,6 +122,7 @@ pub(crate) struct WindowsQemuBoot {
     supervisor: QemuSupervisor,
     artifacts: QemuBootArtifacts,
     control_stream: Option<crate::PlatformControlStream>,
+    control_mux: Option<MuxManager>,
     forward_stream: Option<crate::PlatformControlStream>,
     guest_ready: Option<GuestReady>,
     #[cfg(test)]
@@ -142,6 +146,9 @@ impl WindowsQemuBoot {
     pub(crate) fn open_control(
         &self,
     ) -> Result<crate::PlatformControlStream, VirtioSerialControlError> {
+        if self.control_mux.is_some() {
+            return Err(VirtioSerialControlError::MuxActive);
+        }
         let stream = self
             .control_stream
             .as_ref()
@@ -151,6 +158,19 @@ impl WindowsQemuBoot {
             .map_err(|error| VirtioSerialControlError::OpenFailed {
                 detail: format!("failed to clone the established control pipe handle: {error}"),
             })
+    }
+
+    pub(crate) fn open_mux_session(
+        &self,
+        kind: MuxSessionKind,
+    ) -> Result<MuxSession, MuxSessionError> {
+        let mux = self
+            .control_mux
+            .as_ref()
+            .ok_or_else(|| MuxSessionError::ManagerClosed {
+                reason: "guest did not advertise session_mux".to_string(),
+            })?;
+        mux.open_session(kind)
     }
 
     pub(crate) fn open_port_forward(
@@ -503,11 +523,12 @@ impl fmt::Display for QemuBootError {
                 ..
             } => write!(
                 f,
-                "the Windows guest advertised unsupported runtime capabilities during readiness: {}. The Windows backend currently accepts the base guest-ready handshake plus '{}', '{}', and '{}' capabilities. Update lsb-proto and host handling before advertising additional capabilities. serial excerpt: {}.{}",
+                "the Windows guest advertised unsupported runtime capabilities during readiness: {}. The Windows backend currently accepts the base guest-ready handshake plus '{}', '{}', '{}', and '{}' capabilities. Update lsb-proto and host handling before advertising additional capabilities. serial excerpt: {}.{}",
                 capability_summary(capabilities),
                 lsb_proto::CAP_FILE_RANGE_IO,
                 lsb_proto::CAP_PORT_FORWARD,
                 lsb_proto::CAP_CIFS_MOUNT,
+                lsb_proto::CAP_SESSION_MUX,
                 empty_as_placeholder(serial_excerpt),
                 self.artifact_sentence()
             ),
@@ -677,7 +698,7 @@ pub(crate) fn launch_windows_qemu_boot(
         error
     })?;
 
-    let control_stream = if let Some(endpoint) = &config.control_endpoint {
+    let mut control_stream = if let Some(endpoint) = &config.control_endpoint {
         let control_open_started_at = Instant::now();
         match endpoint.open() {
             Ok(stream) => Some(stream),
@@ -728,6 +749,7 @@ pub(crate) fn launch_windows_qemu_boot(
     };
 
     let mut guest_ready = None;
+    let mut control_mux = None;
     #[cfg(test)]
     let mut guest_ready_elapsed = None;
     if let Some(stream) = control_stream.as_ref() {
@@ -757,21 +779,57 @@ pub(crate) fn launch_windows_qemu_boot(
             GuestTransport::VirtioSerial,
         ) {
             Ok(result) => {
+                let elapsed = result.elapsed;
+                let message = result.message;
+                if guest_has_session_mux(&message) {
+                    let stream = control_stream.take().ok_or_else(|| {
+                        QemuBootError::GuestReadyTransport {
+                            detail:
+                                "guest advertised session_mux without an established control stream"
+                                    .to_string(),
+                            artifacts: artifacts.clone(),
+                            serial_excerpt: read_excerpt(&artifacts.serial),
+                        }
+                    })?;
+                    match MuxManager::start(stream) {
+                        Ok(manager) => {
+                            control_mux = Some(manager);
+                        }
+                        Err(error) => {
+                            let error = QemuBootError::GuestReadyTransport {
+                                detail: format!(
+                                    "failed to start Windows session mux manager: {error}"
+                                ),
+                                artifacts: artifacts.clone(),
+                                serial_excerpt: read_excerpt(&artifacts.serial),
+                            };
+                            record_failure(
+                                &artifacts,
+                                config.guest_ready_timeout,
+                                observation_goal,
+                                &error,
+                            );
+                            let _ = supervisor.terminate();
+                            return Err(error);
+                        }
+                    }
+                }
+
                 write_boot_status_file(
                     &artifacts,
                     observation_goal.success_state,
                     observation_goal.success_definition,
                     config.guest_ready_timeout,
-                    Some(result.elapsed.as_millis()),
-                    Some(&result.message),
+                    Some(elapsed.as_millis()),
+                    Some(&message),
                     None,
                     None,
                 )?;
                 #[cfg(test)]
                 {
-                    guest_ready_elapsed = Some(result.elapsed);
+                    guest_ready_elapsed = Some(elapsed);
                 }
-                guest_ready = Some(result.message);
+                guest_ready = Some(message);
             }
             Err(error) => {
                 record_failure(
@@ -813,6 +871,7 @@ pub(crate) fn launch_windows_qemu_boot(
         supervisor,
         artifacts,
         control_stream,
+        control_mux,
         forward_stream,
         guest_ready,
         #[cfg(test)]
@@ -1499,10 +1558,18 @@ fn unsupported_guest_capabilities(capabilities: &[String]) -> Vec<String> {
                 lsb_proto::CAP_FILE_RANGE_IO
                     | lsb_proto::CAP_PORT_FORWARD
                     | lsb_proto::CAP_CIFS_MOUNT
+                    | lsb_proto::CAP_SESSION_MUX
             )
         })
         .cloned()
         .collect()
+}
+
+fn guest_has_session_mux(ready: &GuestReady) -> bool {
+    ready
+        .capabilities
+        .iter()
+        .any(|capability| capability == lsb_proto::CAP_SESSION_MUX)
 }
 
 fn sanitize_capability_label(value: &str) -> String {
@@ -1751,6 +1818,9 @@ mod tests {
         ready
             .capabilities
             .push(lsb_proto::CAP_CIFS_MOUNT.to_string());
+        ready
+            .capabilities
+            .push(lsb_proto::CAP_SESSION_MUX.to_string());
         guest_ready_frame(&ready)
     }
 
@@ -1842,7 +1912,8 @@ mod tests {
             [
                 lsb_proto::CAP_FILE_RANGE_IO.to_string(),
                 lsb_proto::CAP_PORT_FORWARD.to_string(),
-                lsb_proto::CAP_CIFS_MOUNT.to_string()
+                lsb_proto::CAP_CIFS_MOUNT.to_string(),
+                lsb_proto::CAP_SESSION_MUX.to_string()
             ]
         );
 
