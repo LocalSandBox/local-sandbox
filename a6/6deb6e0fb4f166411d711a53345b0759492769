@@ -1,0 +1,43 @@
+crates/lsb-sdk/src/watch.rs
+  s_e6a4fd52cdedcc::t_53ca872c1ed0d9 54,181-182,185,191,201,207,217-220,226
+  s_e6a4fd52cdedcc::t_a9ea9f69721772 227
+  s_e6a4fd52cdedcc::t_78fd0903a07ff0 20-21,26,29-30,32-33,40-43,51-53,55-58,61,90-93,140-143,149-152,154,179-180,183-184,186-190,192-200,202-206,208-216,221-225
+bindings/nodejs/src/sandbox.rs
+  s_e6a4fd52cdedcc::t_47f519550da09a 158
+crates/lsb-platform/src/windows_x86_64/control/mux.rs
+  s_e6a4fd52cdedcc::t_e211abd94da8a8 506-516,548-555
+  s_e6a4fd52cdedcc::t_e13a27e58bc4ee 651-653
+  s_e6a4fd52cdedcc::t_b614ebadcf04b9 191-194
+  s_e6a4fd52cdedcc::t_c45b074c448a24 777
+  s_e6a4fd52cdedcc::t_a001e9049d06d6 556,940-961,1229-1259
+  s_e6a4fd52cdedcc::t_a191ace48d0034 1260
+crates/lsb-guest/src/main.rs
+  s_e6a4fd52cdedcc::t_69644b4d28f214 2210-2214
+  s_e6a4fd52cdedcc::t_b500dbaf25681f 2624,3058,3142-3163,3226-3241,3243-3258
+  s_e6a4fd52cdedcc::t_44c375c8a64582 2036,2050-2056,2075-2081,2139,2156-2193,2196-2209,2215-2216
+  s_e6a4fd52cdedcc::t_7773573c89855e 2574-2582,2585-2586,2616-2623
+  s_e6a4fd52cdedcc::t_5fbcbfe3578249 2041,2066,2194-2195
+  s_e6a4fd52cdedcc::t_f41364aa7b29b8 2682,2702,2706-2711,2909-2911,3008
+  s_e6a4fd52cdedcc::t_1618a4bc1b9478 2583-2584,3242
+crates/lsb-cli/src/stdio.rs
+  s_e6a4fd52cdedcc::t_1618a4bc1b9478 489-500
+  s_e6a4fd52cdedcc::t_3113213fd36f46 512,637
+bindings/nodejs/src/streams.rs
+  s_e6a4fd52cdedcc::t_e59e181359595b 54,67,69-70
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a66deb6e0fb4f166411d711a53345b0759492769",
+  "prompts": {},
+  "sessions": {
+    "s_e6a4fd52cdedcc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3c24-0735-7fa1-89a6-fc1deeaa67ec",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
