@@ -4,6 +4,7 @@ use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use lsb_proto::frame;
 use lsb_proto::mux::{self, MuxFrame};
@@ -13,6 +14,7 @@ use crate::PlatformControlStream;
 const SESSION_RECEIVE_QUEUE_BYTES: usize = 256 * 1024;
 const SESSION_SEND_QUEUE_BYTES: usize = 256 * 1024;
 const MAX_CONTROL_QUEUE_FRAMES: usize = 128;
+const SESSION_OPEN_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MuxSessionKind {
@@ -306,6 +308,7 @@ impl std::error::Error for MuxManagerError {}
 pub(crate) enum MuxSessionError {
     ManagerClosed { reason: String },
     Rejected { reason: String },
+    OpenTimeout { timeout: Duration },
     SessionIdExhausted,
 }
 
@@ -318,6 +321,11 @@ impl fmt::Display for MuxSessionError {
             Self::Rejected { reason } => {
                 write!(f, "guest rejected Windows mux session: {reason}")
             }
+            Self::OpenTimeout { timeout } => write!(
+                f,
+                "timed out after {} ms waiting for guest to accept Windows mux session",
+                timeout.as_millis()
+            ),
             Self::SessionIdExhausted => {
                 f.write_str("Windows mux manager exhausted host session ids")
             }
@@ -344,6 +352,14 @@ impl MuxManagerInner {
     }
 
     fn open_session(self: &Arc<Self>, kind: MuxSessionKind) -> Result<MuxSession, MuxSessionError> {
+        self.open_session_with_timeout(kind, SESSION_OPEN_TIMEOUT)
+    }
+
+    fn open_session_with_timeout(
+        self: &Arc<Self>,
+        kind: MuxSessionKind,
+        timeout: Duration,
+    ) -> Result<MuxSession, MuxSessionError> {
         let mut state = self.state.lock().expect("Windows mux state lock poisoned");
         if let Some(reason) = state.failed.clone() {
             return Err(MuxSessionError::ManagerClosed { reason });
@@ -377,6 +393,7 @@ impl MuxManagerInner {
         });
         self.cv.notify_all();
 
+        let deadline = Instant::now() + timeout;
         loop {
             if let Some(reason) = state.failed.clone() {
                 state.sessions.remove(&session_id);
@@ -401,10 +418,28 @@ impl MuxManagerInner {
                     return Err(MuxSessionError::Rejected { reason });
                 }
                 Some(SessionOpenState::Opening) => {
-                    state = self
+                    let now = Instant::now();
+                    if now >= deadline {
+                        state.sessions.remove(&session_id);
+                        state.ready_sessions.retain(|queued| *queued != session_id);
+                        return Err(MuxSessionError::OpenTimeout { timeout });
+                    }
+                    let remaining = deadline.saturating_duration_since(now);
+                    let (next_state, wait_result) = self
                         .cv
-                        .wait(state)
+                        .wait_timeout(state, remaining)
                         .expect("Windows mux state lock poisoned");
+                    state = next_state;
+                    if wait_result.timed_out()
+                        && state
+                            .sessions
+                            .get(&session_id)
+                            .is_some_and(|session| session.open_state == SessionOpenState::Opening)
+                    {
+                        state.sessions.remove(&session_id);
+                        state.ready_sessions.retain(|queued| *queued != session_id);
+                        return Err(MuxSessionError::OpenTimeout { timeout });
+                    }
                 }
                 None => {
                     return Err(MuxSessionError::ManagerClosed {
@@ -608,13 +643,28 @@ where
             }
         };
 
-        if let Err(error) = frame::write_frame(&mut writer, frame_type, &payload) {
+        if let Err(error) = write_physical_mux_frame(&mut writer, frame_type, &payload) {
             inner.fail(format!(
                 "failed to write Windows mux physical control stream: {error}"
             ));
             return;
         }
     }
+}
+
+fn write_physical_mux_frame(
+    writer: &mut impl Write,
+    frame_type: u8,
+    payload: &[u8],
+) -> io::Result<()> {
+    // Windows named-pipe FlushFileBuffers can wait for the peer to drain the
+    // pipe. The mux physical writer is unbuffered, so write_all is sufficient.
+    let len = 1u32 + payload.len() as u32;
+    let mut buf = Vec::with_capacity(4 + 1 + payload.len());
+    buf.extend_from_slice(&len.to_be_bytes());
+    buf.push(frame_type);
+    buf.extend_from_slice(payload);
+    writer.write_all(&buf)
 }
 
 fn next_outgoing_frame(inner: &MuxManagerInner) -> Option<MuxFrame> {
@@ -831,6 +881,10 @@ mod tests {
         tx: SyncSender<u8>,
     }
 
+    struct FlushPanicsWriter {
+        bytes: Vec<u8>,
+    }
+
     impl Read for ChannelReader {
         fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
             if buf.is_empty() {
@@ -869,6 +923,17 @@ mod tests {
 
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
+        }
+    }
+
+    impl Write for FlushPanicsWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            panic!("physical mux frame writes must not flush the underlying pipe");
         }
     }
 
@@ -1256,6 +1321,28 @@ mod tests {
 
         write_mux(&mut peer.writer, MuxFrame::Fin { session_id });
         wait_for_session_pruned(&manager, session_id);
+    }
+
+    #[test]
+    fn open_session_times_out_when_guest_does_not_acknowledge() {
+        let (host, _peer) = channel_pair(512 * 1024);
+        let manager = MuxManager::start_for_test(host.reader, host.writer);
+        let err = manager
+            .inner
+            .open_session_with_timeout(MuxSessionKind::File, Duration::from_millis(10))
+            .expect_err("unacknowledged mux session should time out");
+
+        assert!(matches!(err, MuxSessionError::OpenTimeout { .. }));
+    }
+
+    #[test]
+    fn physical_mux_write_does_not_flush_underlying_pipe() {
+        let mut writer = FlushPanicsWriter { bytes: Vec::new() };
+
+        write_physical_mux_frame(&mut writer, mux::MUX_OPEN, &[0, 1, 2])
+            .expect("physical mux frame should write without flushing");
+
+        assert_eq!(writer.bytes, [0, 0, 0, 4, mux::MUX_OPEN, 0, 1, 2]);
     }
 
     #[test]
