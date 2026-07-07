@@ -1,0 +1,52 @@
+crates/lsb-cli/src/vm.rs
+  s_b895113eb3f4bf::t_9053de3add738e 552-553,560,563-569,571,573-577,581-603
+  s_b895113eb3f4bf::t_675795162897d1 578-580
+crates/lsb-vm/src/sandbox.rs
+  s_b895113eb3f4bf::t_675795162897d1 34-35,500-504
+  s_b895113eb3f4bf::t_4960b9824b39ab 261-262,286
+  s_b895113eb3f4bf::t_46ccac7f7f57c0 287,1566-1589,1645-1648,1668-1670,1672-1676,1697-1704
+  s_b895113eb3f4bf::t_6077dd1614134c 505
+  s_b895113eb3f4bf::t_f3c2d017a3a85e 1706,2607-2631,2635-2646,2648-2653
+  s_b895113eb3f4bf::t_d7d8edb36202df 2632-2634,2647
+  s_b895113eb3f4bf::t_11d9f252edadfe 1671
+  s_b895113eb3f4bf::t_d1689a40734be6 1663
+  s_b895113eb3f4bf::t_4ce7dc5b00d659 483-484,489,494-495,497-499,507
+  s_b895113eb3f4bf::t_86ddb122b1a084 2397-2398
+  s_b895113eb3f4bf::t_2d0b35f4fb7f2e 1782-1795
+  s_b895113eb3f4bf::t_954dd5d35cc78a 485-487
+  s_b895113eb3f4bf::t_f0f8fed9ec3674 1705
+  s_b895113eb3f4bf::t_ec673a7e0a4a33 1707
+  s_b895113eb3f4bf::t_902383267e6b7b 2606
+crates/lsb-platform/src/windows_x86_64/fs/smb/types.rs
+  s_b895113eb3f4bf::t_714ce802f97edb 101,123
+crates/lsb-platform/src/windows_x86_64/fs/smb/mod.rs
+  s_b895113eb3f4bf::t_a68d7e6f8ebe63 18-19,22-25
+crates/lsb-platform/src/windows_x86_64/fs/smb/lifecycle.rs
+  s_b895113eb3f4bf::t_d971612702859c 1189-1213
+  s_b895113eb3f4bf::t_73614d2b18ed52 578
+  s_b895113eb3f4bf::t_beb36d96a5c9c2 495-540,545-549,554-558,563-577,579-581,604-618
+  s_b895113eb3f4bf::t_fd284b22cfe2c6 22-64,231
+  s_b895113eb3f4bf::t_675795162897d1 541-544,550-553,559-562
+  s_b895113eb3f4bf::t_ffe2d7ac6d6a2f 619
+STATE.md
+  s_b895113eb3f4bf::t_62734fc1eee2a0 10-12,20-21,113
+  s_b895113eb3f4bf::t_4f78133a134a9b 140,142,146,150,158
+crates/lsb-guest/src/main.rs
+  s_b895113eb3f4bf::t_1d1b9e97b8be3e 783-785
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "17c73ae14fb1775b8992502110ddb0f210efe05c",
+  "prompts": {},
+  "sessions": {
+    "s_b895113eb3f4bf": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3919-b0c1-7bf2-88d0-65803e48b4bf",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}

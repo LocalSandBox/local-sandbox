@@ -1,0 +1,140 @@
+crates/lsb-guest/src/main.rs
+  s_a427c34be259ed::t_99d604b835af97 329,344,394,531-532,545,597
+  s_a427c34be259ed::t_b73e67ec247c49 512
+  s_a427c34be259ed::t_20a405def69068 621-635
+  s_a427c34be259ed::t_f62db9e63a392f 423-446,947,949-950
+crates/lsb-platform/src/windows_x86_64/fs/smb/lifecycle.rs
+  s_a427c34be259ed::t_99d604b835af97 822
+  s_bc2428ff7fc54a::t_26d666b37ccbbe 1198-1199
+  s_a427c34be259ed::t_c84af14d89ce33 55
+  s_a427c34be259ed::t_721e7d189c9d38 430,887-889,966-968
+  s_a427c34be259ed::t_32c0bc377cf75e 191,792,876-886,890-965,969-1017
+  s_a427c34be259ed::t_40f4e64f6cb592 192,240-429,431-447,449-490
+  s_a427c34be259ed::t_af967613026176 499
+  s_a427c34be259ed::t_fe4c1853ce95f3 134-143,181-190
+  s_a427c34be259ed::t_1e864815094c3c 193,793
+  s_a427c34be259ed::t_ea0170e0a37672 2-3,6,11-13,18-20
+  s_a427c34be259ed::t_e0a97ffe888e42 448
+  s_a427c34be259ed::t_20a405def69068 557-575,1165-1197
+  s_a427c34be259ed::t_638c9c3a819813 520,783-791
+docs/windows-port/risk-register.md
+  s_a427c34be259ed::t_0185fe781491fe 10,22
+docs/windows-port/mvp-handoff.md
+  s_a427c34be259ed::t_90b99bd44dc2a2 30,46-47,63,65-66,69-72,76-78,147-148
+PLAN.md
+  s_a427c34be259ed::t_d45c8313cf124a 153-154,418,423,581-583
+crates/lsb-platform/src/windows_x86_64/fs/smb/mod.rs
+  s_a427c34be259ed::t_21f920c50add00 15-22
+docs/windows-port/diagnostics.md
+  s_a427c34be259ed::t_aa0c7487044a54 69
+  s_a427c34be259ed::t_3eaff8ef1ea844 28,122-134,202-203
+  s_a427c34be259ed::t_de544592b41bbe 67-68
+docs/windows-port/README.md
+  s_a427c34be259ed::t_c6b1111c1cc3df 37
+  s_a427c34be259ed::t_09b4ca448c7c07 28,30-31,35-36,42-44
+docs/windows-port/runner-setup.md
+  s_a427c34be259ed::t_4e3c74770b9d0c 112-114
+crates/lsb-platform/src/windows_x86_64/fs/smb/password.rs
+  s_a427c34be259ed::t_bfe9ca9fb3ce7d 70
+docs/windows-port/review-checklist.md
+  s_a427c34be259ed::t_367e9243208e86 30
+docs/windows-port/security-checklist.md
+  s_a427c34be259ed::t_12b28357bc03f0 83-84,104-105
+crates/lsb-platform/src/windows_x86_64/fs/smb/share.rs
+  s_a427c34be259ed::t_f62db9e63a392f 181,185,187-191
+kernel/lsb_x86_64_defconfig
+  s_a427c34be259ed::t_12884ea87c6458 125-128
+kernel/lsb_defconfig
+  s_a427c34be259ed::t_12884ea87c6458 125-128
+STATE.md
+  s_a427c34be259ed::t_e4b214d4f768f4 85-87
+  s_a427c34be259ed::t_25cfb84748c6e2 167-188
+  s_a427c34be259ed::t_94c48e66616f2e 9-10,95-96,125,139
+  s_a427c34be259ed::t_23d73054c56cca 22,90-91
+  s_a427c34be259ed::t_5225a5c5912737 129,134,140-148
+  s_a427c34be259ed::t_b76a996f1f3f6a 13
+  s_a427c34be259ed::t_61650bc2072cf4 153-154,156,159,161,163
+  s_a427c34be259ed::t_61872b2bfe4dcc 23,88-89,136
+  s_a427c34be259ed::t_f3463a25da84c4 93-94
+  s_a427c34be259ed::t_f2eb89356c672f 84
+  s_a427c34be259ed::t_a3294442ae503b 92
+  s_a427c34be259ed::t_9c4858fb4fb8ed 118-119,121
+  s_a427c34be259ed::t_fd53691a1f4b0b 126-127
+  s_a427c34be259ed::t_a2b8b8f029f921 8,14,18-21,24,55-56,63-65,68,70-71
+crates/lsb-sdk/src/runtime.rs
+  s_a427c34be259ed::t_721e7d189c9d38 1301,1380-1381,1414,1421-1424
+  s_a427c34be259ed::t_cf77220d9c0196 471-473
+  s_a427c34be259ed::t_299efd51cd90fe 513-525
+  s_a427c34be259ed::t_6667c5f32cfd2d 469-470,474
+  s_a427c34be259ed::t_b967662d6b81ee 1234
+  s_a427c34be259ed::t_0cc9d34f10fecc 1404,1417
+  s_a427c34be259ed::t_eae06dca681acf 1235-1300,1302-1379,1382-1403,1405-1413,1415-1416,1418-1420,1425-1462
+scripts/windows-smoke.ps1
+  s_a427c34be259ed::t_6e12bbc6bd62cd 170-214,235,244-245,250-251
+crates/lsb-platform/src/windows_x86_64/fs/smb/admin.rs
+  s_bc2428ff7fc54a::t_9154a721d68869 88
+  s_a427c34be259ed::t_c84af14d89ce33 5-8,71-87
+docs/windows-port/architecture.md
+  s_a427c34be259ed::t_68cbbe35d5adfa 43
+crates/lsb-vm/src/sandbox.rs
+  s_a427c34be259ed::t_2f885505308434 3130-3185
+  s_a427c34be259ed::t_825207b87fedd4 1570-1581,1583-1595,1629
+  s_a427c34be259ed::t_d2105a8ca63e78 1795-1804
+  s_a427c34be259ed::t_dee6554ff11988 33
+  s_a427c34be259ed::t_b03b32b2245053 2286-2287,2326-2328
+  s_a427c34be259ed::t_14f6419db7fe83 234-236,262-263,285-286
+  s_a427c34be259ed::t_37c329559af90d 3298-3328
+  s_a427c34be259ed::t_cf77220d9c0196 34-35
+  s_a427c34be259ed::t_e2fed56466b3fb 1794,3129
+crates/lsb-platform/src/windows_x86_64/fs/smb/user.rs
+  s_a427c34be259ed::t_bfe9ca9fb3ce7d 158
+docs/windows-port/decisions.md
+  s_a427c34be259ed::t_1fa3fa91d5655a 351,359-360
+  s_a427c34be259ed::t_afd354ce1e77d2 365
+docs/windows-port/future-work.md
+  s_a427c34be259ed::t_a2053b936119d2 47
+  s_a427c34be259ed::t_3d1c3885be193c 8,38,41-42,44,53-55
+crates/lsb-cli/src/vm.rs
+  s_a427c34be259ed::t_86e47f139905fa 127-128,132
+  s_a427c34be259ed::t_cf77220d9c0196 129-131
+  s_a427c34be259ed::t_9ef41ec05553b4 159-171
+bindings/nodejs/README.md
+  s_a427c34be259ed::t_95480468deb5bc 46-47,191,193-195
+docs/windows-port/validation.md
+  s_a427c34be259ed::t_008c4545f75f33 114,117,119-121,162,165,186-187,197-201
+README.md
+  s_a427c34be259ed::t_318fa6ea06b401 126
+  s_a427c34be259ed::t_8bb70f269606e0 94-97,107-118,124-125
+crates/lsb-platform/src/windows_x86_64/qemu/boot.rs
+  s_a427c34be259ed::t_d29d920620692c 506,510,1499-1501,1751-1753,1844-1845,2120-2121
+crates/lsb-platform/src/windows_x86_64/fs/smb/types.rs
+  s_a427c34be259ed::t_083309156a0271 5-6,18,97,115
+  s_a427c34be259ed::t_c84af14d89ce33 98,116
+bindings/nodejs/scripts/windows-preflight-smoke.mjs
+  s_a427c34be259ed::t_af3812f991de51 130-154,156-184,199
+  s_a427c34be259ed::t_4699b0f3b8a7ca 155
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "61e52f46494e3fc9bb0e335ff0f8d48b2ab15c35",
+  "prompts": {},
+  "sessions": {
+    "s_a427c34be259ed": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f37b8-d44f-7663-aec0-27782ca45efb",
+        "model": "gpt-5.5"
+      },
+      "human_author": null
+    },
+    "s_bc2428ff7fc54a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f379b-3ba5-7f71-b120-aee01b1ecb43",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}

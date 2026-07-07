@@ -1,0 +1,28 @@
+docs/windows-port/rfc-qemu-whpx.md
+  s_613b60f54b40d5::t_766a21ec445d70 14-16,22,31,48-49,73,438-441,469,1086,1111,1117,1119,1447,1450,1849
+crates/lsb-platform/src/windows_x86_64/backend.rs
+  s_613b60f54b40d5::t_c4a28c63f37b48 323
+  s_613b60f54b40d5::t_766a21ec445d70 74,322
+crates/lsb-platform/src/windows_x86_64/errors.rs
+  s_613b60f54b40d5::t_766a21ec445d70 5
+docs/architecture.md
+  s_613b60f54b40d5::t_766a21ec445d70 2360,2375-2377,2390-2393,2404-2405,2409-2410,2414-2417,2422-2423,2426-2428,2435-2436
+skills/lsb/SKILL.md
+  s_613b60f54b40d5::t_766a21ec445d70 186
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "44480044d3e33818510c1f04f23802d7fa98359c",
+  "prompts": {},
+  "sessions": {
+    "s_613b60f54b40d5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3adc-ec06-70b1-b13b-ff975291c20c",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}

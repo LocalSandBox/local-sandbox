@@ -1,0 +1,28 @@
+STATE.md
+  s_a427c34be259ed::t_7ab0342d6529de 101-102,145
+crates/lsb-platform/src/windows_x86_64/fs/smb/types.rs
+  s_a427c34be259ed::t_29cf8addc03122 99-100,120-121
+crates/lsb-platform/Cargo.toml
+  s_a427c34be259ed::t_efc8fcf1602e0f 44
+crates/lsb-platform/src/windows_x86_64/fs/smb/user.rs
+  s_a427c34be259ed::t_da5c7781260f98 115-118,130-136,271-286,289-298,306,308,310-334,339-380,383,385-449
+  s_a427c34be259ed::t_273111750fce35 309,335-338,381-382,384
+  s_a427c34be259ed::t_2bbb8d8cec6dff 287-288,299-305,307
+  s_a427c34be259ed::t_08a0a3335e7f22 450
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5fcf584dee4e9670880c7239a9902c81af561a45",
+  "prompts": {},
+  "sessions": {
+    "s_a427c34be259ed": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f37b8-d44f-7663-aec0-27782ca45efb",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
