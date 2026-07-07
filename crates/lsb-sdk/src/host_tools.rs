@@ -1037,11 +1037,7 @@ mod tests {
     fn archive_traversal_entry_is_rejected() {
         let root = temp_dir("traversal");
         let data_dir = root.join("data");
-        let archive = write_raw_archive(
-            &root,
-            r"qemu-11.0.50-lsb0.4.0\..\escape.txt",
-            b"escape",
-        );
+        let archive = write_raw_archive(&root, r"qemu-11.0.50-lsb0.4.0\..\escape.txt", b"escape");
         let metadata = test_metadata(sha256_file(&archive).expect("hash archive"));
         let probe = FakeProbe::default();
 

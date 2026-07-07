@@ -1040,7 +1040,7 @@ impl Drop for WindowsSmbHostWatchRegistration {
         };
         if let Ok(mut active) = manager.active.lock() {
             active.retain(|(id, _)| *id != self.id);
-        }
+        };
     }
 }
 
