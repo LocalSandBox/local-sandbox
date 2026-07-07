@@ -1,0 +1,23 @@
+crates/lsb-vm/src/sandbox.rs
+  s_bf90524ab15c87::t_81d14e811774db 1293,2762-2784,2788-2790,2794-2800,2804-2808
+  s_bf90524ab15c87::t_f8365516f67e63 1216-1219,1224,1233-1242,1245-1248,1269-1292
+  s_bf90524ab15c87::t_bca5d6a35b537b 2785-2787,2791-2793,2801-2803
+  s_bf90524ab15c87::t_305eddd1e126ec 2051-2069
+  s_bf90524ab15c87::t_d929498dade333 1294,2761
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d42af45186afd21562cbaa92c90e9feb0ae87849",
+  "prompts": {},
+  "sessions": {
+    "s_bf90524ab15c87": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3b91-a236-73e3-b844-f1d455654f2c",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
