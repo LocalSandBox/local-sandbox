@@ -3333,6 +3333,256 @@ mod tests {
 
     #[test]
     #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU, and disposable LocalSandbox assets"]
+    fn windows_qemu_spawn_guest_watch_smoke() {
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        {
+            eprintln!("skipping Windows QEMU spawn/watch smoke on non-Windows host");
+        }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            let kernel = required_env_path("LSB_WINDOWS_BOOT_KERNEL");
+            let initrd = required_env_path("LSB_WINDOWS_BOOT_INITRD");
+            let rootfs = required_env_path("LSB_WINDOWS_BOOT_ROOTFS");
+            let sandbox = Sandbox::builder()
+                .kernel(kernel.display().to_string())
+                .initrd(initrd.display().to_string())
+                .rootfs(rootfs.display().to_string())
+                .console(false)
+                .build()
+                .expect("Windows spawn/watch smoke sandbox should build");
+
+            sandbox
+                .start()
+                .expect("Windows spawn/watch smoke should reach guest ready");
+
+            let watch_root = format!("/tmp/lsb-windows-watch-{}", std::process::id());
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            let code = sandbox
+                .exec(
+                    &[
+                        "/bin/sh",
+                        "-c",
+                        &format!("rm -rf {watch_root}; mkdir -p {watch_root}/sub"),
+                    ],
+                    &mut stdout,
+                    &mut stderr,
+                )
+                .expect("watch fixture setup should run");
+            assert_eq!(
+                code,
+                0,
+                "watch fixture setup failed: stdout={}, stderr={}",
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr)
+            );
+
+            let watch_session = sandbox
+                .open_watch_session(&watch_root, true)
+                .expect("Windows mux guest watch session should open");
+            let (watch_events, watch_reader) = spawn_watch_event_reader(watch_session);
+            std::thread::sleep(Duration::from_secs(1));
+
+            let result = (|| -> Result<()> {
+                let env = HashMap::new();
+
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                let mut stream = sandbox.open_exec_session(
+                    &[
+                        "/bin/sh",
+                        "-c",
+                        "echo chunk1; echo warn >&2; echo chunk2; exit 0",
+                    ],
+                    &env,
+                    None,
+                )?;
+                let code = collect_exec_response(&mut stream, &mut stdout, &mut stderr)?;
+                assert_eq!(code, 0);
+                assert_eq!(String::from_utf8_lossy(&stdout), "chunk1\nchunk2\n");
+                assert_eq!(String::from_utf8_lossy(&stderr), "warn\n");
+
+                stdout.clear();
+                stderr.clear();
+                let mut stream = sandbox.open_exec_session(
+                    &["/bin/sh", "-c", "printf '%s:%s' \"$PWD\" \"$LSB_TEST_ENV\""],
+                    &HashMap::from([("LSB_TEST_ENV".to_string(), "present".to_string())]),
+                    Some("/tmp"),
+                )?;
+                let code = collect_exec_response(&mut stream, &mut stdout, &mut stderr)?;
+                assert_eq!(code, 0);
+                assert_eq!(String::from_utf8_lossy(&stdout), "/tmp:present");
+                assert!(stderr.is_empty());
+
+                stdout.clear();
+                stderr.clear();
+                let mut stream =
+                    sandbox.open_exec_session(&["/bin/sh", "-c", "exit 42"], &env, None)?;
+                let code = collect_exec_response(&mut stream, &mut stdout, &mut stderr)?;
+                assert_eq!(code, 42);
+                assert!(stdout.is_empty());
+                assert!(stderr.is_empty());
+
+                let stream = sandbox.open_exec_session(
+                    &[
+                        "/bin/sh",
+                        "-c",
+                        "IFS= read -r line; printf '%s\n' \"$line\"",
+                    ],
+                    &env,
+                    None,
+                )?;
+                let mut writer = stream.try_clone()?;
+                frame::write_frame(&mut writer, frame::STDIN, b"spawn-stdin\n")?;
+                writer.flush()?;
+                drop(writer);
+                stdout.clear();
+                stderr.clear();
+                let mut reader = stream;
+                let code = collect_exec_response(&mut reader, &mut stdout, &mut stderr)?;
+                assert_eq!(code, 0);
+                assert_eq!(String::from_utf8_lossy(&stdout), "spawn-stdin\n");
+                assert!(stderr.is_empty());
+
+                let stream =
+                    sandbox.open_exec_session(&["/bin/sh", "-c", "sleep 30"], &env, None)?;
+                let mut writer = stream.try_clone()?;
+                frame::write_frame(&mut writer, frame::KILL, &[])?;
+                writer.flush()?;
+                drop(writer);
+                stdout.clear();
+                stderr.clear();
+                let mut reader = stream;
+                let code = collect_exec_response(&mut reader, &mut stdout, &mut stderr)?;
+                assert_ne!(code, 0, "killed process should not report success");
+
+                let mut one = sandbox.open_exec_session(
+                    &["/bin/sh", "-c", "sleep 0.2; echo one"],
+                    &env,
+                    None,
+                )?;
+                let mut two = sandbox.open_exec_session(
+                    &["/bin/sh", "-c", "sleep 0.2; echo two"],
+                    &env,
+                    None,
+                )?;
+                let mut one_stdout = Vec::new();
+                let mut one_stderr = Vec::new();
+                let mut two_stdout = Vec::new();
+                let mut two_stderr = Vec::new();
+                assert_eq!(
+                    collect_exec_response(&mut one, &mut one_stdout, &mut one_stderr)?,
+                    0
+                );
+                assert_eq!(
+                    collect_exec_response(&mut two, &mut two_stdout, &mut two_stderr)?,
+                    0
+                );
+                assert_eq!(String::from_utf8_lossy(&one_stdout), "one\n");
+                assert_eq!(String::from_utf8_lossy(&two_stdout), "two\n");
+                assert!(one_stderr.is_empty());
+                assert!(two_stderr.is_empty());
+
+                let mut large = sandbox.open_exec_session(
+                    &[
+                        "/bin/sh",
+                        "-c",
+                        "i=0; while [ \"$i\" -lt 256 ]; do dd if=/dev/zero bs=4096 count=1 2>/dev/null | tr '\\0' L; i=$((i + 1)); done",
+                    ],
+                    &env,
+                    None,
+                )?;
+                let mut small = sandbox.open_exec_session(
+                    &["/bin/sh", "-c", "sleep 0.1; echo small-ready"],
+                    &env,
+                    None,
+                )?;
+                let mut small_stdout = Vec::new();
+                let mut small_stderr = Vec::new();
+                assert_eq!(
+                    collect_exec_response(&mut small, &mut small_stdout, &mut small_stderr)?,
+                    0
+                );
+                assert_eq!(String::from_utf8_lossy(&small_stdout), "small-ready\n");
+                assert!(small_stderr.is_empty());
+
+                let mut large_stdout = Vec::new();
+                let mut large_stderr = Vec::new();
+                assert_eq!(
+                    collect_exec_response(&mut large, &mut large_stdout, &mut large_stderr)?,
+                    0
+                );
+                assert!(
+                    large_stdout.len() >= 1024 * 1024,
+                    "large spawn should emit at least 1MiB, got {} bytes",
+                    large_stdout.len()
+                );
+                assert!(large_stderr.is_empty());
+
+                let mut touch = sandbox.open_exec_session(
+                    &[
+                        "/bin/sh",
+                        "-c",
+                        &format!(
+                            "touch {watch_root}/new.txt && printf x >> {watch_root}/new.txt && mv {watch_root}/new.txt {watch_root}/renamed.txt && rm {watch_root}/renamed.txt && touch {watch_root}/sub/deep.txt"
+                        ),
+                    ],
+                    &env,
+                    None,
+                )?;
+                stdout.clear();
+                stderr.clear();
+                assert_eq!(
+                    collect_exec_response(&mut touch, &mut stdout, &mut stderr)?,
+                    0
+                );
+
+                let mut concurrent = sandbox.open_exec_session(
+                    &[
+                        "/bin/sh",
+                        "-c",
+                        &format!("sleep 0.2; echo started; touch {watch_root}/spawn-created.txt; echo done"),
+                    ],
+                    &env,
+                    None,
+                )?;
+                stdout.clear();
+                stderr.clear();
+                assert_eq!(
+                    collect_exec_response(&mut concurrent, &mut stdout, &mut stderr)?,
+                    0
+                );
+                assert!(String::from_utf8_lossy(&stdout).contains("started"));
+                assert!(String::from_utf8_lossy(&stdout).contains("done"));
+
+                wait_for_guest_watch_events(
+                    &watch_events,
+                    &[
+                        (&format!("{watch_root}/new.txt"), Some("create")),
+                        (&format!("{watch_root}/new.txt"), Some("modify")),
+                        (&format!("{watch_root}/renamed.txt"), Some("rename")),
+                        (&format!("{watch_root}/renamed.txt"), Some("delete")),
+                        (&format!("{watch_root}/sub/deep.txt"), Some("create")),
+                        (&format!("{watch_root}/spawn-created.txt"), Some("create")),
+                    ],
+                )?;
+
+                Ok(())
+            })();
+
+            let stop_result = sandbox.stop();
+            watch_reader
+                .join()
+                .expect("Windows watch reader thread should not panic");
+
+            result.expect("Windows spawn/watch smoke should pass");
+            stop_result.expect("Windows spawn/watch smoke QEMU should stop cleanly");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU, and disposable LocalSandbox assets"]
     fn windows_qemu_copy_transfer_smoke() {
         #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
         {
@@ -3714,6 +3964,87 @@ mod tests {
         }
         let mut file = std::fs::File::create(path).expect("fixture file");
         file.write_all(content).expect("fixture content");
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn spawn_watch_event_reader(
+        mut stream: PlatformControlStream,
+    ) -> (
+        std::sync::mpsc::Receiver<std::result::Result<lsb_proto::WatchEvent, String>>,
+        std::thread::JoinHandle<std::result::Result<(), String>>,
+    ) {
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
+        let handle = std::thread::Builder::new()
+            .name("lsb-windows-watch-smoke-reader".to_string())
+            .spawn(move || loop {
+                match frame::read_frame(&mut stream) {
+                    Ok(Some((frame::WATCH_EVENT, payload))) => {
+                        let event = serde_json::from_slice::<lsb_proto::WatchEvent>(&payload)
+                            .map_err(|error| error.to_string());
+                        if events_tx.send(event).is_err() {
+                            return Ok(());
+                        }
+                    }
+                    Ok(Some((frame::ERROR, payload))) => {
+                        let message = String::from_utf8_lossy(&payload).to_string();
+                        let _ = events_tx.send(Err(message.clone()));
+                        return Err(message);
+                    }
+                    Ok(Some(_)) => {}
+                    Ok(None) => return Ok(()),
+                    Err(error) => return Err(error.to_string()),
+                }
+            })
+            .expect("watch reader thread should start");
+
+        (events_rx, handle)
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn wait_for_guest_watch_events(
+        events_rx: &std::sync::mpsc::Receiver<std::result::Result<lsb_proto::WatchEvent, String>>,
+        expected: &[(&str, Option<&str>)],
+    ) -> Result<()> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut remaining = expected
+            .iter()
+            .map(|(path, event)| ((*path).to_string(), event.map(str::to_string)))
+            .collect::<Vec<_>>();
+        let mut seen = Vec::new();
+
+        while !remaining.is_empty() {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                bail!(
+                    "timed out waiting for guest watch events {:?}; seen {:?}",
+                    remaining,
+                    seen
+                );
+            }
+
+            match events_rx.recv_timeout((deadline - now).min(Duration::from_millis(200))) {
+                Ok(Ok(event)) => {
+                    seen.push(format!("{}:{}", event.event, event.path));
+                    remaining.retain(|(path, expected_event)| {
+                        event.path != *path
+                            || expected_event
+                                .as_deref()
+                                .is_some_and(|kind| event.event != kind)
+                    });
+                }
+                Ok(Err(error)) => bail!("guest watch reported error: {error}"),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    bail!(
+                        "guest watch event stream closed before expectations {:?}; seen {:?}",
+                        remaining,
+                        seen
+                    );
+                }
+            }
+        }
+
+        Ok(())
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]

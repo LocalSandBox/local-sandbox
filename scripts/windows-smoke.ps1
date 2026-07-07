@@ -320,8 +320,46 @@ function Invoke-WindowsNodeSmoke {
     Invoke-YarnCommand @("patch-loader")
     Invoke-WindowsNodePackedInstallSmoke
     Invoke-NodeCommand @("scripts/windows-preflight-smoke.mjs")
+    Invoke-WindowsNodeStreamingSmoke
   } finally {
     Pop-Location
+  }
+}
+
+function Invoke-WindowsNodeStreamingSmoke {
+  Write-Host "== Windows Node binding spawn/watch streaming smoke =="
+
+  $dataDir = Join-Path ([System.IO.Path]::GetTempPath()) "lsb-nodejs-streaming-$PID"
+  Remove-Item -LiteralPath $dataDir -Recurse -Force -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Force -Path (Join-Path $dataDir "checkpoints") | Out-Null
+  New-Item -ItemType Directory -Force -Path (Join-Path $dataDir "instances") | Out-Null
+
+  $oldDataDir = $env:LSB_NODEJS_TEST_DATA_DIR
+  $oldStorage = $env:LSB_STORAGE
+
+  try {
+    Copy-Item -LiteralPath $env:LSB_WINDOWS_BOOT_KERNEL -Destination (Join-Path $dataDir "Image") -Force
+    Copy-Item -LiteralPath $env:LSB_WINDOWS_BOOT_INITRD -Destination (Join-Path $dataDir "initramfs.cpio.gz") -Force
+    Copy-Item -LiteralPath $env:LSB_WINDOWS_BOOT_ROOTFS -Destination (Join-Path $dataDir "rootfs.ext4") -Force
+
+    $packageVersion = (Get-Content -Raw -LiteralPath "package.json" | ConvertFrom-Json).version
+    Write-Utf8NoBomText -Path (Join-Path $dataDir "VERSION") -Value "$packageVersion`n"
+
+    $env:LSB_NODEJS_TEST_DATA_DIR = $dataDir
+    $env:LSB_STORAGE = "direct"
+    Invoke-YarnCommand @("ava", "test/streaming.spec.ts", "--timeout=3m")
+  } finally {
+    if ($null -eq $oldDataDir) {
+      Remove-Item Env:\LSB_NODEJS_TEST_DATA_DIR -ErrorAction SilentlyContinue
+    } else {
+      $env:LSB_NODEJS_TEST_DATA_DIR = $oldDataDir
+    }
+    if ($null -eq $oldStorage) {
+      Remove-Item Env:\LSB_STORAGE -ErrorAction SilentlyContinue
+    } else {
+      $env:LSB_STORAGE = $oldStorage
+    }
+    Remove-Item -LiteralPath $dataDir -Recurse -Force -ErrorAction SilentlyContinue
   }
 }
 
@@ -463,6 +501,8 @@ if ($missingBootVars.Count -eq 0) {
   Invoke-NativeCommand "cargo" @("test", "-p", "lsb-platform", "windows_qemu_boot_smoke", "--", "--ignored", "--nocapture")
   Write-Host "== Windows guest exec smoke =="
   Invoke-NativeCommand "cargo" @("test", "-p", "lsb-vm", "windows_qemu_exec_smoke", "--", "--ignored", "--nocapture")
+  Write-Host "== Windows mux spawn/guest watch smoke =="
+  Invoke-NativeCommand "cargo" @("test", "-p", "lsb-vm", "windows_qemu_spawn_guest_watch_smoke", "--", "--ignored", "--nocapture")
   Write-Host "== Windows guest copy transfer smoke =="
   Invoke-NativeCommand "cargo" @("test", "-p", "lsb-vm", "windows_qemu_copy_transfer_smoke", "--", "--ignored", "--nocapture")
   Write-Host "== Windows mount smoke =="
@@ -478,5 +518,5 @@ if ($missingBootVars.Count -eq 0) {
   Write-Host "== Windows network policy/proxy smoke =="
   Invoke-NativeCommand "cargo" @("test", "-p", "lsb-sdk", "windows_qemu_network_policy_proxy_smoke", "--", "--ignored", "--nocapture")
 } else {
-  Write-Warning "Skipping Windows Node binding, QEMU direct boot, guest exec, guest copy transfer, mount, port-forward, checkpoint/store, and network policy/proxy smokes. Set $($missingBootVars -join ', ') to disposable LocalSandbox boot asset paths."
+  Write-Warning "Skipping Windows Node binding, QEMU direct boot, guest exec, mux spawn/watch, guest copy transfer, mount, port-forward, checkpoint/store, direct SMB watch, and network policy/proxy smokes. Set $($missingBootVars -join ', ') to disposable LocalSandbox boot asset paths."
 }
