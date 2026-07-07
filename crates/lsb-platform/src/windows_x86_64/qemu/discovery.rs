@@ -124,16 +124,17 @@ where
             return self.validate_config_path(path.clone());
         }
 
+        let default_data_dir = PathBuf::from(crate::default_data_dir());
         let managed_data_dir = self
             .managed_data_dir
-            .clone()
-            .unwrap_or_else(|| PathBuf::from(crate::default_data_dir()));
-        if let Some(path) = self.host.managed_qemu_system_path(&managed_data_dir) {
-            if self.host.is_file(&path) {
-                return Ok(QemuPath {
-                    path: self.canonical_or_original(&path),
-                    source: QemuPathSource::Managed,
-                });
+            .as_deref()
+            .unwrap_or(default_data_dir.as_path());
+        if let Some(qemu) = self.discover_managed_qemu_system(managed_data_dir) {
+            return Ok(qemu);
+        }
+        if managed_data_dir != default_data_dir.as_path() {
+            if let Some(qemu) = self.discover_managed_qemu_system(&default_data_dir) {
+                return Ok(qemu);
             }
         }
 
@@ -188,5 +189,13 @@ where
         self.host
             .canonicalize(path)
             .unwrap_or_else(|| path.to_path_buf())
+    }
+
+    fn discover_managed_qemu_system(&self, data_dir: &Path) -> Option<QemuPath> {
+        let path = self.host.managed_qemu_system_path(data_dir)?;
+        self.host.is_file(&path).then(|| QemuPath {
+            path: self.canonical_or_original(&path),
+            source: QemuPathSource::Managed,
+        })
     }
 }

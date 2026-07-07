@@ -195,7 +195,7 @@ impl fmt::Display for QemuPreflightError {
                 searched_path_entries,
             } => write!(
                 f,
-                "qemu-system-x86_64.exe was not found after checking LSB_QEMU, the LocalSandbox config hook, managed QEMU, and {searched_path_entries} PATH entr{}. {}",
+                "qemu-system-x86_64.exe was not found after checking LSB_QEMU, the LocalSandbox config hook, managed QEMU in the requested data dir, managed QEMU in the default data dir, and {searched_path_entries} PATH entr{}. {}",
                 if *searched_path_entries == 1 { "y" } else { "ies" },
                 self.remediation()
             ),
@@ -303,6 +303,7 @@ mod tests {
         path_entries: Vec<PathBuf>,
         files: HashSet<PathBuf>,
         managed_qemu_system_path: Option<PathBuf>,
+        managed_qemu_system_paths: HashMap<PathBuf, PathBuf>,
         os: String,
         arch: String,
         windows_major_version: Option<u32>,
@@ -315,6 +316,7 @@ mod tests {
                 path_entries: Vec::new(),
                 files: HashSet::new(),
                 managed_qemu_system_path: None,
+                managed_qemu_system_paths: HashMap::new(),
                 os: "windows".to_string(),
                 arch: "x86_64".to_string(),
                 windows_major_version: Some(11),
@@ -338,6 +340,16 @@ mod tests {
 
         fn with_managed_qemu_system_path(mut self, path: impl Into<PathBuf>) -> Self {
             self.managed_qemu_system_path = Some(path.into());
+            self
+        }
+
+        fn with_managed_qemu_system_path_for_data_dir(
+            mut self,
+            data_dir: impl Into<PathBuf>,
+            path: impl Into<PathBuf>,
+        ) -> Self {
+            self.managed_qemu_system_paths
+                .insert(data_dir.into(), path.into());
             self
         }
 
@@ -374,8 +386,11 @@ mod tests {
             Some(path.to_path_buf())
         }
 
-        fn managed_qemu_system_path(&self, _data_dir: &Path) -> Option<PathBuf> {
-            self.managed_qemu_system_path.clone()
+        fn managed_qemu_system_path(&self, data_dir: &Path) -> Option<PathBuf> {
+            self.managed_qemu_system_paths
+                .get(data_dir)
+                .cloned()
+                .or_else(|| self.managed_qemu_system_path.clone())
         }
 
         fn host_os(&self) -> String {
@@ -577,6 +592,55 @@ mod tests {
 
         assert_eq!(qemu.source, QemuPathSource::Managed);
         assert_eq!(qemu.path, managed_path);
+    }
+
+    #[test]
+    fn discovery_uses_default_managed_before_path_when_managed_data_dir_is_custom() {
+        let custom_data_dir = PathBuf::from("/custom/lsb");
+        let default_data_dir = PathBuf::from(crate::default_data_dir());
+        assert_ne!(custom_data_dir, default_data_dir);
+        let default_managed_path = PathBuf::from("/default-managed/qemu-system-x86_64.exe");
+        let path_path = qemu_path();
+        let host = FakeHost::windows()
+            .with_managed_qemu_system_path_for_data_dir(
+                default_data_dir,
+                default_managed_path.clone(),
+            )
+            .with_path_entry(qemu_dir())
+            .with_file(default_managed_path.clone())
+            .with_file(path_path);
+
+        let qemu = QemuDiscovery::new(&host)
+            .with_managed_data_dir(custom_data_dir)
+            .discover()
+            .expect("default managed path should win over PATH");
+
+        assert_eq!(qemu.source, QemuPathSource::Managed);
+        assert_eq!(qemu.path, default_managed_path);
+    }
+
+    #[test]
+    fn discovery_uses_custom_managed_before_default_managed() {
+        let custom_data_dir = PathBuf::from("/custom/lsb");
+        let default_data_dir = PathBuf::from(crate::default_data_dir());
+        assert_ne!(custom_data_dir, default_data_dir);
+        let custom_managed_path = PathBuf::from("/custom-managed/qemu-system-x86_64.exe");
+        let default_managed_path = PathBuf::from("/default-managed/qemu-system-x86_64.exe");
+        let host = FakeHost::windows()
+            .with_managed_qemu_system_path_for_data_dir(
+                custom_data_dir.clone(),
+                custom_managed_path.clone(),
+            )
+            .with_managed_qemu_system_path_for_data_dir(default_data_dir, default_managed_path)
+            .with_file(custom_managed_path.clone());
+
+        let qemu = QemuDiscovery::new(&host)
+            .with_managed_data_dir(custom_data_dir)
+            .discover()
+            .expect("custom managed path should win over default managed path");
+
+        assert_eq!(qemu.source, QemuPathSource::Managed);
+        assert_eq!(qemu.path, custom_managed_path);
     }
 
     #[test]
