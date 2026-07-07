@@ -1,11 +1,12 @@
 use std::io::BufReader;
-use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
 use tokio::sync::{mpsc, watch};
+
+use crate::session::BoxedControlSession;
 
 enum ProcessInput {
     Stdin(Vec<u8>),
@@ -63,7 +64,7 @@ impl ProcessHandle {
     }
 }
 
-pub(crate) fn spawn_process_threads(stream: TcpStream) -> ProcessHandle {
+pub(crate) fn spawn_process_threads(stream: BoxedControlSession) -> ProcessHandle {
     let (stdout_tx, stdout_rx) = mpsc::unbounded_channel();
     let (stderr_tx, stderr_rx) = mpsc::unbounded_channel();
     let (input_tx, input_rx) = std::sync::mpsc::channel();
@@ -75,7 +76,7 @@ pub(crate) fn spawn_process_threads(stream: TcpStream) -> ProcessHandle {
         .spawn({
             let closed = closed.clone();
             move || {
-                let mut reader = match stream.try_clone() {
+                let mut reader = match stream.try_clone_session() {
                     Ok(value) => BufReader::new(value),
                     Err(_) => {
                         let _ = exited_tx.send(Some(1));
@@ -148,5 +149,57 @@ pub(crate) fn spawn_process_threads(stream: TcpStream) -> ProcessHandle {
         stdout_rx: Some(stdout_rx),
         stderr_rx: Some(stderr_rx),
         exited_rx,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::*;
+    use crate::session::test_support::memory_session_pair;
+
+    fn wait_for_exit(rx: watch::Receiver<Option<i32>>) -> i32 {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(code) = *rx.borrow() {
+                return code;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "process exit watcher did not receive an exit code"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn process_forwards_stdout_stderr_and_exit_frames() {
+        let (host, mut guest) = memory_session_pair();
+        let mut handle = spawn_process_threads(Box::new(host));
+
+        lsb_proto::frame::write_frame(&mut guest, lsb_proto::frame::STDOUT, b"hello\n")
+            .expect("stdout frame should write");
+        lsb_proto::frame::write_frame(&mut guest, lsb_proto::frame::STDERR, b"warn\n")
+            .expect("stderr frame should write");
+        lsb_proto::frame::write_frame(
+            &mut guest,
+            lsb_proto::frame::EXIT,
+            &lsb_proto::frame::exit_payload(17),
+        )
+        .expect("exit frame should write");
+
+        let mut stdout = handle.take_stdout().expect("stdout receiver should exist");
+        let mut stderr = handle.take_stderr().expect("stderr receiver should exist");
+
+        assert_eq!(
+            stdout.blocking_recv().expect("stdout chunk should arrive"),
+            b"hello\n".to_vec()
+        );
+        assert_eq!(
+            stderr.blocking_recv().expect("stderr chunk should arrive"),
+            b"warn\n".to_vec()
+        );
+        assert_eq!(wait_for_exit(handle.exit_watcher()), 17);
     }
 }

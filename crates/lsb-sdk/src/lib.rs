@@ -2,6 +2,7 @@ mod assets;
 mod host_tools;
 mod process;
 mod runtime;
+mod session;
 mod shell;
 mod storage;
 mod types;

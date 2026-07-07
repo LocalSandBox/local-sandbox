@@ -113,6 +113,16 @@ impl MuxSession {
     fn session_id(&self) -> u64 {
         self.session_id
     }
+
+    pub(crate) fn close(&self) -> io::Result<()> {
+        self.inner.close_session(self.session_id);
+        Ok(())
+    }
+
+    pub(crate) fn reset(&self, reason: impl Into<String>) -> io::Result<()> {
+        self.inner.reset_session(self.session_id, reason.into());
+        Ok(())
+    }
 }
 
 impl Drop for MuxSession {
@@ -403,6 +413,37 @@ impl MuxManagerInner {
             session.scheduled = true;
             state.ready_sessions.push_back(session_id);
         }
+        self.cv.notify_all();
+    }
+
+    fn reset_session(&self, session_id: u64, reason: String) {
+        let mut state = self.state.lock().expect("Windows mux state lock poisoned");
+        if state.failed.is_some() {
+            return;
+        }
+        if !state.sessions.contains_key(&session_id) {
+            return;
+        }
+        if state.control_queue.len() >= MAX_CONTROL_QUEUE_FRAMES {
+            state.fail(format!(
+                "mux control queue was full while resetting session {session_id}"
+            ));
+            self.cv.notify_all();
+            return;
+        }
+
+        if let Some(session) = state.sessions.get_mut(&session_id) {
+            session.outbound.clear();
+            session.outbound_bytes = 0;
+            session.reset_reason = Some(reason.clone());
+            session.local_fin = true;
+            session.fin_sent = true;
+            session.scheduled = false;
+        }
+        state.ready_sessions.retain(|queued| *queued != session_id);
+        state
+            .control_queue
+            .push_back(MuxFrame::Rst { session_id, reason });
         self.cv.notify_all();
     }
 

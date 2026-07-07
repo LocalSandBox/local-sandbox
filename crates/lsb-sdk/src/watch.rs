@@ -1,9 +1,9 @@
 use std::io::BufReader;
-use std::net::TcpStream;
 
 use anyhow::Result;
 use tokio::sync::mpsc;
 
+use crate::session::BoxedControlSession;
 use crate::WatchEvent;
 
 /// Handle to a file watch stream in the VM.
@@ -21,7 +21,7 @@ impl WatchHandle {
     }
 }
 
-pub(crate) fn spawn_watch_thread(stream: TcpStream) -> WatchHandle {
+pub(crate) fn spawn_watch_thread(stream: BoxedControlSession) -> WatchHandle {
     let (events_tx, events_rx) = mpsc::unbounded_channel();
 
     let _ = std::thread::Builder::new()
@@ -52,4 +52,34 @@ pub(crate) fn spawn_watch_thread(stream: TcpStream) -> WatchHandle {
         });
 
     WatchHandle { events_rx }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::test_support::memory_session_pair;
+
+    #[test]
+    fn watch_forwards_watch_event_frames() {
+        let (host, mut guest) = memory_session_pair();
+        let handle = spawn_watch_thread(Box::new(host));
+        let mut events = handle.into_events();
+
+        lsb_proto::frame::send_json(
+            &mut guest,
+            lsb_proto::frame::WATCH_EVENT,
+            &lsb_proto::WatchEvent {
+                path: "/tmp/file.txt".to_string(),
+                event: "modify".to_string(),
+            },
+        )
+        .expect("watch event frame should write");
+
+        let event = events
+            .blocking_recv()
+            .expect("watch event should arrive")
+            .expect("watch event should parse");
+        assert_eq!(event.path, "/tmp/file.txt");
+        assert_eq!(event.event, "modify");
+    }
 }

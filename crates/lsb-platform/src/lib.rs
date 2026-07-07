@@ -7,7 +7,7 @@
 use std::env;
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::net::{Ipv4Addr, TcpStream};
+use std::net::{Ipv4Addr, Shutdown, TcpStream};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
@@ -287,10 +287,19 @@ pub struct PlatformControlStream {
     inner: PlatformControlStreamInner,
 }
 
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlatformControlSessionKind {
+    Exec,
+    Watch,
+    File,
+}
+
 #[derive(Debug)]
 enum PlatformControlStreamInner {
     Tcp(TcpStream),
     File(File),
+    WindowsMux(windows_x86_64::MuxSession),
 }
 
 impl PlatformControlStream {
@@ -306,6 +315,9 @@ impl PlatformControlStream {
                 .try_clone()
                 .map(PlatformControlStream::from_tcp_stream),
             PlatformControlStreamInner::File(file) => file.try_clone().map(Self::from_file),
+            PlatformControlStreamInner::WindowsMux(session) => {
+                Ok(Self::from_windows_mux_session(session.clone()))
+            }
         }
     }
 
@@ -313,12 +325,39 @@ impl PlatformControlStream {
         match &self.inner {
             PlatformControlStreamInner::Tcp(stream) => stream.set_nodelay(enabled),
             PlatformControlStreamInner::File(_) => Ok(()),
+            PlatformControlStreamInner::WindowsMux(_) => Ok(()),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn close(&mut self) -> io::Result<()> {
+        match &mut self.inner {
+            PlatformControlStreamInner::Tcp(stream) => stream.shutdown(Shutdown::Both),
+            PlatformControlStreamInner::File(file) => file.flush(),
+            PlatformControlStreamInner::WindowsMux(session) => session.close(),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn reset(&mut self) -> io::Result<()> {
+        match &mut self.inner {
+            PlatformControlStreamInner::Tcp(stream) => stream.shutdown(Shutdown::Both),
+            PlatformControlStreamInner::File(file) => file.flush(),
+            PlatformControlStreamInner::WindowsMux(session) => {
+                session.reset("host reset control session")
+            }
         }
     }
 
     pub(crate) fn from_file(file: File) -> Self {
         Self {
             inner: PlatformControlStreamInner::File(file),
+        }
+    }
+
+    pub(crate) fn from_windows_mux_session(session: windows_x86_64::MuxSession) -> Self {
+        Self {
+            inner: PlatformControlStreamInner::WindowsMux(session),
         }
     }
 }
@@ -328,6 +367,7 @@ impl Read for PlatformControlStream {
         match &mut self.inner {
             PlatformControlStreamInner::Tcp(stream) => stream.read(buf),
             PlatformControlStreamInner::File(file) => file.read(buf),
+            PlatformControlStreamInner::WindowsMux(session) => session.read(buf),
         }
     }
 }
@@ -337,6 +377,7 @@ impl Write for PlatformControlStream {
         match &mut self.inner {
             PlatformControlStreamInner::Tcp(stream) => stream.write(buf),
             PlatformControlStreamInner::File(file) => file.write(buf),
+            PlatformControlStreamInner::WindowsMux(session) => session.write(buf),
         }
     }
 
@@ -344,6 +385,7 @@ impl Write for PlatformControlStream {
         match &mut self.inner {
             PlatformControlStreamInner::Tcp(stream) => stream.flush(),
             PlatformControlStreamInner::File(file) => file.flush(),
+            PlatformControlStreamInner::WindowsMux(session) => session.flush(),
         }
     }
 }
@@ -356,6 +398,16 @@ pub trait PlatformVm: Send + Sync {
         Vec::new()
     }
     fn connect_control(&self) -> Result<PlatformControlStream>;
+    #[doc(hidden)]
+    fn open_control_session(
+        &self,
+        kind: PlatformControlSessionKind,
+    ) -> Result<PlatformControlStream> {
+        let _ = kind;
+        Err(anyhow!(
+            "multiplexed guest control sessions are not implemented for this platform backend"
+        ))
+    }
     fn connect_port_forward(&self) -> Result<PlatformControlStream> {
         Err(anyhow!(
             "host-to-guest port forwarding stream is not implemented for this platform backend"

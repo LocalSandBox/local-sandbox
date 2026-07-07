@@ -13,6 +13,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::info;
 
 use crate::process::{spawn_process_threads, ProcessHandle};
+use crate::session::BoxedControlSession;
 use crate::shell::{ShellEvent, ShellHandle, ShellReader, ShellWriter};
 use crate::storage::{prepare_storage, StoragePrepareOptions};
 use crate::types::{CommandOptions, ExecResult, SandboxConfig};
@@ -75,12 +76,12 @@ enum SandboxCmd {
         argv: Vec<String>,
         cwd: Option<String>,
         env: HashMap<String, String>,
-        reply: oneshot::Sender<Result<TcpStream>>,
+        reply: oneshot::Sender<Result<BoxedControlSession>>,
     },
     OpenWatch {
         path: String,
         recursive: bool,
-        reply: oneshot::Sender<Result<TcpStream>>,
+        reply: oneshot::Sender<Result<BoxedControlSession>>,
     },
     OpenShell {
         rows: u16,
@@ -383,7 +384,11 @@ impl AsyncSandbox {
         Ok(spawn_watch_thread(stream))
     }
 
-    async fn open_exec(&self, argv: &[&str], options: CommandOptions) -> Result<TcpStream> {
+    async fn open_exec(
+        &self,
+        argv: &[&str],
+        options: CommandOptions,
+    ) -> Result<BoxedControlSession> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.cmd_tx
             .send(SandboxCmd::OpenExec {
@@ -396,7 +401,7 @@ impl AsyncSandbox {
         reply_rx.await?
     }
 
-    async fn open_watch(&self, path: &str, recursive: bool) -> Result<TcpStream> {
+    async fn open_watch(&self, path: &str, recursive: bool) -> Result<BoxedControlSession> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.cmd_tx
             .send(SandboxCmd::OpenWatch {
@@ -916,7 +921,9 @@ fn run_vm_loop(
             } => {
                 let mut combined_env = env.clone();
                 combined_env.extend(command_env);
-                let result = sandbox.open_exec(&argv, &combined_env, cwd.as_deref());
+                let result = sandbox
+                    .open_exec_session(&argv, &combined_env, cwd.as_deref())
+                    .map(|session| Box::new(session) as BoxedControlSession);
                 let _ = reply.send(result);
             }
             SandboxCmd::OpenWatch {
@@ -924,7 +931,10 @@ fn run_vm_loop(
                 recursive,
                 reply,
             } => {
-                let _ = reply.send(sandbox.open_watch(&path, recursive));
+                let result = sandbox
+                    .open_watch_session(&path, recursive)
+                    .map(|session| Box::new(session) as BoxedControlSession);
+                let _ = reply.send(result);
             }
             SandboxCmd::OpenShell { rows, cols, reply } => {
                 let result = sandbox.open_shell(&["/bin/bash", "-l"], &env, rows, cols);

@@ -1097,6 +1097,51 @@ impl Sandbox {
         }
     }
 
+    /// Internal streaming exec entry point used by higher-level SDK bindings.
+    /// This preserves the public `open_exec` `TcpStream` API while allowing
+    /// platform backends to provide non-TCP control sessions.
+    #[doc(hidden)]
+    pub fn open_exec_session(
+        &self,
+        argv: &[impl AsRef<str>],
+        env: &HashMap<String, String>,
+        cwd: Option<&str>,
+    ) -> Result<PlatformControlStream> {
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (argv, env, cwd);
+            return Err(unsupported_runtime(
+                "streaming exec stdin/kill",
+                "Use Sandbox::exec for non-interactive commands; streaming stdin/kill requires a multiplexed guest control session.",
+            ));
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let session = PlatformControlStream::from_tcp_stream(self.connect_vsock()?);
+            self.initialize_exec_session(session, argv, env, cwd)
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn initialize_exec_session(
+        &self,
+        session: PlatformControlStream,
+        argv: &[impl AsRef<str>],
+        env: &HashMap<String, String>,
+        cwd: Option<&str>,
+    ) -> Result<PlatformControlStream> {
+        let mut writer = session.try_clone()?;
+        let mut reader = session.try_clone()?;
+
+        self.send_mount_requests(&mut writer, &mut reader)?;
+
+        let req = build_exec_request(argv, env, cwd, None, None);
+        send_exec_request(&mut writer, &req)?;
+
+        Ok(session)
+    }
+
     /// Open a vsock connection for an interactive shell with PTY support.
     /// Like `open_exec` but with `tty=true`. Returns the raw stream after
     /// sending mounts + ExecRequest. Caller manages I/O using the binary
@@ -1144,6 +1189,48 @@ impl Sandbox {
         frame::send_json(&mut writer, frame::WATCH_REQ, &req)?;
 
         Ok(stream)
+    }
+
+    /// Internal watch entry point used by higher-level SDK bindings. This keeps
+    /// the public `open_watch` `TcpStream` API stable while allowing platform
+    /// backends to use non-TCP control sessions.
+    #[doc(hidden)]
+    pub fn open_watch_session(&self, path: &str, recursive: bool) -> Result<PlatformControlStream> {
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (path, recursive);
+            return Err(unsupported_runtime(
+                "file watch",
+                "Windows watch requires a multiplexed guest control session and is not enabled yet.",
+            ));
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let session = PlatformControlStream::from_tcp_stream(self.connect_vsock()?);
+            self.initialize_watch_session(session, path, recursive)
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn initialize_watch_session(
+        &self,
+        session: PlatformControlStream,
+        path: &str,
+        recursive: bool,
+    ) -> Result<PlatformControlStream> {
+        let mut writer = session.try_clone()?;
+        let mut reader = session.try_clone()?;
+
+        self.send_mount_requests(&mut writer, &mut reader)?;
+
+        let req = WatchRequest {
+            path: path.to_string(),
+            recursive,
+        };
+        frame::send_json(&mut writer, frame::WATCH_REQ, &req)?;
+
+        Ok(session)
     }
 
     /// Run an interactive shell session with PTY support.

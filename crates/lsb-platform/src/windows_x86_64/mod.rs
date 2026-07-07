@@ -13,6 +13,7 @@ mod network;
 mod qemu;
 
 pub(crate) use backend::create_vm;
+pub(crate) use control::mux::MuxSession;
 
 use crate::{PlatformSpec, PlatformStatus};
 

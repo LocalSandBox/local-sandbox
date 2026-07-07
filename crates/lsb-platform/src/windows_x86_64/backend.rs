@@ -5,10 +5,12 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, Result};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 
-use crate::{PlatformControlStream, PlatformVm, PlatformVmConfig, VmState};
+use crate::{
+    PlatformControlSessionKind, PlatformControlStream, PlatformVm, PlatformVmConfig, VmState,
+};
 
 use super::config::WindowsVmConfig;
-use super::control::VirtioSerialControlEndpoint;
+use super::control::{mux::MuxSessionKind, VirtioSerialControlEndpoint};
 use super::errors::unsupported;
 use super::network::qemu_network_config;
 use super::qemu::boot::{launch_windows_qemu_boot, WindowsQemuBoot, WindowsQemuBootConfig};
@@ -173,6 +175,36 @@ impl PlatformVm for WindowsVm {
                 running_boot.artifacts().summary()
             )
         })
+    }
+
+    fn open_control_session(
+        &self,
+        kind: PlatformControlSessionKind,
+    ) -> Result<PlatformControlStream> {
+        let boot = self
+            .boot
+            .lock()
+            .map_err(|_| anyhow!("Windows QEMU boot state lock poisoned"))?;
+        let Some(running_boot) = boot.as_ref() else {
+            return Err(anyhow!(
+                "Windows virtio-serial control mux is unavailable because the VM is not running; start the VM before opening guest control"
+            ));
+        };
+
+        let mux_kind = match kind {
+            PlatformControlSessionKind::Exec => MuxSessionKind::Exec,
+            PlatformControlSessionKind::Watch => MuxSessionKind::Watch,
+            PlatformControlSessionKind::File => MuxSessionKind::File,
+        };
+        running_boot
+            .open_mux_session(mux_kind)
+            .map(PlatformControlStream::from_windows_mux_session)
+            .map_err(|err| {
+                anyhow!(
+                    "Windows virtio-serial control mux session is unavailable: {err}. Captured artifacts: {}",
+                    running_boot.artifacts().summary()
+                )
+            })
     }
 
     fn connect_port_forward(&self) -> Result<PlatformControlStream> {
