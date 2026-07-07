@@ -7,11 +7,13 @@ use std::collections::HashMap;
 /// Length = size of type byte + payload (excludes the 4-byte length prefix).
 /// Max frame size: 1 MB.
 pub mod frame;
+pub mod mux;
 
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const CAP_FILE_RANGE_IO: &str = "file_range_io";
 pub const CAP_PORT_FORWARD: &str = "port_forward";
 pub const CAP_CIFS_MOUNT: &str = "cifs_mount";
+pub const CAP_SESSION_MUX: &str = "session_mux";
 pub const FILE_TRANSFER_CHUNK_SIZE: usize = 512 * 1024;
 
 // --- Guest lifecycle protocol ---
@@ -388,7 +390,7 @@ mod tests {
     use super::{
         decode_forward_close, decode_forward_payload, encode_forward_close, encode_forward_payload,
         ExecRequest, ForwardRequest, ForwardResponse, GuestReady, GuestTransport, MountRequest,
-        ReadFileRequest, WriteFileRequest, PROTOCOL_VERSION,
+        ReadFileRequest, WriteFileRequest, CAP_SESSION_MUX, PROTOCOL_VERSION,
     };
     use crate::frame;
 
@@ -404,6 +406,18 @@ mod tests {
         assert_eq!(decoded.transport, GuestTransport::VirtioSerial);
         assert_eq!(decoded.guest_version, "0.5.2-test");
         assert!(decoded.capabilities.is_empty());
+    }
+
+    #[test]
+    fn guest_ready_can_advertise_session_mux_capability() {
+        let mut ready = GuestReady::new(GuestTransport::VirtioSerial, "0.5.2-test");
+        ready.capabilities.push(CAP_SESSION_MUX.to_string());
+
+        let json = serde_json::to_string(&ready).expect("guest ready should serialize");
+        let decoded: GuestReady =
+            serde_json::from_str(&json).expect("guest ready should deserialize");
+
+        assert_eq!(decoded.capabilities, [CAP_SESSION_MUX]);
     }
 
     #[test]
