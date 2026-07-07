@@ -574,13 +574,14 @@ impl QemuImg {
             }
         }
 
-        if let Some(managed) =
-            lsb_platform::windows_x86_64::host_tools::active_managed_qemu(data_dir)
-        {
-            if managed.qemu_img.is_file() {
-                return Ok(Self {
-                    program: managed.qemu_img,
-                });
+        if let Some(program) = managed_qemu_img(data_dir) {
+            return Ok(Self { program });
+        }
+
+        let default_data_dir = PathBuf::from(lsb_platform::default_data_dir());
+        if default_data_dir.as_path() != data_dir {
+            if let Some(program) = managed_qemu_img(&default_data_dir) {
+                return Ok(Self { program });
             }
         }
 
@@ -596,7 +597,7 @@ impl QemuImg {
 
         Err(WindowsCheckpointError::QemuImgNotFound {
             detail: format!(
-                "{} was not found via LSB_QEMU_IMG, next to LSB_QEMU, next to configured QEMU, managed QEMU, or in {} PATH entries",
+                "{} was not found via LSB_QEMU_IMG, next to LSB_QEMU, next to configured QEMU, managed QEMU in the sandbox data dir, managed QEMU in the default data dir, or in {} PATH entries",
                 qemu_img_file_name(),
                 path_entries.len()
             ),
@@ -650,6 +651,11 @@ impl QemuImg {
             ],
         }
     }
+}
+
+fn managed_qemu_img(data_dir: &Path) -> Option<PathBuf> {
+    lsb_platform::windows_x86_64::host_tools::active_managed_qemu(data_dir)
+        .and_then(|managed| managed.qemu_img.is_file().then_some(managed.qemu_img))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1116,13 +1122,23 @@ mod tests {
         let old_qemu_img = std::env::var_os("LSB_QEMU_IMG");
         let old_qemu = std::env::var_os("LSB_QEMU");
         let old_path = std::env::var_os("PATH");
+        let old_home = std::env::var_os("HOME");
+        let old_local_app_data = std::env::var_os("LOCALAPPDATA");
+        let old_user_profile = std::env::var_os("USERPROFILE");
+        let isolated_home = tempfile::tempdir().expect("isolated HOME");
         std::env::remove_var("LSB_QEMU_IMG");
         std::env::remove_var("LSB_QEMU");
         std::env::remove_var("PATH");
+        std::env::remove_var("LOCALAPPDATA");
+        std::env::remove_var("USERPROFILE");
+        std::env::set_var("HOME", isolated_home.path());
         let result = f();
         restore_env("LSB_QEMU_IMG", old_qemu_img);
         restore_env("LSB_QEMU", old_qemu);
         restore_env("PATH", old_path);
+        restore_env("HOME", old_home);
+        restore_env("LOCALAPPDATA", old_local_app_data);
+        restore_env("USERPROFILE", old_user_profile);
         result
     }
 
@@ -1300,6 +1316,28 @@ mod tests {
                 QemuImg::discover_for_data_dir(&data_dir).expect("managed qemu-img should win");
 
             assert_eq!(discovered.program(), managed_img);
+            assert_ne!(discovered.program(), path_img);
+        });
+    }
+
+    #[test]
+    fn qemu_img_discovery_uses_default_managed_before_path_when_data_dir_is_custom() {
+        with_env_lock(|| {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let data_dir = tmp.path().join("sandbox-data");
+            let default_data_dir = PathBuf::from(lsb_platform::default_data_dir());
+            assert_ne!(data_dir, default_data_dir);
+            let (_, default_managed_img) = write_managed_qemu(&default_data_dir);
+            let path_dir = tmp.path().join("path");
+            let path_img = path_dir.join(qemu_img_file_name());
+            fs::create_dir_all(&path_dir).expect("path dir");
+            fs::write(&path_img, b"path img").expect("path img");
+            std::env::set_var("PATH", std::env::join_paths([path_dir]).expect("join PATH"));
+
+            let discovered = QemuImg::discover_for_data_dir(&data_dir)
+                .expect("default managed qemu-img should win");
+
+            assert_eq!(discovered.program(), default_managed_img);
             assert_ne!(discovered.program(), path_img);
         });
     }
