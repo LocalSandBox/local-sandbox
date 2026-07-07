@@ -218,7 +218,21 @@ mkdir -p /mnt/rootfs/proc /mnt/rootfs/sys /mnt/rootfs/dev /mnt/rootfs/tmp /mnt/r
 echo "lsb" > /mnt/rootfs/etc/hostname
 echo "nameserver 8.8.8.8" > /mnt/rootfs/etc/resolv.conf
 
-umount /mnt/rootfs
+cd /
+sync
+rootfs_unmounted=0
+for attempt in 1 2 3 4 5; do
+    if umount /mnt/rootfs; then
+        rootfs_unmounted=1
+        break
+    fi
+    echo "umount /mnt/rootfs failed on attempt ${attempt}; retrying..." >&2
+    sleep 1
+done
+if [ "${rootfs_unmounted}" != "1" ]; then
+    echo "regular umount /mnt/rootfs failed; using lazy unmount fallback" >&2
+    umount -l /mnt/rootfs
+fi
 echo "==> Debian rootfs populated successfully"
 "#;
 const LINUX_ROOTFS_SCRIPT_PREFIX: &str = r#"set -e
@@ -488,6 +502,14 @@ mod tests {
 
         assert!(script.contains("cifs-utils"));
         assert!(script.contains("mount.cifs"));
+    }
+
+    #[test]
+    fn macos_rootfs_script_retries_busy_unmounts() {
+        let script = macos_rootfs_docker_script();
+
+        assert!(script.contains("for attempt in 1 2 3 4 5"));
+        assert!(script.contains("umount -l /mnt/rootfs"));
     }
 
     #[test]

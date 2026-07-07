@@ -59,10 +59,115 @@ function Invoke-NativeCommand {
     [string[]]$Arguments
   )
 
-  & $FilePath @Arguments
-  if ($LASTEXITCODE -ne 0) {
-    throw "$FilePath $($Arguments -join ' ') failed with exit code $LASTEXITCODE"
+  $timeoutSeconds = 1200
+  $configuredTimeout = [Environment]::GetEnvironmentVariable("LSB_WINDOWS_SMOKE_COMMAND_TIMEOUT_SECS")
+  if ($configuredTimeout) {
+    $parsedTimeout = 0
+    if ([int]::TryParse($configuredTimeout, [ref]$parsedTimeout) -and $parsedTimeout -gt 0) {
+      $timeoutSeconds = $parsedTimeout
+    }
   }
+
+  $started = Start-NativeCommandOutput -FilePath $FilePath -Arguments $Arguments
+  $printedLength = 0
+  $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSeconds)
+  $stoppedForTimeout = $false
+
+  try {
+    while (-not $started.Process.WaitForExit(1000)) {
+      $text = Get-StartedCommandText $started
+      if ($text.Length -gt $printedLength) {
+        Write-Host -NoNewline $text.Substring($printedLength)
+        $printedLength = $text.Length
+      }
+
+      if ([DateTime]::UtcNow -ge $deadline) {
+        $text = Get-StartedCommandText $started
+        if ($text.Length -gt $printedLength) {
+          Write-Host -NoNewline $text.Substring($printedLength)
+          $printedLength = $text.Length
+        }
+        Stop-StartedCommand $started
+        $stoppedForTimeout = $true
+        throw "$($started.Command) timed out after $timeoutSeconds seconds. Output: $text"
+      }
+    }
+
+    [void]$started.Process.WaitForExit(30000)
+    $text = Get-StartedCommandText $started
+    if ($text.Length -gt $printedLength) {
+      Write-Host -NoNewline $text.Substring($printedLength)
+    }
+
+    if ($started.Process.ExitCode -ne 0) {
+      throw "$($started.Command) failed with exit code $($started.Process.ExitCode)"
+    }
+  } finally {
+    if (-not $stoppedForTimeout) {
+      $started.Process.remove_OutputDataReceived($started.OutputHandler)
+      $started.Process.remove_ErrorDataReceived($started.ErrorHandler)
+    }
+  }
+}
+
+function Resolve-NativeCommandPath {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$FilePath
+  )
+
+  if ([System.IO.Path]::IsPathRooted($FilePath) -or $FilePath.Contains("\") -or $FilePath.Contains("/")) {
+    return $FilePath
+  }
+
+  $commands = @(Get-Command $FilePath -All -ErrorAction SilentlyContinue)
+  $application = @($commands | Where-Object { $_.CommandType -eq "Application" } | Select-Object -First 1)
+  if ($application.Count -gt 0 -and $application[0].Source) {
+    return $application[0].Source
+  }
+
+  $externalScript = @($commands | Where-Object { $_.CommandType -eq "ExternalScript" } | Select-Object -First 1)
+  if ($externalScript.Count -gt 0 -and $externalScript[0].Source) {
+    return $externalScript[0].Source
+  }
+
+  return $FilePath
+}
+
+function Set-NativeCommandStartInfo {
+  param(
+    [Parameter(Mandatory = $true)]
+    [System.Diagnostics.ProcessStartInfo]$StartInfo,
+
+    [Parameter(Mandatory = $true)]
+    [string]$ResolvedFilePath,
+
+    [Parameter(Mandatory = $true)]
+    [string[]]$Arguments
+  )
+
+  $extension = [System.IO.Path]::GetExtension($ResolvedFilePath).ToLowerInvariant()
+  if ($extension -eq ".ps1") {
+    $pwsh = Get-Command pwsh -CommandType Application -ErrorAction SilentlyContinue
+    if (-not $pwsh -or -not $pwsh.Source) {
+      throw "Cannot execute PowerShell script shim $ResolvedFilePath because pwsh was not found on PATH"
+    }
+
+    $StartInfo.FileName = $pwsh.Source
+    foreach ($argument in @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $ResolvedFilePath)) {
+      [void]$StartInfo.ArgumentList.Add($argument)
+    }
+    foreach ($argument in $Arguments) {
+      [void]$StartInfo.ArgumentList.Add($argument)
+    }
+    return "$($pwsh.Source) -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ResolvedFilePath $($Arguments -join ' ')"
+  }
+
+  $StartInfo.FileName = $ResolvedFilePath
+  foreach ($argument in $Arguments) {
+    [void]$StartInfo.ArgumentList.Add($argument)
+  }
+  return "$ResolvedFilePath $($Arguments -join ' ')"
 }
 
 function Start-NativeCommandOutput {
@@ -75,15 +180,13 @@ function Start-NativeCommandOutput {
   )
 
   $collector = [LsbSmoke.ProcessOutputCollector]::new()
+  $resolvedFilePath = Resolve-NativeCommandPath $FilePath
   $psi = [System.Diagnostics.ProcessStartInfo]::new()
-  $psi.FileName = $FilePath
   $psi.WorkingDirectory = (Get-Location).Path
   $psi.UseShellExecute = $false
   $psi.RedirectStandardOutput = $true
   $psi.RedirectStandardError = $true
-  foreach ($argument in $Arguments) {
-    [void]$psi.ArgumentList.Add($argument)
-  }
+  $command = Set-NativeCommandStartInfo -StartInfo $psi -ResolvedFilePath $resolvedFilePath -Arguments $Arguments
 
   $process = [System.Diagnostics.Process]::new()
   $process.StartInfo = $psi
@@ -101,7 +204,7 @@ function Start-NativeCommandOutput {
     Collector = $collector
     OutputHandler = $outputHandler
     ErrorHandler = $errorHandler
-    Command = "$FilePath $($Arguments -join ' ')"
+    Command = $command
   }
 }
 

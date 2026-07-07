@@ -14,7 +14,7 @@ use super::share::{
 use super::types::{
     generate_smb_share_name, generate_smb_user_name, WindowsSmbCleanupFailure,
     WindowsSmbLifecycleConfig, WindowsSmbLifecycleError, WindowsSmbLifecyclePhase,
-    WINDOWS_SMB_UNC_SERVER,
+    WINDOWS_SMB_GATEWAY_SERVER,
 };
 use super::user::{WindowsSmbUserAccount, WindowsSmbUserManager, WindowsSmbUserName};
 
@@ -646,7 +646,7 @@ fn build_mount_request(
 ) -> MountRequest {
     let access = share.access;
     MountRequest::Smb {
-        server: WINDOWS_SMB_UNC_SERVER.to_string(),
+        server: WINDOWS_SMB_GATEWAY_SERVER.to_string(),
         share: share.name.as_str().to_string(),
         target: target.to_string(),
         username: account.name.as_str().to_string(),
@@ -990,7 +990,7 @@ mod tests {
                 file_mode,
                 dir_mode,
                 ..
-            } if server == "localhost"
+            } if server == "10.0.0.1"
                 && share == "lsb-instancemounts01-m0-aabbccdd"
                 && target == "/work"
                 && username == "lsb_000102030405"

@@ -1,4 +1,13 @@
-import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -33,6 +42,49 @@ function prepareDataDir(label) {
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error)
+}
+
+function stageInstanceDiagnostics(label, dataDir) {
+  const destinationRoot = process.env.LSB_WINDOWS_BOOT_ARTIFACT_DIR
+  if (!destinationRoot) {
+    return
+  }
+
+  const instancesDir = join(dataDir, 'instances')
+  if (!existsSync(instancesDir)) {
+    return
+  }
+
+  const stagedRoot = join(destinationRoot, `node-${label}`)
+  let copied = 0
+
+  try {
+    mkdirSync(stagedRoot, { recursive: true })
+
+    for (const entry of readdirSync(instancesDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) {
+        continue
+      }
+
+      const diagnosticsDir = join(instancesDir, entry.name, 'diagnostics')
+      if (!existsSync(diagnosticsDir)) {
+        continue
+      }
+
+      cpSync(diagnosticsDir, join(stagedRoot, entry.name), {
+        errorOnExist: false,
+        force: true,
+        recursive: true,
+      })
+      copied += 1
+    }
+
+    if (copied > 0) {
+      console.log(`staged Node ${label} diagnostic directory count: ${copied}`)
+    }
+  } catch (error) {
+    console.warn(`failed to stage Node ${label} diagnostics: ${errorMessage(error)}`)
+  }
 }
 
 function assertNotNativeLoadError(message) {
@@ -97,6 +149,7 @@ async function expectMissingQemuPreflight(Sandbox) {
     } else {
       process.env.LSB_STORAGE = originalStorage
     }
+    stageInstanceDiagnostics('missing-qemu', dataDir)
     rmSync(dataDir, { recursive: true, force: true })
   }
 }
@@ -121,8 +174,11 @@ async function expectSandboxStart(Sandbox, initSandbox) {
     throw new Error(`Node Sandbox.start reached the Rust backend but did not start: ${message}`)
   } finally {
     if (sandbox) {
+      console.log(`Stopping Node sandbox: ${sandbox.instanceDir}`)
       await sandbox.stop()
+      console.log('Node sandbox stopped')
     }
+    stageInstanceDiagnostics('start', dataDir)
     rmSync(dataDir, { recursive: true, force: true })
   }
 }
@@ -135,6 +191,7 @@ async function expectDirectReadOnlyMount(Sandbox) {
   let sandbox = null
 
   try {
+    console.log('Starting Node direct read-only SMB mount smoke')
     sandbox = await Sandbox.start({
       dataDir,
       instanceId: `node-direct-ro-${process.pid}`,
@@ -178,6 +235,7 @@ async function expectDirectReadOnlyMount(Sandbox) {
     if (sandbox) {
       await sandbox.stop()
     }
+    stageInstanceDiagnostics('direct-ro', dataDir)
     rmSync(dataDir, { recursive: true, force: true })
   }
 }

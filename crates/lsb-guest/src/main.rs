@@ -686,9 +686,9 @@ mod guest {
     use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
     use std::os::unix::process::CommandExt;
     use std::path::Path;
-    use std::process::{Command, Stdio};
+    use std::process::{Child, Command, ExitStatus, Stdio};
     use std::sync::{Arc, Condvar, Mutex};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::control_transport::{self, GuestControlTransport};
     use super::file_transfer;
@@ -702,6 +702,10 @@ mod guest {
         WatchRequest, WriteFileRequest, WriteFileResponse,
     };
     use lsb_proto::{VSOCK_PORT, VSOCK_PORT_FORWARD};
+
+    const MOUNT_CIFS_TIMEOUT: Duration = Duration::from_secs(60);
+    const MOUNT_CIFS_KILL_GRACE: Duration = Duration::from_secs(2);
+    const MOUNT_CIFS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
     trait PhysicalControlStream: Read + Write + AsRawFd + IntoRawFd + Send + 'static {
         fn try_clone_stream(&self) -> std::io::Result<Self>
@@ -963,8 +967,21 @@ mod guest {
             .map_err(|err| format!("failed to write SMB password for {}: {}", target, err))?;
         drop(write_file);
 
+        let stderr_path = mount_cifs_stderr_path();
+        let stderr_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&stderr_path)
+            .map_err(|err| {
+                format!(
+                    "failed to prepare mount.cifs stderr capture for {}: {}",
+                    target, err
+                )
+            })?;
+
         let passwd_fd = read_file.as_raw_fd().to_string();
-        let output = Command::new(smb_mount::MOUNT_CIFS)
+        let child = match Command::new(smb_mount::MOUNT_CIFS)
             .arg(service)
             .arg(target)
             .arg("-o")
@@ -973,28 +990,151 @@ mod guest {
             .env("PASSWD_FD", passwd_fd)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|err| format!("failed to execute mount.cifs for {}: {}", target, err))?;
+            .stderr(Stdio::from(stderr_file))
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(err) => {
+                let _ = std::fs::remove_file(&stderr_path);
+                return Err(format!(
+                    "failed to execute mount.cifs for {}: {}",
+                    target, err
+                ));
+            }
+        };
+        drop(read_file);
 
-        if output.status.success() {
+        let output = match wait_for_mount_cifs(child, target, MOUNT_CIFS_TIMEOUT) {
+            Ok(output) => output,
+            Err(error) => {
+                let _ = std::fs::remove_file(&stderr_path);
+                return Err(error);
+            }
+        };
+        let stderr = std::fs::read(&stderr_path).unwrap_or_default();
+        let _ = std::fs::remove_file(&stderr_path);
+        if !output.timed_out && output.status.is_some_and(|status| status.success()) {
             return Ok(());
         }
 
-        let status = output.status.code().map_or_else(
-            || "terminated by signal".to_string(),
-            |code| code.to_string(),
-        );
-        let stderr = smb_mount::sanitized_command_stderr(&output.stderr);
-        let mut message = format!(
-            "failed to mount SMB share at {}: mount.cifs exited with status {}; stderr: {}",
-            target, status, stderr
-        );
+        let stderr = sanitized_mount_cifs_stderr(&stderr);
+        let mut message = if output.timed_out {
+            format!(
+                "failed to mount SMB share at {}: mount.cifs timed out after {} seconds; stderr: {}",
+                target,
+                MOUNT_CIFS_TIMEOUT.as_secs(),
+                stderr
+            )
+        } else {
+            let status = output.status.map_or_else(
+                || "unknown status".to_string(),
+                mount_cifs_status_description,
+            );
+            format!(
+                "failed to mount SMB share at {}: mount.cifs exited with status {}; stderr: {}",
+                target, status, stderr
+            )
+        };
         if let Some(dmesg) = recent_cifs_dmesg() {
             message.push_str("; dmesg: ");
             message.push_str(&dmesg);
         }
         Err(message)
+    }
+
+    struct MountCifsOutput {
+        status: Option<ExitStatus>,
+        timed_out: bool,
+    }
+
+    fn wait_for_mount_cifs(
+        mut child: Child,
+        target: &str,
+        timeout: Duration,
+    ) -> Result<MountCifsOutput, String> {
+        let deadline = Instant::now() + timeout;
+
+        let (status, timed_out) = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break (Some(status), false),
+                Ok(None) if Instant::now() >= deadline => {
+                    let kill_result = child.kill();
+                    let status = poll_child_exit(&mut child, MOUNT_CIFS_KILL_GRACE)
+                        .ok()
+                        .flatten();
+                    if let Err(error) = kill_result {
+                        eprintln!(
+                            "lsb-guest: failed to kill timed-out mount.cifs for {}: {}",
+                            target, error
+                        );
+                    }
+                    if status.is_none() {
+                        eprintln!(
+                            "lsb-guest: timed-out mount.cifs for {} did not exit within {} seconds after kill",
+                            target,
+                            MOUNT_CIFS_KILL_GRACE.as_secs()
+                        );
+                    }
+                    break (status, true);
+                }
+                Ok(None) => std::thread::sleep(MOUNT_CIFS_POLL_INTERVAL),
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = poll_child_exit(&mut child, MOUNT_CIFS_KILL_GRACE);
+                    return Err(format!(
+                        "failed to poll mount.cifs for {}: {}",
+                        target, error
+                    ));
+                }
+            }
+        };
+
+        Ok(MountCifsOutput { status, timed_out })
+    }
+
+    fn poll_child_exit(
+        child: &mut Child,
+        timeout: Duration,
+    ) -> std::io::Result<Option<ExitStatus>> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return Ok(Some(status));
+            }
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+            std::thread::sleep(MOUNT_CIFS_POLL_INTERVAL);
+        }
+    }
+
+    fn mount_cifs_status_description(status: ExitStatus) -> String {
+        status.code().map_or_else(
+            || "terminated by signal".to_string(),
+            |code| code.to_string(),
+        )
+    }
+
+    fn sanitized_mount_cifs_stderr(stderr: &[u8]) -> String {
+        let stderr = smb_mount::sanitized_command_stderr(stderr);
+        if stderr.is_empty() {
+            "<empty>".to_string()
+        } else {
+            stderr
+        }
+    }
+
+    fn mount_cifs_stderr_path() -> String {
+        format!(
+            "/tmp/lsb-mount-cifs-{}-{}.stderr",
+            std::process::id(),
+            monotonic_mount_cifs_id()
+        )
+    }
+
+    fn monotonic_mount_cifs_id() -> u64 {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 
     fn set_fd_cloexec(fd: RawFd, enabled: bool) -> std::io::Result<()> {
@@ -1893,15 +2033,37 @@ mod guest {
             Ok(mut child) => {
                 let child_pid = child.id() as i32;
 
-                // Channel serializes all frame writes to prevent interleaving
-                let (tx, rx) = std::sync::mpsc::channel::<(u8, Vec<u8>)>();
+                enum ExecOutput {
+                    Frame(u8, Vec<u8>),
+                    Exit(i32),
+                }
+
+                // Channel serializes all frame writes to prevent interleaving.
+                // EXIT is an explicit terminal message so inherited stdout/stderr
+                // handles in grandchildren cannot keep the mux session open forever.
+                let (tx, rx) = std::sync::mpsc::channel::<ExecOutput>();
+                let (output_done_tx, output_done_rx) = std::sync::mpsc::channel::<()>();
 
                 // Writer thread: drains channel, writes frames to vsock
                 let mut frame_writer = control_writer;
                 let writer_thread = std::thread::spawn(move || {
-                    for (frame_type, payload) in rx {
-                        if frame::write_frame(&mut frame_writer, frame_type, &payload).is_err() {
-                            break;
+                    for output in rx {
+                        match output {
+                            ExecOutput::Frame(frame_type, payload) => {
+                                if frame::write_frame(&mut frame_writer, frame_type, &payload)
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            ExecOutput::Exit(exit_code) => {
+                                let _ = frame::write_frame(
+                                    &mut frame_writer,
+                                    frame::EXIT,
+                                    &frame::exit_payload(exit_code),
+                                );
+                                break;
+                            }
                         }
                     }
                 });
@@ -1909,6 +2071,7 @@ mod guest {
                 // Thread: child stdout -> STDOUT frames
                 let child_stdout = child.stdout.take().unwrap();
                 let tx_stdout = tx.clone();
+                let stdout_done = output_done_tx.clone();
                 let stdout_thread = std::thread::spawn(move || {
                     let mut stdout = child_stdout;
                     let mut buf = [0u8; 8192];
@@ -1916,17 +2079,22 @@ mod guest {
                         match stdout.read(&mut buf) {
                             Ok(0) | Err(_) => break,
                             Ok(n) => {
-                                if tx_stdout.send((frame::STDOUT, buf[..n].to_vec())).is_err() {
+                                if tx_stdout
+                                    .send(ExecOutput::Frame(frame::STDOUT, buf[..n].to_vec()))
+                                    .is_err()
+                                {
                                     break;
                                 }
                             }
                         }
                     }
+                    let _ = stdout_done.send(());
                 });
 
                 // Thread: child stderr -> STDERR frames
                 let child_stderr = child.stderr.take().unwrap();
                 let tx_stderr = tx.clone();
+                let stderr_done = output_done_tx.clone();
                 let stderr_thread = std::thread::spawn(move || {
                     let mut stderr = child_stderr;
                     let mut buf = [0u8; 8192];
@@ -1934,13 +2102,18 @@ mod guest {
                         match stderr.read(&mut buf) {
                             Ok(0) | Err(_) => break,
                             Ok(n) => {
-                                if tx_stderr.send((frame::STDERR, buf[..n].to_vec())).is_err() {
+                                if tx_stderr
+                                    .send(ExecOutput::Frame(frame::STDERR, buf[..n].to_vec()))
+                                    .is_err()
+                                {
                                     break;
                                 }
                             }
                         }
                     }
+                    let _ = stderr_done.send(());
                 });
+                drop(output_done_tx);
 
                 let input_thread = if req.stdin_closed.unwrap_or(false) {
                     drop(child.stdin.take());
@@ -1970,9 +2143,6 @@ mod guest {
                     }))
                 };
 
-                // Wait for output to drain, then wait for child
-                let _ = stdout_thread.join();
-                let _ = stderr_thread.join();
                 let status = child.wait().expect("failed to wait on child");
                 let exit_code = status.code().unwrap_or(-1);
 
@@ -1980,9 +2150,27 @@ mod guest {
                     libc::sync();
                 }
 
-                let _ = tx.send((frame::EXIT, frame::exit_payload(exit_code).to_vec()));
+                let output_drain_deadline = std::time::Instant::now() + Duration::from_secs(2);
+                let mut drained_outputs = 0usize;
+                while drained_outputs < 2 {
+                    let now = std::time::Instant::now();
+                    if now >= output_drain_deadline {
+                        break;
+                    }
+                    match output_done_rx.recv_timeout(output_drain_deadline - now) {
+                        Ok(()) => drained_outputs += 1,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+
+                let _ = tx.send(ExecOutput::Exit(exit_code));
                 drop(tx);
                 let _ = writer_thread.join();
+                if drained_outputs == 2 {
+                    let _ = stdout_thread.join();
+                    let _ = stderr_thread.join();
+                }
 
                 // Streaming input threads exit when vsock closes or the host sends KILL.
                 drop(input_thread);
@@ -1992,6 +2180,82 @@ mod guest {
                 let mut w = control_writer;
                 let _ = frame::write_frame(&mut w, frame::ERROR, msg.as_bytes());
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod exec_tests {
+        use super::*;
+        use std::collections::HashMap;
+        use std::os::unix::net::UnixStream;
+        use std::time::{Duration, Instant};
+
+        #[test]
+        fn piped_exec_reports_exit_when_grandchild_keeps_stdout_open() {
+            let pid_file =
+                std::env::temp_dir().join(format!("lsb-guest-exec-bg-{}", std::process::id()));
+            let _ = std::fs::remove_file(&pid_file);
+
+            let mut env = HashMap::new();
+            env.insert(
+                "LSB_GUEST_EXEC_BG_PID".to_string(),
+                pid_file.display().to_string(),
+            );
+            let req = ExecRequest {
+                argv: vec![
+                    "/bin/sh".to_string(),
+                    "-c".to_string(),
+                    "sleep 30 & printf '%s' \"$!\" > \"$LSB_GUEST_EXEC_BG_PID\"; echo child-done"
+                        .to_string(),
+                ],
+                env,
+                tty: None,
+                rows: None,
+                cols: None,
+                cwd: None,
+                stdin_closed: Some(true),
+            };
+
+            let (mut host, guest) = UnixStream::pair().expect("test stream pair");
+            host.set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("read timeout should be set");
+            let guest_reader = guest.try_clone().expect("guest stream should clone");
+            let started = Instant::now();
+            let handle = std::thread::spawn(move || handle_piped_exec(&req, guest_reader, guest));
+
+            let mut stdout = Vec::new();
+            let mut exit_code = None;
+            let read_result = loop {
+                match frame::read_frame(&mut host) {
+                    Ok(Some((frame::STDOUT, data))) => stdout.extend(data),
+                    Ok(Some((frame::STDERR, _))) => {}
+                    Ok(Some((frame::EXIT, data))) => {
+                        exit_code = Some(frame::parse_exit_code(&data).unwrap_or(-1));
+                        break Ok(());
+                    }
+                    Ok(Some((kind, _))) => break Err(format!("unexpected frame type {kind}")),
+                    Ok(None) => break Err("exec stream closed before EXIT".to_string()),
+                    Err(error) => break Err(format!("reading exec frame failed: {error}")),
+                }
+            };
+
+            if let Ok(pid_text) = std::fs::read_to_string(&pid_file) {
+                if let Ok(pid) = pid_text.trim().parse::<i32>() {
+                    unsafe {
+                        libc::kill(pid, libc::SIGTERM);
+                    }
+                }
+            }
+            let _ = std::fs::remove_file(&pid_file);
+
+            read_result.expect("EXIT frame should arrive before inherited stdout closes");
+            assert_eq!(exit_code, Some(0));
+            assert_eq!(String::from_utf8_lossy(&stdout), "child-done\n");
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "EXIT was delayed by inherited stdout handles"
+            );
+            handle.join().expect("exec handler should finish");
         }
     }
 

@@ -25,7 +25,7 @@ use super::process::{
 use super::{lossy_excerpt, QemuPreflightError, StdQemuCommandRunner};
 
 pub(crate) const DEFAULT_BOOT_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(10);
-pub(crate) const DEFAULT_GUEST_READY_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const DEFAULT_GUEST_READY_TIMEOUT: Duration = Duration::from_secs(90);
 const BOOT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SERIAL_LOG_FILE: &str = "serial.log";
 const PREFLIGHT_FILE: &str = "preflight.json";
