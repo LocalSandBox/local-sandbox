@@ -1,0 +1,40 @@
+.github/workflows/release.yml
+  s_ccb900fe171bab::t_7894b205d73ca8 29-32
+README.md
+  s_ccb900fe171bab::t_7894b205d73ca8 49,51,54-60
+  s_ccb900fe171bab::t_9b0074d7bdcd42 61
+crates/lsb-platform/src/lib.rs
+  s_ccb900fe171bab::t_7894b205d73ca8 471-478
+docs/windows-port/README.md
+  s_ccb900fe171bab::t_7894b205d73ca8 13-22
+crates/lsb-platform/src/windows_x86_64/mod.rs
+  s_ccb900fe171bab::t_7894b205d73ca8 24
+docs/windows-port/mvp-handoff.md
+  s_ccb900fe171bab::t_7894b205d73ca8 12,24
+docs/windows-port/validation.md
+  s_ccb900fe171bab::t_7894b205d73ca8 76-80
+docs/windows-port/runner-setup.md
+  s_ccb900fe171bab::t_7894b205d73ca8 80-84
+justfile
+  s_ccb900fe171bab::t_36697bd80ab89c 39-40
+  s_ccb900fe171bab::t_7894b205d73ca8 35,45,56-57
+  s_ccb900fe171bab::t_14a81d9a98b3f9 41,58
+  s_ccb900fe171bab::t_22b945b8fde433 42,59
+  s_ccb900fe171bab::t_76946b7adc85ca 43-44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2b6630e6cd9338245a9318b6b67d3578af5a5037",
+  "prompts": {},
+  "sessions": {
+    "s_ccb900fe171bab": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f36ef-1ae9-7e93-bec0-64c7a1e711eb",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}

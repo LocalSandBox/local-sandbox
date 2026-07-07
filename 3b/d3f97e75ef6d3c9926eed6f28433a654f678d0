@@ -1,0 +1,21 @@
+scripts/windows-smoke.ps1
+  s_a427c34be259ed::t_4cdd0ea379506b 92-104,189-190,194-229
+STATE.md
+  s_a427c34be259ed::t_76b6aeef646766 10-11,108-109,155,191-192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3bd3f97e75ef6d3c9926eed6f28433a654f678d0",
+  "prompts": {},
+  "sessions": {
+    "s_a427c34be259ed": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f37b8-d44f-7663-aec0-27782ca45efb",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}

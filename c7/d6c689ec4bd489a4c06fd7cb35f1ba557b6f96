@@ -1,0 +1,35 @@
+docs/windows-port/validation.md
+  s_e208c75f32f029::t_6c61c394ea3dce 23
+README.md
+  s_e208c75f32f029::t_4e35d0d1f1de90 37-39
+docs/windows-port/mvp-handoff.md
+  s_e208c75f32f029::t_4e35d0d1f1de90 35
+docs/windows-port/rfc-qemu-whpx.md
+  s_e208c75f32f029::t_4e35d0d1f1de90 68,1360,1507
+skills/lsb/SKILL.md
+  s_e208c75f32f029::t_4e35d0d1f1de90 187-188
+bindings/nodejs/scripts/patch-generated-loader.mjs
+  s_e208c75f32f029::t_0340bd0ef010fb 14-15
+CHANGELOG.md
+  s_e208c75f32f029::t_4e35d0d1f1de90 18-20
+docs/windows-port/decisions.md
+  s_e208c75f32f029::t_6c61c394ea3dce 73-74,281,296,306
+crates/lsb-platform/src/windows_x86_64/qemu/mod.rs
+  s_e208c75f32f029::t_4e35d0d1f1de90 860
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c7d6c689ec4bd489a4c06fd7cb35f1ba557b6f96",
+  "prompts": {},
+  "sessions": {
+    "s_e208c75f32f029": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f38b7-f1ea-7421-9a9b-bcaedca7496b",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+install.ps1
+  s_949db60989f24c::t_00fe20d15efb7d 8-90,92-93,103-113,118-126
+  s_949db60989f24c::t_1a111a167aee1a 91,94-102
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ec7cb029b31ff1aa60c3d9ba03bccb488cfb532e",
+  "prompts": {},
+  "sessions": {
+    "s_949db60989f24c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f36b5-0a8f-7d12-a275-151624aba61f",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}

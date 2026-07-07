@@ -1,0 +1,33 @@
+docs/windows-port/decisions.md
+  s_0e659d0366f3b6::t_4ea6f45543a0b6 116-118,122,124-126,271-331
+docs/windows-port/future-work.md
+  s_0e659d0366f3b6::t_85ae4936e3c7c9 22,37-52
+  s_0e659d0366f3b6::t_00fcada452f72b 53
+docs/windows-port/security-checklist.md
+  s_0e659d0366f3b6::t_9e85cf1d96015b 10-12,65-69,73
+STATE.md
+  s_0e659d0366f3b6::t_99b57d80872b94 8-12,16-22,42,96-102
+  s_0e659d0366f3b6::t_3867a0d019d2c8 75
+docs/windows-port/README.md
+  s_0e659d0366f3b6::t_f401664b193e99 27-46
+docs/windows-port/mvp-handoff.md
+  s_0e659d0366f3b6::t_f4ded4a89c7801 44-47,63-79,147-149
+PLAN.md
+  s_0e659d0366f3b6::t_cfb6638d45b791 824-825
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0febf44955776a1cd98d7f01775ff08c9ede0724",
+  "prompts": {},
+  "sessions": {
+    "s_0e659d0366f3b6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3776-d6ee-7943-836b-51c3f480f511",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}

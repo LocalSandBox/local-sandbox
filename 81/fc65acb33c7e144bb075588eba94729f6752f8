@@ -1,0 +1,97 @@
+docs/windows-port/README.md
+  s_a427c34be259ed::t_09b4ca448c7c07 27,29-30,34-35,41-43,45
+  s_a427c34be259ed::t_c6b1111c1cc3df 36
+docs/windows-port/runner-setup.md
+  s_a427c34be259ed::t_4e3c74770b9d0c 112-114
+crates/lsb-vm/src/sandbox.rs
+  s_a427c34be259ed::t_825207b87fedd4 1562-1573,1575-1587,1621
+  s_a427c34be259ed::t_14f6419db7fe83 227-229,254-255,277-278
+  s_a427c34be259ed::t_37c329559af90d 3290-3320
+  s_a427c34be259ed::t_dee6554ff11988 33
+  s_a427c34be259ed::t_b03b32b2245053 2278-2279,2318-2320
+  s_a427c34be259ed::t_cf77220d9c0196 34-35
+  s_a427c34be259ed::t_2f885505308434 3122-3177
+  s_a427c34be259ed::t_d2105a8ca63e78 1787-1796
+  s_a427c34be259ed::t_e2fed56466b3fb 1786,3121
+docs/windows-port/security-checklist.md
+  s_a427c34be259ed::t_12b28357bc03f0 69-70,90-91
+docs/windows-port/validation.md
+  s_a427c34be259ed::t_008c4545f75f33 107,110,112-114,155,158,179-180,190-194
+docs/windows-port/decisions.md
+  s_a427c34be259ed::t_afd354ce1e77d2 322-323
+  s_a427c34be259ed::t_1fa3fa91d5655a 309,317-318
+crates/lsb-sdk/src/runtime.rs
+  s_a427c34be259ed::t_cf77220d9c0196 471-473
+  s_a427c34be259ed::t_6667c5f32cfd2d 469-470,474
+  s_a427c34be259ed::t_299efd51cd90fe 513-525
+  s_a427c34be259ed::t_721e7d189c9d38 1298,1377-1378,1411,1418-1421
+  s_a427c34be259ed::t_eae06dca681acf 1232-1297,1299-1376,1379-1400,1402-1410,1412-1413,1415-1417,1422-1459
+  s_a427c34be259ed::t_0cc9d34f10fecc 1401,1414
+  s_a427c34be259ed::t_b967662d6b81ee 1231
+docs/windows-port/diagnostics.md
+  s_a427c34be259ed::t_de544592b41bbe 51-52
+  s_a427c34be259ed::t_3eaff8ef1ea844 28,105-117,185-186
+  s_a427c34be259ed::t_aa0c7487044a54 53
+docs/windows-port/architecture.md
+  s_a427c34be259ed::t_68cbbe35d5adfa 41
+docs/windows-port/risk-register.md
+  s_a427c34be259ed::t_0185fe781491fe 10,22
+docs/windows-port/review-checklist.md
+  s_a427c34be259ed::t_367e9243208e86 29-30
+STATE.md
+  s_a427c34be259ed::t_f2eb89356c672f 83
+  s_a427c34be259ed::t_a2b8b8f029f921 8-9,13,17-23,54-55,62-64,67,69-70
+  s_a427c34be259ed::t_e4b214d4f768f4 84-86
+  s_a427c34be259ed::t_9c4858fb4fb8ed 108-109,111
+  s_a427c34be259ed::t_5225a5c5912737 119,124,128-138
+  s_a427c34be259ed::t_61650bc2072cf4 142-143,145,148,150,152
+  s_a427c34be259ed::t_25cfb84748c6e2 156-177
+crates/lsb-cli/src/vm.rs
+  s_a427c34be259ed::t_cf77220d9c0196 129-131
+  s_a427c34be259ed::t_86e47f139905fa 127-128,132
+  s_a427c34be259ed::t_9ef41ec05553b4 159-171
+README.md
+  s_a427c34be259ed::t_8bb70f269606e0 91-94,104-115,121-122
+  s_a427c34be259ed::t_318fa6ea06b401 123
+crates/lsb-platform/src/windows_x86_64/fs/smb/lifecycle.rs
+  s_a427c34be259ed::t_638c9c3a819813 520,764-772
+  s_a427c34be259ed::t_32c0bc377cf75e 191,773,857-867,871-946,950-998
+  s_a427c34be259ed::t_e0a97ffe888e42 448
+  s_a427c34be259ed::t_40f4e64f6cb592 192,240-429,431-447,449-490
+  s_a427c34be259ed::t_721e7d189c9d38 430,868-870,947-949
+  s_a427c34be259ed::t_ea0170e0a37672 2-3,6,11-13,19-21
+  s_a427c34be259ed::t_fe4c1853ce95f3 134-143,181-190
+  s_a427c34be259ed::t_1e864815094c3c 193,774
+bindings/nodejs/scripts/windows-preflight-smoke.mjs
+  s_a427c34be259ed::t_af3812f991de51 128-152,154-182,194
+  s_a427c34be259ed::t_4699b0f3b8a7ca 153
+crates/lsb-platform/src/windows_x86_64/fs/smb/types.rs
+  s_a427c34be259ed::t_083309156a0271 5-6,18,97,114
+scripts/windows-smoke.ps1
+  s_a427c34be259ed::t_6e12bbc6bd62cd 170-214,235,244-245,250-251
+crates/lsb-platform/src/windows_x86_64/fs/smb/mod.rs
+  s_a427c34be259ed::t_21f920c50add00 15-22
+bindings/nodejs/README.md
+  s_a427c34be259ed::t_95480468deb5bc 43-44,188,190-192
+docs/windows-port/mvp-handoff.md
+  s_a427c34be259ed::t_90b99bd44dc2a2 29,45-46,62,64-65,68-71,75-77,134-135,146-147
+docs/windows-port/future-work.md
+  s_a427c34be259ed::t_3d1c3885be193c 8-9,37,39-41,43,52-54
+  s_a427c34be259ed::t_a2053b936119d2 46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "81fc65acb33c7e144bb075588eba94729f6752f8",
+  "prompts": {},
+  "sessions": {
+    "s_a427c34be259ed": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f37b8-d44f-7663-aec0-27782ca45efb",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}

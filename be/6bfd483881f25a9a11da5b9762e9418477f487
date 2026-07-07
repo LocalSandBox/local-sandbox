@@ -1,0 +1,56 @@
+crates/lsb-platform/src/windows_x86_64/fs/smb/acl.rs
+  s_bc2428ff7fc54a::t_3ce0851a0fd903 127,147-148
+  s_bc2428ff7fc54a::t_9b5eecdbbfa760 110
+  s_bc2428ff7fc54a::t_6ec1bc9cb8ec6c 83-85,168-172
+  s_bc2428ff7fc54a::t_9154a721d68869 1-82,86-109,111-126,128-146,149-167,173-175
+crates/lsb-platform/src/windows_x86_64/fs/smb/share.rs
+  s_bc2428ff7fc54a::t_9154a721d68869 1-142,144-185,189-190
+  s_bc2428ff7fc54a::t_3ce0851a0fd903 143
+  s_bc2428ff7fc54a::t_6ec1bc9cb8ec6c 186-188
+crates/lsb-platform/src/windows_x86_64/fs/mod.rs
+  s_bc2428ff7fc54a::t_9154a721d68869 3
+crates/lsb-platform/src/windows_x86_64/fs/smb/types.rs
+  s_bc2428ff7fc54a::t_9154a721d68869 1-153,155-160,162-171,182-361,376-377
+  s_bc2428ff7fc54a::t_c430050f44bc3b 172-181
+  s_bc2428ff7fc54a::t_6ec1bc9cb8ec6c 154,161,362-375
+STATE.md
+  s_bc2428ff7fc54a::t_da76ccc2468d82 8-9,13,17-20,22-24,57-62,69,83,123-125
+crates/lsb-platform/src/windows_x86_64/fs/smb/mod.rs
+  s_bc2428ff7fc54a::t_6ec1bc9cb8ec6c 11,14,19-20,32
+  s_bc2428ff7fc54a::t_9154a721d68869 1-10,12-13,15-18,21-31
+crates/lsb-platform/src/windows_x86_64/fs/smb/password.rs
+  s_bc2428ff7fc54a::t_9154a721d68869 1-9,12-92
+  s_bc2428ff7fc54a::t_6ec1bc9cb8ec6c 10-11
+crates/lsb-platform/src/windows_x86_64/fs/smb/user.rs
+  s_bc2428ff7fc54a::t_9154a721d68869 1-3,5-44,49-64,67-117,119-163
+  s_bc2428ff7fc54a::t_6ec1bc9cb8ec6c 4,45-48,65-66,118
+crates/lsb-platform/src/windows_x86_64/fs/smb/admin.rs
+  s_bc2428ff7fc54a::t_3ce0851a0fd903 49-50
+  s_bc2428ff7fc54a::t_9154a721d68869 1-48,51-67
+crates/lsb-platform/Cargo.toml
+  s_bc2428ff7fc54a::t_3ce0851a0fd903 48
+  s_bc2428ff7fc54a::t_9154a721d68869 42,44,47,50
+crates/lsb-platform/src/windows_x86_64/fs/smb/lifecycle.rs
+  s_bc2428ff7fc54a::t_082de9d1cb96af 243
+  s_bc2428ff7fc54a::t_3ce0851a0fd903 10
+  s_bc2428ff7fc54a::t_4b8c277bbb70f1 511,529,552,554-556,598,600-601,729
+  s_bc2428ff7fc54a::t_9154a721d68869 1-9,11-65,67-77,79-89,91-93,100-164,174-232
+  s_bc2428ff7fc54a::t_26d666b37ccbbe 233-242,244-425,430-444,446-510,512-528,530-551,553,557-597,599,602-660,665-728,730-760
+  s_bc2428ff7fc54a::t_6ec1bc9cb8ec6c 66,78,90,94-99,165-173,426-429,445,661-664
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "be6bfd483881f25a9a11da5b9762e9418477f487",
+  "prompts": {},
+  "sessions": {
+    "s_bc2428ff7fc54a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f379b-3ba5-7f71-b120-aee01b1ecb43",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}

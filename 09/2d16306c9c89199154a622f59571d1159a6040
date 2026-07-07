@@ -1,0 +1,22 @@
+PLAN.md
+  s_600e4371fef0a6::t_dba7f4c2bd305b 1-853,1216-1231
+  s_600e4371fef0a6::t_298f4d7539b68b 854-1215
+STATE.md
+  s_600e4371fef0a6::t_6966471a5b5c56 1-128
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "092d16306c9c89199154a622f59571d1159a6040",
+  "prompts": {},
+  "sessions": {
+    "s_600e4371fef0a6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3751-f8f0-75c2-a3e6-4c47cae43a88",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}

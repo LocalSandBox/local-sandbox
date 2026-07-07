@@ -1,0 +1,71 @@
+crates/lsb-platform/src/windows_x86_64/fs/smb/types.rs
+  s_a427c34be259ed::t_a19c8ad2e168a8 102,123
+crates/lsb-cli/src/cli.rs
+  s_a427c34be259ed::t_afe094a856ee91 121-126,171-183
+  s_a427c34be259ed::t_6543c909e1bb89 184
+docs/windows-port/security-checklist.md
+  s_a427c34be259ed::t_7aa90512b729a9 68-75
+docs/windows-port/decisions.md
+  s_a427c34be259ed::t_a63cfa92e55211 313-316
+bindings/nodejs/README.md
+  s_a427c34be259ed::t_73eaec97a4c71c 192-195
+crates/lsb-platform/src/windows_x86_64/fs/smb/lifecycle.rs
+  s_a427c34be259ed::t_b4a92887e6098e 56-57
+  s_a427c34be259ed::t_c04c8106e5c3c9 579-599,1224-1261
+  s_a427c34be259ed::t_9473cf8364db20 1262
+crates/lsb-platform/src/windows_x86_64/fs/smb/mod.rs
+  s_a427c34be259ed::t_09eb06276934e2 5,27-31
+  s_a427c34be259ed::t_d1a0d58294f1f4 32
+docs/windows-port/validation.md
+  s_a427c34be259ed::t_7f405aff21afb0 100-101,132-136
+  s_a427c34be259ed::t_92314c08a81faf 137
+docs/windows-port/README.md
+  s_a427c34be259ed::t_0d04058e037a93 44-46
+crates/lsb-platform/src/windows_x86_64/fs/smb/user.rs
+  s_a427c34be259ed::t_40d2295036fa0b 111,126
+docs/windows-port/mvp-handoff.md
+  s_a427c34be259ed::t_f7091723bdeec0 56-57,75-78,143-144
+crates/lsb-cli/src/doctor.rs
+  s_a427c34be259ed::t_76510d597a9bb0 1-106
+crates/lsb-platform/src/windows_x86_64/fs/smb/admin.rs
+  s_a427c34be259ed::t_28f9a82d06facd 6-11,78-82
+  s_a427c34be259ed::t_d28c02844f03fc 83
+docs/windows-port/runner-setup.md
+  s_a427c34be259ed::t_3ee209136d78c1 112-116
+docs/windows-port/diagnostics.md
+  s_a427c34be259ed::t_305e1178655b2a 28
+docs/windows-port/future-work.md
+  s_a427c34be259ed::t_2a5ebbdf583bb0 54-55
+  s_a427c34be259ed::t_3edf2479788e12 13-14
+README.md
+  s_a427c34be259ed::t_71f04122a2859d 115-118
+crates/lsb-platform/src/windows_x86_64/fs/smb/policy.rs
+  s_a427c34be259ed::t_d201f64d5ff5b6 227,238,264,281,299,321
+  s_a427c34be259ed::t_cb55855bddddee 251-256,307-308,311-314,502-504,561-563
+  s_a427c34be259ed::t_9f509823cc70f6 1-226,228-237,239-250,257-263,265-280,282-298,300-306,309-310,315-320,322-501,505-560,564-570
+crates/lsb-cli/src/main.rs
+  s_a427c34be259ed::t_cb55855bddddee 122
+  s_a427c34be259ed::t_eb4a8040f207fe 5,16,121
+  s_a427c34be259ed::t_d95f79b9467dfd 123
+scripts/windows-smoke.ps1
+  s_a427c34be259ed::t_e77033f3f9969b 234-235
+STATE.md
+  s_a427c34be259ed::t_fd27a20814e34b 103-104
+  s_a427c34be259ed::t_1d884600095a6f 105-106,128-131,144-145,151-152,154-155,157-158,160
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "357e64c6758d46a03bdc5ae2c4d25d36d74029ec",
+  "prompts": {},
+  "sessions": {
+    "s_a427c34be259ed": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f37b8-d44f-7663-aec0-27782ca45efb",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
