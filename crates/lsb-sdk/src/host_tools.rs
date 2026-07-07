@@ -694,7 +694,7 @@ fn now_secs() -> Result<u64> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{Cursor, Write as _};
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -770,6 +770,47 @@ mod tests {
         }
         builder.finish().expect("finish archive");
         archive_path
+    }
+
+    fn write_raw_archive(root: &Path, path: &str, contents: &[u8]) -> PathBuf {
+        let archive_path = root.join("qemu.tar.gz");
+        let archive_file = File::create(&archive_path).expect("create archive");
+        let mut encoder = GzEncoder::new(archive_file, Compression::default());
+        let mut header = [0u8; 512];
+
+        let path_bytes = path.as_bytes();
+        assert!(path_bytes.len() <= 100);
+        header[..path_bytes.len()].copy_from_slice(path_bytes);
+        write_octal(&mut header[100..108], 0o755);
+        write_octal(&mut header[108..116], 0);
+        write_octal(&mut header[116..124], 0);
+        write_octal(&mut header[124..136], contents.len() as u64);
+        write_octal(&mut header[136..148], 0);
+        header[148..156].fill(b' ');
+        header[156] = b'0';
+        header[257..263].copy_from_slice(b"ustar\0");
+        header[263..265].copy_from_slice(b"00");
+
+        let checksum = header.iter().map(|byte| u32::from(*byte)).sum::<u32>();
+        write!(&mut header[148..156], "{checksum:06o}\0 ").expect("write checksum");
+
+        encoder.write_all(&header).expect("write archive header");
+        encoder.write_all(contents).expect("write archive file");
+        let padding = (512 - (contents.len() % 512)) % 512;
+        if padding > 0 {
+            encoder
+                .write_all(&vec![0u8; padding])
+                .expect("write archive padding");
+        }
+        encoder
+            .write_all(&[0u8; 1024])
+            .expect("write archive terminator");
+        encoder.finish().expect("finish archive");
+        archive_path
+    }
+
+    fn write_octal(mut field: &mut [u8], value: u64) {
+        write!(field, "{value:0width$o}\0", width = field.len() - 1).expect("write octal field");
     }
 
     fn sha256_bytes(bytes: &[u8]) -> String {
@@ -996,8 +1037,11 @@ mod tests {
     fn archive_traversal_entry_is_rejected() {
         let root = temp_dir("traversal");
         let data_dir = root.join("data");
-        let files = vec![(r"qemu-11.0.50-lsb0.4.0\..\escape.txt", b"escape".as_slice())];
-        let archive = write_archive(&root, &files);
+        let archive = write_raw_archive(
+            &root,
+            r"qemu-11.0.50-lsb0.4.0\..\escape.txt",
+            b"escape",
+        );
         let metadata = test_metadata(sha256_file(&archive).expect("hash archive"));
         let probe = FakeProbe::default();
 
