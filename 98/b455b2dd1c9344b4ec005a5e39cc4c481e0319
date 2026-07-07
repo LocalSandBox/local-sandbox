@@ -1,0 +1,26 @@
+crates/lsb-proto/src/lib.rs
+  s_3542b2c8bb274b::t_050b5053dc2711 10,16,393,411-420
+  s_3542b2c8bb274b::t_bcf215c09ea57c 421-422
+crates/lsb-proto/src/mux.rs
+  s_3542b2c8bb274b::t_55eb161e79aa22 182,191,197,203,209,216
+  s_3542b2c8bb274b::t_34ffef82cd40b0 1-181,183-190,192-196,198-202,204-208,210-215,217-288,290-300,302-316,318-354,356-421,430-437,443-567,578-584,595-601
+  s_3542b2c8bb274b::t_360a3a25ab7ead 289,301,317,355,422-429
+  s_3542b2c8bb274b::t_6ba4b42cbe68d0 438-442
+  s_3542b2c8bb274b::t_f9392478293247 568-577,585-594
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "98b455b2dd1c9344b4ec005a5e39cc4c481e0319",
+  "prompts": {},
+  "sessions": {
+    "s_3542b2c8bb274b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3b53-c02a-7811-abe7-d7506aa3bab2",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}

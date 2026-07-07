@@ -1,0 +1,36 @@
+crates/lsb-vm/src/sandbox.rs
+  s_832d0d763f8f20::t_08b07fac54a18f 49-50
+  s_832d0d763f8f20::t_1064be095f2970 67-68,1653-1655
+  s_832d0d763f8f20::t_0c121ea87a6ac6 1112-1115,1129-1137,1140-1143
+  s_832d0d763f8f20::t_d7d0c3d5e16eac 1538,1649,1651-1652,1656-1659,1668-1676
+  s_832d0d763f8f20::t_d596378d262f23 1539-1545
+  s_832d0d763f8f20::t_e8e3e3282de225 1679,1952-1960
+  s_832d0d763f8f20::t_03cf7a44b8c1e6 1677-1678,1680
+crates/lsb-platform/src/windows_x86_64/control/mux.rs
+  s_832d0d763f8f20::t_ef55696a84295d 147-149,157,181,185,194,205-207,215,247,249,253,258-260,268,278
+  s_832d0d763f8f20::t_4bf30d7b3e37cd 389-392
+  s_832d0d763f8f20::t_1064be095f2970 182-184,1220,1235
+  s_832d0d763f8f20::t_e6b50c199d4cb0 1129-1191,1193-1211,1213-1219,1221-1232,1234,1236-1253,1255-1267
+  s_832d0d763f8f20::t_4fbf507c3a8053 107-111,119,123,128-130,135
+  s_832d0d763f8f20::t_9b422fb181cb64 1192,1212,1233,1254
+crates/lsb-sdk/src/process.rs
+  s_832d0d763f8f20::t_29bd8a96cf92f1 205-271
+bindings/nodejs/test/streaming.spec.ts
+  s_832d0d763f8f20::t_6491c4f5aaa586 13-20,110-135,139-144
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "59d79fd5775cca7d239356c16d6962f2d84d99b0",
+  "prompts": {},
+  "sessions": {
+    "s_832d0d763f8f20": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3b85-435b-7011-9fb2-ce17ff2b6cff",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
