@@ -1,0 +1,38 @@
+crates/lsb-platform/src/windows_x86_64/control/mod.rs
+  s_91a36d61bdd579::t_c4506e7c1bac63 1
+crates/lsb-platform/src/windows_x86_64/qemu/boot.rs
+  s_91a36d61bdd579::t_f44189d2231246 787-789
+  s_91a36d61bdd579::t_aaaec5a583e37d 1821-1823,1915-1916
+  s_91a36d61bdd579::t_440f0adb41a21d 701,752,782-786,790-817,823-824,830,832,874
+  s_91a36d61bdd579::t_68ca98036633fc 12-15,125,149-151,163-173
+  s_91a36d61bdd579::t_26a295505099d5 526,531,1561,1568-1572
+  s_91a36d61bdd579::t_95cfa40d6d9daa 174-175,1573-1574
+crates/lsb-platform/src/windows_x86_64/control/virtio_serial.rs
+  s_91a36d61bdd579::t_a6ade158720e8a 132,157-159,203-206
+  s_91a36d61bdd579::t_f054585591b57f 207
+crates/lsb-platform/src/windows_x86_64/control/mux.rs
+  s_91a36d61bdd579::t_ddc248001ecea9 162,320,367,720,722
+  s_91a36d61bdd579::t_dee3eeedf2c5e9 741,1099-1106
+  s_91a36d61bdd579::t_1da7320657f921 863,875,949,957,1025,1080
+  s_91a36d61bdd579::t_f8c0221c6b2a4f 402-404,458,473,558-567,569-570,572-573,575-576
+  s_91a36d61bdd579::t_7488ec0bf7c1e5 4,89-101,306,314,464
+  s_91a36d61bdd579::t_5f7515c3a0548b 1-3,5-72,74-88,102-161,163-305,307-313,315-319,321-331,333-366,368-401,405-457,459-463,465-472,474-557,568,571,574,577-612,617-700,705-711,716-719,721,723-740,742-862,864-865,872-874,876-877,884-948,950-956,958-959,966-1024,1026-1027,1034-1079,1081-1082,1089-1098,1107-1108,1110-1111
+  s_91a36d61bdd579::t_f44189d2231246 73,332,613-616,701-704,866-871,878-883,960-965,1028-1033,1083-1088,1109
+  s_91a36d61bdd579::t_6fb82c603b9af7 712-715
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5c1f2f5f7530ca6536918538347fe89d07de47e7",
+  "prompts": {},
+  "sessions": {
+    "s_91a36d61bdd579": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3b5c-b8fd-7dd3-96db-a7bdd2eefd00",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}

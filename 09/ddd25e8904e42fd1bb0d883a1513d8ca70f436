@@ -1,0 +1,45 @@
+docs/windows-port/diagnostics.md
+  s_722fe12ca31a00::t_7583e99a50d6f6 25-26,30-31,52-53,72-75,144-150,164-169,182-222
+  s_722fe12ca31a00::t_b5249219cfe0dc 223
+skills/lsb/SKILL.md
+  s_722fe12ca31a00::t_847ef7c101c0c3 188
+docs/windows-port/architecture.md
+  s_722fe12ca31a00::t_2e1b2d29e2a41b 27,29,44-45,49-50,65-67,81,96,99
+docs/windows-port/validation.md
+  s_722fe12ca31a00::t_77f44a240e4b48 15,112-113,116,128-134,178,203-204,216,218-221
+bindings/nodejs/README.md
+  s_722fe12ca31a00::t_8141f667f27b8d 45-47,200-204,230-232,247-250
+docs/windows-port/mvp-handoff.md
+  s_722fe12ca31a00::t_49100ff89286ee 157-167,178-182
+  s_722fe12ca31a00::t_8e4b03f9f7c322 3,13-14,28,30,33,39-41,49-57
+  s_722fe12ca31a00::t_0596d28b14303f 90-98,113-117,133-136
+docs/windows-port/security-checklist.md
+  s_722fe12ca31a00::t_00887a4e7ab478 37-41,80-87,98-102
+docs/windows-port/risk-register.md
+  s_722fe12ca31a00::t_5f5497f95894ac 23
+  s_722fe12ca31a00::t_8f5dee52ddd28f 20
+docs/windows-port/future-work.md
+  s_722fe12ca31a00::t_cd40a0095bc7a4 8-10,21-28,59-61
+README.md
+  s_722fe12ca31a00::t_f0b87ec47e0e1e 93-98,124-130
+  s_722fe12ca31a00::t_6cde3b75fd27da 131
+docs/windows-port/README.md
+  s_722fe12ca31a00::t_9f0d0be6efd040 8-12,14,50-57
+  s_722fe12ca31a00::t_3416892585a41e 59-60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "09ddd25e8904e42fd1bb0d883a1513d8ca70f436",
+  "prompts": {},
+  "sessions": {
+    "s_722fe12ca31a00": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3bbc-3aba-7bc1-b37c-f0a0a29e04e8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
