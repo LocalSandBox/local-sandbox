@@ -183,9 +183,9 @@ CLI flags override config values. When `secrets` are configured, the guest recei
 - **Networking is off by default.** You must pass `--allow-net` to install packages or make HTTP requests.
 - **The guest is Debian Linux.** Use `apt-get install` for packages.
 - **Ephemeral by default.** Everything is discarded on exit unless you checkpoint.
-- **CLI mounts are overlay-style.** The host source is kept read-only from the product perspective; guest writes are isolated and discarded unless saved through a checkpoint or explicit copy/export path. Windows mounts are snapshot imports and do not provide live host sync.
+- **CLI mounts default to overlay-style.** The host source is kept read-only from the product perspective; guest writes are isolated and discarded unless saved through a checkpoint or explicit copy/export path. On Windows, no-suffix and `:ro` CLI mounts are snapshot imports and do not provide live host sync. Explicit Windows `:rw` mounts use SMB/CIFS direct sharing, require `--allow-host-writes`, and must run from an elevated Administrator shell.
 - **Supported hosts:** macOS 14+ on arm64/x64 and Windows 11 x64. macOS uses Apple Virtualization.framework. Windows uses QEMU with WHPX; `lsb init` installs managed `qemu-system-x86_64.exe` and `qemu-img.exe` host tools.
-- **Windows feature limits:** use non-interactive commands on Windows. Streaming `spawn`, interactive shell, file `watch`, direct writable host mounts, CAS/NBD checkpoints, and Windows ARM64 are not supported there yet. Windows x64 CLI release/install artifacts are available, and Windows users should run `lsb init` to install managed QEMU host tools and runtime assets.
+- **Windows feature limits:** use non-interactive commands on Windows. Streaming `spawn`, interactive shell, file `watch`, CAS/NBD checkpoints, and Windows ARM64 are not supported there yet. Windows explicit direct mounts are SMB/CIFS-backed and require Administrator privileges. Windows x64 CLI release/install artifacts are available, and Windows users should run `lsb init` to install managed QEMU host tools and runtime assets.
 - **Default resources:** 2 CPUs, 2048 MB RAM, 4096 MB disk. Override with `--cpus`, `--memory`, `--disk-size`.
 
 ## Deep-Dive Documentation

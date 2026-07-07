@@ -11,13 +11,15 @@ Post-MVP note: this RFC is retained for design rationale and alternatives. The
 current implementation status, limitations, validation evidence, and follow-up
 work are tracked in `docs/windows-port/mvp-handoff.md`,
 `docs/windows-port/decisions.md`, and the other durable docs in
-`docs/windows-port/`.
+`docs/windows-port/`. In particular, D023 supersedes the original MVP-only
+statement that Windows direct `:rw` mounts were unsupported; explicit Windows
+direct mounts now use SMB/CIFS.
 
 ## 3. Executive Summary
 
 This RFC proposes a native Windows 11 x86_64 backend for LocalSandbox using QEMU as the virtual machine monitor and device model, accelerated by the Windows Hypervisor Platform through QEMU's WHPX accelerator. The backend continues to boot the existing LocalSandbox Linux guest model: a Linux kernel image, initramfs, root filesystem, and `lsb-guest` agent. It does not propose Windows guests, Hyper-V Manager VMs, WSL2, containers, or a custom raw WHP VMM.
 
-The goal is to preserve LocalSandbox product semantics, not merely to make QEMU boot Linux. The Windows backend must keep the public CLI, Rust SDK, and Node API stable; keep no-network-by-default; keep host secrets outside the guest; keep controlled proxy-based network behavior; keep host mounts read-only from the product perspective; and keep checkpoint semantics explicit.
+The goal is to preserve LocalSandbox product semantics, not merely to make QEMU boot Linux. The Windows backend must keep the public CLI, Rust SDK, and Node API stable; keep no-network-by-default; keep host secrets outside the guest; keep controlled proxy-based network behavior; keep overlay mounts read-only from the product perspective; and keep checkpoint semantics explicit. Explicit direct mounts are the exception covered by D023 and use SMB/CIFS.
 
 The proposed MVP path is staged:
 
@@ -26,7 +28,7 @@ The proposed MVP path is staged:
 3. Boot the existing x86_64 Linux guest with QEMU direct Linux boot, a virtio block root disk, serial logs, QMP for QEMU lifecycle diagnostics, and no guest NIC by default.
 4. Replace the macOS AF_VSOCK control transport with QEMU virtio-serial over a private Windows named pipe, while keeping `lsb-proto` as the guest command protocol.
 5. Implement initial exec and file operations, then add a transport-level multiplexer for concurrent exec, watch, and port forwarding sessions.
-6. Implement Windows mount MVP as copy-in/copy-out into guest-owned tmpfs or disk staging, preserving host-read-only and isolated-writes semantics while explicitly not promising live shared mount coherence.
+6. Implement Windows mount MVP as copy-in/copy-out into guest-owned tmpfs or disk staging, preserving host-read-only and isolated-writes semantics while explicitly not promising live shared mount coherence. Post-MVP direct mounts are covered separately by D023 and use SMB/CIFS.
 7. Implement host-to-guest port forwarding without enabling a general guest NIC.
 8. Reintroduce policy-bearing proxy networking through a Windows-compatible QEMU network backend only when it can preserve allowlist and secret substitution semantics.
 9. Implement checkpoint MVP using immutable base rootfs plus per-sandbox writable qcow2 overlays, deferring CAS/NBD until Windows storage transport is validated.
@@ -43,8 +45,8 @@ Key platform facts: Microsoft documents WHP as a user-mode API for third-party v
 - Preserve no-network-by-default.
 - Preserve controlled secret behavior: real secrets remain on the host and are substituted only by the host proxy for approved destinations.
 - Preserve proxy-owned egress policy rather than treating QEMU NAT as policy.
-- Preserve host-source read-only mount semantics from the product perspective.
-- Preserve isolated guest writes for mounts.
+- Preserve host-source read-only mount semantics from the product perspective for overlay mounts.
+- Preserve isolated guest writes for overlay mounts.
 - Preserve explicit checkpoint semantics.
 - Make unsupported Windows MVP features fail with precise capability errors rather than silent behavior changes.
 
@@ -68,7 +70,7 @@ Key platform facts: Microsoft documents WHP as a user-mode API for third-party v
 - Shipping QEMU inside CLI, npm, or runtime guest asset archives for the MVP.
 - Allowing TCG fallback for normal production runs.
 - Providing perfect POSIX live filesystem sharing in the MVP.
-- Supporting direct Windows host `:rw` mounts in the MVP.
+- Supporting direct Windows host `:rw` mounts in the MVP. This is historical; D023 later approves explicit Windows direct mounts through SMB/CIFS.
 - Enabling arbitrary bridged, TAP, or QEMU user networking by default.
 - Treating QEMU NAT/user networking as LocalSandbox security policy.
 - Production-grade live migration or QEMU VM-state snapshots.
@@ -433,10 +435,10 @@ It is not the LocalSandbox guest exec/file API. QMP documentation describes comm
 
 Windows support must preserve these product-level semantics:
 
-- Host source directories are read-only from the product perspective.
-- Guest writes to mounted paths are isolated from the host by default.
-- Windows MVP mount writes are discarded when the VM exits unless explicitly copied/exported through a future API; they must not silently mutate host files.
-- Direct host writes (`:rw`) are unsupported in the Windows MVP.
+- Overlay host source directories are read-only from the product perspective.
+- Guest writes to overlay mounted paths are isolated from the host by default.
+- Windows overlay mount writes are discarded when the VM exits unless explicitly copied/exported through an API; they must not silently mutate host files.
+- Direct host writes (`:rw`) were unsupported in the Windows MVP; D023 supersedes that for explicit SMB/CIFS direct mounts.
 - Host file changes after VM start are not guaranteed to appear in the guest during MVP.
 - Guest file watching during MVP observes the guest-side copy/staging view, not live host changes.
 
@@ -464,7 +466,7 @@ Use raw only for the immutable rootfs. Use qcow2 for overlays/checkpoints becaus
 | 9p/virtfs                            |  Uncertain | QEMU has `-fsdev` plus virtio-9p device options [qemu-virtfs].                                                                     | Semantics/performance weaker than virtiofs; Windows host path behavior must be tested.              | Validation experiment.                   |
 | Virtual FAT / vvfat                  | Low/medium | Simple for small read-only source trees.                                                                                           | Poor POSIX metadata; write semantics risky.                                                         | Debug/experiment only.                   |
 | Custom sync service                  |     Medium | Full control over Windows path normalization, filtering, copy/export, watch behavior.                                              | More code; eventual consistency complexity.                                                         | Potential long-term if virtiofs/9p fail. |
-| Direct Windows `:rw` host mount      |        Low | Existing API has direct mode.                                                                                                      | Host mutation risk, symlink/junction escapes, case-insensitivity, ACL mismatches.                   | Non-goal for MVP.                        |
+| Direct Windows `:rw` host mount      |        Low | Existing API has direct mode.                                                                                                      | Host mutation risk, symlink/junction escapes, case-insensitivity, ACL mismatches.                   | Non-goal for MVP; superseded by D023 SMB/CIFS direct mounts. |
 
 ### 12.4 Windows MVP mount plan
 
@@ -1081,7 +1083,7 @@ Scope:
 - Add mount import request or reuse file API with archive stream.
 - Host validates source tree.
 - Guest extracts into tmpfs/staging and exposes requested guest path.
-- Direct `:rw` returns capability error on Windows.
+- Direct `:rw` was an MVP capability error on Windows; D023 later replaces this with SMB/CIFS direct mount planning.
 
 Likely files:
 
@@ -1106,15 +1108,15 @@ Tests:
 - Mount read file.
 - Guest write does not modify host.
 - Case collision error.
-- Direct rw unsupported error.
+- Direct rw unsupported error for the historical MVP plan; current direct-mount coverage belongs to D023 SMB/CIFS tests.
 
 Coding-agent task prompt:
 
 ```text
 Goal: Implement Windows overlay mount MVP using copy-in guest staging, preserving host-read-only and isolated guest writes.
-Constraints: Do not implement direct host writes. Do not promise live file coherence. Reject symlink/junction escapes and case collisions.
+Constraints: Do not promise live file coherence for overlay mounts. Reject symlink/junction escapes and case collisions. This historical task predates D023 SMB/CIFS direct mounts.
 Likely files: lsb-vm mount planning, lsb-proto import frames, lsb-guest mount/import handler, Windows mount module.
-Tests: read mounted file, write guest file without host mutation, unsupported special files, case collision, direct rw capability error.
+Tests: read mounted file, write guest file without host mutation, unsupported special files, case collision, direct rw capability error for the historical MVP plan.
 Acceptance: `lsb run --mount ./src:/workspace -- cat /workspace/file` works on Windows; host is unchanged after guest writes.
 Do not change: macOS VirtioFS mount behavior.
 ```
@@ -1442,10 +1444,10 @@ LocalSandbox uses a VM boundary, but QEMU is a large native VMM process. A guest
 
 ### 19.2 Host file exposure
 
-- Default Windows mounts are copy-in, not live host writes.
+- Default Windows mounts are copy-in, not live host writes. Explicit direct mounts use SMB/CIFS under D023.
 - Reject symlink/junction escapes and case collisions.
 - Store mount import staging under the VM instance directory or guest tmpfs.
-- Direct `:rw` is unsupported in Windows MVP.
+- Direct `:rw` was unsupported in Windows MVP; explicit direct mounts now use SMB/CIFS under D023 and require elevated setup.
 - Instance directories and named pipes must be private to the current user/session.
 
 ### 19.3 Network egress
@@ -1844,7 +1846,7 @@ Goal: Support overlay-style mounts with copy-in staging.
 Constraints:
 
 - No live host coherence.
-- No direct `:rw`.
+- No direct `:rw` in the historical MVP slice; D023 handles explicit SMB/CIFS direct mounts.
 - Reject unsafe paths.
 
 Files likely touched:

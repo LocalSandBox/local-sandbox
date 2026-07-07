@@ -71,7 +71,7 @@ impl WindowsVm {
         if self.config.shared_dir_count > 0 {
             return Err(unsupported(
                 "live shared directory devices",
-                "Windows mounts use lsb-vm copy-import staging after guest-ready; the Windows QEMU backend does not attach VirtioFS, 9p, virtual FAT, or other live host shared-directory devices",
+                "Windows overlay mounts use lsb-vm copy-import staging after guest-ready, and explicit direct mounts use SMB/CIFS orchestration outside the QEMU device list; the Windows QEMU backend does not attach VirtioFS, 9p, virtual FAT, or other live host shared-directory devices",
             ));
         }
         Ok(())
@@ -319,7 +319,8 @@ mod tests {
 
         assert!(message.contains("live shared directory devices"));
         assert!(message.contains("copy-import staging"));
-        assert!(message.contains("Windows mounts"));
+        assert!(message.contains("SMB/CIFS"));
+        assert!(message.contains("Windows overlay mounts"));
     }
 
     #[test]

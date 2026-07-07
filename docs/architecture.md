@@ -2357,7 +2357,7 @@ connection attempt.
 
 ### Windows Support Invariants
 
-Future Windows support for `Sandbox.start()` must preserve:
+Windows support for `Sandbox.start()` must preserve:
 
 - The same Node API shape and error behavior where possible, including
   pre-start validation for ports, mounts, secrets, and unsupported options.
@@ -2372,9 +2372,9 @@ Future Windows support for `Sandbox.start()` must preserve:
 - Per-instance disk isolation and cleanup, including stable `instanceId`
   validation that rejects `/`, `\`, NUL, and `..`.
 
-- Storage behavior equivalent to direct rootfs copy or CAS-backed block device:
-  consistent logical size, durable flush, resumable `.idx` checkpoints, and no
-  shrink below source size.
+- Storage behavior equivalent to direct rootfs copy or Windows qcow2 checkpoint
+  artifacts: consistent logical size, durable flush, and no shrink below source
+  size. CAS/NBD checkpoints remain macOS-only.
 
 - A copy-on-write or equivalent copy primitive for direct mode. macOS uses APFS
   `clonefile`; Windows must provide an equivalent correctness story even if the
@@ -2387,8 +2387,10 @@ Future Windows support for `Sandbox.start()` must preserve:
   or a deliberately abstracted transport that preserves the same protocol
   semantics.
 
-- Equivalent VirtioFS or directory-sharing semantics for overlay and direct
-  mounts, including read-only lowerdir protection for overlay mounts.
+- Equivalent product semantics for directory mounts: Windows no-suffix and
+  CLI `:ro` mounts are snapshot imports with isolated guest writes, while
+  explicit direct mounts use SMB/CIFS with flags `0` for read-write and
+  `MS_RDONLY` for read-only.
 
 - Equivalent guest networking security model: no network device when disabled;
   proxy-backed networking when enabled; real secrets never enter the guest.
@@ -2399,36 +2401,36 @@ Future Windows support for `Sandbox.start()` must preserve:
 - Node async behavior: `Sandbox.start()` must not block the Node event loop while
   VM work proceeds.
 
-- Platform support indicators must be updated consistently. Today Windows
-  platform specs are `Planned`, `lsb-vm` compile-errors on non-macOS, and the
-  Node package targets only Darwin.
-  - `crates/lsb-platform/src/windows_x86_64/mod.rs:16`
-  - `crates/lsb-platform/src/windows_aarch64/mod.rs:16`
-  - `crates/lsb-vm/src/lib.rs:3`
-  - `bindings/nodejs/package.json:36`
+- Platform support indicators must be updated consistently. Windows x64 uses
+  QEMU/WHPX and has a Node platform package; Windows ARM64 remains planned.
 
 ### Questions and Unknowns
 
-- Which Windows backend should provide `PlatformVm`: Hyper-V/WHP, WSL2, QEMU, or
-  another runtime?
+- Which Windows backend should provide `PlatformVm`: resolved for Windows x64
+  as QEMU with WHPX.
 
 - Does the selected Windows backend provide virtio-vsock, VirtioFS, NBD, and
   raw-frame networking equivalents, or does `PlatformVm` need a more abstract
-  transport/storage/directory-sharing interface?
+  transport/storage/directory-sharing interface? Current Windows x64 uses
+  virtio-serial for control/forwarding, qcow2 checkpoint artifacts instead of
+  NBD/CAS, snapshot imports for overlay mounts, SMB/CIFS for direct mounts, and
+  proxy-owned networking.
 
 - Should `Sandbox.start()` be changed to always wait for guest-agent readiness
   on every platform and option combination?
 
-- What should replace Unix-domain NBD sockets on Windows: TCP loopback, named
-  pipes, Hyper-V sockets, backend-native differencing disks, or another block
-  transport?
+- What should replace Unix-domain NBD sockets on Windows: resolved for the
+  current backend as qcow2 checkpoint artifacts. CAS/NBD remains future work.
 
 - Should direct mount `flags: number` remain part of the stable Node API for
-  Windows, or should the public API become a portable mount-mode enum?
+  Windows, or should the public API become a portable mount-mode enum? Current
+  behavior preserves the stable API: `flags: 0` maps to read-write SMB/CIFS and
+  `flags: MS_RDONLY` maps to read-only SMB/CIFS.
 
 - How should Windows host paths be represented in persisted CAS index fallback
   paths and in mount configuration without breaking current path validation?
 
 - Should the Node package continue to omit Windows npm targets until runtime
   support is complete, or publish unsupported Windows artifacts that fail at
-  runtime like other unsupported builds?
+  runtime like other unsupported builds? Resolved for Windows x64 by publishing
+  the `win32-x64-msvc` platform package.
