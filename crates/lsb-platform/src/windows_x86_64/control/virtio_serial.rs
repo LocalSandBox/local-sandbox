@@ -216,18 +216,13 @@ impl std::error::Error for VirtioSerialControlError {}
 fn open_pipe_with_timeout(
     endpoint: &VirtioSerialControlEndpoint,
 ) -> Result<PlatformControlStream, VirtioSerialControlError> {
-    use std::fs::OpenOptions;
     use std::time::Instant;
 
     let deadline = Instant::now() + endpoint.connect_timeout;
 
     loop {
-        match OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(endpoint.pipe_path())
-        {
-            Ok(file) => return Ok(PlatformControlStream::from_file(file)),
+        match crate::windows_named_pipe::WindowsNamedPipeStream::open(endpoint.pipe_path()) {
+            Ok(stream) => return Ok(PlatformControlStream::from_windows_named_pipe(stream)),
             Err(err) if should_retry_pipe_open(&err) && Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(50));
             }

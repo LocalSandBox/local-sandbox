@@ -13,6 +13,9 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use serde::Serialize;
 
+#[cfg(windows)]
+mod windows_named_pipe;
+
 pub mod linux_aarch64;
 pub mod linux_x86_64;
 pub mod macos_aarch64;
@@ -299,6 +302,8 @@ pub enum PlatformControlSessionKind {
 enum PlatformControlStreamInner {
     Tcp(TcpStream),
     File(File),
+    #[cfg(windows)]
+    WindowsNamedPipe(windows_named_pipe::WindowsNamedPipeStream),
     WindowsMux(windows_x86_64::MuxSession),
 }
 
@@ -315,6 +320,10 @@ impl PlatformControlStream {
                 .try_clone()
                 .map(PlatformControlStream::from_tcp_stream),
             PlatformControlStreamInner::File(file) => file.try_clone().map(Self::from_file),
+            #[cfg(windows)]
+            PlatformControlStreamInner::WindowsNamedPipe(stream) => {
+                Ok(Self::from_windows_named_pipe(stream.clone()))
+            }
             PlatformControlStreamInner::WindowsMux(session) => {
                 Ok(Self::from_windows_mux_session(session.clone()))
             }
@@ -325,6 +334,8 @@ impl PlatformControlStream {
         match &self.inner {
             PlatformControlStreamInner::Tcp(stream) => stream.set_nodelay(enabled),
             PlatformControlStreamInner::File(_) => Ok(()),
+            #[cfg(windows)]
+            PlatformControlStreamInner::WindowsNamedPipe(_) => Ok(()),
             PlatformControlStreamInner::WindowsMux(_) => Ok(()),
         }
     }
@@ -334,6 +345,8 @@ impl PlatformControlStream {
         match &mut self.inner {
             PlatformControlStreamInner::Tcp(stream) => stream.shutdown(Shutdown::Both),
             PlatformControlStreamInner::File(file) => file.flush(),
+            #[cfg(windows)]
+            PlatformControlStreamInner::WindowsNamedPipe(stream) => stream.close(),
             PlatformControlStreamInner::WindowsMux(session) => session.close(),
         }
     }
@@ -343,6 +356,8 @@ impl PlatformControlStream {
         match &mut self.inner {
             PlatformControlStreamInner::Tcp(stream) => stream.shutdown(Shutdown::Both),
             PlatformControlStreamInner::File(file) => file.flush(),
+            #[cfg(windows)]
+            PlatformControlStreamInner::WindowsNamedPipe(stream) => stream.reset(),
             PlatformControlStreamInner::WindowsMux(session) => {
                 session.reset("host reset control session")
             }
@@ -352,6 +367,15 @@ impl PlatformControlStream {
     pub(crate) fn from_file(file: File) -> Self {
         Self {
             inner: PlatformControlStreamInner::File(file),
+        }
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn from_windows_named_pipe(
+        stream: windows_named_pipe::WindowsNamedPipeStream,
+    ) -> Self {
+        Self {
+            inner: PlatformControlStreamInner::WindowsNamedPipe(stream),
         }
     }
 
@@ -367,6 +391,8 @@ impl Read for PlatformControlStream {
         match &mut self.inner {
             PlatformControlStreamInner::Tcp(stream) => stream.read(buf),
             PlatformControlStreamInner::File(file) => file.read(buf),
+            #[cfg(windows)]
+            PlatformControlStreamInner::WindowsNamedPipe(stream) => stream.read(buf),
             PlatformControlStreamInner::WindowsMux(session) => session.read(buf),
         }
     }
@@ -377,6 +403,8 @@ impl Write for PlatformControlStream {
         match &mut self.inner {
             PlatformControlStreamInner::Tcp(stream) => stream.write(buf),
             PlatformControlStreamInner::File(file) => file.write(buf),
+            #[cfg(windows)]
+            PlatformControlStreamInner::WindowsNamedPipe(stream) => stream.write(buf),
             PlatformControlStreamInner::WindowsMux(session) => session.write(buf),
         }
     }
@@ -385,6 +413,8 @@ impl Write for PlatformControlStream {
         match &mut self.inner {
             PlatformControlStreamInner::Tcp(stream) => stream.flush(),
             PlatformControlStreamInner::File(file) => file.flush(),
+            #[cfg(windows)]
+            PlatformControlStreamInner::WindowsNamedPipe(stream) => stream.flush(),
             PlatformControlStreamInner::WindowsMux(session) => session.flush(),
         }
     }
