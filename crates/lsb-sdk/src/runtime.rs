@@ -2,11 +2,20 @@ use std::collections::HashMap;
 use std::io::BufReader;
 use std::net::TcpStream;
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use std::sync::{Mutex, Weak};
 
 use anyhow::{bail, Result};
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use lsb_platform::windows_x86_64::fs::smb::WindowsSmbAccess;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use lsb_platform::windows_x86_64::fs::{
+    plan_windows_mounts, start_windows_host_directory_watch, WindowsHostDirectoryWatchStop,
+    WindowsMountSpec,
+};
 use lsb_platform::{asset_paths, PlatformNetworkAttachment};
 use lsb_proxy::config::ProxyConfig;
 use tokio::sync::{mpsc, oneshot};
@@ -17,6 +26,8 @@ use crate::session::BoxedControlSession;
 use crate::shell::{ShellEvent, ShellHandle, ShellReader, ShellWriter};
 use crate::storage::{prepare_storage, StoragePrepareOptions};
 use crate::types::{CommandOptions, ExecResult, SandboxConfig};
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use crate::watch::spawn_windows_smb_host_watch_thread;
 use crate::watch::{spawn_watch_thread, WatchHandle};
 use crate::{ReadDirResponse, StatResponse};
 
@@ -105,11 +116,20 @@ enum SandboxCmd {
 pub struct AsyncSandbox {
     cmd_tx: std::sync::mpsc::Sender<SandboxCmd>,
     instance_dir: String,
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    windows_smb_watch_registry: WindowsSmbWatchRegistry,
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    windows_smb_host_watches: WindowsSmbHostWatchManager,
 }
 
 impl AsyncSandbox {
     /// Boot a new sandbox VM with the given configuration.
     pub async fn boot(config: SandboxConfig) -> Result<Self> {
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        let windows_smb_watch_registry = WindowsSmbWatchRegistry::from_mounts(&config.mounts)?;
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        let windows_smb_host_watches = WindowsSmbHostWatchManager::default();
+
         let (ready_tx, ready_rx) = oneshot::channel::<Result<String>>();
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
 
@@ -157,6 +177,10 @@ impl AsyncSandbox {
         Ok(Self {
             cmd_tx,
             instance_dir,
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            windows_smb_watch_registry,
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            windows_smb_host_watches,
         })
     }
 
@@ -380,8 +404,27 @@ impl AsyncSandbox {
 
     /// Watch guest filesystem changes.
     pub async fn watch(&self, path: &str, recursive: bool) -> Result<WatchHandle> {
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        if let Some(handle) = self.open_windows_smb_host_watch(path, recursive)? {
+            return Ok(handle);
+        }
+
         let stream = self.open_watch(path, recursive).await?;
         Ok(spawn_watch_thread(stream))
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn open_windows_smb_host_watch(
+        &self,
+        path: &str,
+        recursive: bool,
+    ) -> Result<Option<WatchHandle>> {
+        open_windows_smb_host_watch_from_registry(
+            &self.windows_smb_watch_registry,
+            &self.windows_smb_host_watches,
+            path,
+            recursive,
+        )
     }
 
     async fn open_exec(
@@ -428,6 +471,9 @@ impl AsyncSandbox {
 
     /// Stop the VM and clean up resources.
     pub async fn stop(&self) -> Result<()> {
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        self.windows_smb_host_watches.stop_all();
+
         let (reply_tx, reply_rx) = oneshot::channel();
         let _ = self.cmd_tx.send(SandboxCmd::Stop { reply: reply_tx });
         reply_rx.await.unwrap_or(Ok(()))
@@ -441,6 +487,9 @@ impl AsyncSandbox {
 
 impl Drop for AsyncSandbox {
     fn drop(&mut self) {
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        self.windows_smb_host_watches.stop_all();
+
         let (reply_tx, _) = oneshot::channel();
         let _ = self.cmd_tx.send(SandboxCmd::Stop { reply: reply_tx });
         let _ = std::fs::remove_dir_all(&self.instance_dir);
@@ -826,6 +875,260 @@ fn platform_network_attachment(
     }
 }
 
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[derive(Debug, Clone, Default)]
+struct WindowsSmbWatchRegistry {
+    mounts: Vec<WindowsSmbWatchMount>,
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WindowsSmbWatchMount {
+    source: PathBuf,
+    target: String,
+    access: WindowsSmbAccess,
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WindowsSmbResolvedWatch {
+    host_root: PathBuf,
+    guest_root: String,
+    #[allow(dead_code)]
+    access: WindowsSmbAccess,
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+impl WindowsSmbWatchRegistry {
+    fn from_mounts(mounts: &[lsb_vm::MountConfig]) -> Result<Self> {
+        let specs = mounts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, mount)| match mount {
+                lsb_vm::MountConfig::Direct {
+                    host_path,
+                    guest_path,
+                    flags,
+                } => Some(WindowsMountSpec::direct(
+                    format!("mount{index}"),
+                    PathBuf::from(host_path),
+                    guest_path.clone(),
+                    *flags,
+                )),
+                lsb_vm::MountConfig::Overlay { .. } => None,
+            })
+            .collect::<Vec<_>>();
+
+        if specs.is_empty() {
+            return Ok(Self::default());
+        }
+
+        let plan = plan_windows_mounts(&specs).map_err(|error| {
+            anyhow::anyhow!("planning Windows direct SMB watch registry: {error}")
+        })?;
+        let mounts = plan
+            .smb_directs
+            .into_iter()
+            .map(|mount| WindowsSmbWatchMount {
+                source: mount.source,
+                target: normalize_guest_watch_path(&mount.target)
+                    .expect("planned Windows SMB target should be a valid guest watch path"),
+                access: mount.access,
+            })
+            .collect();
+
+        Ok(Self { mounts })
+    }
+
+    fn resolve(&self, path: &str, recursive: bool) -> Result<Option<WindowsSmbResolvedWatch>> {
+        let path = normalize_guest_watch_path(path)?;
+
+        if let Some(mount) = self
+            .mounts
+            .iter()
+            .filter(|mount| guest_path_contains_or_equals(&path, &mount.target))
+            .max_by_key(|mount| mount.target.len())
+        {
+            let mut host_root = mount.source.clone();
+            for component in guest_relative_suffix(&path, &mount.target)
+                .split('/')
+                .filter(|component| !component.is_empty())
+            {
+                host_root.push(component);
+            }
+
+            return Ok(Some(WindowsSmbResolvedWatch {
+                host_root,
+                guest_root: path,
+                access: mount.access,
+            }));
+        }
+
+        if recursive {
+            if let Some(mount) = self
+                .mounts
+                .iter()
+                .filter(|mount| guest_path_contains_or_equals(&mount.target, &path))
+                .max_by_key(|mount| mount.target.len())
+            {
+                anyhow::bail!(
+                    "recursive Windows watch for guest path '{}' would span direct SMB mount target '{}'; watch the SMB target directly or start separate watches",
+                    path,
+                    mount.target
+                );
+            }
+        }
+
+        Ok(None)
+    }
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[derive(Debug, Clone, Default)]
+struct WindowsSmbHostWatchManager {
+    inner: Arc<WindowsSmbHostWatchManagerInner>,
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[derive(Debug, Default)]
+struct WindowsSmbHostWatchManagerInner {
+    next_id: AtomicU64,
+    active: Mutex<Vec<(u64, WindowsHostDirectoryWatchStop)>>,
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+impl WindowsSmbHostWatchManager {
+    fn register(&self, stop: WindowsHostDirectoryWatchStop) -> WindowsSmbHostWatchRegistration {
+        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut active) = self.inner.active.lock() {
+            active.push((id, stop.clone()));
+        }
+
+        WindowsSmbHostWatchRegistration {
+            id,
+            stop,
+            manager: Arc::downgrade(&self.inner),
+        }
+    }
+
+    fn stop_all(&self) {
+        let active = if let Ok(mut active) = self.inner.active.lock() {
+            std::mem::take(&mut *active)
+        } else {
+            Vec::new()
+        };
+
+        for (_, stop) in active {
+            stop.stop();
+        }
+    }
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+struct WindowsSmbHostWatchRegistration {
+    id: u64,
+    stop: WindowsHostDirectoryWatchStop,
+    manager: Weak<WindowsSmbHostWatchManagerInner>,
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+impl Drop for WindowsSmbHostWatchRegistration {
+    fn drop(&mut self) {
+        self.stop.stop();
+        let Some(manager) = self.manager.upgrade() else {
+            return;
+        };
+        if let Ok(mut active) = manager.active.lock() {
+            active.retain(|(id, _)| *id != self.id);
+        }
+    }
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn open_windows_smb_host_watch_from_registry(
+    registry: &WindowsSmbWatchRegistry,
+    manager: &WindowsSmbHostWatchManager,
+    path: &str,
+    recursive: bool,
+) -> Result<Option<WatchHandle>> {
+    let Some(resolved) = registry.resolve(path, recursive)? else {
+        return Ok(None);
+    };
+
+    let (watch, platform_events) =
+        start_windows_host_directory_watch(resolved.host_root, recursive).map_err(|error| {
+            anyhow::anyhow!(
+                "starting Windows direct SMB watch for guest path '{}': {}",
+                resolved.guest_root,
+                error
+            )
+        })?;
+    let registration = manager.register(watch.stop_handle());
+
+    Ok(Some(spawn_windows_smb_host_watch_thread(
+        watch,
+        platform_events,
+        resolved.guest_root,
+        registration,
+    )))
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn normalize_guest_watch_path(path: &str) -> Result<String> {
+    if path.is_empty() {
+        anyhow::bail!("guest watch path is empty");
+    }
+    if path.contains('\0') {
+        anyhow::bail!("guest watch path contains NUL byte");
+    }
+    if path.contains('\\') {
+        anyhow::bail!("guest watch path must use '/' separators, not backslashes");
+    }
+    if !path.starts_with('/') {
+        anyhow::bail!("guest watch path must be absolute");
+    }
+    if path.contains("//") {
+        anyhow::bail!("guest watch path contains empty components or repeated separators");
+    }
+
+    let normalized = if path.len() > 1 {
+        path.trim_end_matches('/').to_string()
+    } else {
+        path.to_string()
+    };
+    if normalized != "/" {
+        for component in normalized.trim_start_matches('/').split('/') {
+            if component.is_empty() || component == "." || component == ".." {
+                anyhow::bail!(
+                    "guest watch path '{}' contains traversal or empty components",
+                    normalized
+                );
+            }
+        }
+    }
+
+    Ok(normalized)
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn guest_path_contains_or_equals(path: &str, ancestor: &str) -> bool {
+    if ancestor == "/" {
+        return path.starts_with('/');
+    }
+    path == ancestor
+        || path
+            .strip_prefix(ancestor)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn guest_relative_suffix<'a>(path: &'a str, ancestor: &str) -> &'a str {
+    path.strip_prefix(ancestor)
+        .unwrap_or("")
+        .strip_prefix('/')
+        .unwrap_or("")
+}
+
 fn run_vm_loop(
     sandbox: lsb_vm::Sandbox,
     instance_dir: &str,
@@ -1086,6 +1389,117 @@ mod tests {
         assert!(proxy.is_domain_allowed("example.com"));
     }
 
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn windows_smb_watch_registry_resolves_longest_guest_target_to_host_path() {
+        let root = temp_test_dir("watch-registry-longest");
+        let source = root.join("source");
+        let nested_source = root.join("nested-source");
+        std::fs::create_dir_all(&source).expect("source dir");
+        std::fs::create_dir_all(&nested_source).expect("nested source dir");
+
+        let registry = WindowsSmbWatchRegistry::from_mounts(&[
+            lsb_vm::MountConfig::Direct {
+                host_path: source.display().to_string(),
+                guest_path: "/workspace".to_string(),
+                flags: 0,
+            },
+            lsb_vm::MountConfig::Direct {
+                host_path: nested_source.display().to_string(),
+                guest_path: "/workspace/nested".to_string(),
+                flags: 0,
+            },
+        ])
+        .expect("watch registry should plan");
+
+        let resolved = registry
+            .resolve("/workspace/nested/deep", true)
+            .expect("watch path should resolve")
+            .expect("direct SMB watch should use host watcher");
+
+        assert_eq!(
+            resolved.host_root,
+            nested_source.canonicalize().unwrap().join("deep")
+        );
+        assert_eq!(resolved.guest_root, "/workspace/nested/deep");
+        assert_eq!(resolved.access, WindowsSmbAccess::ReadWrite);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn windows_smb_watch_registry_enforces_path_boundaries_and_read_only_access() {
+        const MS_RDONLY: u64 = 1;
+
+        let root = temp_test_dir("watch-registry-boundaries");
+        let source = root.join("source");
+        std::fs::create_dir_all(&source).expect("source dir");
+
+        let registry = WindowsSmbWatchRegistry::from_mounts(&[lsb_vm::MountConfig::Direct {
+            host_path: source.display().to_string(),
+            guest_path: "/workspace".to_string(),
+            flags: MS_RDONLY,
+        }])
+        .expect("watch registry should plan");
+
+        assert!(registry
+            .resolve("/workspace2/file.txt", true)
+            .expect("path outside direct target should not fail")
+            .is_none());
+
+        let resolved = registry
+            .resolve("/workspace/", true)
+            .expect("trailing slash should normalize")
+            .expect("direct target should resolve");
+        assert_eq!(resolved.host_root, source.canonicalize().unwrap());
+        assert_eq!(resolved.guest_root, "/workspace");
+        assert_eq!(resolved.access, WindowsSmbAccess::ReadOnly);
+
+        let traversal = registry
+            .resolve("/workspace/../secret", true)
+            .expect_err("guest traversal should be rejected");
+        assert!(traversal.to_string().contains("traversal"));
+        assert!(
+            !traversal
+                .to_string()
+                .contains(source.to_string_lossy().as_ref()),
+            "watch path errors must not expose host source paths"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn windows_smb_watch_registry_rejects_recursive_ancestor_of_direct_mount() {
+        let root = temp_test_dir("watch-registry-ancestor");
+        let source = root.join("source");
+        std::fs::create_dir_all(&source).expect("source dir");
+
+        let registry = WindowsSmbWatchRegistry::from_mounts(&[lsb_vm::MountConfig::Direct {
+            host_path: source.display().to_string(),
+            guest_path: "/workspace".to_string(),
+            flags: 0,
+        }])
+        .expect("watch registry should plan");
+
+        let error = registry
+            .resolve("/", true)
+            .expect_err("recursive watch above direct SMB mount should be rejected");
+        assert!(error.to_string().contains("/workspace"));
+        assert!(!error
+            .to_string()
+            .contains(source.to_string_lossy().as_ref()));
+
+        assert!(registry
+            .resolve("/", false)
+            .expect("non-recursive ancestor watch should stay guest-side")
+            .is_none());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU/qemu-img, and disposable LocalSandbox assets"]
     fn windows_qemu_checkpoint_store_smoke() {
@@ -1241,6 +1655,13 @@ mod tests {
         }
     }
 
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn temp_test_dir(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("lsb-sdk-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
     #[test]
     #[ignore = "requires elevated Windows 11 x86_64 with WHPX, QEMU, SMB, and disposable LocalSandbox assets"]
     fn windows_qemu_direct_smb_mount_smoke() {
@@ -1263,17 +1684,30 @@ mod tests {
             let _storage_guard = EnvVarGuard::set("LSB_STORAGE", "direct");
             let data_dir = prepare_direct_smb_smoke_data_dir();
             let source = data_dir.join("direct-source");
+            let readonly_source = data_dir.join("readonly-source");
             std::fs::create_dir_all(&source).expect("direct source dir");
+            std::fs::create_dir_all(&readonly_source).expect("readonly source dir");
             std::fs::write(source.join("hello.txt"), b"hello from host")
                 .expect("direct source file");
-
-            let config = SandboxConfig {
-                data_dir: Some(data_dir.display().to_string()),
-                mounts: vec![lsb_vm::MountConfig::Direct {
+            std::fs::write(readonly_source.join("readonly.txt"), b"readonly from host")
+                .expect("readonly source file");
+            const MS_RDONLY: u64 = 1;
+            let direct_mounts = vec![
+                lsb_vm::MountConfig::Direct {
                     host_path: source.display().to_string(),
                     guest_path: "/direct".to_string(),
                     flags: 0,
-                }],
+                },
+                lsb_vm::MountConfig::Direct {
+                    host_path: readonly_source.display().to_string(),
+                    guest_path: "/readonly".to_string(),
+                    flags: MS_RDONLY,
+                },
+            ];
+
+            let config = SandboxConfig {
+                data_dir: Some(data_dir.display().to_string()),
+                mounts: direct_mounts.clone(),
                 instance_id: Some(format!("direct-smb-{}", std::process::id())),
                 ..Default::default()
             };
@@ -1290,7 +1724,7 @@ mod tests {
             assert!(!manifest_text.contains("mount_requests"));
             let manifest = read_windows_smb_cleanup_manifest(&manifest_path)
                 .expect("SMB cleanup manifest should parse");
-            assert_eq!(manifest.shares.len(), 1);
+            assert_eq!(manifest.shares.len(), 2);
             assert!(
                 proxy_handle.is_some(),
                 "direct SMB mount should attach a mount-only proxy when allow_net is false"
@@ -1300,9 +1734,17 @@ mod tests {
                 assert!(windows_share_exists(&share.name));
             }
             assert!(windows_acl_contains(&source, &manifest.account.principal));
+            assert!(windows_acl_contains(
+                &readonly_source,
+                &manifest.account.principal
+            ));
 
             let result = (|| -> anyhow::Result<()> {
                 assert_eq!(sandbox.read_file("/direct/hello.txt")?, b"hello from host");
+                assert_eq!(
+                    sandbox.read_file("/readonly/readonly.txt")?,
+                    b"readonly from host"
+                );
 
                 std::fs::write(source.join("host-live.txt"), b"host live update")?;
                 wait_for_guest_file(&sandbox, "/direct/host-live.txt", b"host live update")?;
@@ -1310,6 +1752,63 @@ mod tests {
                 sandbox.write_file("/direct/guest.txt", b"guest write")?;
                 sandbox.exec(&["/bin/sync"], &mut std::io::sink(), &mut std::io::sink())?;
                 wait_for_host_file(&source.join("guest.txt"), b"guest write")?;
+
+                let watch_registry = WindowsSmbWatchRegistry::from_mounts(&direct_mounts)?;
+                let watch_manager = WindowsSmbHostWatchManager::default();
+                let mut direct_watch = open_windows_smb_host_watch_from_registry(
+                    &watch_registry,
+                    &watch_manager,
+                    "/direct",
+                    true,
+                )?
+                .expect("direct SMB path should use host watcher");
+                let mut readonly_watch = open_windows_smb_host_watch_from_registry(
+                    &watch_registry,
+                    &watch_manager,
+                    "/readonly",
+                    true,
+                )?
+                .expect("read-only direct SMB path should use host watcher");
+                std::thread::sleep(Duration::from_millis(500));
+
+                std::fs::write(source.join("host-watch.txt"), b"host watch create")?;
+                std::fs::write(source.join("host-watch.txt"), b"host watch modify")?;
+                std::fs::rename(
+                    source.join("host-watch.txt"),
+                    source.join("host-renamed.txt"),
+                )?;
+                std::fs::remove_file(source.join("host-renamed.txt"))?;
+
+                sandbox.write_file("/direct/guest-watch.txt", b"guest watch")?;
+                sandbox.exec(&["/bin/sync"], &mut std::io::sink(), &mut std::io::sink())?;
+                wait_for_host_file(&source.join("guest-watch.txt"), b"guest watch")?;
+
+                std::fs::write(
+                    readonly_source.join("host-readonly-watch.txt"),
+                    b"host readonly",
+                )?;
+                assert!(
+                    sandbox
+                        .write_file("/readonly/guest-denied.txt", b"denied")
+                        .is_err(),
+                    "guest writes through read-only direct SMB mounts must remain denied"
+                );
+
+                wait_for_watch_events(
+                    &mut direct_watch,
+                    &[
+                        ("/direct/host-watch.txt", Some("create")),
+                        ("/direct/host-watch.txt", Some("modify")),
+                        ("/direct/host-renamed.txt", Some("rename")),
+                        ("/direct/host-renamed.txt", Some("delete")),
+                        ("/direct/guest-watch.txt", None),
+                    ],
+                )?;
+                wait_for_watch_events(
+                    &mut readonly_watch,
+                    &[("/readonly/host-readonly-watch.txt", Some("create"))],
+                )?;
+                watch_manager.stop_all();
 
                 let egress = sandbox.exec(
                     &[
@@ -1351,6 +1850,8 @@ mod tests {
                 .iter()
                 .all(|share| !windows_share_exists(&share.name));
             let acl_removed = !windows_acl_contains(&source, &manifest.account.principal);
+            let readonly_acl_removed =
+                !windows_acl_contains(&readonly_source, &manifest.account.principal);
             let _ = std::fs::remove_dir_all(&data_dir);
 
             result.expect("Windows direct SMB smoke should pass");
@@ -1359,6 +1860,10 @@ mod tests {
             assert!(user_removed, "generated SMB user should be removed");
             assert!(shares_removed, "generated SMB shares should be removed");
             assert!(acl_removed, "generated SMB ACL grant should be removed");
+            assert!(
+                readonly_acl_removed,
+                "generated read-only SMB ACL grant should be removed"
+            );
 
             struct EnvVarGuard {
                 name: &'static str,
@@ -1435,6 +1940,52 @@ mod tests {
                     }
                     std::thread::sleep(Duration::from_millis(200));
                 }
+            }
+
+            fn wait_for_watch_events(
+                handle: &mut WatchHandle,
+                expected: &[(&str, Option<&str>)],
+            ) -> anyhow::Result<()> {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                let mut remaining = expected
+                    .iter()
+                    .map(|(path, event)| ((*path).to_string(), event.map(str::to_string)))
+                    .collect::<Vec<_>>();
+                let mut seen = Vec::new();
+
+                while !remaining.is_empty() {
+                    match handle.try_next() {
+                        Ok(Some(Ok(event))) => {
+                            seen.push(format!("{}:{}", event.event, event.path));
+                            remaining.retain(|(path, expected_event)| {
+                                event.path != *path
+                                    || expected_event
+                                        .as_deref()
+                                        .is_some_and(|kind| event.event != kind)
+                            });
+                        }
+                        Ok(Some(Err(error))) => return Err(error),
+                        Ok(None) => {
+                            if Instant::now() >= deadline {
+                                anyhow::bail!(
+                                    "timed out waiting for SMB watch events {:?}; seen {:?}",
+                                    remaining,
+                                    seen
+                                );
+                            }
+                            std::thread::sleep(Duration::from_millis(100));
+                        }
+                        Err(error) => {
+                            anyhow::bail!(
+                                "SMB watch event stream closed before expectations {:?}: {}",
+                                remaining,
+                                error
+                            );
+                        }
+                    }
+                }
+
+                Ok(())
             }
 
             fn windows_local_user_exists(name: &str) -> bool {
