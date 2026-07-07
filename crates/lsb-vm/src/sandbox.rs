@@ -1213,12 +1213,15 @@ impl Sandbox {
     /// backends to use non-TCP control sessions.
     #[doc(hidden)]
     pub fn open_watch_session(&self, path: &str, recursive: bool) -> Result<PlatformControlStream> {
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(
+            target_os = "macos",
+            all(target_os = "windows", target_arch = "x86_64")
+        )))]
         {
             let _ = (path, recursive);
             return Err(unsupported_runtime(
                 "file watch",
-                "Windows watch requires a multiplexed guest control session and is not enabled yet.",
+                "File watch requires a supported guest control session.",
             ));
         }
 
@@ -1227,9 +1230,22 @@ impl Sandbox {
             let session = PlatformControlStream::from_tcp_stream(self.connect_vsock()?);
             self.initialize_watch_session(session, path, recursive)
         }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            self.ensure_guest_side_windows_watch_path(path)?;
+            let session = self
+                .vm
+                .open_control_session(PlatformControlSessionKind::Watch)
+                .context("opening Windows mux watch control session")?;
+            self.initialize_watch_session(session, path, recursive)
+        }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(
+        target_os = "macos",
+        all(target_os = "windows", target_arch = "x86_64")
+    ))]
     fn initialize_watch_session(
         &self,
         session: PlatformControlStream,
@@ -1248,6 +1264,32 @@ impl Sandbox {
         frame::send_json(&mut writer, frame::WATCH_REQ, &req)?;
 
         Ok(session)
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn ensure_guest_side_windows_watch_path(&self, path: &str) -> Result<()> {
+        if let Some(target) = self.windows_smb_watch_target(path)? {
+            bail!(
+                "Windows direct SMB mount watch for guest path '{}' under '{}' is not implemented in this slice; watch a normal guest path or overlay/import mount instead",
+                path,
+                target
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn windows_smb_watch_target(&self, path: &str) -> Result<Option<String>> {
+        let mounts = self
+            .windows_smb_mounts
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Windows SMB mount lock poisoned"))?;
+
+        Ok(mounts
+            .iter()
+            .filter(|mount| guest_path_contains_or_equals(path, &mount.target))
+            .max_by_key(|mount| mount.target.len())
+            .map(|mount| mount.target.clone()))
     }
 
     /// Run an interactive shell session with PTY support.
@@ -2007,6 +2049,25 @@ fn windows_smb_instance_id(rootfs_path: &str) -> String {
 }
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn guest_path_contains_or_equals(path: &str, ancestor: &str) -> bool {
+    let path = normalize_guest_watch_path(path);
+    let ancestor = normalize_guest_watch_path(ancestor);
+    path == ancestor
+        || path
+            .strip_prefix(ancestor.as_str())
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn normalize_guest_watch_path(path: &str) -> String {
+    if path.len() > 1 {
+        path.trim_end_matches('/').to_string()
+    } else {
+        path.to_string()
+    }
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 fn windows_smb_cleanup_manifest_path_from_rootfs(rootfs_path: &str) -> Result<PathBuf> {
     let instance_dir = Path::new(rootfs_path).parent().ok_or_else(|| {
         anyhow::anyhow!(
@@ -2694,6 +2755,54 @@ mod tests {
         assert!(plan.windows_smb_mounts[1].access.read_only());
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn windows_watch_routes_only_non_smb_paths_to_guest_watch() {
+        let sandbox = sandbox_with_mount_requests(Vec::new());
+        {
+            let mut mounts = sandbox
+                .windows_smb_mounts
+                .lock()
+                .expect("Windows SMB mount lock");
+            mounts.push(WindowsSmbMount::read_write(
+                PathBuf::from(r"C:\host\workspace"),
+                "/workspace",
+            ));
+            mounts.push(WindowsSmbMount::read_write(
+                PathBuf::from(r"C:\host\nested"),
+                "/workspace/nested",
+            ));
+        }
+
+        assert_eq!(sandbox.windows_smb_watch_target("/tmp").unwrap(), None);
+        assert_eq!(
+            sandbox.windows_smb_watch_target("/workspace").unwrap(),
+            Some("/workspace".to_string())
+        );
+        assert_eq!(
+            sandbox
+                .windows_smb_watch_target("/workspace/file.txt")
+                .unwrap(),
+            Some("/workspace".to_string())
+        );
+        assert_eq!(
+            sandbox
+                .windows_smb_watch_target("/workspace/nested/deep.txt")
+                .unwrap(),
+            Some("/workspace/nested".to_string())
+        );
+        assert_eq!(
+            sandbox.windows_smb_watch_target("/workspace/").unwrap(),
+            Some("/workspace".to_string())
+        );
+        assert_eq!(
+            sandbox
+                .windows_smb_watch_target("/workspace2/file.txt")
+                .unwrap(),
+            None
+        );
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]

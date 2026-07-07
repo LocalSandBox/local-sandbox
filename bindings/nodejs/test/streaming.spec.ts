@@ -136,12 +136,6 @@ test.serial(
 test.serial(
   'supported runtime watch reports file changes, recurses into subdirectories, and coexists with spawn',
   async (t) => {
-    if (process.platform === 'win32') {
-      t.log('Windows watch over mux is out of scope for Slice 5')
-      t.pass()
-      return
-    }
-
     const sandbox = runtime.use(t)
     if (!sandbox) {
       t.log('sandbox not found')
