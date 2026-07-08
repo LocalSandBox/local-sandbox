@@ -949,6 +949,24 @@ impl WindowsSmbWatchRegistry {
             .filter(|mount| guest_path_contains_or_equals(&path, &mount.target))
             .max_by_key(|mount| mount.target.len())
         {
+            if recursive {
+                if let Some(nested) = self
+                    .mounts
+                    .iter()
+                    .filter(|nested| {
+                        nested.target != mount.target
+                            && guest_path_contains_or_equals(&nested.target, &path)
+                    })
+                    .max_by_key(|nested| nested.target.len())
+                {
+                    anyhow::bail!(
+                        "recursive Windows watch for guest path '{}' would span nested direct SMB mount target '{}'; watch the SMB targets directly or start separate watches",
+                        path,
+                        nested.target
+                    );
+                }
+            }
+
             let mut host_root = mount.source.clone();
             for component in guest_relative_suffix(&path, &mount.target)
                 .split('/')
@@ -1423,6 +1441,54 @@ mod tests {
         );
         assert_eq!(resolved.guest_root, "/workspace/nested/deep");
         assert_eq!(resolved.access, WindowsSmbAccess::ReadWrite);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn windows_smb_watch_registry_rejects_recursive_direct_mount_with_nested_direct_mount() {
+        let root = temp_test_dir("watch-registry-nested-recursive");
+        let source = root.join("source");
+        let nested_source = root.join("nested-source");
+        std::fs::create_dir_all(&source).expect("source dir");
+        std::fs::create_dir_all(&nested_source).expect("nested source dir");
+
+        let registry = WindowsSmbWatchRegistry::from_mounts(&[
+            lsb_vm::MountConfig::Direct {
+                host_path: source.display().to_string(),
+                guest_path: "/workspace".to_string(),
+                flags: 0,
+            },
+            lsb_vm::MountConfig::Direct {
+                host_path: nested_source.display().to_string(),
+                guest_path: "/workspace/nested".to_string(),
+                flags: 0,
+            },
+        ])
+        .expect("watch registry should plan");
+
+        let error = registry
+            .resolve("/workspace", true)
+            .expect_err("recursive outer direct SMB watch should reject nested SMB mount");
+        assert!(error.to_string().contains("/workspace/nested"));
+        assert!(
+            !error
+                .to_string()
+                .contains(source.to_string_lossy().as_ref()),
+            "watch path errors must not expose outer host source paths"
+        );
+        assert!(
+            !error
+                .to_string()
+                .contains(nested_source.to_string_lossy().as_ref()),
+            "watch path errors must not expose nested host source paths"
+        );
+
+        assert!(registry
+            .resolve("/workspace", false)
+            .expect("non-recursive outer direct SMB watch should resolve")
+            .is_some());
 
         let _ = std::fs::remove_dir_all(root);
     }
