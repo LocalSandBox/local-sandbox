@@ -1,0 +1,37 @@
+crates/lsb-vm/src/sandbox.rs
+  s_16b02e74a2c557::t_bcebb039709427 1069,1193,1273
+docs/windows-port/architecture.md
+  s_16b02e74a2c557::t_7bb2a2d765354a 99
+docs/architecture.md
+  s_16b02e74a2c557::t_12419cff53c3da 680,682-684,686-687,692-693,709-711,713-717,1012,1030,1509,1514-1516,1522-1523,1530,1534-1538,1560-1561,1822-1824,1826-1828,2324-2326,2342-2343
+  s_16b02e74a2c557::t_bcebb039709427 26-31,151-154,189-191,208-210,409-410,412-417,421,425-426,428,430-431,434,436-440,957-961,1014-1016,1033-1035,1040-1041,1049-1051,1053-1058,1060-1062
+  s_16b02e74a2c557::t_a553d3d9079552 1855-1858,1860,1862-1866,1874-1875,2045,2178,2180-2181,2188-2191,2198-2202
+docs/windows-port/rfc-qemu-whpx.md
+  s_16b02e74a2c557::t_7bb2a2d765354a 89,95,666,698,1643
+  s_16b02e74a2c557::t_e49377361a3865 90
+bindings/nodejs/README.md
+  s_16b02e74a2c557::t_0899d5f7df9c88 47
+  s_16b02e74a2c557::t_412b92ea52e584 261-271,277-280
+skills/lsb/SKILL.md
+  s_16b02e74a2c557::t_dbadd74647bd87 188
+CHANGELOG.md
+  s_16b02e74a2c557::t_bcebb039709427 12-17,21-23
+README.md
+  s_16b02e74a2c557::t_412b92ea52e584 263-264
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2ef1da4f945b1bb9583a96f20c2a25b111668f72",
+  "prompts": {},
+  "sessions": {
+    "s_16b02e74a2c557": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4002-342f-7672-890f-a69497836d09",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
