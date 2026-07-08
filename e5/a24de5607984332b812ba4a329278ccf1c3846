@@ -1,0 +1,21 @@
+scripts/win-gh-test
+  s_7beb246561925d::t_742654e26cd3b3 8,10
+.github/workflows/windows-lsb-hardware.yml
+  s_7beb246561925d::t_2f53068063737e 5,22,34,130,269,374,386,392,510,515,527
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e5a24de5607984332b812ba4a329278ccf1c3846",
+  "prompts": {},
+  "sessions": {
+    "s_7beb246561925d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3ffa-fee7-7840-9a56-3e2bcd0faf7e",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}

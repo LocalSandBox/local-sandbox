@@ -1,0 +1,21 @@
+crates/lsb-sdk/src/host_tools.rs
+  s_ce75fa925f1673::t_bda2c025139152 1040
+crates/lsb-sdk/src/runtime.rs
+  s_ce75fa925f1673::t_bda2c025139152 1043
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3f05ed1ed31d06cfd098539447f006cac673a74b",
+  "prompts": {},
+  "sessions": {
+    "s_ce75fa925f1673": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3bd0-d067-76b2-b835-5ca516912182",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+xtask/src/rootfs.rs
+  s_182c4bf5c89dba::t_8243022b0a4cef 221-235,507-512
+  s_182c4bf5c89dba::t_885d7c631eb00d 513-514
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e0be647940f4b86214f992d048cdf05642479aea",
+  "prompts": {},
+  "sessions": {
+    "s_182c4bf5c89dba": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3c44-8d22-7ea3-912a-71cccf4e6a73",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}

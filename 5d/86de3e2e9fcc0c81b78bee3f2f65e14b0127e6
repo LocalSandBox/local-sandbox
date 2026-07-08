@@ -1,0 +1,24 @@
+crates/lsb-platform/src/windows_x86_64/control/mux.rs
+  s_c2777c6955d505::t_9fa8ef39218cd1 884-887,929-939,1326-1346
+  s_c2777c6955d505::t_3bf90cf182e495 17,311,324-328,355-362,428,432-442,646,655-659,662-667
+  s_c2777c6955d505::t_db70394f122424 660-661
+  s_c2777c6955d505::t_8c56ba662c6190 7,396,421-427,430
+  s_c2777c6955d505::t_8ba82e68ec88a3 668-669
+  s_c2777c6955d505::t_44586cafcbf5b1 1347
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5d86de3e2e9fcc0c81b78bee3f2f65e14b0127e6",
+  "prompts": {},
+  "sessions": {
+    "s_c2777c6955d505": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3d48-dc5a-7e80-be93-c08d0935d4a4",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+crates/lsb-platform/src/windows_x86_64/control/mux.rs
+  s_c2777c6955d505::t_e2ad819f5b6be2 646
+crates/lsb-platform/src/windows_named_pipe.rs
+  s_c2777c6955d505::t_620946dacb69be 142-143
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7e527f24f1e06d11cd5b4d55632d9a2d2bb5612a",
+  "prompts": {},
+  "sessions": {
+    "s_c2777c6955d505": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3d48-dc5a-7e80-be93-c08d0935d4a4",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}

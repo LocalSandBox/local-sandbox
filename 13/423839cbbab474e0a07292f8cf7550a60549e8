@@ -1,0 +1,49 @@
+crates/lsb-platform/src/windows_x86_64/fs/smb/lifecycle.rs
+  s_182c4bf5c89dba::t_2b4fe64ea267bc 17,649,993
+scripts/windows-smoke.ps1
+  s_182c4bf5c89dba::t_7cf3dc85a1bdb1 110,123,137-170,189,207
+  s_182c4bf5c89dba::t_1ae7c3341b48b0 62-73,75-90,92-105
+  s_182c4bf5c89dba::t_c7517d6030d045 74,91,106-109
+  s_182c4bf5c89dba::t_539b431d6cd14c 111,113-122,124-131,133-136,183
+  s_182c4bf5c89dba::t_ee3dccd93b2c77 112
+crates/lsb-guest/src/main.rs
+  s_182c4bf5c89dba::t_6a0ff87c5baf0c 2036-2045,2050-2062,2064-2066,2074,2082-2085,2091,2097,2105-2108,2114,2116,2154-2167,2170-2173
+  s_182c4bf5c89dba::t_452e9dc2abaab4 1126
+  s_182c4bf5c89dba::t_03f4a1ba047d5b 2063
+  s_182c4bf5c89dba::t_5c37001dea60c7 707,970-982,993,1014-1015,1020,1071-1077,1080,1083,1092-1093,1095-1108,1127-1138
+  s_182c4bf5c89dba::t_51fe7ec155d2ce 2195-2196
+  s_182c4bf5c89dba::t_06c434e8c48f03 706
+  s_182c4bf5c89dba::t_f740b227843a9b 689,691,708-709,994,1005,1016,1021-1037,1045-1061,1065-1070,1078-1079,1081-1082,1088-1091,1094,1109-1125
+  s_182c4bf5c89dba::t_f4e00982e4bf94 984,995-1004,1007-1013
+  s_182c4bf5c89dba::t_1c0b03f04921fc 1084-1087
+  s_182c4bf5c89dba::t_00c8d44b6b5246 1139
+  s_182c4bf5c89dba::t_7a57ea5e01cdb2 1062-1064
+  s_182c4bf5c89dba::t_64f6b129f6e947 2153
+  s_182c4bf5c89dba::t_affc57de9dc0d3 2186-2194,2197-2261
+.github/workflows/windows-lsb-hardware.yml
+  s_182c4bf5c89dba::t_c48ecc091f97a4 326,450
+bindings/nodejs/scripts/windows-preflight-smoke.mjs
+  s_182c4bf5c89dba::t_8fda6a3ea6544c 177,179,194
+  s_182c4bf5c89dba::t_167b3219fbbb99 1-10,47-89,152,181,238
+xtask/src/rootfs.rs
+  s_182c4bf5c89dba::t_8243022b0a4cef 221-235,507-512
+  s_182c4bf5c89dba::t_885d7c631eb00d 513-514
+crates/lsb-platform/src/windows_x86_64/qemu/boot.rs
+  s_182c4bf5c89dba::t_bb81d94fcc5471 28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "13423839cbbab474e0a07292f8cf7550a60549e8",
+  "prompts": {},
+  "sessions": {
+    "s_182c4bf5c89dba": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3c44-8d22-7ea3-912a-71cccf4e6a73",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}

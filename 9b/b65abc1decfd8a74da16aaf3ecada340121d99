@@ -1,0 +1,26 @@
+crates/lsb-guest/src/main.rs
+  s_182c4bf5c89dba::t_64f6b129f6e947 2013
+  s_182c4bf5c89dba::t_affc57de9dc0d3 2046-2054,2057-2121
+  s_182c4bf5c89dba::t_03f4a1ba047d5b 1923
+  s_182c4bf5c89dba::t_6a0ff87c5baf0c 1896-1905,1910-1922,1924-1926,1934,1942-1945,1951,1957,1965-1968,1974,1976,2014-2027,2030-2033
+  s_182c4bf5c89dba::t_51fe7ec155d2ce 2055-2056
+scripts/windows-smoke.ps1
+  s_182c4bf5c89dba::t_c7517d6030d045 74,91,106-109
+  s_182c4bf5c89dba::t_1ae7c3341b48b0 62-73,75-90,92-105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9bb65abc1decfd8a74da16aaf3ecada340121d99",
+  "prompts": {},
+  "sessions": {
+    "s_182c4bf5c89dba": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3c44-8d22-7ea3-912a-71cccf4e6a73",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}

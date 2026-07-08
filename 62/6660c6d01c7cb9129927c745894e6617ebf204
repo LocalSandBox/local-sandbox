@@ -1,0 +1,46 @@
+crates/lsb-platform/src/windows_x86_64/fs/watch.rs
+  s_9dd411de83037b::t_3a1b0c8f3845f4 1-16,21-23,26-147,149-284,286-304,307-346,348-401,403-405,423-543
+  s_9dd411de83037b::t_2509ae4a8f2f07 17-20
+  s_9dd411de83037b::t_5d0ad1e45356f9 24-25,305-306,347
+  s_9dd411de83037b::t_5b0d6295a0fefa 285,402,406-422
+  s_9dd411de83037b::t_0330e40f6ee3ee 148
+crates/lsb-sdk/src/runtime.rs
+  s_9dd411de83037b::t_718fbcc53ef9f6 878-925,929-1047,1077-1114,1118-1131,1989
+  s_9dd411de83037b::t_224c6df38d7ce1 1048-1076
+  s_9dd411de83037b::t_5920a71aee5593 428,1392-1463,1467-1490,1494-1502,1658-1659,1661-1663
+  s_9dd411de83037b::t_7356062d741fe4 1687,1689,1692-1696,1700-1710,1727,1737-1740,1744-1747,1756-1775,1780-1785,1790-1812,1853-1854,1863-1866,1945-1988
+  s_9dd411de83037b::t_88f2bc193d7a2e 1115-1117
+  s_9dd411de83037b::t_5d0ad1e45356f9 926-928,1464-1466,1491-1493,1660,1776-1779,1786-1789
+  s_9dd411de83037b::t_7ec68ccaf6556a 422-427
+  s_9dd411de83037b::t_94c36206d45460 5,8-9,12-18,29-30,119-122,128-132,180-183,407-411,416-421,474-476,490-492
+  s_9dd411de83037b::t_e602d3a71dd424 429,1664,1990
+crates/lsb-sdk/src/watch.rs
+  s_9dd411de83037b::t_674961fcc7f45f 31,36-41
+  s_9dd411de83037b::t_5d0ad1e45356f9 33-35,80-82,104
+  s_9dd411de83037b::t_71e09b2edf9fe2 32
+  s_9dd411de83037b::t_492b05a2a550d7 2-5,8-12,77-79,83-103,105-117
+  s_9dd411de83037b::t_52f36e1aef2b6e 118-120
+  s_9dd411de83037b::t_3619a9d0802238 121-123
+crates/lsb-platform/Cargo.toml
+  s_9dd411de83037b::t_3a1b0c8f3845f4 47
+crates/lsb-platform/src/windows_x86_64/fs/mod.rs
+  s_9dd411de83037b::t_0330e40f6ee3ee 19,21-23
+  s_9dd411de83037b::t_3a1b0c8f3845f4 4,20
+  s_9dd411de83037b::t_5a4c1b5d34d1dd 24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "626660c6d01c7cb9129927c745894e6617ebf204",
+  "prompts": {},
+  "sessions": {
+    "s_9dd411de83037b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3b9c-ac87-79d2-9042-fffbb98f4430",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
