@@ -60,6 +60,40 @@ async function withSmokeTimeout(label, dataDir, action, timeoutMs) {
   }
 }
 
+async function waitForWatchEvent(stream, predicate, timeoutMs) {
+  const iterator = stream[Symbol.asyncIterator]()
+  const seen = []
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    const remaining = Math.max(1, deadline - Date.now())
+    let timeout = null
+    const next = await Promise.race([
+      iterator.next(),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(`timed out waiting for watch event; seen ${JSON.stringify(seen)}`))
+        }, remaining)
+      }),
+    ]).finally(() => {
+      if (timeout) {
+        clearTimeout(timeout)
+      }
+    })
+
+    if (next.done) {
+      throw new Error(`watch stream ended before expected event; seen ${JSON.stringify(seen)}`)
+    }
+
+    seen.push(next.value)
+    if (predicate(next.value)) {
+      return seen
+    }
+  }
+
+  throw new Error(`timed out waiting for watch event; seen ${JSON.stringify(seen)}`)
+}
+
 function stageInstanceDiagnostics(label, dataDir) {
   const destinationRoot = process.env.LSB_WINDOWS_BOOT_ARTIFACT_DIR
   if (!destinationRoot) {
@@ -249,6 +283,28 @@ async function expectDirectReadOnlyMount(Sandbox) {
     if (result.exitCode !== 0) {
       throw new Error(`direct read-only mount did not expose live host update: ${result.stderr}`)
     }
+
+    const directWatch = await withSmokeTimeout(
+      'direct-ro-watch-open',
+      dataDir,
+      () => sandbox.watch('/node-ro'),
+      60_000,
+    )
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    writeFileSync(join(source, 'host-watch.txt'), 'node-direct-ro-watch')
+    await withSmokeTimeout(
+      'direct-ro-watch-event',
+      dataDir,
+      () =>
+        waitForWatchEvent(
+          directWatch,
+          (event) =>
+            event.path === '/node-ro/host-watch.txt' &&
+            (event.event === 'create' || event.event === 'modify'),
+          60_000,
+        ),
+      70_000,
+    )
 
     result = await withSmokeTimeout(
       'direct-ro-write-denial',

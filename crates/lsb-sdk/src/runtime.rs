@@ -3,6 +3,8 @@ use std::io::BufReader;
 use std::net::TcpStream;
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use std::path::{Path, PathBuf};
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -93,6 +95,9 @@ enum SandboxCmd {
         path: String,
         recursive: bool,
         reply: oneshot::Sender<Result<BoxedControlSession>>,
+    },
+    EnsureRunning {
+        reply: oneshot::Sender<Result<()>>,
     },
     OpenShell {
         rows: u16,
@@ -404,6 +409,8 @@ impl AsyncSandbox {
 
     /// Watch guest filesystem changes.
     pub async fn watch(&self, path: &str, recursive: bool) -> Result<WatchHandle> {
+        self.ensure_running().await?;
+
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         if let Some(handle) = self.open_windows_smb_host_watch(path, recursive)? {
             return Ok(handle);
@@ -425,6 +432,14 @@ impl AsyncSandbox {
             path,
             recursive,
         )
+    }
+
+    async fn ensure_running(&self) -> Result<()> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SandboxCmd::EnsureRunning { reply: reply_tx })
+            .map_err(|_| anyhow::anyhow!("VM thread exited"))?;
+        reply_rx.await?
     }
 
     async fn open_exec(
@@ -1011,25 +1026,43 @@ struct WindowsSmbHostWatchManager {
 #[derive(Debug, Default)]
 struct WindowsSmbHostWatchManagerInner {
     next_id: AtomicU64,
+    stopped: AtomicBool,
     active: Mutex<Vec<(u64, WindowsHostDirectoryWatchStop)>>,
 }
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 impl WindowsSmbHostWatchManager {
-    fn register(&self, stop: WindowsHostDirectoryWatchStop) -> WindowsSmbHostWatchRegistration {
-        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut active) = self.inner.active.lock() {
-            active.push((id, stop.clone()));
+    fn register(
+        &self,
+        stop: WindowsHostDirectoryWatchStop,
+    ) -> Result<WindowsSmbHostWatchRegistration> {
+        if self.inner.stopped.load(Ordering::Acquire) {
+            stop.stop();
+            anyhow::bail!("VM thread exited");
         }
 
-        WindowsSmbHostWatchRegistration {
+        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
+        let mut active = self
+            .inner
+            .active
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Windows direct SMB watch manager lock poisoned"))?;
+        if self.inner.stopped.load(Ordering::Acquire) {
+            stop.stop();
+            anyhow::bail!("VM thread exited");
+        }
+        active.push((id, stop.clone()));
+
+        Ok(WindowsSmbHostWatchRegistration {
             id,
             stop,
             manager: Arc::downgrade(&self.inner),
-        }
+        })
     }
 
     fn stop_all(&self) {
+        self.inner.stopped.store(true, Ordering::Release);
+
         let active = if let Ok(mut active) = self.inner.active.lock() {
             std::mem::take(&mut *active)
         } else {
@@ -1081,7 +1114,7 @@ fn open_windows_smb_host_watch_from_registry(
                 error
             )
         })?;
-    let registration = manager.register(watch.stop_handle());
+    let registration = manager.register(watch.stop_handle())?;
 
     Ok(Some(spawn_windows_smb_host_watch_thread(
         watch,
@@ -1172,6 +1205,8 @@ fn run_vm_loop(
         .unwrap_or_default();
 
     let _proxy = proxy_handle;
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    let mut vm_running = true;
 
     while let Ok(cmd) = cmd_rx.recv() {
         match cmd {
@@ -1257,6 +1292,19 @@ fn run_vm_loop(
                     .map(|session| Box::new(session) as BoxedControlSession);
                 let _ = reply.send(result);
             }
+            SandboxCmd::EnsureRunning { reply } => {
+                #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+                let result = if vm_running {
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("VM not running"))
+                };
+
+                #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+                let result = Ok(());
+
+                let _ = reply.send(result);
+            }
             SandboxCmd::OpenShell { rows, cols, reply } => {
                 let result = sandbox.open_shell(&["/bin/bash", "-l"], &env, rows, cols);
                 let _ = reply.send(result);
@@ -1272,7 +1320,9 @@ fn run_vm_loop(
                     } else if storage_kind == RuntimeStorageKind::WindowsQcow2 {
                         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
                         {
-                            sandbox.stop()?;
+                            let stop_result = sandbox.stop();
+                            vm_running = false;
+                            stop_result?;
                             let source = windows_checkpoint_source.as_ref().ok_or_else(|| {
                                 anyhow::anyhow!(
                                     "Windows checkpoint source metadata missing for active qcow2 disk '{}'",
@@ -1566,6 +1616,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn windows_direct_smb_watch_requires_live_vm_thread() {
+        let root = temp_test_dir("watch-public-lifecycle");
+        let source = root.join("source");
+        let instance_dir = root.join("instance");
+        std::fs::create_dir_all(&source).expect("source dir");
+
+        let registry = WindowsSmbWatchRegistry::from_mounts(&[lsb_vm::MountConfig::Direct {
+            host_path: source.display().to_string(),
+            guest_path: "/workspace".to_string(),
+            flags: 0,
+        }])
+        .expect("watch registry should plan");
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+        drop(cmd_rx);
+        let sandbox = AsyncSandbox {
+            cmd_tx,
+            instance_dir: instance_dir.display().to_string(),
+            windows_smb_watch_registry: registry,
+            windows_smb_host_watches: WindowsSmbHostWatchManager::default(),
+        };
+
+        let result = block_on(sandbox.watch("/workspace", true));
+        let error = match result {
+            Ok(_) => panic!("direct SMB watch must not open after the VM actor exits"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("VM thread exited"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU/qemu-img, and disposable LocalSandbox assets"]
     fn windows_qemu_checkpoint_store_smoke() {
@@ -1728,6 +1811,14 @@ mod tests {
         root
     }
 
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime should build")
+            .block_on(future)
+    }
+
     #[test]
     #[ignore = "requires elevated Windows 11 x86_64 with WHPX, QEMU, SMB, and disposable LocalSandbox assets"]
     fn windows_qemu_direct_smb_mount_smoke() {
@@ -1773,16 +1864,14 @@ mod tests {
 
             let config = SandboxConfig {
                 data_dir: Some(data_dir.display().to_string()),
-                mounts: direct_mounts.clone(),
+                mounts: direct_mounts,
                 instance_id: Some(format!("direct-smb-{}", std::process::id())),
                 ..Default::default()
             };
 
-            let booted =
-                super::boot_vm(config).expect("Windows direct SMB sandbox should boot elevated");
-            let sandbox = booted.sandbox;
-            let instance_dir = booted.instance_dir;
-            let proxy_handle = booted.proxy_handle;
+            let sandbox = block_on(AsyncSandbox::boot(config))
+                .expect("Windows direct SMB sandbox should boot elevated");
+            let instance_dir = sandbox.instance_dir().to_string();
             let manifest_path = windows_smb_cleanup_manifest_path(Path::new(&instance_dir));
             let manifest_text =
                 std::fs::read_to_string(&manifest_path).expect("SMB cleanup manifest should exist");
@@ -1791,10 +1880,6 @@ mod tests {
             let manifest = read_windows_smb_cleanup_manifest(&manifest_path)
                 .expect("SMB cleanup manifest should parse");
             assert_eq!(manifest.shares.len(), 2);
-            assert!(
-                proxy_handle.is_some(),
-                "direct SMB mount should attach a mount-only proxy when allow_net is false"
-            );
             assert!(windows_local_user_exists(&manifest.account.name));
             for share in &manifest.shares {
                 assert!(windows_share_exists(&share.name));
@@ -1806,35 +1891,27 @@ mod tests {
             ));
 
             let result = (|| -> anyhow::Result<()> {
-                assert_eq!(sandbox.read_file("/direct/hello.txt")?, b"hello from host");
                 assert_eq!(
-                    sandbox.read_file("/readonly/readonly.txt")?,
+                    block_on(sandbox.read_file("/direct/hello.txt"))?,
+                    b"hello from host"
+                );
+                assert_eq!(
+                    block_on(sandbox.read_file("/readonly/readonly.txt"))?,
                     b"readonly from host"
                 );
 
                 std::fs::write(source.join("host-live.txt"), b"host live update")?;
                 wait_for_guest_file(&sandbox, "/direct/host-live.txt", b"host live update")?;
 
-                sandbox.write_file("/direct/guest.txt", b"guest write")?;
-                sandbox.exec(&["/bin/sync"], &mut std::io::sink(), &mut std::io::sink())?;
+                block_on(sandbox.write_file("/direct/guest.txt", b"guest write"))?;
+                let sync = block_on(sandbox.exec(&["/bin/sync"]))?;
+                if sync.exit_code != 0 {
+                    anyhow::bail!("guest sync failed: {}", sync.stderr);
+                }
                 wait_for_host_file(&source.join("guest.txt"), b"guest write")?;
 
-                let watch_registry = WindowsSmbWatchRegistry::from_mounts(&direct_mounts)?;
-                let watch_manager = WindowsSmbHostWatchManager::default();
-                let mut direct_watch = open_windows_smb_host_watch_from_registry(
-                    &watch_registry,
-                    &watch_manager,
-                    "/direct",
-                    true,
-                )?
-                .expect("direct SMB path should use host watcher");
-                let mut readonly_watch = open_windows_smb_host_watch_from_registry(
-                    &watch_registry,
-                    &watch_manager,
-                    "/readonly",
-                    true,
-                )?
-                .expect("read-only direct SMB path should use host watcher");
+                let mut direct_watch = block_on(sandbox.watch("/direct", true))?;
+                let mut readonly_watch = block_on(sandbox.watch("/readonly", true))?;
                 std::thread::sleep(Duration::from_millis(500));
 
                 std::fs::write(source.join("host-watch.txt"), b"host watch create")?;
@@ -1845,8 +1922,11 @@ mod tests {
                 )?;
                 std::fs::remove_file(source.join("host-renamed.txt"))?;
 
-                sandbox.write_file("/direct/guest-watch.txt", b"guest watch")?;
-                sandbox.exec(&["/bin/sync"], &mut std::io::sink(), &mut std::io::sink())?;
+                block_on(sandbox.write_file("/direct/guest-watch.txt", b"guest watch"))?;
+                let sync = block_on(sandbox.exec(&["/bin/sync"]))?;
+                if sync.exit_code != 0 {
+                    anyhow::bail!("guest sync failed: {}", sync.stderr);
+                }
                 wait_for_host_file(&source.join("guest-watch.txt"), b"guest watch")?;
 
                 std::fs::write(
@@ -1854,9 +1934,7 @@ mod tests {
                     b"host readonly",
                 )?;
                 assert!(
-                    sandbox
-                        .write_file("/readonly/guest-denied.txt", b"denied")
-                        .is_err(),
+                    block_on(sandbox.write_file("/readonly/guest-denied.txt", b"denied")).is_err(),
                     "guest writes through read-only direct SMB mounts must remain denied"
                 );
 
@@ -1874,19 +1952,14 @@ mod tests {
                     &mut readonly_watch,
                     &[("/readonly/host-readonly-watch.txt", Some("create"))],
                 )?;
-                watch_manager.stop_all();
 
-                let egress = sandbox.exec(
-                    &[
-                        "/bin/sh",
-                        "-c",
-                        "if curl -fsS --max-time 5 http://example.com/ >/tmp/smb-egress.out 2>/tmp/smb-egress.err; then exit 42; else exit 0; fi",
-                    ],
-                    &mut std::io::sink(),
-                    &mut std::io::sink(),
-                )?;
+                let egress = block_on(sandbox.exec(&[
+                    "/bin/sh",
+                    "-c",
+                    "if curl -fsS --max-time 5 http://example.com/ >/tmp/smb-egress.out 2>/tmp/smb-egress.err; then exit 42; else exit 0; fi",
+                ]))?;
                 assert_eq!(
-                    egress, 0,
+                    egress.exit_code, 0,
                     "mount-only SMB proxy must not allow arbitrary outbound network"
                 );
 
@@ -1908,7 +1981,8 @@ mod tests {
                 Ok(())
             })();
 
-            let stop_result = sandbox.stop();
+            let stop_result = block_on(sandbox.stop());
+            let post_stop_watch_rejected = block_on(sandbox.watch("/direct", true)).is_err();
             let manifest_removed = !manifest_path.exists();
             let user_removed = !windows_local_user_exists(&manifest.account.name);
             let shares_removed = manifest
@@ -1922,6 +1996,10 @@ mod tests {
 
             result.expect("Windows direct SMB smoke should pass");
             stop_result.expect("Windows direct SMB smoke QEMU should stop cleanly");
+            assert!(
+                post_stop_watch_rejected,
+                "direct SMB watch must reject after AsyncSandbox::stop"
+            );
             assert!(manifest_removed, "SMB cleanup manifest should be removed");
             assert!(user_removed, "generated SMB user should be removed");
             assert!(shares_removed, "generated SMB shares should be removed");
@@ -1976,13 +2054,13 @@ mod tests {
             }
 
             fn wait_for_guest_file(
-                sandbox: &lsb_vm::Sandbox,
+                sandbox: &AsyncSandbox,
                 path: &str,
                 expected: &[u8],
             ) -> anyhow::Result<()> {
                 let deadline = Instant::now() + Duration::from_secs(8);
                 loop {
-                    if matches!(sandbox.read_file(path), Ok(bytes) if bytes == expected) {
+                    if matches!(block_on(sandbox.read_file(path)), Ok(bytes) if bytes == expected) {
                         return Ok(());
                     }
                     if Instant::now() >= deadline {
