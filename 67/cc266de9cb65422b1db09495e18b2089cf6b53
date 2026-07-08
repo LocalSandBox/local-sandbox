@@ -1,0 +1,83 @@
+crates/lsb-sdk/src/host_tools.rs
+  s_07cc4468a3c5d8::t_37acf87b19b58e 1040
+crates/lsb-platform/src/windows_x86_64/host_tools.rs
+  s_0db0570768cdd3::t_fad3d247c9bb4e 16,249
+crates/lsb-sdk/src/assets.rs
+  s_09f863a2106b47::t_64d2692041c88a 11
+crates/lsb-store/Cargo.toml
+  s_abb5db8e5c02f5::t_b4939ece1568b9 3,13
+crates/lsb-guest/Cargo.toml
+  s_abb5db8e5c02f5::t_b4939ece1568b9 3
+crates/lsb-vm/Cargo.toml
+  s_abb5db8e5c02f5::t_b4939ece1568b9 3,10-11
+bindings/nodejs/npm/darwin-arm64/package.json
+  s_abb5db8e5c02f5::t_b4939ece1568b9 3
+bindings/nodejs/npm/win32-x64-msvc/package.json
+  s_abb5db8e5c02f5::t_b4939ece1568b9 3
+bindings/nodejs/npm/darwin-x64/package.json
+  s_abb5db8e5c02f5::t_b4939ece1568b9 3
+crates/lsb-platform/Cargo.toml
+  s_abb5db8e5c02f5::t_b4939ece1568b9 3,13
+bindings/nodejs/package.json
+  s_abb5db8e5c02f5::t_b4939ece1568b9 3
+crates/lsb-sdk/Cargo.toml
+  s_abb5db8e5c02f5::t_b4939ece1568b9 3,10-14
+crates/lsb-proto/Cargo.toml
+  s_abb5db8e5c02f5::t_b4939ece1568b9 3
+crates/lsb-proxy/Cargo.toml
+  s_abb5db8e5c02f5::t_b4939ece1568b9 3
+bindings/nodejs/Cargo.toml
+  s_abb5db8e5c02f5::t_b4939ece1568b9 5
+crates/lsb-cli/Cargo.toml
+  s_abb5db8e5c02f5::t_b4939ece1568b9 3
+Cargo.lock
+  s_abb5db8e5c02f5::t_65fb37a63f2290 936,959,968,987,995,1014,1033,1048
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "67cc266de9cb65422b1db09495e18b2089cf6b53",
+  "prompts": {},
+  "sessions": {
+    "s_07cc4468a3c5d8": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3c01-e1d5-73a0-9abc-e6ed4040a7ed",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    },
+    "s_09f863a2106b47": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3d25-4a3d-7db1-8c56-aa23fd7c6538",
+        "model": "gpt-5.5"
+      },
+      "human_author": null
+    },
+    "s_0db0570768cdd3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3d41-e27c-7582-9440-067376e2ce54",
+        "model": "gpt-5.5"
+      },
+      "human_author": null
+    },
+    "s_1f43ffa0395082": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3d29-bb7c-73e2-9a3b-df8678f8e373",
+        "model": "gpt-5.5"
+      },
+      "human_author": null
+    },
+    "s_abb5db8e5c02f5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3d59-7c08-74a0-985b-3052f98914b6",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
