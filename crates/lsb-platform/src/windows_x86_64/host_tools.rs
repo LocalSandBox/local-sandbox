@@ -13,7 +13,7 @@ pub const MANAGED_QEMU_PACKAGE_REVISION: &str = "lsb0.4.0";
 pub const MANAGED_QEMU_PACKAGE_VERSION: &str = "qemu-11.0.50-lsb0.4.0";
 pub const MANAGED_QEMU_RELEASE_TAG: &str = "qemu-windows-x86_64-v11.0.50-lsb0.4.0";
 pub const MANAGED_QEMU_TARBALL_NAME: &str = "lsb-qemu-windows-x86_64-qemu-11.0.50-lsb0.4.0.tar.gz";
-pub const MANAGED_QEMU_ARTIFACT_URL: &str = "https://github.com/caika-lgtm/local-sandbox/releases/download/qemu-windows-x86_64-v11.0.50-lsb0.4.0/lsb-qemu-windows-x86_64-qemu-11.0.50-lsb0.4.0.tar.gz";
+pub const MANAGED_QEMU_ARTIFACT_URL: &str = "https://github.com/LocalSandBox/local-sandbox/releases/download/qemu-windows-x86_64-v11.0.50-lsb0.4.0/lsb-qemu-windows-x86_64-qemu-11.0.50-lsb0.4.0.tar.gz";
 pub const MANAGED_QEMU_ARTIFACT_SHA256: &str =
     "49021ed8481ad8bc3e2d71ab3d088e60414ec2bb78654c96f6da33b2dd0c6251";
 pub const MANAGED_QEMU_TOP_LEVEL_DIR: &str = MANAGED_QEMU_PACKAGE_VERSION;
@@ -246,7 +246,7 @@ mod tests {
         );
         assert_eq!(
             metadata.artifact_url,
-            "https://github.com/caika-lgtm/local-sandbox/releases/download/qemu-windows-x86_64-v11.0.50-lsb0.4.0/lsb-qemu-windows-x86_64-qemu-11.0.50-lsb0.4.0.tar.gz"
+            "https://github.com/LocalSandBox/local-sandbox/releases/download/qemu-windows-x86_64-v11.0.50-lsb0.4.0/lsb-qemu-windows-x86_64-qemu-11.0.50-lsb0.4.0.tar.gz"
         );
     }
 
