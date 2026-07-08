@@ -5,9 +5,9 @@ TEST_SET="${1:-check}"
 WORKFLOW="windows-lsb-hardware.yml"
 
 case "$TEST_SET" in
-  check | unit | smoke | e2e) ;;
+  check | unit | smoke | e2e | full) ;;
   *)
-    echo "Usage: $0 [check|unit|smoke|e2e]" >&2
+    echo "Usage: $0 [check|unit|smoke|e2e|full]" >&2
     exit 2
     ;;
 esac
