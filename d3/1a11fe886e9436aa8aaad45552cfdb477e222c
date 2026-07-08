@@ -1,0 +1,37 @@
+crates/lsb-platform/Cargo.toml
+  s_1090ba06675bc7::t_12119e192526fa 3,13
+crates/lsb-sdk/Cargo.toml
+  s_1090ba06675bc7::t_12119e192526fa 3,10-14
+crates/lsb-proxy/Cargo.toml
+  s_1090ba06675bc7::t_12119e192526fa 3
+bindings/nodejs/Cargo.toml
+  s_1090ba06675bc7::t_12119e192526fa 5
+crates/lsb-proto/Cargo.toml
+  s_1090ba06675bc7::t_12119e192526fa 3
+crates/lsb-cli/Cargo.toml
+  s_1090ba06675bc7::t_12119e192526fa 3
+crates/lsb-vm/Cargo.toml
+  s_1090ba06675bc7::t_12119e192526fa 3,10-11
+crates/lsb-store/Cargo.toml
+  s_1090ba06675bc7::t_12119e192526fa 3,13
+crates/lsb-guest/Cargo.toml
+  s_1090ba06675bc7::t_12119e192526fa 3
+Cargo.lock
+  s_1090ba06675bc7::t_15de6f3bb5d3e9 936,959,968,987,995,1014,1033,1048
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d31a11fe886e9436aa8aaad45552cfdb477e222c",
+  "prompts": {},
+  "sessions": {
+    "s_1090ba06675bc7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f40aa-af81-7391-aae3-363ac6eb9e73",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
