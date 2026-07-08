@@ -44,7 +44,7 @@ corepack yarn install
   paths.
 - Windows support covers sandbox start/stop, non-interactive `exec()` / `execShell()`, streaming
   `spawn()`, guest file APIs, `watch()`, overlay mounts, SMB/CIFS direct mounts, loopback port
-  forwarding, policy-mediated proxy networking, and checkpoint restore/save. Interactive shells
+  forwarding, policy-mediated proxy networking, and checkpoint restore/save. Interactive PTY shells
   remain macOS-only.
 
 ## Usage
@@ -258,27 +258,26 @@ corepack yarn test:signed-node
 ```
 
 `corepack yarn test` always builds the native binding first, then runs AVA against the
-generated root entrypoint. The positive VM smoke test only runs when both of these are true:
+generated root entrypoint. The positive VM smoke tests only run when runtime assets already exist in
+the platform default lsb data directory (`~/.local/share/lsb` on macOS/Linux,
+`%LOCALAPPDATA%\lsb` on Windows) or in `LSB_NODEJS_TEST_DATA_DIR` (`Image` is expected there and
+usually needs to be provisioned manually).
 
-- lsb runtime assets already exist in the platform default lsb data directory
-  (`~/.local/share/lsb` on macOS/Linux, `%LOCALAPPDATA%\lsb` on Windows) or in
-  `LSB_NODEJS_TEST_DATA_DIR` (`Image` is expected there and usually needs to be provisioned
-  manually)
-- the current `node` executable has the `com.apple.security.virtualization` entitlement
-
-To avoid modifying your global Node installation, use [`test:signed-node`](./package.json),
-which copies the current `node` binary into `.signed-node/node`, signs that local copy with
-[`../../lsb.entitlements`](../../lsb.entitlements), prepends it to `PATH`, and then runs
-the local `napi build --platform` plus `ava` commands through that signed Node:
+On macOS, positive VM tests also require the current `node` executable to have the
+`com.apple.security.virtualization` entitlement. To avoid modifying your global Node installation,
+use [`test:signed-node`](./package.json), which copies the current `node` binary into
+`.signed-node/node`, signs that local copy with [`../../lsb.entitlements`](../../lsb.entitlements),
+prepends it to `PATH`, and then runs the local `napi build --platform` plus `ava` commands through
+that signed Node:
 
 ```sh
 corepack yarn test:signed-node
 ```
 
-If runtime assets are missing, provision them in the lsb data directory first. The generated build outputs
-(`index.js`, `index.d.ts`, `lsb-nodejs.*.node`) are local artifacts and are ignored by git.
-This explicit smoke-test entrypoint will attempt a real VM boot; if your host still refuses
-virtualization after signing the local Node copy, the command will surface that underlying error.
+If runtime assets are missing, provision them in the lsb data directory first. On Windows, positive
+VM tests require Windows 11 x64 with WHPX enabled and initialized managed QEMU host tools. The
+generated build outputs (`index.js`, `index.d.ts`, `lsb-nodejs.*.node`) are local artifacts and are
+ignored by git.
 
 ## Platform Notes
 

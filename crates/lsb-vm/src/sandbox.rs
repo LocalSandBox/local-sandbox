@@ -1066,7 +1066,7 @@ impl Sandbox {
         Ok(())
     }
 
-    /// Open a vsock connection for streaming exec. Returns the raw stream
+    /// Open a macOS vsock connection for streaming exec. Returns the raw stream
     /// after sending mounts + ExecRequest. Caller manages I/O (reads
     /// STDOUT/STDERR/EXIT frames, writes STDIN/KILL frames).
     pub fn open_exec(
@@ -1190,7 +1190,7 @@ impl Sandbox {
         Ok(stream)
     }
 
-    /// Open a vsock connection for file watching. Returns a stream that
+    /// Open a macOS vsock connection for file watching. Returns a stream that
     /// emits WATCH_EVENT frames until the connection is closed.
     pub fn open_watch(&self, path: &str, recursive: bool) -> Result<TcpStream> {
         let stream = self.connect_vsock()?;
@@ -1270,7 +1270,7 @@ impl Sandbox {
     fn ensure_guest_side_windows_watch_path(&self, path: &str) -> Result<()> {
         if let Some(target) = self.windows_smb_watch_target(path)? {
             bail!(
-                "Windows direct SMB mount watch for guest path '{}' under '{}' is not implemented in this slice; watch a normal guest path or overlay/import mount instead",
+                "Windows direct SMB mount watch for guest path '{}' under '{}' is handled by the SDK/Node host watcher; guest-side VM watch sessions only support normal guest paths and overlay/import mounts",
                 path,
                 target
             );

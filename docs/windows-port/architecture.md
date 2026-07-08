@@ -96,7 +96,7 @@ Useful categories include:
 - `MuxSessionUnavailable`
 - `GuestProtocolError`
 - `FeatureUnsupportedOnWindows`
-- `WindowsDirectSmbWatchUnsupported`
+- `WindowsHybridWatchUnsupported`
 - `NetworkPolicyViolation`
 - `CheckpointUnsupported`
 

@@ -23,10 +23,12 @@ runtime paths. Each path should capture:
 ### Summary
 
 `lsb run -- echo hello` parses `echo hello` as a direct argv vector, prepares an
-ephemeral VM disk, boots the Linux guest, opens a vsock connection to the guest
-init process, sends an `ExecRequest`, streams output back over the binary frame
-protocol, stops the VM, removes the per-run instance directory, and exits with
-the guest process exit code.
+ephemeral VM disk, boots the Linux guest, opens a platform control session to
+the guest init process, sends an `ExecRequest`, streams output back over the
+binary frame protocol, stops the VM, removes the per-run instance directory,
+and exits with the guest process exit code. macOS uses AF_VSOCK for control;
+Windows x64 uses virtio-serial and switches to the session mux after the raw
+`GuestReady` handshake.
 
 The command is not wrapped in a host shell. With no config override, the argv
 that crosses the host/guest boundary is:
@@ -146,7 +148,10 @@ the CLI uses the piped path (`Sandbox::exec_with_env`) and the guest executes vi
     - `crates/lsb-vm/src/sandbox.rs:132`
     - `crates/lsb-vm/src/sandbox.rs:133`
 
-15. The current macOS backend builds the Virtualization.framework VM.
+15. The platform backend builds the VM.
+    - macOS uses Virtualization.framework.
+    - Windows x64 uses QEMU with WHPX, private virtio-serial control and
+      forwarding pipes, and `CAP_SESSION_MUX` for control sessions.
     - Linux boot loader with kernel/initrd and command line.
     - Serial console attachment.
     - Virtio block device or NBD attachment.
@@ -181,7 +186,9 @@ the CLI uses the piped path (`Sandbox::exec_with_env`) and the guest executes vi
     - `crates/lsb-guest/src/main.rs:1347`
 
 18. Guest PID 1 initializes filesystems/networking, installs signal handlers,
-    listens on vsock port `1024`, and accepts host control connections.
+    selects the requested control transport, and accepts host control sessions.
+    macOS listens on vsock port `1024`; Windows sends raw `GUEST_READY` over
+    virtio-serial and then dispatches mux virtual sessions.
     - `crates/lsb-guest/src/main.rs:1350`
     - `crates/lsb-guest/src/main.rs:1359`
     - `crates/lsb-guest/src/main.rs:1362`
@@ -198,8 +205,9 @@ the CLI uses the piped path (`Sandbox::exec_with_env`) and the guest executes vi
     - `crates/lsb-cli/src/vm.rs:347`
     - `crates/lsb-cli/src/vm.rs:349`
 
-20. Piped host path: `Sandbox::exec_with_env()` connects to vsock, sends pending
-    mount requests, then sends `EXEC_REQ` with `tty: None`.
+20. Piped host path: `Sandbox::exec_with_env()` opens a platform control
+    session, sends pending mount requests, then sends `EXEC_REQ` with
+    `tty: None`.
     - `crates/lsb-vm/src/sandbox.rs:262`
     - `crates/lsb-vm/src/sandbox.rs:269`
     - `crates/lsb-vm/src/sandbox.rs:273`
@@ -398,40 +406,38 @@ the CLI uses the piped path (`Sandbox::exec_with_env`) and the guest executes vi
 - The frame protocol is endian-sensitive and size-limited. Frame length and exit
   payloads are big-endian.
 
-- Pending mount requests are sent before the `EXEC_REQ` on the first vsock
-  operation that needs them.
+- Pending mount requests are sent before the request on the first platform
+  control session that needs them.
 
-- `lsb-vm` is currently macOS-only at compile time. Platform metadata already
-  lists Windows targets as planned, but the runtime trait and module exports are
-  only enabled for macOS today.
-  - `crates/lsb-vm/src/lib.rs:3`
-  - `crates/lsb-platform/src/windows_x86_64/mod.rs:3`
-  - `crates/lsb-platform/src/windows_aarch64/mod.rs:3`
+- `lsb-vm` builds for macOS and Windows x64. macOS control streams are TCP
+  vsock connections; Windows control streams are virtio-serial streams or mux
+  virtual sessions behind `PlatformControlStream`.
+  - `crates/lsb-vm/src/lib.rs`
+  - `crates/lsb-platform/src/lib.rs`
+  - `crates/lsb-platform/src/windows_x86_64/mod.rs`
 
 ### Windows Support Invariants
 
-Future Windows runtime support for this path must preserve:
+Windows runtime support for this path must preserve:
 
 - Direct argv semantics across CLI, host protocol, and guest execution.
 - The same guest Linux ABI and `lsb-guest` `ExecRequest` protocol.
-- Equivalent vsock-like stream semantics for control connections.
+- Equivalent stream semantics for control connections, regardless of whether
+  the backend uses AF_VSOCK or virtio-serial mux sessions.
 - Correct stdout/stderr/exit behavior in piped mode.
-- Correct raw terminal, resize, and process exit behavior in TTY mode.
+- Clear capability errors for unsupported interactive TTY mode on Windows.
 - Per-run disk isolation and cleanup.
-- Storage behavior equivalent to rootfs clone or CAS/NBD-backed disk.
+- Storage behavior equivalent to rootfs copy or Windows qcow2 checkpoint
+  artifacts; CAS/NBD remains macOS-only.
 - Guest boot into `/usr/bin/lsb-init` as PID 1.
 
-Open Windows-specific design points:
+Current Windows-specific follow-ups:
 
-- What backend provides `PlatformVm`: Hyper-V/WHP, WSL2, QEMU, or another
-  runtime?
-- Should `PlatformVm::connect_to_vsock_port() -> TcpStream` remain the cross
-  platform API, or should it become an abstract stream type?
-- What replaces Unix-domain NBD sockets on Windows?
-- How will Windows host paths be represented without conflicting with current
-  `HOST:GUEST[:mode]` mount parsing?
-- What replaces macOS terminal support built on `termios`, `kqueue`, and raw
-  file descriptors?
+- Interactive shell/PTTY support remains out of scope.
+- Port forwarding still uses a dedicated virtio-serial forwarding channel
+  rather than the session mux.
+- Hybrid recursive watches spanning guest-only and direct SMB roots remain
+  future work.
 
 ## Mount Overlay Path
 
@@ -671,20 +677,20 @@ Only `:rw` maps to a direct VirtioFS mount, and that path requires
 
 ### Windows Support Invariants
 
-Future Windows host support for overlay mounts must preserve:
+Windows host support for overlay mounts must preserve:
 
-- A platform shared-directory device equivalent to VirtioFS, or a guest-visible
-  filesystem with the same Linux mount semantics.
+- The product semantics: CLI no-suffix and CLI `:ro` mounts are snapshot
+  imports with isolated guest writes; explicit direct mounts are SMB/CIFS and
+  require host-write opt-in where the CLI exposes it.
 
-- Per-share read-only enforcement for overlay lower layers. Relying only on
-  guest overlay behavior is not equivalent if the lower share can still be
-  written directly.
+- Per-share read-only enforcement for overlay-style lower layers, whether the
+  backend uses VirtioFS directly or a staged copy/import path.
 
 - The existing guest protocol: `MountRequest::Overlay { source, target }`,
   frame `MOUNT_REQ`, and `MountResponse` compatibility.
 
-- Linux guest behavior: mount source tag as `virtiofs`, tmpfs upper/work dirs,
-  and Linux `overlay` at the requested target.
+- Linux guest behavior for overlay mounts: tmpfs upper/work dirs and Linux
+  `overlay` at the requested target.
 
 - Deterministic tag generation and no host-path leakage into the guest protocol.
 
@@ -700,31 +706,17 @@ Future Windows host support for overlay mounts must preserve:
 
 Current Windows state:
 
-- Windows platform metadata exists but is marked `Planned`.
-  - `crates/lsb-platform/src/windows_x86_64/mod.rs:3`
-  - `crates/lsb-platform/src/windows_aarch64/mod.rs:3`
+- Windows x64 is supported with QEMU/WHPX. Windows ARM64 remains planned.
+  - `crates/lsb-platform/src/windows_x86_64/mod.rs`
+  - `crates/lsb-platform/src/windows_aarch64/mod.rs`
 
-- `lsb-vm` currently fails compilation on non-macOS hosts.
-  - `crates/lsb-vm/src/lib.rs:3`
-
-- `PlatformSharedDir`, `PlatformVmConfig`, `PlatformVm`, and `create_vm()` are
-  currently exported only for macOS.
-  - `crates/lsb-platform/src/lib.rs:178`
-  - `crates/lsb-platform/src/lib.rs:186`
-  - `crates/lsb-platform/src/lib.rs:201`
-  - `crates/lsb-platform/src/lib.rs:219`
+- Windows overlay mounts are staged imports, and explicit direct mounts are
+  SMB/CIFS-backed with ephemeral users, shares, credentials, ACL grants, and
+  cleanup manifests.
+  - `crates/lsb-platform/src/windows_x86_64/fs/mount_plan.rs`
+  - `crates/lsb-platform/src/windows_x86_64/fs/smb/mod.rs`
 
 ### Questions And Unknowns
-
-- Which Windows backend should provide the platform VM and directory sharing:
-  Hyper-V/WHP, WSL2, QEMU, or something else?
-
-- Can the Windows backend expose a Linux guest filesystem that supports the same
-  `mount -t virtiofs source target` path, or does the guest mount code need a
-  backend-specific filesystem type?
-
-- Can Windows enforce read-only host sharing strongly enough for overlay lower
-  layers?
 
 - What CLI/API syntax should represent Windows drive-letter and UNC host paths
   without breaking existing `HOST:GUEST[:mode]` specs?
@@ -962,10 +954,11 @@ then relays bytes between vsock and that guest-local TCP stream.
   - `crates/lsb-vm/src/sandbox.rs:795`
 
 - `PlatformVm`
-  - Host-platform abstraction that must provide `connect_to_vsock_port()`.
-  - Current exports are macOS-only.
-  - `crates/lsb-platform/src/lib.rs:201`
-  - `crates/lsb-platform/src/lib.rs:206`
+  - Host-platform abstraction that provides lifecycle, control streams, and
+    platform-specific port-forward streams. macOS still exposes direct vsock
+    dialing; Windows x64 exposes virtio-serial and mux sessions.
+  - `crates/lsb-platform/src/lib.rs`
+  - `crates/lsb-platform/src/windows_x86_64/backend.rs`
 
 - Node `PortMappingConfig`
   - Public JS shape with `host` and `guest` as `u32`, validated down to `u16`.
@@ -1016,10 +1009,11 @@ then relays bytes between vsock and that guest-local TCP stream.
 
 ### Windows Support Invariants
 
-Future Windows host support for port forwarding must preserve:
+Windows host support for port forwarding must preserve:
 
-- A platform VM implementation that can attach a Linux guest vsock device and
-  connect from host to guest vsock port `1025`.
+- A platform VM implementation that can connect host forwarding streams to the
+  Linux guest. macOS uses guest vsock port `1025`; Windows x64 uses the
+  dedicated private virtio-serial forwarding channel.
 
 - A host-side stream abstraction with the same practical behavior as the current
   `TcpStream` returned by macOS: blocking reads/writes, clonable read/write
@@ -1033,18 +1027,18 @@ Future Windows host support for port forwarding must preserve:
   - Rust SDK `PortMapping { host_port, guest_port }`.
   - Node `{ host, guest }`.
 
-- `--allow-net` independence. Windows support must not require the outbound
+- `--allow-net` independence. Windows support does not require the outbound
   proxy network device just to make host-to-guest forwarding work.
 
-- Per-accepted-connection vsock dialing and handshake. A Windows transport that
-  multiplexes internally must still preserve the externally observable behavior:
-  connection isolation, EOF behavior, and failure of one client not affecting
-  other clients.
+- Per-accepted-connection forwarding handshake. A platform transport must
+  preserve the externally observable behavior: connection isolation, EOF
+  behavior, and failure of one client not affecting other clients.
 
 - The same guest Linux daemon protocol and port constants:
   `FWD_REQ`, `FWD_RESP`, and `VSOCK_PORT_FORWARD = 1025`.
 
-- Guest kernel vsock support in the Windows-targeted OS image.
+- Guest kernel virtio support in the Windows-targeted OS image, including
+  virtio-serial for control and forwarding.
 
 - Correct lifecycle cleanup: dropping the forwarding handle must unblock or end
   listener loops and join owned listener threads without leaking background
@@ -1052,32 +1046,22 @@ Future Windows host support for port forwarding must preserve:
 
 Current Windows state:
 
-- Windows platform metadata exists but is marked `Planned`.
-  - `crates/lsb-platform/src/windows_x86_64/mod.rs:3`
-  - `crates/lsb-platform/src/windows_aarch64/mod.rs:3`
+- Windows x64 platform metadata is supported; Windows ARM64 remains planned.
+  - `crates/lsb-platform/src/windows_x86_64/mod.rs`
+  - `crates/lsb-platform/src/windows_aarch64/mod.rs`
 
-- `lsb-vm` currently fails compilation on non-macOS hosts.
-  - `crates/lsb-vm/src/lib.rs:3`
+- `lsb-vm` and `lsb-platform` compile with a Windows QEMU/WHPX backend, private
+  virtio-serial control, mux sessions for exec/file/watch, and a separate
+  virtio-serial forwarding channel.
+  - `crates/lsb-vm/src/lib.rs`
+  - `crates/lsb-platform/src/lib.rs`
+  - `crates/lsb-platform/src/windows_x86_64/backend.rs`
 
-- `PlatformVm`, `PlatformVmConfig`, and `create_vm()` are currently exported only
-  for macOS.
-  - `crates/lsb-platform/src/lib.rs:186`
-  - `crates/lsb-platform/src/lib.rs:201`
-  - `crates/lsb-platform/src/lib.rs:219`
-
-- Node runtime support is currently gated to macOS x86_64 and Apple Silicon.
-  - `bindings/nodejs/build.rs:1`
-  - `bindings/nodejs/build.rs:7`
-  - `bindings/nodejs/src/error.rs:3`
+- Node runtime support is enabled for macOS arm64/x64 and Windows x64.
+  - `bindings/nodejs/build.rs`
+  - `bindings/nodejs/src/error.rs`
 
 ### Questions And Unknowns
-
-- Which Windows VM backend should own vsock: Hyper-V/WHP, WSL2, QEMU, or another
-  backend?
-
-- Can the selected Windows backend expose host-to-guest vsock as something that
-  can safely satisfy the current `TcpStream`-shaped contract, or should
-  `PlatformVm::connect_to_vsock_port()` return a custom stream trait?
 
 - Should Windows support IPv6 loopback (`::1`) in addition to current IPv4
   `127.0.0.1`, and if so how should that be represented without changing
@@ -1522,56 +1506,36 @@ executing `sync` over the normal guest exec protocol. The guest also calls
 
 ### Windows Support Invariants
 
-Future Windows host support for checkpoints must preserve:
+Windows host support for checkpoints must preserve:
 
 - The public checkpoint model: save root disk state, restore by booting a fresh
   Linux guest from that disk state.
 
-- Compatibility with existing `.idx` CAS checkpoints and `.ext4` checkpoints, or
-  an explicit migration path.
-
-- CAS chunk semantics: 64 KiB chunks, BLAKE3 hash-addressed chunk files,
-  `"ZERO"` sparse chunks, parent chains, fallback rootfs paths, and durable index
-  writes.
-
-- Equivalent NBD behavior or a storage backend with the same observable block
-  semantics: guest reads/writes a virtio-style block device, host can flush dirty
-  writes, and checkpoint save captures a consistent index.
+- A storage backend with observable block-device semantics: guest reads/writes a
+  virtio-style block device, host can flush dirty writes, and checkpoint save
+  captures a consistent disk state.
 
 - Equivalent guest `sync` ordering before host-side capture.
 
 - Per-instance working disk isolation and cleanup.
 
-- A copy-on-write or equivalent copy primitive for direct `.ext4` mode. Windows
-  cannot use APFS `clonefile`; ReFS block cloning, full copy, or another backend
-  must preserve isolation and correctness.
+- A copy-on-write or equivalent isolation primitive. Windows uses private
+  per-instance qcow2 overlays and flattened qcow2 checkpoint artifacts.
 
 - Path handling that does not break checkpoint names or CAS index paths on
   Windows. Current code stores string paths inside indexes and validates both `/`
   and `\` in checkpoint names.
 
 - A platform VM implementation that provides the current `PlatformVm` lifecycle
-  and vsock control connection behavior.
+  and platform control-session behavior.
 
 Current Windows state:
 
-- Windows platform metadata exists but is marked `Planned`.
-  - `crates/lsb-platform/src/windows_x86_64/mod.rs:3`
-  - `crates/lsb-platform/src/windows_aarch64/mod.rs:3`
-
-- `lsb-vm` currently fails compilation on non-macOS hosts.
-  - `crates/lsb-vm/src/lib.rs:3`
-
-- `PlatformVmConfig`, `PlatformVm`, `copy_file_cow()`, and `create_vm()` are
-  currently exported only for macOS.
-  - `crates/lsb-platform/src/lib.rs:186`
-  - `crates/lsb-platform/src/lib.rs:201`
-  - `crates/lsb-platform/src/lib.rs:209`
-  - `crates/lsb-platform/src/lib.rs:219`
-
-- Node runtime support is currently gated to macOS x86_64 and Apple Silicon.
-  - `bindings/nodejs/build.rs:1`
-  - `bindings/nodejs/build.rs:7`
+- Windows x64 is supported with private qcow2 overlays and flattened qcow2
+  checkpoint artifacts. CAS/NBD checkpoint transport remains macOS-only.
+  - `crates/lsb-store/src/windows_checkpoint.rs`
+  - `crates/lsb-platform/src/windows_x86_64/backend.rs`
+  - `crates/lsb-sdk/src/runtime.rs`
 
 ### Questions And Unknowns
 
@@ -1593,11 +1557,8 @@ Current Windows state:
 - CAS indexes store parent/fallback paths as host strings. It is unclear whether
   these should be portable across machines, data dirs, or operating systems.
 
-- The intended Windows VM backend is not selected. The storage answer depends on
-  whether Windows uses Hyper-V/WHP, WSL2, QEMU, or another runtime.
-
-- It is unclear whether Windows should keep NBD as the host block protocol or use
-  a backend-native differencing disk while preserving `.idx` compatibility.
+- Whether Windows should later migrate from flattened qcow2 artifacts to
+  CAS/NBD, persistent qcow2 overlay chains, or another deduplicated format.
 
 ## `--allow-net` + Secrets Path
 
@@ -1858,26 +1819,18 @@ the VM, no proxy CA is installed, and secret placeholders are not injected.
 - Host exposure through `host.lsb.internal` must continue to resolve to
   `10.0.0.1` and map only configured guest ports to host localhost ports.
 
-- The current implementation exposes Unix `RawFd`, `AF_UNIX` socketpair, and
-  Apple `VZFileHandleNetworkDeviceAttachment` assumptions. Windows support must
-  hide those behind a platform-neutral raw-frame attachment boundary.
+- macOS networking uses Unix `RawFd`, `AF_UNIX` socketpair, and Apple
+  `VZFileHandleNetworkDeviceAttachment`. Windows hides those behind a
+  platform-neutral proxy link and QEMU stream attachment.
 
-- `lsb-vm` is currently compile-gated to macOS, and Windows platform specs are
-  currently marked `Planned`.
-  - `crates/lsb-vm/src/lib.rs:3`
-  - `crates/lsb-platform/src/windows_x86_64/mod.rs:3`
-  - `crates/lsb-platform/src/windows_aarch64/mod.rs:3`
+- Windows x64 is supported; Windows ARM64 remains planned.
+  - `crates/lsb-platform/src/windows_x86_64/mod.rs`
+  - `crates/lsb-platform/src/windows_aarch64/mod.rs`
 
 ### Questions and Unknowns
 
 - Should `--secret` without `--allow-net` remain inert, or should the CLI reject
   it as a configuration error?
-
-- What Windows backend will provide the raw Ethernet-frame attachment currently
-  supplied by Apple Virtualization's file-handle network device?
-
-- How should the host/guest vsock protocol be implemented on Windows while
-  preserving `VSOCK_PORT` and the binary frame protocol?
 
 - `allowed_hosts` is enforced in the DNS path. Direct IP TCP connections appear
   to bypass domain policy because `handle_connection()` receives only a
@@ -1899,18 +1852,18 @@ the Rust SDK. The N-API layer converts JavaScript options into
 storage and optional networking, builds an `lsb_vm::Sandbox`, starts the
 platform VM, and then returns an `AsyncSandbox` handle to JavaScript.
 
-Today the Node runtime path is intentionally macOS-only. The package metadata,
-build script, and native binding all restrict positive VM support to Darwin
-arm64 and x64. Non-supported builds expose enough API shape to install and fail
-with a clear unsupported-platform error.
+The Node runtime path supports macOS arm64/x64 and Windows x64. The package
+metadata, build script, and native binding enable positive VM support for those
+targets; non-supported builds expose enough API shape to install and fail with
+a clear unsupported-platform error.
 
-One startup semantic matters for future platform work: plain
+One startup semantic matters for platform work: plain
 `Sandbox.start()` resolves after the hypervisor start and host-side setup, but
-it does not always prove the guest control agent is accepting vsock
-connections. Guest readiness is forced during startup only when startup needs a
-guest operation, such as installing the proxy CA for secret placeholders. In
-other cases, the first later sandbox operation performs the first control-vsock
-connection attempt.
+it does not always prove the guest control agent is accepting a platform
+control session. Guest readiness is forced during startup only when startup
+needs a guest operation, such as installing the proxy CA for secret
+placeholders. In other cases, the first later sandbox operation performs the
+first control-session attempt.
 
 ### Ordered Call Graph
 
@@ -1918,8 +1871,8 @@ connection attempt.
    - `bindings/nodejs/src/sandbox.rs:39`
    - `bindings/nodejs/src/sandbox.rs:40`
 
-2. The build script enables `lsb_nodejs_supported` only for macOS on
-   `aarch64` or `x86_64`.
+2. The build script enables `lsb_nodejs_supported` for macOS on `aarch64` or
+   `x86_64`, and for Windows on `x86_64`.
    - `bindings/nodejs/build.rs:1`
    - `bindings/nodejs/build.rs:7`
 
@@ -2089,7 +2042,7 @@ connection attempt.
 
 26. If proxy secret placeholders exist, the SDK writes the generated CA
     certificate into the guest and runs `update-ca-certificates`. This path
-    requires the first control-vsock connection during startup.
+    requires the first platform control session during startup.
     - `crates/lsb-sdk/src/runtime.rs:589`
     - `crates/lsb-sdk/src/runtime.rs:591`
     - `crates/lsb-sdk/src/runtime.rs:595`
@@ -2222,28 +2175,31 @@ connection attempt.
   - `crates/lsb-proxy/src/lib.rs:80`
   - `crates/lsb-platform/src/macos_aarch64/network.rs:20`
 
-- VirtioFS mount boundary:
+- VirtioFS or mount-request boundary:
   - Host mount config becomes platform shared dirs tagged `mount0`, `mount1`,
-    and so on. The guest later receives `MOUNT_REQ` over control vsock and
-    mounts the tag as overlay or direct VirtioFS.
+    and so on on macOS. Windows overlay imports and SMB/CIFS direct mounts also
+    reach the guest as `MOUNT_REQ` over the platform control session.
   - `crates/lsb-vm/src/sandbox.rs:157`
   - `crates/lsb-vm/src/sandbox.rs:219`
   - `crates/lsb-guest/src/main.rs:72`
   - `crates/lsb-guest/src/main.rs:112`
   - `crates/lsb-guest/src/main.rs:148`
 
-- Control vsock boundary:
-  - Host connects to guest vsock port `1024`. Guest PID 1 binds AF_VSOCK,
-    accepts connections, decodes binary frames, and dispatches request types.
+- Control boundary:
+  - macOS connects to guest vsock port `1024`. Windows uses virtio-serial,
+    keeps the initial `GUEST_READY` frame raw, then carries operation frames
+    over mux virtual sessions after `CAP_SESSION_MUX`.
   - `crates/lsb-vm/src/sandbox.rs:751`
   - `crates/lsb-vm/src/sandbox.rs:764`
   - `crates/lsb-guest/src/main.rs:251`
   - `crates/lsb-guest/src/main.rs:337`
   - `crates/lsb-guest/src/main.rs:1378`
 
-- Port-forward vsock boundary:
-  - Host local TCP listeners relay through guest vsock port `1025`; the guest
-    connects to `127.0.0.1:{guest_port}` inside the VM.
+- Port-forward boundary:
+  - Host local TCP listeners relay through a platform forwarding stream. macOS
+    uses guest vsock port `1025`; Windows uses a dedicated virtio-serial
+    forwarding channel. The guest connects to `127.0.0.1:{guest_port}` inside
+    the VM.
   - `crates/lsb-vm/src/sandbox.rs:694`
   - `crates/lsb-vm/src/sandbox.rs:804`
   - `crates/lsb-guest/src/main.rs:1254`
@@ -2365,9 +2321,9 @@ Windows support for `Sandbox.start()` must preserve:
 - Runtime asset expectations: kernel, rootfs, initramfs, checkpoints, instances,
   and base-version metadata remain discoverable from a data dir.
 
-- Correct Windows default data-dir resolution. Current platform metadata says
-  `AppData/Local/lsb`, while `default_data_dir()` currently uses `HOME` plus the
-  platform subdir.
+- Correct Windows default data-dir resolution. The runtime prefers
+  `%LOCALAPPDATA%\lsb`, then falls back to `%USERPROFILE%\AppData\Local\lsb`
+  and `$HOME/AppData/Local/lsb`.
 
 - Per-instance disk isolation and cleanup, including stable `instanceId`
   validation that rejects `/`, `\`, NUL, and `..`.
@@ -2383,9 +2339,8 @@ Windows support for `Sandbox.start()` must preserve:
 - A platform VM backend implementing the current lifecycle and connection
   contract: start, stop, state channel, and guest control stream connection.
 
-- A vsock-like bidirectional byte stream for control and port-forward channels,
-  or a deliberately abstracted transport that preserves the same protocol
-  semantics.
+- A bidirectional byte stream for control and port-forward channels, or a
+  deliberately abstracted transport that preserves the same protocol semantics.
 
 - Equivalent product semantics for directory mounts: Windows no-suffix and
   CLI `:ro` mounts are snapshot imports with isolated guest writes, while

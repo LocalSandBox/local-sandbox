@@ -86,13 +86,13 @@ This section describes the repository as of inspection of `main`. Facts in this 
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------ |
 | `crates/lsb-cli`      | CLI entrypoint, config, checkpoint commands, VM preparation.                                                                                                       | [repo-cargo], [repo-cli-checkpoint]              |
 | `crates/lsb-sdk`      | Rust SDK surface used by bindings.                                                                                                                                 | [repo-cargo]                                     |
-| `crates/lsb-vm`       | Host-side sandbox orchestration: config builder, VM lifecycle wrapper, exec/file/watch/port APIs, mount request dispatch. Currently hard-gated to macOS.           | [repo-lsb-vm-lib], [repo-lsb-vm-sandbox]         |
-| `crates/lsb-platform` | Platform metadata and macOS VM backend. Has planned Windows metadata but no Windows runtime implementation.                                                        | [repo-lsb-platform-lib], [repo-windows-x86-spec] |
+| `crates/lsb-vm`       | Host-side sandbox orchestration: config builder, VM lifecycle wrapper, exec/file/watch/port APIs, mount request dispatch. At RFC time this was limited to macOS; the current tree also has the Windows backend. | [repo-lsb-vm-lib], [repo-lsb-vm-sandbox] |
+| `crates/lsb-platform` | Platform metadata and platform VM backends. At RFC time Windows existed only as planned metadata; the current tree includes Windows x64 QEMU/WHPX support. | [repo-lsb-platform-lib], [repo-windows-x86-spec] |
 | `crates/lsb-proto`    | Custom host/guest frame protocol and request/response types. Defines `VSOCK_PORT = 1024` and `VSOCK_PORT_FORWARD = 1025`.                                          | [repo-lsb-proto]                                 |
 | `crates/lsb-guest`    | Linux guest agent. Runs guest init tasks, listens on AF_VSOCK, handles exec, fs, mount, watch, and port-forward protocol.                                          | [repo-lsb-guest]                                 |
 | `crates/lsb-proxy`    | Host-side proxy and policy engine for network allowlists, host port exposure, and secret substitution.                                                             | [repo-proxy-config]                              |
 | `crates/lsb-store`    | CAS/NBD-backed rootfs/checkpoint storage. Current NBD server is Unix-domain-socket based.                                                                          | [repo-store]                                     |
-| `bindings/nodejs`     | NAPI Node/TypeScript binding. Current supported packages are macOS-only.                                                                                           | [repo-node-readme]                               |
+| `bindings/nodejs`     | NAPI Node/TypeScript binding. At RFC time only macOS packages were supported; the current tree also has `win32-x64-msvc`.                                           | [repo-node-readme]                               |
 | `kernel`              | Linux kernel configs and guest runtime assets. x86_64 config includes virtio block, console, net, vsock, virtiofs, overlayfs, ext4, FUSE, namespaces, and inotify. | [repo-kernel-x86]                                |
 | `.github/workflows`   | Current Rust CI and Node binding CI are macOS-oriented for runtime builds; Node binding build matrix targets macOS.                                                | [repo-ci], [repo-node-ci]                        |
 
@@ -663,7 +663,7 @@ Do not port Unix-domain-socket NBD as part of Windows boot MVP. The current `lsb
 
 ### 14.4 Windows filesystem considerations
 
-- Use `AppData\Local\lsb` only as a target layout; current implementation's `default_data_dir` uses `HOME` even for planned Windows metadata and needs Windows-specific correction [repo-lsb-platform-lib], [repo-windows-x86-spec].
+- Use `AppData\Local\lsb` as the Windows target layout. The current implementation prefers `%LOCALAPPDATA%\lsb`, then falls back to `%USERPROFILE%\AppData\Local\lsb` and `$HOME/AppData/Local/lsb` [repo-lsb-platform-lib], [repo-windows-x86-spec].
 - Use `std::path::PathBuf` and Windows-known-folder APIs rather than string concatenation.
 - Use restrictive ACLs for instance directories.
 - Ensure checkpoint names continue to reject path traversal and both `/` and `\`; current `validate_checkpoint_name` already rejects `/`, `\`, NUL, and `..` [repo-lsb-vm-lib].
@@ -695,7 +695,7 @@ pub trait ControlSession: Read + Write + Send {
 
 | Crate             | Current role                                                                                | Windows impact                                                                         | Proposed changes                                                                                                               | Expose platform details?                                            |
 | ----------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
-| `lsb-vm`          | Sandbox builder and high-level operations. Currently hard-gated to macOS [repo-lsb-vm-lib]. | Must compile on Windows and stop assuming vsock.                                       | Remove non-macOS `compile_error!`; introduce platform-neutral backend/control traits; keep public Sandbox API stable.          | No.                                                                 |
+| `lsb-vm`          | Sandbox builder and high-level operations. At RFC time it was limited to macOS [repo-lsb-vm-lib]. | Must compile on Windows and stop assuming vsock.                                       | Remove non-macOS `compile_error!`; introduce platform-neutral backend/control traits; keep public Sandbox API stable.          | No.                                                                 |
 | `lsb-platform`    | Platform metadata and macOS backend.                                                        | Add Windows QEMU backend and shared config types.                                      | Add `windows_x86_64::qemu`; define `PlatformVmConfig` cross-platform; use PathBuf; fix Windows data dir.                       | Internally yes; public API should hide QEMU details where possible. |
 | `lsb-proto`       | Frame and request types.                                                                    | Mostly transport-independent; may need ready/import/export/mux messages.               | Keep existing frame types; add version/feature handshake and mount import/export frames if needed.                             | No.                                                                 |
 | `lsb-guest`       | Linux guest agent over vsock.                                                               | Add virtio-serial transport and optional transport mux.                                | Refactor transport listener from request handlers; add virtio-serial discovery; add ready handshake; add copy-in mount import. | No, except kernel cmdline feature selection.                        |
@@ -1640,7 +1640,7 @@ VirtioFS is designed for host/guest shared directory trees and local filesystem 
 
 ### Task B1: Extract platform-neutral VM backend trait
 
-Goal: Remove macOS-only coupling from `lsb-vm` and introduce backend traits.
+Goal: Remove previous macOS coupling from `lsb-vm` and introduce backend traits.
 
 Constraints:
 
