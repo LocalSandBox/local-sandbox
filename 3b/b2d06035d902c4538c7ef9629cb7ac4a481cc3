@@ -1,0 +1,51 @@
+bindings/nodejs/npm/darwin-arm64/package.json
+  s_98c09b7fb191f2::t_5a7b2182cfbbd6 3
+CHANGELOG.md
+  s_98c09b7fb191f2::t_fa234542163b71 7-8,27
+crates/lsb-vm/Cargo.toml
+  s_98c09b7fb191f2::t_5a7b2182cfbbd6 3,10-11
+bindings/nodejs/npm/win32-x64-msvc/package.json
+  s_98c09b7fb191f2::t_5a7b2182cfbbd6 3
+.github/workflows/nodejs-binding.yml
+  s_98c09b7fb191f2::t_fa234542163b71 15,26
+bindings/nodejs/Cargo.toml
+  s_98c09b7fb191f2::t_5a7b2182cfbbd6 5
+crates/lsb-cli/Cargo.toml
+  s_98c09b7fb191f2::t_5a7b2182cfbbd6 3
+.github/workflows/publish-crates.yml
+  s_98c09b7fb191f2::t_fa234542163b71 42
+crates/lsb-store/Cargo.toml
+  s_98c09b7fb191f2::t_5a7b2182cfbbd6 3,13
+bindings/nodejs/npm/darwin-x64/package.json
+  s_98c09b7fb191f2::t_5a7b2182cfbbd6 3
+crates/lsb-proxy/Cargo.toml
+  s_98c09b7fb191f2::t_5a7b2182cfbbd6 3
+crates/lsb-guest/Cargo.toml
+  s_98c09b7fb191f2::t_5a7b2182cfbbd6 3
+crates/lsb-sdk/Cargo.toml
+  s_98c09b7fb191f2::t_5a7b2182cfbbd6 3,10-14
+crates/lsb-proto/Cargo.toml
+  s_98c09b7fb191f2::t_5a7b2182cfbbd6 3
+crates/lsb-platform/Cargo.toml
+  s_98c09b7fb191f2::t_5a7b2182cfbbd6 3,13
+bindings/nodejs/package.json
+  s_98c09b7fb191f2::t_5a7b2182cfbbd6 3
+Cargo.lock
+  s_98c09b7fb191f2::t_d15cabdd6adcd0 936,959,968,987,995,1014,1033,1048
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3bb2d06035d902c4538c7ef9629cb7ac4a481cc3",
+  "prompts": {},
+  "sessions": {
+    "s_98c09b7fb191f2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4012-0060-7fa0-ad61-82df0a193130",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
