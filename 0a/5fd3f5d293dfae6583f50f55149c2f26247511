@@ -1,0 +1,25 @@
+bindings/nodejs/npm/darwin-x64/package.json
+  s_1090ba06675bc7::t_d90b37bc46d524 3
+bindings/nodejs/package.json
+  s_1090ba06675bc7::t_d90b37bc46d524 3
+bindings/nodejs/npm/darwin-arm64/package.json
+  s_1090ba06675bc7::t_d90b37bc46d524 3
+bindings/nodejs/npm/win32-x64-msvc/package.json
+  s_1090ba06675bc7::t_d90b37bc46d524 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0a5fd3f5d293dfae6583f50f55149c2f26247511",
+  "prompts": {},
+  "sessions": {
+    "s_1090ba06675bc7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f40aa-af81-7391-aae3-363ac6eb9e73",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
