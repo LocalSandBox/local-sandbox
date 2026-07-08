@@ -15,6 +15,7 @@ const SESSION_RECEIVE_QUEUE_BYTES: usize = 256 * 1024;
 const SESSION_SEND_QUEUE_BYTES: usize = 256 * 1024;
 const MAX_CONTROL_QUEUE_FRAMES: usize = 128;
 const SESSION_OPEN_TIMEOUT: Duration = Duration::from_secs(90);
+const MAX_TIMED_OUT_OPENS: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MuxSessionKind {
@@ -420,8 +421,8 @@ impl MuxManagerInner {
                 Some(SessionOpenState::Opening) => {
                     let now = Instant::now();
                     if now >= deadline {
-                        state.sessions.remove(&session_id);
-                        state.ready_sessions.retain(|queued| *queued != session_id);
+                        state.timeout_open_session(session_id, timeout);
+                        self.cv.notify_all();
                         return Err(MuxSessionError::OpenTimeout { timeout });
                     }
                     let remaining = deadline.saturating_duration_since(now);
@@ -436,8 +437,8 @@ impl MuxManagerInner {
                             .get(&session_id)
                             .is_some_and(|session| session.open_state == SessionOpenState::Opening)
                     {
-                        state.sessions.remove(&session_id);
-                        state.ready_sessions.retain(|queued| *queued != session_id);
+                        state.timeout_open_session(session_id, timeout);
+                        self.cv.notify_all();
                         return Err(MuxSessionError::OpenTimeout { timeout });
                     }
                 }
@@ -513,6 +514,7 @@ struct MuxManagerState {
     sessions: HashMap<u64, SessionState>,
     control_queue: VecDeque<MuxFrame>,
     ready_sessions: VecDeque<u64>,
+    timed_out_host_opens: VecDeque<u64>,
     failed: Option<String>,
 }
 
@@ -523,6 +525,7 @@ impl MuxManagerState {
             sessions: HashMap::new(),
             control_queue: VecDeque::new(),
             ready_sessions: VecDeque::new(),
+            timed_out_host_opens: VecDeque::new(),
             failed: None,
         }
     }
@@ -548,6 +551,48 @@ impl MuxManagerState {
             self.sessions.remove(&session_id);
             self.ready_sessions.retain(|queued| *queued != session_id);
         }
+    }
+
+    fn timeout_open_session(&mut self, session_id: u64, timeout: Duration) {
+        self.sessions.remove(&session_id);
+        self.ready_sessions.retain(|queued| *queued != session_id);
+        self.record_timed_out_open(session_id);
+
+        if self.control_queue.len() < MAX_CONTROL_QUEUE_FRAMES {
+            self.control_queue.push_back(MuxFrame::Rst {
+                session_id,
+                reason: format!(
+                    "host timed out after {} ms waiting for guest to accept mux session",
+                    timeout.as_millis()
+                ),
+            });
+        }
+    }
+
+    fn record_timed_out_open(&mut self, session_id: u64) {
+        if self.timed_out_host_opens.contains(&session_id) {
+            return;
+        }
+        if self.timed_out_host_opens.len() >= MAX_TIMED_OUT_OPENS {
+            self.timed_out_host_opens.pop_front();
+        }
+        self.timed_out_host_opens.push_back(session_id);
+    }
+
+    fn is_timed_out_open(&self, session_id: u64) -> bool {
+        self.timed_out_host_opens.contains(&session_id)
+    }
+
+    fn remove_timed_out_open(&mut self, session_id: u64) -> bool {
+        let Some(index) = self
+            .timed_out_host_opens
+            .iter()
+            .position(|timed_out| *timed_out == session_id)
+        else {
+            return false;
+        };
+        self.timed_out_host_opens.remove(index);
+        true
     }
 }
 
@@ -727,10 +772,14 @@ fn handle_incoming_frame(inner: &MuxManagerInner, frame: MuxFrame) -> Result<(),
         } => {
             mux::validate_host_session_id(session_id).map_err(|error| error.to_string())?;
             let mut state = inner.state.lock().expect("Windows mux state lock poisoned");
-            let session = state
-                .sessions
-                .get_mut(&session_id)
-                .ok_or_else(|| format!("guest acknowledged unknown mux session {session_id}"))?;
+            let Some(session) = state.sessions.get_mut(&session_id) else {
+                if state.is_timed_out_open(session_id) {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "guest acknowledged unknown mux session {session_id}"
+                ));
+            };
             if session.open_state != SessionOpenState::Opening {
                 return Err(format!(
                     "guest acknowledged mux session {session_id} after it was already open"
@@ -756,9 +805,14 @@ fn handle_incoming_frame(inner: &MuxManagerInner, frame: MuxFrame) -> Result<(),
         MuxFrame::OpenErr { session_id, reason } => {
             mux::validate_host_session_id(session_id).map_err(|error| error.to_string())?;
             let mut state = inner.state.lock().expect("Windows mux state lock poisoned");
-            let session = state.sessions.get_mut(&session_id).ok_or_else(|| {
-                format!("guest rejected unknown mux session {session_id}: {reason}")
-            })?;
+            let Some(session) = state.sessions.get_mut(&session_id) else {
+                if state.remove_timed_out_open(session_id) {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "guest rejected unknown mux session {session_id}: {reason}"
+                ));
+            };
             session.open_state = SessionOpenState::Rejected(reason);
             inner.cv.notify_all();
             Ok(())
@@ -816,10 +870,14 @@ fn handle_incoming_frame(inner: &MuxManagerInner, frame: MuxFrame) -> Result<(),
         MuxFrame::Rst { session_id, reason } => {
             mux::validate_host_session_id(session_id).map_err(|error| error.to_string())?;
             let mut state = inner.state.lock().expect("Windows mux state lock poisoned");
-            let session = state
-                .sessions
-                .get_mut(&session_id)
-                .ok_or_else(|| format!("guest reset unknown mux session {session_id}: {reason}"))?;
+            let Some(session) = state.sessions.get_mut(&session_id) else {
+                if state.remove_timed_out_open(session_id) {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "guest reset unknown mux session {session_id}: {reason}"
+                ));
+            };
             session.reset_reason = Some(reason);
             inner.cv.notify_all();
             Ok(())
@@ -1303,6 +1361,77 @@ mod tests {
             .expect_err("unacknowledged mux session should time out");
 
         assert!(matches!(err, MuxSessionError::OpenTimeout { .. }));
+    }
+
+    #[test]
+    fn late_open_ok_after_open_timeout_does_not_fail_manager() {
+        let inner = std::sync::Arc::new(MuxManagerInner::new());
+        let err = inner
+            .open_session_with_timeout(MuxSessionKind::File, Duration::from_millis(1))
+            .expect_err("unacknowledged mux session should time out");
+        assert!(matches!(err, MuxSessionError::OpenTimeout { .. }));
+
+        {
+            let state = inner
+                .state
+                .lock()
+                .expect("Windows mux state lock should not be poisoned");
+            assert!(state.is_timed_out_open(1));
+        }
+
+        handle_incoming_frame(
+            &inner,
+            MuxFrame::OpenOk {
+                session_id: 1,
+                initial_credit: 1024,
+            },
+        )
+        .expect("late OpenOk for timed-out open should be ignored");
+        assert!(inner
+            .state
+            .lock()
+            .expect("Windows mux state lock should not be poisoned")
+            .failed
+            .is_none());
+
+        let next_open = {
+            let inner = std::sync::Arc::clone(&inner);
+            thread::spawn(move || {
+                inner.open_session_with_timeout(MuxSessionKind::Exec, Duration::from_secs(1))
+            })
+        };
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let next_opening = inner
+                .state
+                .lock()
+                .expect("Windows mux state lock should not be poisoned")
+                .sessions
+                .contains_key(&3);
+            if next_opening {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "next mux session did not start opening"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        handle_incoming_frame(
+            &inner,
+            MuxFrame::OpenOk {
+                session_id: 3,
+                initial_credit: 1024,
+            },
+        )
+        .expect("manager should still accept later sessions");
+        let session = next_open
+            .join()
+            .expect("next open thread should finish")
+            .expect("next open should succeed");
+        assert_eq!(session.session_id(), 3);
     }
 
     #[test]

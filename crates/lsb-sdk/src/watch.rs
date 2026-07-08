@@ -131,6 +131,7 @@ pub(crate) fn spawn_windows_smb_host_watch_thread<R>(
         Result<WindowsHostWatchEvent, WindowsHostWatchError>,
     >,
     guest_root: String,
+    event_filter: Option<String>,
     registration: R,
 ) -> WatchHandle
 where
@@ -150,8 +151,16 @@ where
 
                 match platform_events.recv_timeout(Duration::from_millis(200)) {
                     Ok(Ok(event)) => {
+                        let relative_path =
+                            normalize_windows_host_relative_path(&event.relative_path);
+                        if event_filter
+                            .as_deref()
+                            .is_some_and(|filter| relative_path != filter)
+                        {
+                            continue;
+                        }
                         let event = WatchEvent {
-                            path: join_guest_watch_event_path(&guest_root, &event.relative_path),
+                            path: join_guest_watch_event_path(&guest_root, &relative_path),
                             event: event.kind.as_watch_event().to_string(),
                         };
                         if events_tx.send(Ok(event)).is_err() {
@@ -172,6 +181,14 @@ where
         events_rx: Some(events_rx),
         cancel_session: None,
     }
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn normalize_windows_host_relative_path(path: &str) -> String {
+    path.split(['/', '\\'])
+        .filter(|component| !component.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 #[cfg(test)]
