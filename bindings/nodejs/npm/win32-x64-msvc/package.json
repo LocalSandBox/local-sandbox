@@ -1,6 +1,6 @@
 {
   "name": "@local-sandbox/lsb-nodejs-win32-x64-msvc",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Native binary for @local-sandbox/lsb-nodejs on Windows x64 MSVC",
   "license": "Apache-2.0",
   "os": [

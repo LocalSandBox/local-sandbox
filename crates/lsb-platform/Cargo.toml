@@ -1,6 +1,6 @@
 [package]
 name = "lsb-platform"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "Platform abstraction and metadata for lsb"
 license = "Apache-2.0"
@@ -10,7 +10,7 @@ repository = "https://github.com/LocalSandBox/local-sandbox.git"
 anyhow = "1"
 crossbeam-channel = "0.5"
 getrandom = "0.3"
-lsb-proto = { version = "0.4.0", path = "../lsb-proto" }
+lsb-proto = { version = "0.4.1", path = "../lsb-proto" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
