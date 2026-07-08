@@ -1,0 +1,19 @@
+crates/lsb-platform/src/windows_x86_64/host_tools.rs
+  s_1f43ffa0395082::t_f4383b7d1a1212 16,249
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "56d6b250ce1756723b30b4dbf99cd1f74a5743ae",
+  "prompts": {},
+  "sessions": {
+    "s_1f43ffa0395082": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3d29-bb7c-73e2-9a3b-df8678f8e373",
+        "model": "gpt-5.5"
+      },
+      "human_author": null
+    }
+  }
+}
