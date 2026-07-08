@@ -1,0 +1,34 @@
+crates/lsb-sdk/src/runtime.rs
+  s_0c5178efe22800::t_cfcfef9c1eee44 1867,1872-1874,1895-1899,1906-1910,1913-1914,1925-1929,1956,1962,1984-1985,1999-2002,2057,2063
+  s_0c5178efe22800::t_108f4d6be5875e 100-101,412-413,437-439,441-444,1029,1039-1043,1045-1052,1054,1056,1060,1064-1065,1117
+  s_0c5178efe22800::t_fc8da38d1f1479 1619-1651,1814-1820
+  s_0c5178efe22800::t_983e7c86da09fd 99,440,1209,1295,1297-1301,1306-1307,1323-1325
+  s_0c5178efe22800::t_850bbb43472553 6-7
+  s_0c5178efe22800::t_1ee57084fafffd 1035-1038,1937
+  s_0c5178efe22800::t_2f7fb6f9494e64 1208,1296,1302-1305
+  s_0c5178efe22800::t_b9facb0f7c992a 1957-1960
+  s_0c5178efe22800::t_ca6aef7ebb501c 1821
+bindings/nodejs/scripts/windows-preflight-smoke.mjs
+  s_0c5178efe22800::t_a7589043319121 63-74,76-96,287-292,294-307
+  s_0c5178efe22800::t_c524c3bb59ea18 293
+  s_0c5178efe22800::t_53fb819d9f6969 75
+  s_0c5178efe22800::t_d174550a0e1be0 308
+crates/lsb-sdk/Cargo.toml
+  s_0c5178efe22800::t_99228c5a83c738 23-25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "86afea2dfd55dd6cfd874efb5037c6f67b0c5432",
+  "prompts": {},
+  "sessions": {
+    "s_0c5178efe22800": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3fcd-17b4-7451-91b0-a912c4e159dc",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
