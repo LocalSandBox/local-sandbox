@@ -1,0 +1,43 @@
+crates/lsb-sdk/src/watch.rs
+  s_223f3ad4f43003::t_7b79fafe533661 134,156-161,163,186-191
+  s_223f3ad4f43003::t_f68a5d89756efb 154-155
+  s_223f3ad4f43003::t_960343d3623e0d 192-193
+crates/lsb-sdk/src/runtime.rs
+  s_223f3ad4f43003::t_1f94b25fa363a1 1388
+  s_223f3ad4f43003::t_96945e152d2823 1103-1104,1106
+  s_223f3ad4f43003::t_43a3a83822b606 109,117,493,499-500,1372-1375,1428
+  s_223f3ad4f43003::t_513003e3f3b992 494-497
+  s_223f3ad4f43003::t_8e89b8c7496a1f 116,122
+  s_223f3ad4f43003::t_2af7320d0440e6 928-929,1011-1028,1031-1033,1227-1239
+  s_223f3ad4f43003::t_6a61b33d61f385 1166
+  s_223f3ad4f43003::t_2b5c5efac2226d 1557-1558,1564-1592,1668-1669,1716-1740,1742-1743
+  s_223f3ad4f43003::t_f68a5d89756efb 118-121,1151-1159
+  s_223f3ad4f43003::t_a7f91b25836448 498
+  s_223f3ad4f43003::t_57208103fbafe3 123-124
+  s_223f3ad4f43003::t_d537f3029e8ef9 1240-1241
+  s_223f3ad4f43003::t_94e775b7f96cbe 1741
+  s_223f3ad4f43003::t_d8792390b3ffa1 1744
+crates/lsb-platform/src/windows_x86_64/control/mux.rs
+  s_223f3ad4f43003::t_99fa570ac270a6 596,1367-1436
+  s_223f3ad4f43003::t_62fd0b0b6d2e40 18,424-425,440-441,517,528,555-595
+  s_223f3ad4f43003::t_f68a5d89756efb 779-781
+  s_223f3ad4f43003::t_21717d851eaf9d 873-880
+  s_223f3ad4f43003::t_899ab1d77a4a52 775-778,782,808-815
+  s_223f3ad4f43003::t_5962ab4d9776f2 1366
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9161d2f9eefb7184296e9d5ee198e67dbd4cb36f",
+  "prompts": {},
+  "sessions": {
+    "s_223f3ad4f43003": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3fdd-d444-7710-9309-8982d7febe26",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Codex <codex-agent@users.noreply.github.com>"
+    }
+  }
+}
