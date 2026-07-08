@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::Result;
 use base64::Engine;
@@ -36,6 +39,7 @@ const PARSE_ERROR: i32 = -32700;
 const METHOD_NOT_FOUND: i32 = -32601;
 const INVALID_PARAMS: i32 = -32602;
 const SERVER_ERROR: i32 = -32000;
+const PROCESS_INPUT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 // --- JSON-RPC 2.0 types ---
 
@@ -268,6 +272,41 @@ struct ProcessHandle {
     input_tx: std::sync::mpsc::Sender<ProcessInput>,
 }
 
+type ProcessMap = Arc<Mutex<HashMap<String, ProcessHandle>>>;
+
+fn spawn_process_input_thread<W>(
+    mut writer: W,
+    input_rx: std::sync::mpsc::Receiver<ProcessInput>,
+    closed: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<W>
+where
+    W: Write + Send + 'static,
+{
+    std::thread::spawn(move || {
+        while !closed.load(Ordering::SeqCst) {
+            match input_rx.recv_timeout(PROCESS_INPUT_POLL_INTERVAL) {
+                Ok(ProcessInput::Stdin(data)) => {
+                    if closed.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    if frame::write_frame(&mut writer, frame::STDIN, &data).is_err() {
+                        break;
+                    }
+                }
+                Ok(ProcessInput::Kill) => {
+                    if !closed.load(Ordering::SeqCst) {
+                        let _ = frame::write_frame(&mut writer, frame::KILL, &[]);
+                    }
+                    break;
+                }
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        writer
+    })
+}
+
 // --- Shared writer ---
 
 type SharedWriter = Arc<Mutex<io::Stdout>>;
@@ -366,12 +405,13 @@ pub(crate) fn run_stdio(prepared: &PreparedVm) -> Result<i32> {
     )?;
 
     let mut pid_counter: u64 = 0;
-    let mut processes: HashMap<String, ProcessHandle> = HashMap::new();
+    let processes: ProcessMap = Arc::new(Mutex::new(HashMap::new()));
     let mut bg_threads: Vec<std::thread::JoinHandle<()>> = Vec::new();
 
     // Spawn a thread to drain events and write notifications to stdout.
     // This ensures we never block the main stdin-reading loop.
     let out_for_events = out.clone();
+    let processes_for_events = processes.clone();
     let event_thread = std::thread::spawn(move || {
         for event in event_rx {
             let res = match event {
@@ -387,14 +427,21 @@ pub(crate) fn run_stdio(prepared: &PreparedVm) -> Result<i32> {
                         }),
                     },
                 ),
-                Event::Exit { pid, code } => send_json_shared(
-                    &out_for_events,
-                    &JsonRpcNotification {
-                        jsonrpc: "2.0",
-                        method: "exit",
-                        params: Some(ExitParams { pid, code }),
-                    },
-                ),
+                Event::Exit { pid, code } => {
+                    let res = send_json_shared(
+                        &out_for_events,
+                        &JsonRpcNotification {
+                            jsonrpc: "2.0",
+                            method: "exit",
+                            params: Some(ExitParams {
+                                pid: pid.clone(),
+                                code,
+                            }),
+                        },
+                    );
+                    processes_for_events.lock().unwrap().remove(&pid);
+                    res
+                }
                 Event::FileChange { path, event } => send_json_shared(
                     &out_for_events,
                     &JsonRpcNotification {
@@ -476,7 +523,10 @@ pub(crate) fn run_stdio(prepared: &PreparedVm) -> Result<i32> {
 
                 // Channel for sending stdin/kill to the process
                 let (input_tx, input_rx) = std::sync::mpsc::channel::<ProcessInput>();
-                processes.insert(pid.clone(), ProcessHandle { input_tx });
+                processes
+                    .lock()
+                    .unwrap()
+                    .insert(pid.clone(), ProcessHandle { input_tx });
 
                 let sb = sandbox.clone();
                 let tx = event_tx.clone();
@@ -501,32 +551,24 @@ pub(crate) fn run_stdio(prepared: &PreparedVm) -> Result<i32> {
 
                     let mut vsock_reader = match stream.try_clone() {
                         Ok(r) => r,
-                        Err(_) => return,
+                        Err(e) => {
+                            eprintln!("lsb: spawn stream clone failed: {}", e);
+                            let _ = tx.send(Event::Exit {
+                                pid: pid_clone,
+                                code: 1,
+                            });
+                            return;
+                        }
                     };
-                    let mut vsock_writer = stream;
+                    let vsock_writer = stream;
+                    let closed = Arc::new(AtomicBool::new(false));
 
                     // Thread: forward stdin/kill from SDK to vsock.
                     // Returns vsock_writer so it isn't dropped before the read
                     // loop finishes — on Apple vsock, dropping the original fd
                     // closes the entire connection even if a dup'd reader exists.
-                    let input_thread = std::thread::spawn(move || {
-                        for msg in input_rx {
-                            match msg {
-                                ProcessInput::Stdin(data) => {
-                                    if frame::write_frame(&mut vsock_writer, frame::STDIN, &data)
-                                        .is_err()
-                                    {
-                                        break;
-                                    }
-                                }
-                                ProcessInput::Kill => {
-                                    let _ = frame::write_frame(&mut vsock_writer, frame::KILL, &[]);
-                                    break;
-                                }
-                            }
-                        }
-                        vsock_writer
-                    });
+                    let input_thread =
+                        spawn_process_input_thread(vsock_writer, input_rx, closed.clone());
 
                     // Read vsock frames -> send events
                     let pid_for_read = pid_clone.clone();
@@ -576,6 +618,7 @@ pub(crate) fn run_stdio(prepared: &PreparedVm) -> Result<i32> {
                         }
                     }
 
+                    closed.store(true, Ordering::SeqCst);
                     let _ = input_thread.join();
                 }));
 
@@ -595,7 +638,7 @@ pub(crate) fn run_stdio(prepared: &PreparedVm) -> Result<i32> {
                         continue;
                     }
                 };
-                if let Some(handle) = processes.get(&params.pid) {
+                if let Some(handle) = processes.lock().unwrap().get(&params.pid) {
                     let _ = handle.input_tx.send(ProcessInput::Kill);
                 }
                 send_result_shared(&out, req.id, EmptyResult {})?;
@@ -607,7 +650,7 @@ pub(crate) fn run_stdio(prepared: &PreparedVm) -> Result<i32> {
                     Ok(p) => p,
                     Err(_) => continue,
                 };
-                if let Some(handle) = processes.get(&params.pid) {
+                if let Some(handle) = processes.lock().unwrap().get(&params.pid) {
                     if let Ok(data) = BASE64.decode(&params.data) {
                         let _ = handle.input_tx.send(ProcessInput::Stdin(data));
                     }
@@ -714,6 +757,7 @@ pub(crate) fn run_stdio(prepared: &PreparedVm) -> Result<i32> {
                     &out,
                 )?;
                 let _ = sandbox.stop();
+                processes.lock().unwrap().clear();
                 drop(event_tx);
                 let _ = event_thread.join();
                 return Ok(0);
@@ -890,6 +934,7 @@ pub(crate) fn run_stdio(prepared: &PreparedVm) -> Result<i32> {
     // Stop the VM first — this closes vsock connections, unblocking
     // any background threads stuck on read_frame().
     let _ = sandbox.stop();
+    processes.lock().unwrap().clear();
 
     // Wait briefly for background threads to notice and exit
     for thread in bg_threads {
@@ -1019,4 +1064,33 @@ fn handle_checkpoint(
     }
 
     send_result_shared(out, id, EmptyResult {})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_input_thread_exits_when_closed_even_if_sender_is_retained() {
+        let (input_tx, input_rx) = std::sync::mpsc::channel();
+        let closed = Arc::new(AtomicBool::new(false));
+        let input_thread = spawn_process_input_thread(Vec::<u8>::new(), input_rx, closed.clone());
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            let writer = input_thread
+                .join()
+                .expect("input thread should not panic while shutting down");
+            let _ = done_tx.send(writer);
+        });
+
+        closed.store(true, Ordering::SeqCst);
+
+        let writer = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("input thread should exit even while input_tx is still retained");
+        assert!(writer.is_empty());
+
+        drop(input_tx);
+    }
 }
