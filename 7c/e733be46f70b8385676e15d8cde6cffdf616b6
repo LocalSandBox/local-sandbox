@@ -1,0 +1,19 @@
+.github/workflows/release_nodejs.yml
+  s_8e12695113a340::t_67a9be2bdb8431 78,136-138
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7ce733be46f70b8385676e15d8cde6cffdf616b6",
+  "prompts": {},
+  "sessions": {
+    "s_8e12695113a340": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4574-d994-7820-8bb4-bdfd268dc00c",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
