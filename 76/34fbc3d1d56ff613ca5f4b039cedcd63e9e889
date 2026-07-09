@@ -1,0 +1,29 @@
+crates/lsb-sdk/src/host_tools.rs
+  s_353d8cd626d4c6::t_13cfc63b557fa8 9
+  s_353d8cd626d4c6::t_7f958e911f9016 651-654
+crates/lsb-platform/src/windows_x86_64/qemu/mod.rs
+  s_353d8cd626d4c6::t_6f409731f0fcba 8-9,79-85
+crates/lsb-platform/src/windows_x86_64/mod.rs
+  s_353d8cd626d4c6::t_f81300f275ed91 18-19,37-69
+crates/lsb-store/src/windows_checkpoint.rs
+  s_353d8cd626d4c6::t_a00f758880d925 8,808-811
+crates/lsb-platform/src/windows_x86_64/qemu/process.rs
+  s_353d8cd626d4c6::t_76760d8c655f31 1583-1584
+  s_353d8cd626d4c6::t_67a58118d37522 11-12,496
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7634fbc3d1d56ff613ca5f4b039cedcd63e9e889",
+  "prompts": {},
+  "sessions": {
+    "s_353d8cd626d4c6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f45ef-f6e7-7fa0-894b-422b0d06f574",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
