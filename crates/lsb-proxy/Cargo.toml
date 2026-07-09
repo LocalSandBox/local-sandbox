@@ -28,5 +28,11 @@ simple-dns = "0.9"
 lru = "0.14"
 tracing = "0.1"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

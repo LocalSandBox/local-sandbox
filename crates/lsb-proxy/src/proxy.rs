@@ -1,13 +1,23 @@
 use std::collections::HashMap;
+#[cfg(windows)]
+use std::ffi::c_void;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use boring::ssl::{SslConnector, SslMethod};
+use boring::ssl::{SslConnector, SslConnectorBuilder, SslMethod};
+#[cfg(windows)]
+use boring::x509::X509;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace};
+#[cfg(windows)]
+use windows_sys::Win32::Security::Cryptography::{
+    CertCloseStore, CertEnumCertificatesInStore, CertOpenStore, CERT_CONTEXT,
+    CERT_STORE_PROV_SYSTEM_W, CERT_STORE_READONLY_FLAG, CERT_SYSTEM_STORE_CURRENT_USER,
+    CERT_SYSTEM_STORE_LOCAL_MACHINE,
+};
 
 use crate::config::{ProxyConfig, SMB_MOUNT_PORT};
 use crate::dns::{self, SharedDnsCache};
@@ -46,6 +56,7 @@ impl ProxyEngine {
         // doesn't reject our MITM connections based on JA3/JA4 fingerprint.
         let mut builder = SslConnector::builder(SslMethod::tls()).expect("SslConnector");
         builder.set_alpn_protos(b"\x08http/1.1").expect("ALPN");
+        configure_upstream_tls_roots(&mut builder);
         let upstream_ssl = builder.build();
 
         ProxyEngine {
@@ -118,6 +129,98 @@ impl ProxyEngine {
                 debug!("connection to {} ended: {e}", conn.dst);
             }
         });
+    }
+}
+
+fn configure_upstream_tls_roots(builder: &mut SslConnectorBuilder) {
+    #[cfg(windows)]
+    match add_windows_system_roots(builder) {
+        Ok(count) => debug!("loaded {count} Windows root certificate(s) for upstream TLS"),
+        Err(error) => debug!("failed to load Windows root certificates for upstream TLS: {error}"),
+    }
+
+    #[cfg(not(windows))]
+    let _ = builder;
+}
+
+#[cfg(windows)]
+fn add_windows_system_roots(builder: &mut SslConnectorBuilder) -> anyhow::Result<usize> {
+    let mut count = 0;
+    for location in [
+        CERT_SYSTEM_STORE_CURRENT_USER,
+        CERT_SYSTEM_STORE_LOCAL_MACHINE,
+    ] {
+        for store_name in ["ROOT", "CA"] {
+            count += add_windows_cert_store(builder, location, store_name)?;
+        }
+    }
+    Ok(count)
+}
+
+#[cfg(windows)]
+fn add_windows_cert_store(
+    builder: &mut SslConnectorBuilder,
+    location: u32,
+    store_name: &str,
+) -> anyhow::Result<usize> {
+    let store_name = store_name
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let store = unsafe {
+        CertOpenStore(
+            CERT_STORE_PROV_SYSTEM_W,
+            0,
+            0,
+            CERT_STORE_READONLY_FLAG | location,
+            store_name.as_ptr().cast::<c_void>(),
+        )
+    };
+    if store.is_null() {
+        return Ok(0);
+    }
+
+    let _guard = WindowsCertStore(store);
+    let mut loaded = 0;
+    let mut previous: *const CERT_CONTEXT = std::ptr::null();
+    loop {
+        let context = unsafe { CertEnumCertificatesInStore(store, previous) };
+        if context.is_null() {
+            break;
+        }
+        previous = context;
+
+        let cert = unsafe { &*context };
+        if cert.pbCertEncoded.is_null() || cert.cbCertEncoded == 0 {
+            continue;
+        }
+
+        let der =
+            unsafe { std::slice::from_raw_parts(cert.pbCertEncoded, cert.cbCertEncoded as usize) };
+        let Ok(cert) = X509::from_der(der) else {
+            continue;
+        };
+
+        match builder.cert_store_mut().add_cert(cert) {
+            Ok(()) => loaded += 1,
+            Err(error) => {
+                trace!("skipping Windows root certificate that BoringSSL rejected: {error}");
+            }
+        }
+    }
+
+    Ok(loaded)
+}
+
+#[cfg(windows)]
+struct WindowsCertStore(windows_sys::Win32::Security::Cryptography::HCERTSTORE);
+
+#[cfg(windows)]
+impl Drop for WindowsCertStore {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CertCloseStore(self.0, 0);
+        }
     }
 }
 
@@ -396,11 +499,28 @@ async fn handle_mitm(
 
     // Upstream: BoringSSL — Chrome's TLS fingerprint passes Cloudflare
     debug!("MITM {domain}: opening upstream TCP {dst}");
-    let upstream_tcp = TcpStream::connect(dst).await?;
+    let upstream_tcp = match TcpStream::connect(dst).await {
+        Ok(stream) => stream,
+        Err(error) => {
+            let _ = cmd_tx.send(StackCommand::Close { id });
+            return Err(error.into());
+        }
+    };
     debug!("MITM {domain}: opening upstream TLS with SNI {domain}");
-    let upstream_tls = tokio_boring::connect(upstream_ssl.configure()?, &domain, upstream_tcp)
-        .await
-        .map_err(|e| anyhow::anyhow!("BoringSSL connect to {domain}: {e}"))?;
+    let connect_config = match upstream_ssl.configure() {
+        Ok(config) => config,
+        Err(error) => {
+            let _ = cmd_tx.send(StackCommand::Close { id });
+            return Err(error.into());
+        }
+    };
+    let upstream_tls = match tokio_boring::connect(connect_config, &domain, upstream_tcp).await {
+        Ok(stream) => stream,
+        Err(error) => {
+            let _ = cmd_tx.send(StackCommand::Close { id });
+            return Err(anyhow::anyhow!("BoringSSL connect to {domain}: {error}"));
+        }
+    };
     debug!("MITM {domain}: upstream TLS connected");
 
     let (mut guest_rd, mut guest_wr) = tokio::io::split(guest_tls);
