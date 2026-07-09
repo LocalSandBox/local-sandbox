@@ -1,6 +1,6 @@
 {
   "name": "@local-sandbox/lsb-nodejs-darwin-arm64",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Native binary for @local-sandbox/lsb-nodejs on macOS arm64",
   "license": "Apache-2.0",
   "os": [
