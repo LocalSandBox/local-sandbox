@@ -13,6 +13,8 @@ const MTU: usize = 1514; // 14-byte Ethernet header + 1500-byte IP payload
 const MAX_PENDING_FRAMES: usize = 256;
 #[cfg_attr(not(windows), allow(dead_code))]
 const MAX_STREAM_FRAME: usize = 65536;
+#[cfg_attr(not(windows), allow(dead_code))]
+const STREAM_TX_BACKPRESSURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub trait FrameDevice: Device {
     fn drain_recv(&mut self);
@@ -316,7 +318,7 @@ impl Device for QemuStreamDevice {
 
 #[cfg_attr(not(windows), allow(dead_code))]
 fn write_all_nonblocking(stream: &mut TcpStream, mut payload: &[u8]) {
-    let mut attempts = 0;
+    let started = std::time::Instant::now();
     while !payload.is_empty() {
         match stream.write(payload) {
             Ok(0) => {
@@ -325,9 +327,11 @@ fn write_all_nonblocking(stream: &mut TcpStream, mut payload: &[u8]) {
             }
             Ok(n) => payload = &payload[n..],
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                attempts += 1;
-                if attempts > 50 {
-                    debug!("QEMU stream netdev TX timed out while writing frame");
+                if started.elapsed() >= STREAM_TX_BACKPRESSURE_TIMEOUT {
+                    debug!(
+                        "QEMU stream netdev TX timed out after {:?} while writing frame",
+                        STREAM_TX_BACKPRESSURE_TIMEOUT
+                    );
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(1));
