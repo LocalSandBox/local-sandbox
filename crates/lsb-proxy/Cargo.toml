@@ -1,6 +1,6 @@
 [package]
 name = "lsb-proxy"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 description = "Transparent network proxy for lsb microVMs"
 license = "Apache-2.0"
