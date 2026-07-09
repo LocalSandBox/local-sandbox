@@ -1,0 +1,23 @@
+crates/lsb-proxy/Cargo.toml
+  s_f56489f62d8139::t_5c52e58de9b609 31-36
+crates/lsb-proxy/src/proxy.rs
+  s_f56489f62d8139::t_133258ebab7a13 2-3,8-10,15-20,59,135-226,502-508,510-523
+Cargo.lock
+  s_f56489f62d8139::t_57dfdc982dda31 1010
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1da1a1ea0f68fa0e536ef0f1a0d69940c08ff22c",
+  "prompts": {},
+  "sessions": {
+    "s_f56489f62d8139": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f44ea-3400-7ed1-bcf3-9496c31b8dde",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
