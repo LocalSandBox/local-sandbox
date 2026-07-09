@@ -1,0 +1,22 @@
+crates/lsb-platform/src/windows_x86_64/qemu/process.rs
+  s_9225fe191e0148::t_bc6f8bd5331d82 1594-1595,1597-1601
+  s_9225fe191e0148::t_6e9b03a9bf2231 1596
+  s_9225fe191e0148::t_ba334d0f23ca01 494,986-999
+  s_9225fe191e0148::t_b16e041c25a0b4 1000,1592-1593
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "98aa33e53c63a43c4f4f6cbae2ac23ba226e464a",
+  "prompts": {},
+  "sessions": {
+    "s_9225fe191e0148": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f451d-63d6-7ef2-8a90-8c3fff53573f",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
