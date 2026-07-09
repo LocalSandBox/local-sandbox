@@ -1,0 +1,26 @@
+crates/lsb-proxy/src/proxy.rs
+  s_f56489f62d8139::t_2315f4bb65188e 482,563
+  s_f56489f62d8139::t_2fb74950830863 531
+  s_f56489f62d8139::t_7bf41bfe0ce2ed 697-698,701,726-751,778-839
+  s_f56489f62d8139::t_8fc56a5bcf6ab0 761,765,769-770,773-777
+  s_f56489f62d8139::t_0c4f294bb07bfb 429,432,438,441
+  s_f56489f62d8139::t_a4872df517547a 2,7,10,377-381,393,395,398,400,404,409,411-417,420,422,426-428,430-431,433-437,439-440,442-443,450-481,483-530,532-562,564-567,569,573,579,589
+crates/lsb-proxy/src/device.rs
+  s_f56489f62d8139::t_02020b854b643c 16-17,321,330-334
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "18362b62918c7c372d373fc61d0fe309dff3d414",
+  "prompts": {},
+  "sessions": {
+    "s_f56489f62d8139": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f44ea-3400-7ed1-bcf3-9496c31b8dde",
+        "model": "gpt-5.5"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
