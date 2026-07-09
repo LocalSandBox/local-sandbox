@@ -5,6 +5,8 @@ use std::process::Command;
 
 use serde::Serialize;
 
+use super::apply_qemu_no_window_creation_flags;
+
 pub(crate) mod argv;
 pub(crate) mod boot;
 pub(crate) mod config;
@@ -74,14 +76,13 @@ pub(crate) struct StdQemuCommandRunner;
 
 impl QemuCommandRunner for StdQemuCommandRunner {
     fn run(&self, program: &Path, args: &[&str]) -> Result<QemuCommandOutput, QemuCommandRunError> {
-        let output =
-            Command::new(program)
-                .args(args)
-                .output()
-                .map_err(|err| QemuCommandRunError {
-                    kind: err.kind(),
-                    message: err.to_string(),
-                })?;
+        let mut command = Command::new(program);
+        command.args(args);
+        apply_qemu_no_window_creation_flags(&mut command);
+        let output = command.output().map_err(|err| QemuCommandRunError {
+            kind: err.kind(),
+            message: err.to_string(),
+        })?;
 
         Ok(QemuCommandOutput {
             status: QemuCommandStatus {

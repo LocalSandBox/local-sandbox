@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
+use crate::windows_x86_64::apply_qemu_no_window_creation_flags;
+
 use super::argv::QemuCommand;
 use super::lossy_excerpt;
 
@@ -491,7 +493,7 @@ impl QemuSupervisor {
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
         apply_environment(&mut command, &self.config.environment);
-        apply_qemu_process_creation_flags(&mut command);
+        apply_qemu_no_window_creation_flags(&mut command);
 
         let mut child = match command.spawn() {
             Ok(child) => child,
@@ -981,21 +983,6 @@ fn apply_environment(command: &mut Command, environment: &QemuProcessEnvironment
     for (key, value) in &environment.variables {
         command.env(key, value);
     }
-}
-
-#[cfg(target_os = "windows")]
-fn apply_qemu_process_creation_flags(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
-
-    command.creation_flags(qemu_process_creation_flags());
-}
-
-#[cfg(not(target_os = "windows"))]
-fn apply_qemu_process_creation_flags(_command: &mut Command) {}
-
-#[cfg(target_os = "windows")]
-fn qemu_process_creation_flags() -> u32 {
-    windows_sys::Win32::System::Threading::CREATE_NO_WINDOW
 }
 
 fn minimal_qemu_environment() -> Vec<(OsString, OsString)> {
@@ -1593,7 +1580,8 @@ mod tests {
     #[test]
     fn windows_qemu_creation_flags_hide_console_window() {
         assert_ne!(
-            qemu_process_creation_flags() & windows_sys::Win32::System::Threading::CREATE_NO_WINDOW,
+            crate::windows_x86_64::qemu_no_window_creation_flags()
+                & windows_sys::Win32::System::Threading::CREATE_NO_WINDOW,
             0,
             "QEMU must be spawned with CREATE_NO_WINDOW for GUI parents"
         );

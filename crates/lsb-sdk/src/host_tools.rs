@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use flate2::read::GzDecoder;
+use lsb_platform::windows_x86_64::apply_qemu_no_window_creation_flags;
 use lsb_platform::windows_x86_64::host_tools::{
     managed_qemu_package_metadata, managed_qemu_paths, read_managed_qemu_current,
     read_managed_qemu_manifest, ManagedQemuCurrent, ManagedQemuManifest,
@@ -647,7 +648,10 @@ fn sha256_file(path: &Path) -> Result<String> {
 }
 
 fn run_required_probe(program: &Path, args: &[&str], label: &'static str) -> Result<String> {
-    let output = Command::new(program).args(args).output().with_context(|| {
+    let mut command = Command::new(program);
+    command.args(args);
+    apply_qemu_no_window_creation_flags(&mut command);
+    let output = command.output().with_context(|| {
         format!(
             "failed to run managed QEMU probe {label} using '{}'",
             program.display()

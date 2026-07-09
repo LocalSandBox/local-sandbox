@@ -15,6 +15,8 @@ mod qemu;
 pub(crate) use backend::create_vm;
 pub(crate) use control::mux::MuxSession;
 
+use std::process::Command;
+
 use crate::{PlatformSpec, PlatformStatus};
 
 pub const SPEC: PlatformSpec = PlatformSpec {
@@ -32,3 +34,36 @@ pub const SPEC: PlatformSpec = PlatformSpec {
     codesign_entitlements: None,
     status: PlatformStatus::Supported,
 };
+
+pub fn apply_qemu_no_window_creation_flags(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        command.creation_flags(qemu_no_window_creation_flags());
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = command;
+    }
+}
+
+#[cfg(windows)]
+pub fn qemu_no_window_creation_flags() -> u32 {
+    windows_sys::Win32::System::Threading::CREATE_NO_WINDOW
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn qemu_no_window_creation_flags_include_create_no_window() {
+        assert_ne!(
+            super::qemu_no_window_creation_flags()
+                & windows_sys::Win32::System::Threading::CREATE_NO_WINDOW,
+            0,
+            "QEMU and qemu-img must be launched with CREATE_NO_WINDOW for GUI parents"
+        );
+    }
+}

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use lsb_platform::windows_x86_64::apply_qemu_no_window_creation_flags;
 use serde::{Deserialize, Serialize};
 
 pub const WINDOWS_CHECKPOINT_SCHEMA_VERSION: u32 = 1;
@@ -804,8 +805,10 @@ impl std::error::Error for WindowsCheckpointError {
 }
 
 fn run_qemu_img(invocation: &QemuImgInvocation) -> Result<(), WindowsCheckpointError> {
-    let output = Command::new(&invocation.program)
-        .args(&invocation.args)
+    let mut command = Command::new(&invocation.program);
+    command.args(&invocation.args);
+    apply_qemu_no_window_creation_flags(&mut command);
+    let output = command
         .output()
         .map_err(|source| WindowsCheckpointError::Io {
             path: invocation.program.clone(),
