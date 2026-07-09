@@ -1,12 +1,13 @@
 use std::collections::HashMap;
+use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use boring::ssl::{SslConnector, SslMethod};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 use crate::config::{ProxyConfig, SMB_MOUNT_PORT};
 use crate::dns::{self, SharedDnsCache};
@@ -373,6 +374,11 @@ async fn handle_mitm(
     substitutions: Vec<(String, String)>,
     upstream_ssl: SslConnector,
 ) -> anyhow::Result<()> {
+    debug!(
+        "MITM {domain}: starting interception for {dst} with {} secret placeholder(s)",
+        substitutions.len()
+    );
+
     // Get fake cert for this domain
     let acceptor = {
         let mut ca = ca.lock().await;
@@ -384,70 +390,193 @@ async fn handle_mitm(
     guest_stream.prepend(first_chunk);
 
     // TLS handshake with guest (fake cert)
+    debug!("MITM {domain}: accepting guest TLS");
     let guest_tls = acceptor.accept(guest_stream).await?;
+    debug!("MITM {domain}: guest TLS accepted");
 
     // Upstream: BoringSSL — Chrome's TLS fingerprint passes Cloudflare
+    debug!("MITM {domain}: opening upstream TCP {dst}");
     let upstream_tcp = TcpStream::connect(dst).await?;
+    debug!("MITM {domain}: opening upstream TLS with SNI {domain}");
     let upstream_tls = tokio_boring::connect(upstream_ssl.configure()?, &domain, upstream_tcp)
         .await
         .map_err(|e| anyhow::anyhow!("BoringSSL connect to {domain}: {e}"))?;
+    debug!("MITM {domain}: upstream TLS connected");
 
     let (mut guest_rd, mut guest_wr) = tokio::io::split(guest_tls);
     let (mut upstream_rd, mut upstream_wr) = tokio::io::split(upstream_tls);
 
+    let request_domain = domain.clone();
     let guest_to_upstream = async move {
-        let mut buf = vec![0u8; 65536];
-        loop {
-            match guest_rd.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    let mut data = buf[..n].to_vec();
-                    for (placeholder, real_value) in &substitutions {
-                        data = replace_bytes(&data, placeholder.as_bytes(), real_value.as_bytes());
-                    }
-                    if upstream_wr.write_all(&data).await.is_err() {
-                        break;
-                    }
-                }
-            }
-        }
+        relay_guest_request(
+            &request_domain,
+            &mut guest_rd,
+            &mut upstream_wr,
+            &substitutions,
+        )
+        .await
     };
 
+    let response_domain = domain.clone();
     let upstream_to_guest = async move {
-        let mut buf = vec![0u8; 65536];
-        loop {
-            match upstream_rd.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if guest_wr.write_all(&buf[..n]).await.is_err() {
-                        break;
-                    }
-                }
-            }
-        }
+        relay_upstream_response(&response_domain, &mut upstream_rd, &mut guest_wr).await
     };
 
     tokio::select! {
-        _ = guest_to_upstream => {},
-        _ = upstream_to_guest => {},
+        result = guest_to_upstream => {
+            match result {
+                Ok(stats) => debug!(
+                    "MITM {domain}: guest->upstream relay ended after {} bytes in {} chunk(s), {} replacement(s)",
+                    stats.bytes, stats.chunks, stats.replacements
+                ),
+                Err(error) => debug!("MITM {domain}: guest->upstream relay failed: {error}"),
+            }
+        },
+        result = upstream_to_guest => {
+            match result {
+                Ok(stats) => debug!(
+                    "MITM {domain}: upstream->guest relay ended after {} bytes in {} chunk(s)",
+                    stats.bytes, stats.chunks
+                ),
+                Err(error) => debug!("MITM {domain}: upstream->guest relay failed: {error}"),
+            }
+        },
     }
 
     let _ = cmd_tx.send(StackCommand::Close { id });
     Ok(())
 }
 
-/// Replace all occurrences of `from` with `to` in a byte slice.
-fn replace_bytes(data: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+#[derive(Debug, Default, PartialEq, Eq)]
+struct RelayStats {
+    bytes: u64,
+    chunks: u64,
+    replacements: u64,
+}
+
+#[derive(Debug, Default)]
+struct HttpHeaderProgress {
+    buffer: Vec<u8>,
+    logged: bool,
+}
+
+impl HttpHeaderProgress {
+    fn observe_request(&mut self, domain: &str, data: &[u8], total_bytes: u64) {
+        self.observe(domain, data, total_bytes, "request");
+    }
+
+    fn observe_response(&mut self, domain: &str, data: &[u8], total_bytes: u64) {
+        self.observe(domain, data, total_bytes, "response");
+    }
+
+    fn observe(&mut self, domain: &str, data: &[u8], total_bytes: u64, kind: &str) {
+        if self.logged {
+            return;
+        }
+
+        const MAX_HEADER_SCAN_BYTES: usize = 64 * 1024;
+        let remaining = MAX_HEADER_SCAN_BYTES.saturating_sub(self.buffer.len());
+        self.buffer
+            .extend_from_slice(&data[..data.len().min(remaining)]);
+
+        if self.buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+            debug!("MITM {domain}: HTTP {kind} headers observed after {total_bytes} byte(s)");
+            self.logged = true;
+            self.buffer.clear();
+        } else if self.buffer.len() >= MAX_HEADER_SCAN_BYTES {
+            trace!("MITM {domain}: HTTP {kind} headers not observed in first {MAX_HEADER_SCAN_BYTES} bytes");
+            self.logged = true;
+            self.buffer.clear();
+        }
+    }
+}
+
+async fn relay_guest_request<R, W>(
+    domain: &str,
+    reader: &mut R,
+    writer: &mut W,
+    substitutions: &[(String, String)],
+) -> io::Result<RelayStats>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut stats = RelayStats::default();
+    let mut progress = HttpHeaderProgress::default();
+    let mut buf = vec![0u8; 65536];
+
+    loop {
+        let n = reader.read(&mut buf).await?;
+        if n == 0 {
+            debug!("MITM {domain}: guest closed request stream");
+            return Ok(stats);
+        }
+
+        stats.bytes += n as u64;
+        stats.chunks += 1;
+        progress.observe_request(domain, &buf[..n], stats.bytes);
+
+        let mut data = buf[..n].to_vec();
+        for (placeholder, real_value) in substitutions {
+            let (replaced, count) =
+                replace_bytes_count(&data, placeholder.as_bytes(), real_value.as_bytes());
+            stats.replacements += count as u64;
+            data = replaced;
+        }
+
+        writer.write_all(&data).await?;
+        writer.flush().await?;
+        trace!(
+            "MITM {domain}: forwarded request chunk {} byte(s), {} replacement(s) total",
+            n,
+            stats.replacements
+        );
+    }
+}
+
+async fn relay_upstream_response<R, W>(
+    domain: &str,
+    reader: &mut R,
+    writer: &mut W,
+) -> io::Result<RelayStats>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut stats = RelayStats::default();
+    let mut progress = HttpHeaderProgress::default();
+    let mut buf = vec![0u8; 65536];
+
+    loop {
+        let n = reader.read(&mut buf).await?;
+        if n == 0 {
+            debug!("MITM {domain}: upstream closed response stream");
+            return Ok(stats);
+        }
+
+        stats.bytes += n as u64;
+        stats.chunks += 1;
+        progress.observe_response(domain, &buf[..n], stats.bytes);
+
+        writer.write_all(&buf[..n]).await?;
+        writer.flush().await?;
+        trace!("MITM {domain}: forwarded response chunk {} byte(s)", n);
+    }
+}
+
+fn replace_bytes_count(data: &[u8], from: &[u8], to: &[u8]) -> (Vec<u8>, usize) {
     if from.is_empty() || data.len() < from.len() {
-        return data.to_vec();
+        return (data.to_vec(), 0);
     }
 
     let mut result = Vec::with_capacity(data.len());
+    let mut replacements = 0;
     let mut i = 0;
 
     while i <= data.len() - from.len() {
         if &data[i..i + from.len()] == from {
             result.extend_from_slice(to);
+            replacements += 1;
             i += from.len();
         } else {
             result.push(data[i]);
@@ -457,7 +586,7 @@ fn replace_bytes(data: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
 
     // Append remaining bytes that can't contain the pattern
     result.extend_from_slice(&data[i..]);
-    result
+    (result, replacements)
 }
 
 /// Extract SNI from a TLS ClientHello.
@@ -565,8 +694,11 @@ fn strip_host_port(host: &str) -> &str {
 mod tests {
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
 
     use super::*;
+    use tokio::io::AsyncWrite;
 
     fn allowed_config(domain: &str) -> ProxyConfig {
         ProxyConfig {
@@ -591,6 +723,32 @@ mod tests {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
     }
 
+    #[derive(Default)]
+    struct FlushCountingWriter {
+        bytes: Vec<u8>,
+        flushes: usize,
+    }
+
+    impl AsyncWrite for FlushCountingWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            self.bytes.extend_from_slice(buf);
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            self.flushes += 1;
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
     #[test]
     fn test_extract_sni_none_for_non_tls() {
         assert_eq!(extract_sni(b"GET / HTTP/1.1\r\n"), None);
@@ -600,19 +758,85 @@ mod tests {
     #[test]
     fn test_replace_bytes() {
         assert_eq!(
-            replace_bytes(b"hello world", b"world", b"rust"),
+            replace_bytes_count(b"hello world", b"world", b"rust").0,
             b"hello rust"
         );
         assert_eq!(
-            replace_bytes(
+            replace_bytes_count(
                 b"key=lsb_tok_abc123&other=val",
                 b"lsb_tok_abc123",
                 b"real_secret"
-            ),
+            )
+            .0,
             b"key=real_secret&other=val"
         );
-        assert_eq!(replace_bytes(b"no match", b"xyz", b"abc"), b"no match");
-        assert_eq!(replace_bytes(b"", b"x", b"y"), b"");
+        assert_eq!(
+            replace_bytes_count(b"no match", b"xyz", b"abc").0,
+            b"no match"
+        );
+        assert_eq!(replace_bytes_count(b"", b"x", b"y").0, b"");
+    }
+
+    #[test]
+    fn test_replace_bytes_count() {
+        assert_eq!(
+            replace_bytes_count(b"one token two token", b"token", b"secret"),
+            (b"one secret two secret".to_vec(), 2)
+        );
+        assert_eq!(
+            replace_bytes_count(b"unchanged", b"missing", b"secret"),
+            (b"unchanged".to_vec(), 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn upstream_response_relay_flushes_after_forwarding_chunk() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK";
+        let mut reader = &response[..];
+        let mut writer = FlushCountingWriter::default();
+
+        let stats = relay_upstream_response("api.example.test", &mut reader, &mut writer)
+            .await
+            .expect("response relay should succeed");
+
+        assert_eq!(writer.bytes, response);
+        assert_eq!(writer.flushes, 1);
+        assert_eq!(
+            stats,
+            RelayStats {
+                bytes: response.len() as u64,
+                chunks: 1,
+                replacements: 0,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn guest_request_relay_substitutes_and_flushes_forwarded_chunk() {
+        let request =
+            b"GET / HTTP/1.1\r\nHost: api.example.test\r\nAuthorization: Bearer lsb_tok_test\r\n\r\n";
+        let substitutions = vec![("lsb_tok_test".to_string(), "real-token".to_string())];
+        let mut reader = &request[..];
+        let mut writer = FlushCountingWriter::default();
+
+        let stats =
+            relay_guest_request("api.example.test", &mut reader, &mut writer, &substitutions)
+                .await
+                .expect("request relay should succeed");
+
+        assert_eq!(
+            writer.bytes,
+            b"GET / HTTP/1.1\r\nHost: api.example.test\r\nAuthorization: Bearer real-token\r\n\r\n"
+        );
+        assert_eq!(writer.flushes, 1);
+        assert_eq!(
+            stats,
+            RelayStats {
+                bytes: request.len() as u64,
+                chunks: 1,
+                replacements: 1,
+            }
+        );
     }
 
     #[test]
