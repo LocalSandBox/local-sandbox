@@ -6,6 +6,7 @@ use flate2::read::GzDecoder;
 use lsb_platform::{asset_paths, supported_runtime_platform, AssetPaths};
 use tar::Archive;
 
+use crate::fixes::{apply_sandbox_fixes, SandboxFixResult};
 use crate::host_tools::{init_host_tools, HostToolsInitResult};
 
 const GITHUB_REPO: &str = "LocalSandBox/local-sandbox";
@@ -21,6 +22,8 @@ pub struct SandboxInitOptions {
     pub data_dir: Option<String>,
     /// Re-download assets even when the expected files and VERSION marker already exist.
     pub force: bool,
+    /// Apply every automatic host configuration fix supported by this SDK build.
+    pub fix: bool,
 }
 
 /// Result returned after checking or downloading sandbox runtime assets.
@@ -38,6 +41,8 @@ pub struct SandboxInitResult {
     pub paths: AssetPaths,
     /// Host tool initialization status when this call initialized host tools.
     pub host_tools: Option<HostToolsInitResult>,
+    /// Automatic host configuration fixes attempted by this call.
+    pub fixes: Vec<SandboxFixResult>,
 }
 
 /// Check if the runtime assets exist and match this SDK version.
@@ -65,8 +70,13 @@ pub fn init_sandbox_version(
         .data_dir
         .unwrap_or_else(lsb_platform::default_data_dir);
     let force = options.force;
+    let fixes = if options.fix {
+        apply_sandbox_fixes()?
+    } else {
+        Vec::new()
+    };
     let host_tools = init_host_tools(Some(data_dir.clone()), force)?;
-    init_runtime_assets_for_data_dir(data_dir, version, force, Some(host_tools))
+    init_runtime_assets_for_data_dir(data_dir, version, force, Some(host_tools), fixes)
 }
 
 /// Ensure runtime assets for a specific version exist without initializing host tools.
@@ -81,7 +91,12 @@ pub fn init_runtime_assets_version(
     let data_dir = options
         .data_dir
         .unwrap_or_else(lsb_platform::default_data_dir);
-    init_runtime_assets_for_data_dir(data_dir, version, options.force, None)
+    let fixes = if options.fix {
+        apply_sandbox_fixes()?
+    } else {
+        Vec::new()
+    };
+    init_runtime_assets_for_data_dir(data_dir, version, options.force, None, fixes)
 }
 
 fn init_runtime_assets_for_data_dir(
@@ -89,6 +104,7 @@ fn init_runtime_assets_for_data_dir(
     version: &str,
     force: bool,
     host_tools: Option<HostToolsInitResult>,
+    fixes: Vec<SandboxFixResult>,
 ) -> Result<SandboxInitResult> {
     let paths = asset_paths(&data_dir);
 
@@ -104,6 +120,7 @@ fn init_runtime_assets_for_data_dir(
             pinned: !was_pinned,
             paths,
             host_tools,
+            fixes,
         });
     }
 
@@ -117,6 +134,7 @@ fn init_runtime_assets_for_data_dir(
         pinned: true,
         paths,
         host_tools,
+        fixes,
     })
 }
 
@@ -217,6 +235,7 @@ mod tests {
             SandboxInitOptions {
                 data_dir: Some(data_dir_str.clone()),
                 force: false,
+                fix: false,
             },
             CURRENT_VERSION,
         )
@@ -227,6 +246,7 @@ mod tests {
         assert!(!result.downloaded);
         assert_eq!(result.paths.kernel, format!("{}/Image", result.data_dir));
         assert!(result.host_tools.is_none());
+        assert!(result.fixes.is_empty());
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -241,6 +261,7 @@ mod tests {
         let result = init_sandbox(SandboxInitOptions {
             data_dir: Some(data_dir_str.clone()),
             force: false,
+            fix: true,
         })
         .expect("init should succeed without downloading");
 
@@ -250,6 +271,7 @@ mod tests {
         assert_eq!(result.paths.kernel, format!("{}/Image", result.data_dir));
         assert!(result.host_tools.is_some());
         assert!(!result.host_tools.expect("host tools result").supported);
+        assert!(result.fixes.is_empty());
 
         let _ = fs::remove_dir_all(data_dir);
     }

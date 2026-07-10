@@ -285,6 +285,7 @@ test('supported builds can initialize against already-present runtime assets', a
   t.is(result.dataDir, dataDir)
   t.is(result.version, packageVersion)
   t.false(result.downloaded)
+  t.deepEqual(result.fixes, [])
   t.is(result.paths.kernel, join(dataDir, 'Image'))
   t.is(result.paths.rootfs, join(dataDir, 'rootfs.ext4'))
 })

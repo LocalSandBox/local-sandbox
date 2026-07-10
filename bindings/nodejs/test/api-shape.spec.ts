@@ -30,6 +30,9 @@ const sandboxMethods = [
 test('TypeScript declarations preserve the public Sandbox API shape', (t) => {
   t.regex(declarations, /export declare class Sandbox/)
   t.regex(declarations, /export declare function initSandbox/)
+  t.regex(declarations, /export interface SandboxFixResult/)
+  t.regex(declarations, /fix\?: boolean/)
+  t.regex(declarations, /fixes: Array<SandboxFixResult>/)
 
   for (const method of sandboxMethods) {
     t.regex(declarations, new RegExp(`\\b${method}\\(`))

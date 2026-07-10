@@ -1,4 +1,5 @@
 mod assets;
+mod fixes;
 mod host_tools;
 mod process;
 mod runtime;
@@ -18,6 +19,7 @@ pub use assets::{
     assets_ready, init_runtime_assets_version, init_sandbox, init_sandbox_version,
     SandboxInitOptions, SandboxInitResult, CURRENT_VERSION,
 };
+pub use fixes::{apply_sandbox_fixes, SandboxFixResult};
 pub use host_tools::{init_host_tools, HostToolsInitResult};
 pub use process::ProcessHandle;
 pub use runtime::AsyncSandbox;

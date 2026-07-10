@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- Added `lsb init --fix` and the Rust/Node initialization `fix` option to apply
+  all available automatic host configuration repairs, including the Windows
+  direct SMB mount policy repair.
+
 ## 0.4.0
 
 ### Windows 11 x64 backend and Node package MVP

@@ -63,7 +63,7 @@ pub fn ensure_windows_smb_policy_allows_generated_users() -> Result<(), WindowsS
         "Windows direct SMB mounts are blocked by local security policy: \
          'Deny access to this computer from the network' contains \
          NT AUTHORITY\\Local account (S-1-5-113). Run \
-         'lsb doctor windows-smb-policy --fix' from an elevated PowerShell \
+         'lsb init --fix' or 'lsb doctor windows-smb-policy --fix' from elevated PowerShell \
          to replace that broad deny with the narrower local-Administrator-account deny.",
     ))
 }

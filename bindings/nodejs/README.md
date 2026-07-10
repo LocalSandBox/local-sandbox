@@ -87,6 +87,14 @@ console.log(init.dataDir, init.version, init.downloaded)
 `Sandbox.start()` defaults to the initialized `VERSION` in the runtime data directory. You only need
 to pass a version when preparing or booting from an older pinned base.
 
+On Windows, pass `fix: true` from an elevated process to apply every available automatic host
+configuration repair. The result reports each attempted fix and whether it changed the host.
+
+```ts
+const init = await initSandbox({ fix: true })
+console.log(init.fixes) // [{ name: 'windows-smb-policy', changed: true }]
+```
+
 ```ts
 await initSandbox({ version: '0.3.8' })
 
@@ -195,7 +203,8 @@ use SMB/CIFS, require an elevated Administrator shell, and use LocalSandbox-cont
 networking without enabling arbitrary outbound network access. If Windows local security policy
 denies network logon to `NT AUTHORITY\Local account`, direct mounts fail preflight; use
 `lsb doctor windows-smb-policy` to diagnose or `lsb doctor windows-smb-policy --fix` to apply the
-recommended local policy repair.
+recommended local policy repair. `lsb init --fix` and `initSandbox({ fix: true })` apply this repair
+as part of initialization.
 
 On Windows, `watch()` on a direct SMB mount path uses a host-side Windows directory watcher and maps
 events back to guest paths. It reports host-created, modified, renamed, and deleted files, and it

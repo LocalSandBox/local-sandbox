@@ -26,13 +26,13 @@ pub use streams::{ByteStream, WatchStream};
 pub use types::{
   CopyOptions, DirEntry, ExecOptions, ExecResult, ExposeHostConfig, FileChangeEvent, MkdirOptions,
   MountConfig, NetworkConfig, PortMappingConfig, RemoveOptions, SandboxAssetPaths,
-  SandboxInitOptions, SandboxInitResult, SecretConfig, SpawnOptions, StartOptions, StatResult,
-  WatchOptions,
+  SandboxFixResult, SandboxInitOptions, SandboxInitResult, SecretConfig, SpawnOptions,
+  StartOptions, StatResult, WatchOptions,
 };
 
 /// Download or verify sandbox runtime assets such as kernel, rootfs, and initramfs.
 ///
-/// Usage: `await initSandbox({ dataDir, force: false })`
+/// Usage: `await initSandbox({ dataDir, force: false, fix: true })`
 #[napi]
 pub async fn init_sandbox(opts: Option<SandboxInitOptions>) -> Result<SandboxInitResult> {
   #[cfg(lsb_nodejs_supported)]

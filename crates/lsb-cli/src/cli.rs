@@ -108,6 +108,10 @@ pub(crate) enum Commands {
         #[arg(long)]
         force: bool,
 
+        /// Apply all available automatic host configuration fixes
+        #[arg(long)]
+        fix: bool,
+
         /// Initialize Windows host tools without downloading runtime assets
         #[arg(long, hide = true)]
         host_tools_only: bool,
@@ -185,4 +189,15 @@ pub(crate) enum DoctorCommands {
         #[arg(long)]
         yes: bool,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn init_accepts_fix() {
+        let cli = Cli::try_parse_from(["lsb", "init", "--fix"]).expect("parse init --fix");
+        assert!(matches!(cli.command, Commands::Init { fix: true, .. }));
+    }
 }

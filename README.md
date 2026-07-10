@@ -14,7 +14,9 @@ packages, and run tools without touching your host.
 - Windows requires Windows 11 x64 with Windows Hypervisor Platform enabled.
   `lsb init` installs LocalSandbox-managed QEMU host tools under the user data
   directory and production Windows runs require WHPX; they do not fall back to
-  TCG. `LSB_QEMU` and `LSB_QEMU_IMG` remain supported override/debug paths.
+  TCG. Run `lsb init --fix` from elevated PowerShell to also apply available
+  automatic host configuration repairs. `LSB_QEMU` and `LSB_QEMU_IMG` remain
+  supported override/debug paths.
 - `cmake` is required when building from source because `lsb-proxy` links
   BoringSSL for upstream TLS.
 - Windows source builds require the Rust MSVC toolchain and native build tools.
@@ -119,7 +121,8 @@ LocalSandbox-controlled proxy path and do not imply arbitrary outbound
 `--allow-net`. If local Windows policy denies network logon to
 `NT AUTHORITY\Local account`, direct SMB mounts fail before boot with an
 actionable preflight error; diagnose or repair that policy with
-`lsb doctor windows-smb-policy`.
+`lsb doctor windows-smb-policy`, or apply all available automatic repairs with
+`lsb init --fix` from elevated PowerShell.
 
 On Windows, `watch()` on normal guest paths and overlay/import mounts observes
 the guest filesystem view. `watch()` on SDK or Node direct SMB mount paths uses
@@ -177,6 +180,9 @@ they were created from.
 # Initialize the current CLI version and boot from that current base
 lsb init
 lsb run -- sh
+
+# On Windows, also apply all available automatic host configuration repairs
+lsb init --fix
 
 # Set up an environment and save it
 lsb checkpoint create myenv --allow-net -- sh -c 'apt-get install -y python3 gcc'

@@ -7,7 +7,7 @@ use napi::bindgen_prelude::Either;
 #[cfg(lsb_nodejs_supported)]
 use crate::types::{
   DirEntry, ExecResult, ExposeHostConfig, MountConfig, PortMappingConfig, SandboxAssetPaths,
-  SandboxInitOptions, SandboxInitResult, SecretConfig, StartOptions, StatResult,
+  SandboxFixResult, SandboxInitOptions, SandboxInitResult, SecretConfig, StartOptions, StatResult,
 };
 
 // Conversion layer between JS options and the Rust SDK. Keeping validation here
@@ -94,6 +94,7 @@ pub(crate) fn build_init_options(opts: SandboxInitOptions) -> lsb_sdk::SandboxIn
   lsb_sdk::SandboxInitOptions {
     data_dir: opts.dataDir,
     force: opts.force.unwrap_or(false),
+    fix: opts.fix.unwrap_or(false),
   }
 }
 
@@ -223,6 +224,14 @@ pub(crate) fn map_init_result(result: lsb_sdk::SandboxInitResult) -> SandboxInit
     dataDir: result.data_dir,
     version: result.version,
     downloaded: result.downloaded,
+    fixes: result
+      .fixes
+      .into_iter()
+      .map(|fix| SandboxFixResult {
+        name: fix.name,
+        changed: fix.changed,
+      })
+      .collect(),
     paths: SandboxAssetPaths {
       dataDir: result.paths.data_dir,
       versionFile: result.paths.version_file,

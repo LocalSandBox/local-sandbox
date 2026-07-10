@@ -4,7 +4,7 @@ use std::io::{self, Read, Write};
 use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
 use lsb_platform::supported_runtime_platform;
-use lsb_sdk::{HostToolsInitResult, SandboxInitOptions};
+use lsb_sdk::{HostToolsInitResult, SandboxFixResult, SandboxInitOptions};
 use serde::Deserialize;
 use tar::Archive;
 
@@ -18,15 +18,21 @@ pub fn assets_ready(data_dir: &str) -> bool {
 
 /// Download and extract OS image assets from GitHub Releases via the SDK.
 pub fn download_os_image(data_dir: &str) -> Result<()> {
-    init_version(data_dir, CURRENT_VERSION, true, false)
+    init_version(data_dir, CURRENT_VERSION, true, false, false)
 }
 
 pub fn init_version(
     data_dir: &str,
     version: &str,
     force: bool,
+    fix: bool,
     host_tools_only: bool,
 ) -> Result<()> {
+    if fix {
+        let fixes = lsb_sdk::apply_sandbox_fixes()?;
+        print_fix_status(&fixes);
+    }
+
     let host_tools = lsb_sdk::init_host_tools(Some(data_dir.to_string()), force)?;
     print_host_tools_status(&host_tools, host_tools_only);
     if host_tools_only {
@@ -45,6 +51,7 @@ pub fn init_os_image_version(data_dir: &str, version: &str, force: bool) -> Resu
         SandboxInitOptions {
             data_dir: Some(data_dir.to_string()),
             force,
+            fix: false,
         },
         version,
     )?;
@@ -61,7 +68,17 @@ pub fn init_os_image_version(data_dir: &str, version: &str, force: bool) -> Resu
 }
 
 pub fn download_os_image_version(data_dir: &str, version: &str) -> Result<()> {
-    init_version(data_dir, version, true, false)
+    init_version(data_dir, version, true, false, false)
+}
+
+fn print_fix_status(results: &[SandboxFixResult]) {
+    for result in results {
+        if result.changed {
+            eprintln!("lsb: {} repaired", result.name);
+        } else {
+            eprintln!("lsb: {} did not require changes", result.name);
+        }
+    }
 }
 
 fn print_host_tools_status(result: &HostToolsInitResult, host_tools_only: bool) {

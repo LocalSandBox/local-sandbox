@@ -103,6 +103,18 @@ pub struct SandboxInitOptions {
   pub version: Option<String>,
   /// Re-download assets even when the expected files and VERSION marker already exist.
   pub force: Option<bool>,
+  /// Apply every automatic host configuration fix supported by this package.
+  pub fix: Option<bool>,
+}
+
+/// Result of an automatic host configuration fix applied during initialization.
+#[allow(non_snake_case)]
+#[napi(object)]
+pub struct SandboxFixResult {
+  /// Stable name of the fix.
+  pub name: String,
+  /// True when the fix changed host configuration.
+  pub changed: bool,
 }
 
 /// Runtime asset paths derived from a sandbox data directory.
@@ -137,6 +149,8 @@ pub struct SandboxInitResult {
   pub downloaded: bool,
   /// Concrete runtime asset paths.
   pub paths: SandboxAssetPaths,
+  /// Automatic host configuration fixes attempted by this call.
+  pub fixes: Vec<SandboxFixResult>,
 }
 
 /// Per-command execution options.
@@ -269,6 +283,7 @@ impl Default for SandboxInitOptions {
       dataDir: None,
       version: None,
       force: None,
+      fix: None,
     }
   }
 }

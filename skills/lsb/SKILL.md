@@ -86,6 +86,7 @@ Checkpoint names must be unique - delete the old one before re-creating with the
 # Download/update OS image
 lsb init
 lsb init --force    # re-download even if up to date
+lsb init --fix      # apply all available automatic host fixes
 
 # Upgrade CLI + OS image
 lsb upgrade

@@ -237,7 +237,7 @@ export interface FileChangeEvent {
 /**
  * Download or verify sandbox runtime assets such as kernel, rootfs, and initramfs.
  *
- * Usage: `await initSandbox({ dataDir, force: false })`
+ * Usage: `await initSandbox({ dataDir, force: false, fix: true })`
  */
 export declare function initSandbox(opts?: SandboxInitOptions | undefined | null): Promise<SandboxInitResult>
 
@@ -301,6 +301,14 @@ export interface SandboxAssetPaths {
   instancesDir: string
 }
 
+/** Result of an automatic host configuration fix applied during initialization. */
+export interface SandboxFixResult {
+  /** Stable name of the fix. */
+  name: string
+  /** True when the fix changed host configuration. */
+  changed: boolean
+}
+
 /** Options used when initializing sandbox runtime assets. */
 export interface SandboxInitOptions {
   /** Runtime data directory. Defaults to the platform runtime data directory. */
@@ -309,6 +317,8 @@ export interface SandboxInitOptions {
   version?: string
   /** Re-download assets even when the expected files and VERSION marker already exist. */
   force?: boolean
+  /** Apply every automatic host configuration fix supported by this package. */
+  fix?: boolean
 }
 
 /** Result returned after initializing or checking sandbox runtime assets. */
@@ -321,6 +331,8 @@ export interface SandboxInitResult {
   downloaded: boolean
   /** Concrete runtime asset paths. */
   paths: SandboxAssetPaths
+  /** Automatic host configuration fixes attempted by this call. */
+  fixes: Array<SandboxFixResult>
 }
 
 /** Secret value that is only exposed to requests for the listed hosts. */
