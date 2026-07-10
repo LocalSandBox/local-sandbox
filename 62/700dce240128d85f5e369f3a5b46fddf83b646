@@ -1,0 +1,58 @@
+bindings/nodejs/src/lib.rs
+  s_cfb35c4cce685d::t_5049c8a9090fba 29-30
+  s_cfb35c4cce685d::t_57672113ebeda3 35
+bindings/nodejs/src/config.rs
+  s_cfb35c4cce685d::t_57672113ebeda3 10,97,227-234
+skills/lsb/SKILL.md
+  s_cfb35c4cce685d::t_04e6e490ce3be4 89
+crates/lsb-sdk/src/lib.rs
+  s_cfb35c4cce685d::t_57672113ebeda3 2,22
+bindings/nodejs/README.md
+  s_cfb35c4cce685d::t_04e6e490ce3be4 90-97,206-207
+bindings/nodejs/src/types.rs
+  s_cfb35c4cce685d::t_57672113ebeda3 106-117,152-153,286
+CHANGELOG.md
+  s_cfb35c4cce685d::t_04e6e490ce3be4 7-10
+crates/lsb-cli/src/cli.rs
+  s_cfb35c4cce685d::t_57672113ebeda3 111-114,193-202
+  s_cfb35c4cce685d::t_bf2d5e90530693 203
+crates/lsb-platform/src/windows_x86_64/fs/smb/policy.rs
+  s_cfb35c4cce685d::t_105100f67895a0 66
+crates/lsb-cli/src/assets.rs
+  s_cfb35c4cce685d::t_57672113ebeda3 7,21,28,31-35,54,71-81
+bindings/nodejs/test/index.spec.ts
+  s_cfb35c4cce685d::t_47e92cb75b9cbb 288
+bindings/nodejs/test/api-shape.spec.ts
+  s_cfb35c4cce685d::t_04e6e490ce3be4 33-35
+README.md
+  s_cfb35c4cce685d::t_04e6e490ce3be4 17-19,124-125,184-185
+  s_cfb35c4cce685d::t_ec1923e8ff27ba 186
+crates/lsb-cli/src/main.rs
+  s_cfb35c4cce685d::t_57672113ebeda3 64,69
+crates/lsb-sdk/src/fixes.rs
+  s_cfb35c4cce685d::t_57672113ebeda3 1-12,14,21,26-34,38-39
+  s_cfb35c4cce685d::t_e752d78e10643c 13,15-16,20,22-25
+  s_cfb35c4cce685d::t_8b62ff3cadd64c 17-19
+  s_cfb35c4cce685d::t_009ceefcd087d2 35-37
+crates/lsb-sdk/src/assets.rs
+  s_cfb35c4cce685d::t_47e92cb75b9cbb 9,249
+  s_cfb35c4cce685d::t_57672113ebeda3 25-26,44-45,73-77,79,94-99,107,123,137,238,264,274
+bindings/nodejs/index.d.ts
+  s_cfb35c4cce685d::t_fc48e5b902a2d6 240,304-311,320-321,334-335
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "62700dce240128d85f5e369f3a5b46fddf83b646",
+  "prompts": {},
+  "sessions": {
+    "s_cfb35c4cce685d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4ac5-705d-7842-8b2f-c648bcc9e0d7",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
