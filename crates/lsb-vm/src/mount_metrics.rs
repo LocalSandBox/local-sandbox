@@ -472,12 +472,14 @@ impl WindowsMountMetrics {
         });
     }
 
-    pub(crate) fn record_legacy_write(&self, bytes: u64) {
+    pub(crate) fn record_file_write(&self, bytes: u64, deferred: bool) {
         self.with_state(|state| {
             state.record.bytes_transferred = state.record.bytes_transferred.saturating_add(bytes);
             state.record.chunk_count = state.record.chunk_count.saturating_add(1);
-            state.record.sync_all_calls = state.record.sync_all_calls.saturating_add(1);
-            state.record.global_sync_calls = state.record.global_sync_calls.saturating_add(1);
+            if !deferred {
+                state.record.sync_all_calls = state.record.sync_all_calls.saturating_add(1);
+                state.record.global_sync_calls = state.record.global_sync_calls.saturating_add(1);
+            }
         });
     }
 
@@ -650,7 +652,7 @@ mod tests {
         metrics.record_mux_file_session(Duration::from_millis(1), true);
         metrics.record_filesystem_request();
         metrics.record_filesystem_response();
-        metrics.record_legacy_write(11);
+        metrics.record_file_write(11, false);
         metrics.mark_fallback_mounts_used();
         metrics.finish_success();
 
@@ -701,6 +703,28 @@ mod tests {
         assert!(json.contains("\"error_category\": \"source_mutation\""));
         assert!(json.contains("\"terminal_outcome\": \"startup_failed\""));
         assert!(!json.contains("C:\\"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deferred_import_metrics_record_one_barrier_and_no_per_file_syncs() {
+        let root = temp_dir("deferred");
+        let path = root.join("metrics.json");
+        let metrics = WindowsMountMetrics::for_test(path.clone());
+        metrics.record_file_write(5, true);
+        metrics.record_file_write(7, true);
+        metrics.record_final_barrier();
+        metrics.finish_success();
+
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("metrics output"))
+                .expect("metrics json");
+        assert_eq!(value["bytes_transferred"], 12);
+        assert_eq!(value["chunk_count"], 2);
+        assert_eq!(value["sync_all_calls"], 0);
+        assert_eq!(value["global_sync_calls"], 0);
+        assert_eq!(value["final_barriers"], 1);
 
         let _ = fs::remove_dir_all(root);
     }

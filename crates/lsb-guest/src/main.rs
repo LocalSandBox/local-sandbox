@@ -41,6 +41,9 @@ mod control_transport {
                 ready
                     .capabilities
                     .push(lsb_proto::CAP_SESSION_MUX.to_string());
+                ready
+                    .capabilities
+                    .push(lsb_proto::CAP_DEFERRED_FILE_SYNC.to_string());
                 Some(ready)
             }
         }
@@ -114,7 +117,8 @@ mod control_transport {
                     lsb_proto::CAP_FILE_RANGE_IO,
                     lsb_proto::CAP_PORT_FORWARD,
                     lsb_proto::CAP_CIFS_MOUNT,
-                    lsb_proto::CAP_SESSION_MUX
+                    lsb_proto::CAP_SESSION_MUX,
+                    lsb_proto::CAP_DEFERRED_FILE_SYNC
                 ]
             );
         }
@@ -218,6 +222,14 @@ mod file_transfer {
     }
 
     pub(crate) fn write_file_range(req: &WriteFileRequest, data: &[u8]) -> std::io::Result<()> {
+        write_file_range_with_sync(req, data, |file| file.sync_all())
+    }
+
+    fn write_file_range_with_sync(
+        req: &WriteFileRequest,
+        data: &[u8],
+        sync_file: impl FnOnce(&std::fs::File) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
         use std::io::{Seek, SeekFrom, Write};
 
         if data.len() > lsb_proto::FILE_TRANSFER_CHUNK_SIZE {
@@ -243,7 +255,11 @@ mod file_transfer {
         let mut file = options.open(&req.path)?;
         file.seek(SeekFrom::Start(req.offset.unwrap_or(0)))?;
         file.write_all(data)?;
-        file.sync_all()
+        if req.defer_sync.unwrap_or(false) {
+            Ok(())
+        } else {
+            sync_file(&file)
+        }
     }
 
     #[cfg(test)]
@@ -265,6 +281,7 @@ mod file_transfer {
                 len: 5,
                 offset: Some(0),
                 truncate: Some(true),
+                defer_sync: None,
             };
             write_file_range(&first, b"hello").expect("first chunk should write");
 
@@ -273,11 +290,47 @@ mod file_transfer {
                 len: 6,
                 offset: Some(5),
                 truncate: Some(false),
+                defer_sync: None,
             };
             write_file_range(&second, b" world").expect("second chunk should write");
 
             let content = std::fs::read(&path).expect("written file should read");
             assert_eq!(content, b"hello world");
+
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn deferred_range_write_skips_file_sync_hook() {
+            use std::sync::atomic::AtomicUsize;
+
+            let root = temp_dir("deferred-write");
+            let path = root.join("out.txt");
+            let sync_calls = AtomicUsize::new(0);
+            let deferred = WriteFileRequest {
+                path: path.display().to_string(),
+                len: 5,
+                offset: Some(0),
+                truncate: Some(true),
+                defer_sync: Some(true),
+            };
+            write_file_range_with_sync(&deferred, b"hello", |_| {
+                sync_calls.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            })
+            .expect("deferred write");
+            assert_eq!(sync_calls.load(Ordering::Relaxed), 0);
+
+            let durable = WriteFileRequest {
+                defer_sync: None,
+                ..deferred
+            };
+            write_file_range_with_sync(&durable, b"hello", |_| {
+                sync_calls.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            })
+            .expect("durable write");
+            assert_eq!(sync_calls.load(Ordering::Relaxed), 1);
 
             let _ = std::fs::remove_dir_all(root);
         }
@@ -680,10 +733,13 @@ mod smb_mount {
 
 #[cfg(target_os = "linux")]
 mod guest {
+    use std::ffi::CString;
     use std::fs::{File, OpenOptions};
     use std::io::{self, Read, Write};
     use std::net::TcpListener;
     use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::process::CommandExt;
     use std::path::Path;
     use std::process::{Child, Command, ExitStatus, Stdio};
@@ -698,8 +754,8 @@ mod guest {
     use lsb_proto::{
         ChmodRequest, CopyRequest, DirEntry, ExecRequest, ForwardRequest, ForwardResponse,
         FsOkResponse, MkdirRequest, MountRequest, MountResponse, ReadDirRequest, ReadDirResponse,
-        ReadFileRequest, RemoveRequest, RenameRequest, StatRequest, StatResponse, WatchEvent,
-        WatchRequest, WriteFileRequest, WriteFileResponse,
+        ReadFileRequest, RemoveRequest, RenameRequest, StatRequest, StatResponse, SyncFsRequest,
+        WatchEvent, WatchRequest, WriteFileRequest, WriteFileResponse,
     };
     use lsb_proto::{VSOCK_PORT, VSOCK_PORT_FORWARD};
 
@@ -1479,6 +1535,17 @@ mod guest {
                     };
                     handle_write_file(&req, &mut reader, &mut writer);
                 }
+                frame::SYNC_FS_REQ => {
+                    let req: SyncFsRequest = match serde_json::from_slice(&payload) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            let msg = format!("invalid sync_fs request: {}", e);
+                            let _ = frame::write_frame(&mut writer, frame::ERROR, msg.as_bytes());
+                            continue;
+                        }
+                    };
+                    handle_sync_fs(&req, &mut writer);
+                }
                 frame::MKDIR_REQ => {
                     let req: MkdirRequest = match serde_json::from_slice(&payload) {
                         Ok(r) => r,
@@ -1673,6 +1740,18 @@ mod guest {
                 handle_write_file(&req, reader, writer);
                 true
             }
+            frame::SYNC_FS_REQ => {
+                let req: SyncFsRequest = match serde_json::from_slice(payload) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let msg = format!("invalid sync_fs request: {}", e);
+                        let _ = frame::write_frame(writer, frame::ERROR, msg.as_bytes());
+                        return true;
+                    }
+                };
+                handle_sync_fs(&req, writer);
+                true
+            }
             frame::MKDIR_REQ => {
                 let req: MkdirRequest = match serde_json::from_slice(payload) {
                     Ok(r) => r,
@@ -1780,6 +1859,17 @@ mod guest {
     }
 
     fn handle_write_file(req: &WriteFileRequest, reader: &mut impl Read, writer: &mut impl Write) {
+        handle_write_file_with_global_sync(req, reader, writer, || unsafe {
+            libc::sync();
+        });
+    }
+
+    fn handle_write_file_with_global_sync(
+        req: &WriteFileRequest,
+        reader: &mut impl Read,
+        writer: &mut impl Write,
+        global_sync: impl FnOnce(),
+    ) {
         let data = match frame::read_frame(reader) {
             Ok(Some((frame::WRITE_FILE_DATA, payload))) => payload,
             _ => {
@@ -1805,7 +1895,8 @@ mod guest {
             return;
         }
 
-        let result = if req.offset.is_some() || req.truncate.is_some() {
+        let is_range_write = req.offset.is_some() || req.truncate.is_some();
+        let result = if is_range_write {
             file_transfer::write_file_range(req, &data)
         } else {
             if let Some(parent) = std::path::Path::new(&req.path).parent() {
@@ -1816,8 +1907,8 @@ mod guest {
 
         match result {
             Ok(()) => {
-                unsafe {
-                    libc::sync();
+                if !(is_range_write && req.defer_sync.unwrap_or(false)) {
+                    global_sync();
                 }
                 let resp = WriteFileResponse {
                     ok: true,
@@ -1832,6 +1923,218 @@ mod guest {
                 };
                 let _ = frame::send_json(writer, frame::WRITE_FILE_RESP, &resp);
             }
+        }
+    }
+
+    fn handle_sync_fs(req: &SyncFsRequest, writer: &mut impl Write) {
+        match sync_filesystem(&req.path) {
+            Ok(()) => send_fs_ok(writer),
+            Err(error) => {
+                let message = format!("sync_fs {}: {}", req.path, error);
+                let _ = frame::write_frame(writer, frame::ERROR, message.as_bytes());
+            }
+        }
+    }
+
+    fn sync_filesystem(path: &str) -> io::Result<()> {
+        let directory = open_directory_no_symlinks(Path::new(path))?;
+        let result = unsafe { libc::syncfs(directory.as_raw_fd()) };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    fn open_directory_no_symlinks(path: &Path) -> io::Result<File> {
+        use std::path::Component;
+
+        if !path.is_absolute() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "syncfs path must be absolute",
+            ));
+        }
+
+        let flags = libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_RDONLY;
+        let mut directory = OpenOptions::new()
+            .read(true)
+            .custom_flags(flags)
+            .open("/")?;
+        for component in path.components() {
+            match component {
+                Component::RootDir => {}
+                Component::Normal(name) => {
+                    let name = CString::new(name.as_bytes()).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "syncfs path component contains NUL",
+                        )
+                    })?;
+                    let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
+                    if fd < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    directory = unsafe { File::from_raw_fd(fd) };
+                }
+                Component::CurDir | Component::ParentDir | Component::Prefix(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "syncfs path contains an unsafe component",
+                    ));
+                }
+            }
+        }
+        Ok(directory)
+    }
+
+    #[cfg(test)]
+    mod filesystem_tests {
+        use super::*;
+        use std::cell::Cell;
+        use std::io::Cursor;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        #[test]
+        fn deferred_range_write_skips_global_sync_only_for_ranged_requests() {
+            let root = temp_dir("write-sync");
+            std::fs::create_dir_all(&root).expect("fixture root");
+            let path = root.join("out.txt");
+            let sync_calls = Cell::new(0usize);
+
+            let deferred = WriteFileRequest {
+                path: path.display().to_string(),
+                len: 5,
+                offset: Some(0),
+                truncate: Some(true),
+                defer_sync: Some(true),
+            };
+            let mut deferred_data = Cursor::new(write_data_frame(b"hello"));
+            let mut deferred_response = Vec::new();
+            handle_write_file_with_global_sync(
+                &deferred,
+                &mut deferred_data,
+                &mut deferred_response,
+                || sync_calls.set(sync_calls.get() + 1),
+            );
+            assert_eq!(sync_calls.get(), 0);
+            assert_response_type(&deferred_response, frame::WRITE_FILE_RESP);
+
+            let durable = WriteFileRequest {
+                defer_sync: None,
+                ..deferred.clone()
+            };
+            let mut durable_data = Cursor::new(write_data_frame(b"hello"));
+            let mut durable_response = Vec::new();
+            handle_write_file_with_global_sync(
+                &durable,
+                &mut durable_data,
+                &mut durable_response,
+                || sync_calls.set(sync_calls.get() + 1),
+            );
+            assert_eq!(sync_calls.get(), 1);
+            assert_response_type(&durable_response, frame::WRITE_FILE_RESP);
+
+            let non_range = WriteFileRequest {
+                offset: None,
+                truncate: None,
+                defer_sync: Some(true),
+                ..deferred
+            };
+            let mut non_range_data = Cursor::new(write_data_frame(b"hello"));
+            let mut non_range_response = Vec::new();
+            handle_write_file_with_global_sync(
+                &non_range,
+                &mut non_range_data,
+                &mut non_range_response,
+                || sync_calls.set(sync_calls.get() + 1),
+            );
+            assert_eq!(sync_calls.get(), 2);
+            assert_response_type(&non_range_response, frame::WRITE_FILE_RESP);
+
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn syncfs_uses_secure_absolute_directory_walk() {
+            let root = temp_dir("syncfs");
+            let directory = root.join("safe/nested");
+            std::fs::create_dir_all(&directory).expect("syncfs fixture");
+
+            sync_filesystem(&directory.display().to_string()).expect("valid syncfs path");
+            assert_eq!(
+                sync_filesystem("relative/path")
+                    .expect_err("relative syncfs path should fail")
+                    .kind(),
+                io::ErrorKind::InvalidInput
+            );
+
+            let link = root.join("link");
+            std::os::unix::fs::symlink(&directory, &link).expect("symlink fixture");
+            assert!(open_directory_no_symlinks(&link).is_err());
+
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn simple_control_handler_returns_syncfs_success_and_error_frames() {
+            let root = temp_dir("syncfs-handler");
+            std::fs::create_dir_all(&root).expect("syncfs fixture");
+            let request = SyncFsRequest {
+                path: root.display().to_string(),
+            };
+            let payload = serde_json::to_vec(&request).expect("syncfs request json");
+            let mut reader = Cursor::new(Vec::<u8>::new());
+            let mut success = Vec::new();
+            assert!(handle_simple_control_frame(
+                frame::SYNC_FS_REQ,
+                &payload,
+                &mut reader,
+                &mut success
+            ));
+            assert_response_type(&success, frame::FS_OK_RESP);
+
+            let missing = SyncFsRequest {
+                path: root.join("missing").display().to_string(),
+            };
+            let payload = serde_json::to_vec(&missing).expect("missing syncfs request json");
+            let mut error = Vec::new();
+            assert!(handle_simple_control_frame(
+                frame::SYNC_FS_REQ,
+                &payload,
+                &mut reader,
+                &mut error
+            ));
+            assert_response_type(&error, frame::ERROR);
+
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        fn write_data_frame(data: &[u8]) -> Vec<u8> {
+            let mut frame_data = Vec::new();
+            frame::write_frame(&mut frame_data, frame::WRITE_FILE_DATA, data)
+                .expect("write data frame");
+            frame_data
+        }
+
+        fn assert_response_type(response: &[u8], expected: u8) {
+            let actual = frame::read_frame(&mut Cursor::new(response))
+                .expect("response frame read")
+                .expect("response frame")
+                .0;
+            assert_eq!(actual, expected);
+        }
+
+        fn temp_dir(label: &str) -> std::path::PathBuf {
+            let nonce = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "lsb-guest-filesystem-{label}-{}-{nonce}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            root
         }
     }
 

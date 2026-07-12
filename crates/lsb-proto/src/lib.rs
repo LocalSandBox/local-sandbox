@@ -14,6 +14,7 @@ pub const CAP_FILE_RANGE_IO: &str = "file_range_io";
 pub const CAP_PORT_FORWARD: &str = "port_forward";
 pub const CAP_CIFS_MOUNT: &str = "cifs_mount";
 pub const CAP_SESSION_MUX: &str = "session_mux";
+pub const CAP_DEFERRED_FILE_SYNC: &str = "deferred_file_sync";
 pub const FILE_TRANSFER_CHUNK_SIZE: usize = 512 * 1024;
 
 // --- Guest lifecycle protocol ---
@@ -265,7 +266,7 @@ pub struct ReadFileRequest {
     pub len: Option<u64>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WriteFileRequest {
     pub path: String,
     pub len: u64,
@@ -273,6 +274,8 @@ pub struct WriteFileRequest {
     pub offset: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncate: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defer_sync: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -289,6 +292,11 @@ pub struct FsOkResponse {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncFsRequest {
+    pub path: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -390,7 +398,7 @@ mod tests {
     use super::{
         decode_forward_close, decode_forward_payload, encode_forward_close, encode_forward_payload,
         ExecRequest, ForwardRequest, ForwardResponse, GuestReady, GuestTransport, MountRequest,
-        ReadFileRequest, WriteFileRequest, CAP_SESSION_MUX, PROTOCOL_VERSION,
+        ReadFileRequest, SyncFsRequest, WriteFileRequest, CAP_SESSION_MUX, PROTOCOL_VERSION,
     };
     use crate::frame;
 
@@ -630,6 +638,7 @@ mod tests {
             len: 5,
             offset: None,
             truncate: None,
+            defer_sync: None,
         };
 
         let read_json = serde_json::to_string(&read).expect("read request should serialize");
@@ -651,6 +660,7 @@ mod tests {
             len: 4096,
             offset: Some(1024),
             truncate: Some(false),
+            defer_sync: None,
         };
 
         let read_json = serde_json::to_string(&read).expect("read request should serialize");
@@ -660,5 +670,30 @@ mod tests {
         assert!(read_json.contains(r#""len":4096"#));
         assert!(write_json.contains(r#""offset":1024"#));
         assert!(write_json.contains(r#""truncate":false"#));
+    }
+
+    #[test]
+    fn deferred_write_and_sync_fs_requests_round_trip() {
+        let write = WriteFileRequest {
+            path: "/tmp/file".to_string(),
+            len: 4096,
+            offset: Some(0),
+            truncate: Some(true),
+            defer_sync: Some(true),
+        };
+        let sync = SyncFsRequest {
+            path: "/tmp/lsb/mounts".to_string(),
+        };
+
+        let write_json = serde_json::to_string(&write).expect("deferred write should serialize");
+        let decoded_write: WriteFileRequest =
+            serde_json::from_str(&write_json).expect("deferred write should deserialize");
+        let sync_json = serde_json::to_string(&sync).expect("sync request should serialize");
+        let decoded_sync: SyncFsRequest =
+            serde_json::from_str(&sync_json).expect("sync request should deserialize");
+
+        assert!(write_json.contains(r#""defer_sync":true"#));
+        assert_eq!(decoded_write.defer_sync, Some(true));
+        assert_eq!(decoded_sync, sync);
     }
 }

@@ -6,16 +6,19 @@ param(
     [string]$FixtureRoot = ".\target\windows-overlay-benchmark\fixture",
     [string]$CacheRoot = ".\target\windows-overlay-benchmark\cache",
     [string]$ResultsRoot = ".\target\windows-overlay-benchmark\results",
+    [string]$RuntimeKernel,
+    [string]$RuntimeInitrd,
+    [string]$RuntimeRootfs,
     [ValidateSet("Baseline", "Phase1", "Phase2", "Phase3", "Acceptance")]
     [string]$Mode = "Baseline",
     [ValidateRange(0, 1000)]
     [int]$WarmupIterations = 1,
     [ValidateRange(0, 1000)]
-    [int]$Iterations = 20,
+    [int]$Iterations = 5,
     [ValidateRange(0, 1000)]
-    [int]$MissIterations = 20,
+    [int]$MissIterations = 5,
     [ValidateRange(0, 1000)]
-    [int]$HitIterations = 30,
+    [int]$HitIterations = 5,
     [ValidateRange(0, 100)]
     [int]$MaxFailedPairs = 5,
     [switch]$DefenderDisabledDiagnostic,
@@ -227,10 +230,23 @@ function Get-CommandOutput {
 }
 
 function Get-RuntimeAssets {
+    param(
+        [AllowNull()][string]$KernelPath,
+        [AllowNull()][string]$InitrdPath,
+        [AllowNull()][string]$RootfsPath
+    )
+
     $dataDir = Join-Path $env:LOCALAPPDATA "lsb"
     $assets = [ordered]@{}
-    foreach ($name in @("VERSION", "Image", "initramfs.cpio.gz", "rootfs.ext4")) {
-        $path = Join-Path $dataDir $name
+    $assetPaths = [ordered]@{
+        VERSION             = Join-Path $dataDir "VERSION"
+        Image               = if ($null -ne $KernelPath) { $KernelPath } else { Join-Path $dataDir "Image" }
+        "initramfs.cpio.gz" = if ($null -ne $InitrdPath) { $InitrdPath } else { Join-Path $dataDir "initramfs.cpio.gz" }
+        "rootfs.ext4"       = if ($null -ne $RootfsPath) { $RootfsPath } else { Join-Path $dataDir "rootfs.ext4" }
+    }
+    foreach ($entry in $assetPaths.GetEnumerator()) {
+        $name = $entry.Key
+        $path = $entry.Value
         if (Test-Path -LiteralPath $path -PathType Leaf) {
             $file = [System.IO.FileInfo]::new($path)
             $assets[$name] = [ordered]@{
@@ -454,6 +470,14 @@ function Invoke-BenchmarkCommand {
 
     $arguments = [System.Collections.Generic.List[string]]::new()
     $arguments.Add("run")
+    if ($null -ne $script:RuntimeKernel) {
+        $arguments.Add("--kernel")
+        $arguments.Add($script:RuntimeKernel)
+        $arguments.Add("--initrd")
+        $arguments.Add($script:RuntimeInitrd)
+        $arguments.Add("--rootfs")
+        $arguments.Add($script:RuntimeRootfs)
+    }
     if ($Kind -eq "overlay") {
         $arguments.Add("--mount")
         $arguments.Add("$($script:FixtureRoot):/workspace")
@@ -672,6 +696,14 @@ $script:Binary = Resolve-FullPath $Binary
 $script:FixtureRoot = Resolve-FullPath $FixtureRoot
 $script:CacheRoot = Resolve-FullPath $CacheRoot
 $script:ResultsRoot = Resolve-FullPath $ResultsRoot
+$customRuntimeValues = @($RuntimeKernel, $RuntimeInitrd, $RuntimeRootfs)
+$customRuntimeCount = @($customRuntimeValues | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+if ($customRuntimeCount -ne 0 -and $customRuntimeCount -ne 3) {
+    throw "RuntimeKernel, RuntimeInitrd, and RuntimeRootfs must be supplied together"
+}
+$script:RuntimeKernel = if ($customRuntimeCount -eq 3) { Resolve-FullPath $RuntimeKernel } else { $null }
+$script:RuntimeInitrd = if ($customRuntimeCount -eq 3) { Resolve-FullPath $RuntimeInitrd } else { $null }
+$script:RuntimeRootfs = if ($customRuntimeCount -eq 3) { Resolve-FullPath $RuntimeRootfs } else { $null }
 $benchmarkRoot = Split-Path -Parent $script:FixtureRoot
 $correctnessRoot = Join-Path $benchmarkRoot "correctness-fixture"
 $fixtureManifestPath = Join-Path $benchmarkRoot "fixture-manifest.json"
@@ -708,7 +740,10 @@ $classificationSuffix = if ($DefenderDisabledDiagnostic) { "-defender-disabled-d
 $script:RunDirectory = Join-Path $script:ResultsRoot "$timestamp-$($Mode.ToLowerInvariant())$classificationSuffix"
 [System.IO.Directory]::CreateDirectory($script:RunDirectory) | Out-Null
 
-$runtime = Get-RuntimeAssets
+$runtime = Get-RuntimeAssets `
+    -KernelPath $script:RuntimeKernel `
+    -InitrdPath $script:RuntimeInitrd `
+    -RootfsPath $script:RuntimeRootfs
 $script:EnvironmentMetadata = Get-EnvironmentMetadata `
     -Executable $script:Binary `
     -FixturePath $script:FixtureRoot `

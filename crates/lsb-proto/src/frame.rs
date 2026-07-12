@@ -47,6 +47,7 @@ pub const REMOVE_REQ: u8 = 0x46;
 pub const RENAME_REQ: u8 = 0x48;
 pub const COPY_REQ: u8 = 0x4A;
 pub const CHMOD_REQ: u8 = 0x4C;
+pub const SYNC_FS_REQ: u8 = 0x4E;
 
 pub const MAX_FRAME_LEN: u32 = 1 << 20; // 1 MB
 pub const MAX_FRAME_PAYLOAD: usize = MAX_FRAME_LEN as usize - 1;

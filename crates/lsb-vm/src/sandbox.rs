@@ -44,7 +44,7 @@ use lsb_platform::windows_x86_64::fs::{
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use lsb_platform::windows_x86_64::fs::{
     plan_windows_mounts, replan_windows_mount_import, replan_windows_smb_mount, WindowsMountImport,
-    WindowsMountMode, WindowsMountSpec,
+    WindowsMountMode, WindowsMountSpec, WINDOWS_MOUNT_STAGING_ROOT,
 };
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use lsb_platform::PlatformControlSessionKind;
@@ -56,8 +56,8 @@ use lsb_platform::{
 use lsb_proto::{
     frame, ChmodRequest, CopyRequest, ExecRequest, FsOkResponse, MkdirRequest, MountRequest,
     MountResponse, PortMapping, ReadDirRequest, ReadDirResponse, ReadFileRequest, RemoveRequest,
-    RenameRequest, StatRequest, StatResponse, WatchRequest, WriteFileRequest, WriteFileResponse,
-    CAP_FILE_RANGE_IO, FILE_TRANSFER_CHUNK_SIZE,
+    RenameRequest, StatRequest, StatResponse, SyncFsRequest, WatchRequest, WriteFileRequest,
+    WriteFileResponse, CAP_FILE_RANGE_IO, FILE_TRANSFER_CHUNK_SIZE,
 };
 #[cfg(any(
     target_os = "macos",
@@ -65,7 +65,7 @@ use lsb_proto::{
 ))]
 use lsb_proto::{ForwardRequest, ForwardResponse};
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-use lsb_proto::{CAP_CIFS_MOUNT, CAP_SESSION_MUX};
+use lsb_proto::{CAP_CIFS_MOUNT, CAP_DEFERRED_FILE_SYNC, CAP_SESSION_MUX};
 #[cfg(target_os = "macos")]
 use lsb_proto::{VSOCK_PORT, VSOCK_PORT_FORWARD};
 
@@ -756,6 +756,7 @@ impl Sandbox {
             len: content.len() as u64,
             offset: None,
             truncate: None,
+            defer_sync: None,
         };
 
         self.send_write_file_request(&req, content)
@@ -768,6 +769,7 @@ impl Sandbox {
                 len: 0,
                 offset: Some(0),
                 truncate: Some(true),
+                defer_sync: None,
             };
             return self.send_write_file_request(&req, &[]);
         }
@@ -781,6 +783,7 @@ impl Sandbox {
                 len: chunk.len() as u64,
                 offset: Some(offset as u64),
                 truncate: Some(offset == 0),
+                defer_sync: None,
             };
             self.send_write_file_request(&req, chunk)?;
             offset = end;
@@ -843,7 +846,8 @@ impl Sandbox {
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         if self.mount_metrics.mount_init_active() {
-            self.mount_metrics.record_legacy_write(content.len() as u64);
+            self.mount_metrics
+                .record_file_write(content.len() as u64, req.defer_sync.unwrap_or(false));
         }
 
         Ok(())
@@ -1001,14 +1005,14 @@ impl Sandbox {
     fn copy_from_host_plan(&self, plan: &CopyInPlan) -> Result<()> {
         if self.supports_session_mux() {
             return self.with_guest_control_session("copy_from_host", |writer, reader| {
-                self.copy_from_host_plan_on_session(writer, reader, plan)
+                self.copy_from_host_plan_on_session(writer, reader, plan, false)
             });
         }
-        self.copy_from_host_plan_legacy(plan)
+        self.copy_from_host_plan_legacy(plan, false)
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    fn copy_from_host_plan_legacy(&self, plan: &CopyInPlan) -> Result<()> {
+    fn copy_from_host_plan_legacy(&self, plan: &CopyInPlan, defer_sync: bool) -> Result<()> {
         for entry in &plan.entries {
             match &entry.kind {
                 CopyInEntryKind::Directory => {
@@ -1017,7 +1021,13 @@ impl Sandbox {
                     })?;
                 }
                 CopyInEntryKind::File { len, identity } => self
-                    .copy_host_file_to_guest(&entry.host_path, *len, *identity, &entry.guest_path)
+                    .copy_host_file_to_guest(
+                        &entry.host_path,
+                        *len,
+                        *identity,
+                        &entry.guest_path,
+                        defer_sync,
+                    )
                     .with_context(|| format!("copy-in file to '{}'", entry.guest_path))?,
             }
         }
@@ -1031,6 +1041,7 @@ impl Sandbox {
         writer: &mut impl Write,
         reader: &mut impl Read,
         plan: &CopyInPlan,
+        defer_sync: bool,
     ) -> Result<()> {
         for entry in &plan.entries {
             match &entry.kind {
@@ -1053,6 +1064,7 @@ impl Sandbox {
                         *len,
                         *identity,
                         &entry.guest_path,
+                        defer_sync,
                     )
                     .with_context(|| format!("copy-in file to '{}'", entry.guest_path))?,
             }
@@ -1103,6 +1115,7 @@ impl Sandbox {
         expected_len: u64,
         expected_identity: CopyInFileIdentity,
         guest_path: &str,
+        defer_sync: bool,
     ) -> Result<()> {
         let mut file = open_copy_in_file_checked(host_path, expected_len, expected_identity)
             .with_context(|| format!("opening copy-in source '{}'", host_path.display()))?;
@@ -1116,11 +1129,11 @@ impl Sandbox {
                 .with_context(|| format!("reading copy-in source '{}'", host_path.display()))?;
             if len == 0 {
                 if first {
-                    self.write_guest_file_range(guest_path, 0, true, &[])?;
+                    self.write_guest_file_range(guest_path, 0, true, &[], defer_sync)?;
                 }
                 break;
             }
-            self.write_guest_file_range(guest_path, offset, first, &buffer[..len])?;
+            self.write_guest_file_range(guest_path, offset, first, &buffer[..len], defer_sync)?;
             offset += len as u64;
             first = false;
         }
@@ -1137,6 +1150,7 @@ impl Sandbox {
         expected_len: u64,
         expected_identity: CopyInFileIdentity,
         guest_path: &str,
+        defer_sync: bool,
     ) -> Result<()> {
         let mut file = open_copy_in_file_checked(host_path, expected_len, expected_identity)
             .with_context(|| format!("opening copy-in source '{}'", host_path.display()))?;
@@ -1157,6 +1171,7 @@ impl Sandbox {
                         0,
                         true,
                         &[],
+                        defer_sync,
                     )?;
                 }
                 break;
@@ -1168,6 +1183,7 @@ impl Sandbox {
                 offset,
                 first,
                 &buffer[..len],
+                defer_sync,
             )?;
             offset += len as u64;
             first = false;
@@ -1183,12 +1199,14 @@ impl Sandbox {
         offset: u64,
         truncate: bool,
         content: &[u8],
+        defer_sync: bool,
     ) -> Result<()> {
         let req = WriteFileRequest {
             path: guest_path.to_string(),
             len: content.len() as u64,
             offset: Some(offset),
             truncate: Some(truncate),
+            defer_sync: defer_sync.then_some(true),
         };
         self.send_write_file_request(&req, content)
     }
@@ -1202,12 +1220,14 @@ impl Sandbox {
         offset: u64,
         truncate: bool,
         content: &[u8],
+        defer_sync: bool,
     ) -> Result<()> {
         let req = WriteFileRequest {
             path: guest_path.to_string(),
             len: content.len() as u64,
             offset: Some(offset),
             truncate: Some(truncate),
+            defer_sync: defer_sync.then_some(true),
         };
         self.send_write_file_request_on_session(writer, reader, &req, content)
     }
@@ -1873,6 +1893,14 @@ impl Sandbox {
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn supports_deferred_file_sync(&self) -> bool {
+        self.vm
+            .guest_capabilities()
+            .iter()
+            .any(|capability| capability == CAP_DEFERRED_FILE_SYNC)
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn supports_cifs_mount(&self) -> bool {
         self.vm
             .guest_capabilities()
@@ -2264,6 +2292,7 @@ impl Sandbox {
     }
 
     fn initialize_windows_mounts_mux(&self, imports: &[WindowsMountImport]) -> Result<()> {
+        let defer_sync = self.supports_deferred_file_sync();
         self.mount_metrics
             .set_failure_context(FailedPhase::Transfer, ErrorCategory::TransportFailure);
         self.with_guest_control_session("mount init", |writer, reader| {
@@ -2272,19 +2301,28 @@ impl Sandbox {
             let transfer_started = Instant::now();
             let transfer_result: Result<()> = (|| {
                 for import in imports {
-                    self.copy_from_host_plan_on_session(writer, reader, &import.copy_plan)
-                        .with_context(|| {
-                            format!(
-                                "copying Windows mount '{}' into guest staging path '{}'",
-                                import.tag, import.guest_source
-                            )
-                        })?;
+                    self.copy_from_host_plan_on_session(
+                        writer,
+                        reader,
+                        &import.copy_plan,
+                        defer_sync,
+                    )
+                    .with_context(|| {
+                        format!(
+                            "copying Windows mount '{}' into guest staging path '{}'",
+                            import.tag, import.guest_source
+                        )
+                    })?;
                 }
                 Ok(())
             })();
             self.mount_metrics
                 .add_duration(DurationMetric::Transfer, transfer_started.elapsed());
             transfer_result?;
+
+            if defer_sync && !imports.is_empty() {
+                self.sync_windows_mount_import_on_session(writer, reader)?;
+            }
 
             self.mount_metrics
                 .set_failure_context(FailedPhase::OverlayMount, ErrorCategory::GuestRejected);
@@ -2297,6 +2335,7 @@ impl Sandbox {
     }
 
     fn initialize_windows_mounts_legacy(&self, imports: &[WindowsMountImport]) -> Result<()> {
+        let defer_sync = self.supports_deferred_file_sync();
         for import in imports {
             self.mount_metrics
                 .set_failure_context(FailedPhase::Transfer, ErrorCategory::SourceMutation);
@@ -2304,7 +2343,7 @@ impl Sandbox {
                 .mount_metrics
                 .duration_ms(DurationMetric::MuxSessionOpen);
             let transfer_started = Instant::now();
-            let copy_result = self.copy_from_host_plan_legacy(&import.copy_plan);
+            let copy_result = self.copy_from_host_plan_legacy(&import.copy_plan, defer_sync);
             let transfer_elapsed_ms = transfer_started.elapsed().as_secs_f64() * 1000.0;
             let mux_open_after = self
                 .mount_metrics
@@ -2321,6 +2360,14 @@ impl Sandbox {
             })?;
         }
 
+        if defer_sync && !imports.is_empty() {
+            self.mount_metrics
+                .set_failure_context(FailedPhase::Barrier, ErrorCategory::BarrierFailed);
+            self.with_guest_control_session("mount import sync", |writer, reader| {
+                self.sync_windows_mount_import_on_session(writer, reader)
+            })?;
+        }
+
         self.mount_metrics
             .set_failure_context(FailedPhase::OverlayMount, ErrorCategory::GuestRejected);
         self.with_guest_control_session("mount init", |writer, reader| {
@@ -2330,6 +2377,30 @@ impl Sandbox {
                 .add_duration(DurationMetric::OverlayMount, overlay_started.elapsed());
             result
         })
+    }
+
+    fn sync_windows_mount_import_on_session(
+        &self,
+        writer: &mut impl Write,
+        reader: &mut impl Read,
+    ) -> Result<()> {
+        self.mount_metrics
+            .set_failure_context(FailedPhase::Barrier, ErrorCategory::BarrierFailed);
+        let barrier_started = Instant::now();
+        let result = self.void_fs_op_on_session(
+            writer,
+            reader,
+            frame::SYNC_FS_REQ,
+            &SyncFsRequest {
+                path: WINDOWS_MOUNT_STAGING_ROOT.to_string(),
+            },
+        );
+        self.mount_metrics
+            .add_duration(DurationMetric::Barrier, barrier_started.elapsed());
+        if result.is_ok() {
+            self.mount_metrics.record_final_barrier();
+        }
+        result.context("syncing deferred Windows mount imports")
     }
 }
 
@@ -3150,6 +3221,15 @@ mod tests {
         }
         frame::send_json(
             &mut scripted_responses,
+            frame::FS_OK_RESP,
+            &FsOkResponse {
+                ok: true,
+                error: None,
+            },
+        )
+        .expect("syncfs response");
+        frame::send_json(
+            &mut scripted_responses,
             frame::MOUNT_RESP,
             &MountResponse {
                 source: "/tmp/lsb/mounts/mount0/source".to_string(),
@@ -3163,8 +3243,11 @@ mod tests {
         let mut reader = Cursor::new(scripted_responses);
         let mut writer = Vec::new();
         sandbox
-            .copy_from_host_plan_on_session(&mut writer, &mut reader, &plan)
+            .copy_from_host_plan_on_session(&mut writer, &mut reader, &plan, true)
             .expect("copy transcript");
+        sandbox
+            .sync_windows_mount_import_on_session(&mut writer, &mut reader)
+            .expect("syncfs transcript");
         sandbox
             .send_mount_requests(&mut writer, &mut reader)
             .expect("mount transcript");
@@ -3174,9 +3257,10 @@ mod tests {
         let mut directory_requests = 0usize;
         let mut write_requests = 0usize;
         let mut data_frames = 0usize;
+        let mut sync_requests = 0usize;
         let mut mount_requests = 0usize;
         while emitted.position() < emitted.get_ref().len() as u64 {
-            let (frame_type, _) = frame::read_frame(&mut emitted)
+            let (frame_type, payload) = frame::read_frame(&mut emitted)
                 .expect("read emitted request frame")
                 .expect("emitted request frame");
             match frame_type {
@@ -3186,11 +3270,21 @@ mod tests {
                 }
                 frame::WRITE_FILE_REQ => {
                     assert_eq!(mount_requests, 0);
+                    assert_eq!(sync_requests, 0);
+                    let request: WriteFileRequest =
+                        serde_json::from_slice(&payload).expect("write request json");
+                    assert_eq!(request.defer_sync, Some(true));
                     write_requests += 1;
                 }
                 frame::WRITE_FILE_DATA => {
                     assert_eq!(mount_requests, 0);
                     data_frames += 1;
+                }
+                frame::SYNC_FS_REQ => {
+                    assert_eq!(write_requests, 2_000);
+                    assert_eq!(data_frames, 2_000);
+                    assert_eq!(mount_requests, 0);
+                    sync_requests += 1;
                 }
                 frame::MOUNT_REQ => mount_requests += 1,
                 other => panic!("unexpected transcript frame 0x{other:02x}"),
@@ -3200,6 +3294,7 @@ mod tests {
         assert_eq!(directory_requests, 101);
         assert_eq!(write_requests, 2_000);
         assert_eq!(data_frames, 2_000);
+        assert_eq!(sync_requests, 1);
         assert_eq!(mount_requests, 1);
         assert!(sandbox.mounts.lock().expect("mount lock").is_empty());
 
