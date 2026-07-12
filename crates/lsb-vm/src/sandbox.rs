@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
     target_os = "macos",
     all(target_os = "windows", target_arch = "x86_64")
 ))]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use crossbeam_channel::Receiver;
@@ -68,6 +68,11 @@ use lsb_proto::{ForwardRequest, ForwardResponse};
 use lsb_proto::{CAP_CIFS_MOUNT, CAP_SESSION_MUX};
 #[cfg(target_os = "macos")]
 use lsb_proto::{VSOCK_PORT, VSOCK_PORT_FORWARD};
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use crate::mount_metrics::{
+    DurationMetric, ErrorCategory, FailedPhase, MountSourceSummary, WindowsMountMetrics,
+};
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Debug)]
@@ -226,32 +231,83 @@ impl VmConfigBuilder {
     }
 
     pub fn build(self) -> Result<Sandbox> {
-        let kernel_path = self.kernel.context("kernel path is required")?;
-        let rootfs_path = self.rootfs.context("rootfs path is required")?;
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        let mount_metrics = WindowsMountMetrics::from_env();
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        mount_metrics.set_failure_context(
+            FailedPhase::Configuration,
+            ErrorCategory::InvalidConfiguration,
+        );
+
+        let kernel_path = match self.kernel.context("kernel path is required") {
+            Ok(path) => path,
+            Err(error) => {
+                #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+                mount_metrics.finish_current_failure();
+                return Err(error);
+            }
+        };
+        let rootfs_path = match self.rootfs.context("rootfs path is required") {
+            Ok(path) => path,
+            Err(error) => {
+                #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+                mount_metrics.finish_current_failure();
+                return Err(error);
+            }
+        };
 
         let memory_bytes = self.memory_mb * 1024 * 1024;
-        let mount_plan = build_mount_plan(&self.mounts)?;
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        mount_metrics.set_failure_context(FailedPhase::InitialPlan, ErrorCategory::UnsafeSource);
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        let initial_plan_started = Instant::now();
+        let mount_plan_result = build_mount_plan(&self.mounts);
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        mount_metrics.add_duration(DurationMetric::InitialPlan, initial_plan_started.elapsed());
+        let mount_plan = match mount_plan_result {
+            Ok(plan) => plan,
+            Err(error) => {
+                #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+                mount_metrics.finish_current_failure();
+                return Err(error);
+            }
+        };
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        mount_metrics
+            .initialize_mounts(windows_mount_source_summaries(&mount_plan.windows_imports));
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         let windows_smb_instance_id = windows_smb_instance_id(&rootfs_path);
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         let windows_smb_cleanup_manifest_path =
             windows_smb_cleanup_manifest_path_from_rootfs(&rootfs_path)?;
 
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        mount_metrics.set_failure_context(FailedPhase::VmCreate, ErrorCategory::VmCreateFailed);
+        let vm_result = lsb_platform::create_vm(PlatformVmConfig {
+            data_dir: self.data_dir,
+            kernel_path,
+            rootfs_path,
+            initrd_path: self.initrd,
+            cpus: self.cpus,
+            memory_bytes,
+            console: self.console,
+            verbose: self.verbose,
+            network_fd: self.network_fd,
+            network_attachment: self.network_attachment,
+            nbd_uri: self.nbd_uri,
+            shared_dirs: mount_plan.shared_dirs,
+        });
+        let vm = match vm_result {
+            Ok(vm) => vm,
+            Err(error) => {
+                #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+                mount_metrics.finish_current_failure();
+                return Err(error);
+            }
+        };
+
         Ok(Sandbox {
-            vm: lsb_platform::create_vm(PlatformVmConfig {
-                data_dir: self.data_dir,
-                kernel_path,
-                rootfs_path,
-                initrd_path: self.initrd,
-                cpus: self.cpus,
-                memory_bytes,
-                console: self.console,
-                verbose: self.verbose,
-                network_fd: self.network_fd,
-                network_attachment: self.network_attachment,
-                nbd_uri: self.nbd_uri,
-                shared_dirs: mount_plan.shared_dirs,
-            })?,
+            vm,
             mounts: Mutex::new(mount_plan.mount_requests),
             #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
             windows_mounts: Mutex::new(mount_plan.windows_imports),
@@ -269,6 +325,8 @@ impl VmConfigBuilder {
             control_session: Mutex::new(()),
             #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
             port_forward_session: Arc::new(Mutex::new(())),
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            mount_metrics,
         })
     }
 }
@@ -294,6 +352,8 @@ pub struct Sandbox {
     control_session: Mutex<()>,
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     port_forward_session: Arc<Mutex<()>>,
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    mount_metrics: WindowsMountMetrics,
 }
 
 struct SandboxMountPlan {
@@ -303,6 +363,36 @@ struct SandboxMountPlan {
     windows_imports: Vec<WindowsMountImport>,
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     windows_smb_mounts: Vec<WindowsSmbMount>,
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn windows_mount_source_summaries(imports: &[WindowsMountImport]) -> Vec<MountSourceSummary> {
+    imports
+        .iter()
+        .map(|import| {
+            let mut file_count = 0u64;
+            let mut directory_count = 0u64;
+            let mut logical_bytes = 0u64;
+            for entry in &import.copy_plan.entries {
+                match entry.kind {
+                    CopyInEntryKind::Directory => {
+                        directory_count = directory_count.saturating_add(1);
+                    }
+                    CopyInEntryKind::File { len, .. } => {
+                        file_count = file_count.saturating_add(1);
+                        logical_bytes = logical_bytes.saturating_add(len);
+                    }
+                }
+            }
+            MountSourceSummary {
+                mount_id: import.tag.clone(),
+                file_count,
+                directory_count,
+                logical_bytes,
+                entries_visited: import.copy_plan.entries.len() as u64,
+            }
+        })
+        .collect()
 }
 
 fn build_mount_plan(mounts: &[MountConfig]) -> Result<SandboxMountPlan> {
@@ -412,21 +502,49 @@ impl Sandbox {
 
     pub fn start(&self) -> Result<()> {
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        self.prepare_windows_smb_mounts()
-            .context("Failed to prepare Windows SMB mounts")?;
+        self.mount_metrics.begin_start();
 
-        if let Err(error) = self.vm.start().context("Failed to start VM") {
-            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-            self.cleanup_windows_smb_mounts_best_effort();
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        if let Err(error) = self
+            .prepare_windows_smb_mounts()
+            .context("Failed to prepare Windows SMB mounts")
+        {
+            self.mount_metrics.finish_failure(
+                FailedPhase::Configuration,
+                ErrorCategory::InvalidConfiguration,
+            );
             return Err(error);
         }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        self.mount_metrics
+            .set_failure_context(FailedPhase::GuestReady, ErrorCategory::VmStartFailed);
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        let guest_ready_started = Instant::now();
+        if let Err(error) = self.vm.start().context("Failed to start VM") {
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            {
+                self.mount_metrics
+                    .add_duration(DurationMetric::GuestReady, guest_ready_started.elapsed());
+                self.cleanup_windows_smb_mounts_best_effort();
+                self.mount_metrics.finish_current_failure();
+            }
+            return Err(error);
+        }
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        self.mount_metrics
+            .add_duration(DurationMetric::GuestReady, guest_ready_started.elapsed());
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         if let Err(error) = self.initialize_windows_mounts() {
             let _ = self.vm.stop();
             self.cleanup_windows_smb_mounts_best_effort();
+            self.mount_metrics.finish_current_failure();
             return Err(error).context("Failed to initialize Windows mounts");
         }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        self.mount_metrics.complete_start();
 
         Ok(())
     }
@@ -437,14 +555,21 @@ impl Sandbox {
             self.sync_windows_smb_mounts_best_effort();
             let stop_result = self.vm.stop().context("Failed to stop VM");
             let cleanup_result = self.cleanup_windows_smb_mounts();
-            match (stop_result, cleanup_result) {
+            let result = match (stop_result, cleanup_result) {
                 (Ok(()), Ok(())) => Ok(()),
                 (Err(error), Ok(())) => Err(error),
                 (Ok(()), Err(error)) => Err(error).context("Failed to clean up Windows SMB mounts"),
                 (Err(stop_error), Err(cleanup_error)) => Err(stop_error).context(format!(
                     "Failed to stop VM; additionally failed to clean up Windows SMB mounts: {cleanup_error}"
                 )),
+            };
+            if result.is_ok() {
+                self.mount_metrics.finish_success();
+            } else {
+                self.mount_metrics
+                    .finish_failure(FailedPhase::VmStop, ErrorCategory::VmStopFailed);
             }
+            result
         }
 
         #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
@@ -464,8 +589,16 @@ impl Sandbox {
         let mut mounts = self.mounts.lock().unwrap();
         for req in mounts.iter() {
             frame::send_json(writer, frame::MOUNT_REQ, req).context("sending mount request")?;
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            if self.mount_metrics.mount_init_active() {
+                self.mount_metrics.record_filesystem_request();
+            }
             let (msg_type, payload) =
                 read_response_frame(reader, "mount init").context("reading mount response")?;
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            if self.mount_metrics.mount_init_active() {
+                self.mount_metrics.record_filesystem_response();
+            }
             if msg_type == frame::ERROR {
                 bail!("{}", String::from_utf8_lossy(&payload));
             }
@@ -669,9 +802,17 @@ impl Sandbox {
         self.with_guest_control_session("write_file", |writer, reader| {
             frame::send_json(writer, frame::WRITE_FILE_REQ, req)?;
             frame::write_frame(writer, frame::WRITE_FILE_DATA, content)?;
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            if self.mount_metrics.mount_init_active() {
+                self.mount_metrics.record_filesystem_request();
+            }
 
             let (msg_type, payload) =
                 read_response_frame(reader, "write_file").context("reading write_file response")?;
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            if self.mount_metrics.mount_init_active() {
+                self.mount_metrics.record_filesystem_response();
+            }
             if msg_type == frame::ERROR {
                 bail!("{}", String::from_utf8_lossy(&payload));
             }
@@ -689,6 +830,11 @@ impl Sandbox {
                 );
             }
 
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            if self.mount_metrics.mount_init_active() {
+                self.mount_metrics.record_legacy_write(content.len() as u64);
+            }
+
             Ok(())
         })
     }
@@ -697,10 +843,18 @@ impl Sandbox {
     fn void_fs_op(&self, req_frame: u8, req: &impl serde::Serialize) -> Result<()> {
         self.with_guest_control_session("filesystem operation", |writer, reader| {
             frame::send_json(writer, req_frame, req)?;
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            if self.mount_metrics.mount_init_active() {
+                self.mount_metrics.record_filesystem_request();
+            }
 
-            match read_response_frame(reader, "filesystem operation")
-                .context("reading fs op response")?
-            {
+            let response = read_response_frame(reader, "filesystem operation")
+                .context("reading fs op response")?;
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            if self.mount_metrics.mount_init_active() {
+                self.mount_metrics.record_filesystem_response();
+            }
+            match response {
                 (frame::FS_OK_RESP, payload) => {
                     let resp: FsOkResponse =
                         serde_json::from_slice(&payload).context("parsing fs ok response")?;
@@ -1628,7 +1782,19 @@ impl Sandbox {
             .lock()
             .map_err(|_| anyhow::anyhow!("Windows guest control session lock poisoned"))?;
 
-        let stream = self.connect_guest_control(operation)?;
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        let track_mux_file_session = self.mount_metrics.mount_init_active()
+            && self.supports_session_mux()
+            && windows_control_session_kind(operation) == PlatformControlSessionKind::File;
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        let connect_started = Instant::now();
+        let stream_result = self.connect_guest_control(operation);
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        if track_mux_file_session {
+            self.mount_metrics
+                .record_mux_file_session(connect_started.elapsed(), stream_result.is_ok());
+        }
+        let stream = stream_result?;
         let mut writer = stream
             .try_clone()
             .with_context(|| format!("cloning guest control stream for {operation}"))?;
@@ -1920,36 +2086,70 @@ impl Sandbox {
             return Ok(());
         }
 
+        let _metrics_guard = self.mount_metrics.begin_mount_init();
+
         if !imports.is_empty() {
+            self.mount_metrics
+                .set_failure_context(FailedPhase::Transfer, ErrorCategory::ProtocolFailure);
             self.ensure_file_range_io("Windows mount import")?;
         }
         if has_pending_smb_mounts {
             self.ensure_cifs_mount("Windows SMB direct mount")?;
         }
         for import in &imports {
-            let refreshed = replan_windows_mount_import(import).with_context(|| {
+            self.mount_metrics
+                .set_failure_context(FailedPhase::Replan, ErrorCategory::UnsafeSource);
+            let replan_started = Instant::now();
+            let refreshed_result = replan_windows_mount_import(import);
+            self.mount_metrics
+                .add_duration(DurationMetric::Replan, replan_started.elapsed());
+            let refreshed = refreshed_result.with_context(|| {
                 format!(
                     "revalidating Windows mount '{}' source before import",
                     import.tag
                 )
             })?;
-            self.copy_from_host_plan(&refreshed.copy_plan)
-                .with_context(|| {
-                    format!(
-                        "copying Windows mount '{}' into guest staging path '{}'",
-                        refreshed.tag, refreshed.guest_source
-                    )
-                })?;
+            self.mount_metrics
+                .record_tree_walk(refreshed.copy_plan.entries.len() as u64);
+
+            self.mount_metrics
+                .set_failure_context(FailedPhase::Transfer, ErrorCategory::SourceMutation);
+            let mux_open_before = self
+                .mount_metrics
+                .duration_ms(DurationMetric::MuxSessionOpen);
+            let transfer_started = Instant::now();
+            let copy_result = self.copy_from_host_plan(&refreshed.copy_plan);
+            let transfer_elapsed_ms = transfer_started.elapsed().as_secs_f64() * 1000.0;
+            let mux_open_after = self
+                .mount_metrics
+                .duration_ms(DurationMetric::MuxSessionOpen);
+            self.mount_metrics.add_duration_ms(
+                DurationMetric::Transfer,
+                (transfer_elapsed_ms - (mux_open_after - mux_open_before)).max(0.0),
+            );
+            copy_result.with_context(|| {
+                format!(
+                    "copying Windows mount '{}' into guest staging path '{}'",
+                    refreshed.tag, refreshed.guest_source
+                )
+            })?;
         }
 
+        self.mount_metrics
+            .set_failure_context(FailedPhase::OverlayMount, ErrorCategory::GuestRejected);
         let result = self.with_guest_control_session("mount init", |writer, reader| {
-            self.send_mount_requests(writer, reader)
+            let overlay_started = Instant::now();
+            let result = self.send_mount_requests(writer, reader);
+            self.mount_metrics
+                .add_duration(DurationMetric::OverlayMount, overlay_started.elapsed());
+            result
         });
         if result.is_ok() {
             self.windows_mounts
                 .lock()
                 .map_err(|_| anyhow::anyhow!("Windows mount import lock poisoned"))?
                 .clear();
+            self.mount_metrics.mark_fallback_mounts_used();
         }
         result
     }
@@ -2608,6 +2808,8 @@ mod tests {
             control_session: Mutex::new(()),
             #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
             port_forward_session: Arc::new(Mutex::new(())),
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            mount_metrics: WindowsMountMetrics::default(),
         }
     }
 

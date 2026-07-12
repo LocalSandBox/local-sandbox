@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod mount_metrics;
 mod sandbox;
 
 pub use lsb_platform::VmState;
