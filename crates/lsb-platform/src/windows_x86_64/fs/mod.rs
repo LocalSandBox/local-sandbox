@@ -1,4 +1,6 @@
 mod copy;
+#[cfg(windows)]
+mod mount_cache;
 mod mount_plan;
 #[cfg(windows)]
 mod mount_snapshot;
@@ -16,6 +18,12 @@ pub use copy::{
 pub use copy::{
     open_copy_in_directory_checked, open_copy_in_file_checked, open_copy_in_file_for_snapshot,
     CheckedCopyInDirectory, CheckedCopyInFile, CopyInFileIdentity,
+};
+#[cfg(windows)]
+pub use mount_cache::{
+    mount_cache_image_sizing, MountCacheImageFormat, MountCacheImageSizing, MountCacheManifest,
+    WindowsMountCache, WindowsMountCacheBuild, WindowsMountCacheHit, WindowsMountCacheLimits,
+    WindowsMountCacheSelection,
 };
 pub use mount_plan::{
     plan_windows_mounts, replan_windows_smb_mount, windows_mount_guest_source,
