@@ -66,9 +66,7 @@ const MACOS_ROOTFS_DOCKER_SCRIPT_PREFIX: &str = r#"set -e
 apt-get update -qq
 apt-get install -y -qq ca-certificates curl debootstrap e2fsprogs xz-utils > /dev/null 2>&1
 
-mkfs.ext4 -F -E lazy_itable_init=0 /rootfs.ext4
 mkdir -p /mnt/rootfs
-mount -o loop /rootfs.ext4 /mnt/rootfs
 
 echo "==> Running debootstrap (this may take a few minutes)..."
 debootstrap --arch="${DEBOOTSTRAP_ARCH}" --variant=minbase "${DEBIAN_RELEASE}" /mnt/rootfs http://deb.debian.org/debian
@@ -222,19 +220,7 @@ echo "nameserver 8.8.8.8" > /mnt/rootfs/etc/resolv.conf
 
 cd /
 sync
-rootfs_unmounted=0
-for attempt in 1 2 3 4 5; do
-    if umount /mnt/rootfs; then
-        rootfs_unmounted=1
-        break
-    fi
-    echo "umount /mnt/rootfs failed on attempt ${attempt}; retrying..." >&2
-    sleep 1
-done
-if [ "${rootfs_unmounted}" != "1" ]; then
-    echo "regular umount /mnt/rootfs failed; using lazy unmount fallback" >&2
-    umount -l /mnt/rootfs
-fi
+mkfs.ext4 -F -E lazy_itable_init=0 -d /mnt/rootfs /rootfs.ext4
 echo "==> Debian rootfs populated successfully"
 "#;
 const LINUX_ROOTFS_SCRIPT_PREFIX: &str = r#"set -e
@@ -395,13 +381,7 @@ pub fn prepare_rootfs_for_platform(platform: &PlatformSpec) -> Result<()> {
             "==> Creating ext4 rootfs image ({}MB) with Debian {}...",
             DEFAULT_ROOTFS_SIZE_MB, DEFAULT_DEBIAN_RELEASE
         );
-        run_command(
-            Command::new("truncate")
-                .arg("-s")
-                .arg(format!("{DEFAULT_ROOTFS_SIZE_MB}M"))
-                .arg(&rootfs_img),
-            "create rootfs image file",
-        )?;
+        create_sized_rootfs_image(&rootfs_img, DEFAULT_ROOTFS_SIZE_MB)?;
 
         if should_use_docker_rootfs() {
             println!();
@@ -493,9 +473,38 @@ pub fn prepare_rootfs_for_platform(platform: &PlatformSpec) -> Result<()> {
     Ok(())
 }
 
+fn create_sized_rootfs_image(path: &std::path::Path, size_mb: u64) -> Result<()> {
+    let size = size_mb
+        .checked_mul(1024 * 1024)
+        .context("rootfs image size overflow")?;
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .with_context(|| format!("failed to create rootfs image {}", path.display()))?;
+    if let Err(error) = file.set_len(size) {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(error)
+            .with_context(|| format!("failed to size rootfs image {}", path.display()));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{linux_rootfs_script, macos_rootfs_docker_script};
+    use super::{create_sized_rootfs_image, linux_rootfs_script, macos_rootfs_docker_script};
+
+    #[test]
+    fn rootfs_image_creation_does_not_require_unix_truncate() {
+        let path =
+            std::env::temp_dir().join(format!("lsb-xtask-rootfs-image-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        create_sized_rootfs_image(&path, 2).expect("rootfs image should be sized");
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 2 * 1024 * 1024);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn macos_rootfs_script_installs_and_checks_runtime_filesystem_tools() {
@@ -508,11 +517,12 @@ mod tests {
     }
 
     #[test]
-    fn macos_rootfs_script_retries_busy_unmounts() {
+    fn container_rootfs_script_populates_without_loop_mounts() {
         let script = macos_rootfs_docker_script();
 
-        assert!(script.contains("for attempt in 1 2 3 4 5"));
-        assert!(script.contains("umount -l /mnt/rootfs"));
+        assert!(script.contains("mkfs.ext4 -F -E lazy_itable_init=0 -d /mnt/rootfs"));
+        assert!(!script.contains("mount -o loop"));
+        assert!(!script.contains("umount /mnt/rootfs"));
     }
 
     #[test]

@@ -132,8 +132,12 @@ pub(crate) enum Commands {
         action: DoctorCommands,
     },
 
-    /// Remove leftover instance data from crashed VMs
-    Prune,
+    /// Remove inactive runtime data
+    Prune {
+        /// Remove inactive mount-cache objects instead of orphaned VM instances
+        #[arg(long)]
+        mount_cache: bool,
+    },
 }
 
 #[derive(clap::Subcommand)]

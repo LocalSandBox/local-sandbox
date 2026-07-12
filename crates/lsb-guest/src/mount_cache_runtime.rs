@@ -729,7 +729,7 @@ fn discover_cache_device(
         .map_err(|_| MountCacheRejectReason::DeviceNotFound)?;
     for entry in entries.flatten() {
         let sys_path = entry.path();
-        let Ok(serial) = std::fs::read_to_string(sys_path.join("device/serial")) else {
+        let Ok(serial) = std::fs::read_to_string(sys_path.join("serial")) else {
             continue;
         };
         if serial.trim() != expected_serial {

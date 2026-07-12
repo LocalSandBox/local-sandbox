@@ -77,7 +77,8 @@ use lsb_proto::{VSOCK_PORT, VSOCK_PORT_FORWARD};
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use crate::mount_metrics::{
-    DurationMetric, ErrorCategory, FailedPhase, MountSourceSummary, WindowsMountMetrics,
+    CacheDecision, DurationMetric, ErrorCategory, FailedPhase, FallbackReason, MountSourceSummary,
+    TerminalOutcome, WindowsMountMetrics,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -545,6 +546,58 @@ impl WindowsMountCacheRun {
         }
     }
 
+    fn record_metrics(&self, metrics: &WindowsMountMetrics) {
+        for image in &self.images {
+            metrics.record_cache_image_size(image.lease.virtual_size());
+            if image.lease.is_hit() {
+                metrics.record_raw_image_bytes_hashed(image.lease.virtual_size());
+            }
+        }
+        for (snapshot_index, route) in self.routes.iter().enumerate() {
+            match route {
+                WindowsMountCacheRoute::Selected { image_index, .. } => {
+                    let is_hit = self.images[*image_index].lease.is_hit();
+                    metrics.record_cache_route(
+                        snapshot_index,
+                        if is_hit {
+                            CacheDecision::HitSelected
+                        } else {
+                            CacheDecision::BuildSelected
+                        },
+                        None,
+                        if is_hit {
+                            TerminalOutcome::HitUsed
+                        } else {
+                            TerminalOutcome::BuildNotPublished
+                        },
+                    );
+                }
+                WindowsMountCacheRoute::Fallback { reason } => {
+                    let selected_image = self
+                        .images
+                        .iter()
+                        .find(|image| image.binding_indices.contains(&snapshot_index));
+                    let decision = selected_image.map_or_else(
+                        || cache_bypass_decision(reason),
+                        |image| {
+                            if image.lease.is_hit() {
+                                CacheDecision::HitSelected
+                            } else {
+                                CacheDecision::BuildSelected
+                            }
+                        },
+                    );
+                    metrics.record_cache_route(
+                        snapshot_index,
+                        decision,
+                        Some(cache_fallback_reason(reason)),
+                        TerminalOutcome::FallbackUsed,
+                    );
+                }
+            }
+        }
+    }
+
     fn needs_payload_transfer(&self) -> bool {
         self.has_fallback_routes()
             || self.images.iter().any(|image| {
@@ -612,8 +665,9 @@ impl WindowsMountCacheRun {
         }
     }
 
-    fn finalize_after_stop(mut self) {
+    fn finalize_after_stop(mut self, metrics: &WindowsMountMetrics) {
         for image in &mut self.images {
+            let image_size = image.lease.virtual_size();
             match &mut image.lease {
                 WindowsMountCacheLease::Hit(hit) => {
                     drop(hit.take());
@@ -624,12 +678,27 @@ impl WindowsMountCacheRun {
                     };
                     match &image.state {
                         WindowsMountCacheImageState::PublishEligible { raw_device_digest } => {
-                            match build.publish(raw_device_digest) {
-                                Ok(path) => eprintln!(
-                                    "lsb: published mount cache object {} at {}",
-                                    image.image_id,
-                                    path.display()
-                                ),
+                            metrics.record_raw_image_bytes_hashed(image_size);
+                            let publish_started = Instant::now();
+                            let publish_result = build.publish(raw_device_digest);
+                            metrics.add_duration(
+                                DurationMetric::CachePublish,
+                                publish_started.elapsed(),
+                            );
+                            match publish_result {
+                                Ok(path) => {
+                                    for binding in &image.binding_indices {
+                                        metrics.set_cache_terminal_outcome(
+                                            *binding,
+                                            TerminalOutcome::BuildPublished,
+                                        );
+                                    }
+                                    eprintln!(
+                                        "lsb: published mount cache object {} at {}",
+                                        image.image_id,
+                                        path.display()
+                                    );
+                                }
                                 Err(error) => eprintln!(
                                     "lsb: discarded mount cache object {} after verification: {error:#}",
                                     image.image_id
@@ -648,6 +717,38 @@ impl WindowsMountCacheRun {
                 }
             }
         }
+    }
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn cache_bypass_decision(reason: &str) -> CacheDecision {
+    if reason.contains("another process") {
+        CacheDecision::BusyBypass
+    } else if reason.contains("invalid") || reason.contains("corrupt") {
+        CacheDecision::InvalidCorruptBypass
+    } else {
+        CacheDecision::UnsupportedBypass
+    }
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn cache_fallback_reason(reason: &str) -> FallbackReason {
+    if reason.contains("another process") {
+        FallbackReason::Busy
+    } else if reason.contains("does not advertise") || reason.contains("requires the persistent") {
+        FallbackReason::UnsupportedGuest
+    } else if reason.contains("VM start") {
+        FallbackReason::BootRetry
+    } else if reason.contains("guest cache") {
+        FallbackReason::GuestRejected
+    } else if reason.contains("corrupt") {
+        FallbackReason::CorruptObject
+    } else if reason.contains("invalid") {
+        FallbackReason::InvalidObject
+    } else if reason.contains("image") || reason.contains("disk configuration") {
+        FallbackReason::ImageCreateFailed
+    } else {
+        FallbackReason::CacheDisabled
     }
 }
 
@@ -805,12 +906,23 @@ impl Sandbox {
         }
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        let cache_lookup_started = Instant::now();
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         let mut windows_mount_cache_run = self.plan_windows_mount_cache(&windows_mount_snapshots);
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        self.mount_metrics
+            .add_duration(DurationMetric::CacheLookup, cache_lookup_started.elapsed());
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         if windows_mount_cache_run.has_disks() {
+            let disk_config_started = Instant::now();
             let disks = windows_mount_cache_run.data_disks();
-            if let Err(error) = self.vm.configure_data_disks(disks) {
+            let disk_config_result = self.vm.configure_data_disks(disks);
+            self.mount_metrics.add_duration(
+                DurationMetric::CacheDiskConfig,
+                disk_config_started.elapsed(),
+            );
+            if let Err(error) = disk_config_result {
                 eprintln!(
                     "lsb: mount cache disk configuration failed; using copy fallback: {error:#}"
                 );
@@ -928,7 +1040,7 @@ impl Sandbox {
                     .map_err(|_| anyhow::anyhow!("Windows mount cache run lock poisoned"))?
                     .take();
                 if let Some(cache_run) = cache_run {
-                    cache_run.finalize_after_stop();
+                    cache_run.finalize_after_stop(&self.mount_metrics);
                 }
             }
             let cleanup_result = self.cleanup_windows_smb_mounts();
@@ -2663,6 +2775,11 @@ impl Sandbox {
                 );
             }
         };
+        if let Err(error) = cache.maintain() {
+            eprintln!(
+                "lsb: mount cache maintenance failed; continuing without eviction: {error:#}"
+            );
+        }
         let mut images = Vec::<WindowsMountCacheRunImage>::new();
         let mut routes = Vec::with_capacity(snapshots.len());
         let mut digests = HashMap::<String, Option<usize>>::new();
@@ -2782,6 +2899,7 @@ impl Sandbox {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("Windows mount import lock poisoned"))?
                 .clear();
+            cache_run.record_metrics(&self.mount_metrics);
             if cache_run.has_fallback_routes() {
                 self.mount_metrics.mark_fallback_mounts_used();
                 cache_run.report_fallbacks();
@@ -2876,8 +2994,17 @@ impl Sandbox {
                     inode_count,
                 }
             };
+            let prepare_started = Instant::now();
             let prepare_response =
                 self.send_mount_cache_request_on_session(writer, reader, &prepare)?;
+            self.mount_metrics.add_duration(
+                if is_hit {
+                    DurationMetric::CacheValidate
+                } else {
+                    DurationMetric::CacheFormat
+                },
+                prepare_started.elapsed(),
+            );
             match prepare_response {
                 MountCacheResponse::Rejected { reason, .. } => {
                     eprintln!(
@@ -2893,6 +3020,16 @@ impl Sandbox {
                     if is_hit && computed_key.as_deref() != Some(image_id.as_str()) {
                         bail!(
                             "guest cache hit validation returned a different source key for {image_id}"
+                        );
+                    }
+                    if is_hit {
+                        let snapshot_index = cache_run.images[image_index]
+                            .binding_indices
+                            .first()
+                            .copied()
+                            .ok_or_else(|| anyhow::anyhow!("cache hit has no mount bindings"))?;
+                        self.mount_metrics.record_guest_validation_bytes_hashed(
+                            snapshots[snapshot_index].logical_bytes,
                         );
                     }
                 }
@@ -2928,7 +3065,12 @@ impl Sandbox {
                     image_id: image_id.clone(),
                     expected_key: image_id.clone(),
                 };
-                match self.send_mount_cache_request_on_session(writer, reader, &seal)? {
+                let seal_started = Instant::now();
+                let seal_response =
+                    self.send_mount_cache_request_on_session(writer, reader, &seal)?;
+                self.mount_metrics
+                    .add_duration(DurationMetric::CacheValidate, seal_started.elapsed());
+                match seal_response {
                     MountCacheResponse::Rejected { reason, .. } => {
                         eprintln!(
                             "lsb: guest rejected mount cache image {image_id} during seal ({reason:?}); using copy fallback"
@@ -2955,6 +3097,12 @@ impl Sandbox {
                         cache_run.images[image_index].state = WindowsMountCacheImageState::Sealed {
                             raw_device_digest: digest.clone(),
                         };
+                        self.mount_metrics.record_guest_validation_bytes_hashed(
+                            snapshot.logical_bytes.saturating_mul(2),
+                        );
+                        self.mount_metrics
+                            .record_raw_image_bytes_hashed(expected_size);
+                        self.mount_metrics.record_final_barrier();
                     }
                 }
             }
@@ -2977,9 +3125,12 @@ impl Sandbox {
                     binding_id,
                     target: snapshot.descriptor.guest_target.clone(),
                 };
-                if let MountCacheResponse::Rejected { reason, .. } =
-                    self.send_mount_cache_request_on_session(writer, reader, &request)?
-                {
+                let overlay_started = Instant::now();
+                let response =
+                    self.send_mount_cache_request_on_session(writer, reader, &request)?;
+                self.mount_metrics
+                    .add_duration(DurationMetric::OverlayMount, overlay_started.elapsed());
+                if let MountCacheResponse::Rejected { reason, .. } = response {
                     rejected = Some(reason);
                     break;
                 }

@@ -447,6 +447,55 @@ impl WindowsMountMetrics {
         });
     }
 
+    pub(crate) fn record_cache_route(
+        &self,
+        mount_index: usize,
+        decision: CacheDecision,
+        fallback_reason: Option<FallbackReason>,
+        terminal_outcome: TerminalOutcome,
+    ) {
+        self.with_state(|state| {
+            state.record.cache_schema_version = Some(1);
+            state.record.cache_key_version = Some(lsb_proto::MOUNT_CACHE_KEY_ABI_VERSION.into());
+            if let Some(mount) = state.record.mounts.get_mut(mount_index) {
+                mount.cache_decision = decision;
+                mount.fallback_reason = fallback_reason;
+                mount.terminal_outcome = Some(terminal_outcome);
+            }
+        });
+    }
+
+    pub(crate) fn record_cache_image_size(&self, bytes: u64) {
+        self.with_state(|state| {
+            state.record.image_logical_size_bytes =
+                state.record.image_logical_size_bytes.saturating_add(bytes)
+        });
+    }
+
+    pub(crate) fn record_guest_validation_bytes_hashed(&self, bytes: u64) {
+        self.with_state(|state| {
+            state.record.guest_validation_bytes_hashed = state
+                .record
+                .guest_validation_bytes_hashed
+                .saturating_add(bytes)
+        });
+    }
+
+    pub(crate) fn record_raw_image_bytes_hashed(&self, bytes: u64) {
+        self.with_state(|state| {
+            state.record.raw_image_bytes_hashed =
+                state.record.raw_image_bytes_hashed.saturating_add(bytes)
+        });
+    }
+
+    pub(crate) fn set_cache_terminal_outcome(&self, mount_index: usize, outcome: TerminalOutcome) {
+        self.with_state(|state| {
+            if let Some(mount) = state.record.mounts.get_mut(mount_index) {
+                mount.terminal_outcome = Some(outcome);
+            }
+        });
+    }
+
     pub(crate) fn begin_mount_init(&self) -> MountInitMetricsGuard {
         self.with_state(|state| state.mount_init_active = true);
         MountInitMetricsGuard {
@@ -504,7 +553,9 @@ impl WindowsMountMetrics {
         self.with_state(|state| {
             state.record.lowerdir_tmpfs_bytes = state.record.logical_source_bytes;
             for mount in &mut state.record.mounts {
-                mount.terminal_outcome = Some(TerminalOutcome::FallbackUsed);
+                if mount.fallback_reason.is_some() {
+                    mount.terminal_outcome = Some(TerminalOutcome::FallbackUsed);
+                }
             }
         });
     }
@@ -738,6 +789,45 @@ mod tests {
         assert_eq!(value["sync_all_calls"], 0);
         assert_eq!(value["global_sync_calls"], 0);
         assert_eq!(value["final_barriers"], 1);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_metrics_record_hit_without_payload_or_fallback() {
+        let root = temp_dir("cache-hit");
+        let path = root.join("metrics.json");
+        let metrics = WindowsMountMetrics::for_test(path.clone());
+        metrics.initialize_mounts(vec![MountSourceSummary {
+            mount_id: "mount0".to_string(),
+            file_count: 2,
+            directory_count: 1,
+            logical_bytes: 11,
+            entries_visited: 3,
+        }]);
+        metrics.record_cache_route(
+            0,
+            CacheDecision::HitSelected,
+            None,
+            TerminalOutcome::HitUsed,
+        );
+        metrics.record_cache_image_size(128 * 1024 * 1024);
+        metrics.record_guest_validation_bytes_hashed(11);
+        metrics.record_raw_image_bytes_hashed(128 * 1024 * 1024);
+        metrics.finish_success();
+
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("metrics output"))
+                .expect("metrics json");
+        assert_eq!(value["cache_schema_version"], 1);
+        assert_eq!(value["cache_key_version"], 1);
+        assert_eq!(value["image_logical_size_bytes"], 128 * 1024 * 1024u64);
+        assert_eq!(value["guest_validation_bytes_hashed"], 11);
+        assert_eq!(value["raw_image_bytes_hashed"], 128 * 1024 * 1024u64);
+        assert_eq!(value["bytes_transferred"], 0);
+        assert_eq!(value["mounts"][0]["cache_decision"], "hit_selected");
+        assert_eq!(value["mounts"][0]["terminal_outcome"], "hit_used");
+        assert!(value["mounts"][0]["fallback_reason"].is_null());
 
         let _ = fs::remove_dir_all(root);
     }

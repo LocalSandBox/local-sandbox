@@ -5,7 +5,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::MetadataExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -36,9 +36,11 @@ const DEFAULT_NONSPARSE_MAX: u64 = 512 * 1024 * 1024;
 const DEFAULT_TOTAL_LOGICAL_LIMIT: u64 = 4 * 1024 * 1024 * 1024;
 const DEFAULT_OBJECT_LIMIT: usize = 64;
 const DEFAULT_MAX_AGE_SECONDS: u64 = 30 * 24 * 60 * 60;
+const STAGING_MAX_AGE_SECONDS: u64 = 60 * 60;
 const MANIFEST_LIMIT: u64 = 64 * 1024;
 const HASH_BUFFER_SIZE: usize = 1024 * 1024;
 const FSCTL_SET_SPARSE_CODE: u32 = 0x0009_00c4;
+pub const WINDOWS_MOUNT_CACHE_DIR_ENV: &str = "LSB_WINDOWS_MOUNT_CACHE_DIR";
 
 #[derive(Debug, Clone)]
 pub struct WindowsMountCache {
@@ -131,6 +133,21 @@ pub struct MountCacheImageSizing {
     pub inode_count: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MountCacheMaintenanceReport {
+    pub removed_objects: u64,
+    pub removed_staging_directories: u64,
+    pub skipped_locked: u64,
+    pub objects_after: u64,
+    pub logical_bytes_after: u64,
+}
+
+struct EvictionCandidate {
+    image_id: String,
+    virtual_size: u64,
+    last_access: SystemTime,
+}
+
 struct DigestLock {
     file: File,
 }
@@ -147,7 +164,13 @@ struct ValidatedHit {
 
 impl WindowsMountCache {
     pub fn new(data_dir: impl AsRef<Path>) -> Result<Self> {
-        Self::with_limits(data_dir, WindowsMountCacheLimits::default())
+        let override_dir = std::env::var_os(WINDOWS_MOUNT_CACHE_DIR_ENV)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        Self::with_limits(
+            override_dir.as_deref().unwrap_or_else(|| data_dir.as_ref()),
+            WindowsMountCacheLimits::default(),
+        )
     }
 
     pub fn with_limits(
@@ -160,6 +183,70 @@ impl WindowsMountCache {
 
     pub fn root(&self) -> &Path {
         &self.layout.root
+    }
+
+    pub fn maintain(&self) -> Result<MountCacheMaintenanceReport> {
+        let mut report = MountCacheMaintenanceReport::default();
+        self.sweep_staging(false, &mut report)?;
+        let mut candidates = self.collect_eviction_candidates(&mut report)?;
+        candidates.sort_by_key(|candidate| candidate.last_access);
+        let now = SystemTime::now();
+        let mut total = candidates.iter().fold(0u64, |total, candidate| {
+            total.saturating_add(candidate.virtual_size)
+        });
+        let mut count = candidates.len();
+        for candidate in candidates {
+            let expired = now
+                .duration_since(candidate.last_access)
+                .map(|age| age.as_secs() > self.limits.max_age_seconds)
+                .unwrap_or(false);
+            if !expired
+                && count <= self.limits.max_objects
+                && total <= self.limits.max_total_logical_size
+            {
+                continue;
+            }
+            if self.try_remove_object(&candidate.image_id)? {
+                report.removed_objects = report.removed_objects.saturating_add(1);
+                count = count.saturating_sub(1);
+                total = total.saturating_sub(candidate.virtual_size);
+            } else {
+                report.skipped_locked = report.skipped_locked.saturating_add(1);
+            }
+        }
+        report.objects_after = count as u64;
+        report.logical_bytes_after = total;
+        Ok(report)
+    }
+
+    pub fn prune_all(&self) -> Result<MountCacheMaintenanceReport> {
+        let mut report = MountCacheMaintenanceReport::default();
+        self.sweep_staging(true, &mut report)?;
+        for entry in fs::read_dir(&self.layout.objects).with_context(|| {
+            format!(
+                "failed to enumerate mount cache objects {}",
+                self.layout.objects.display()
+            )
+        })? {
+            let entry = entry?;
+            let Some(image_id) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            if validate_digest(&image_id).is_err() {
+                continue;
+            }
+            if self.try_remove_object(&image_id)? {
+                report.removed_objects = report.removed_objects.saturating_add(1);
+            } else {
+                report.skipped_locked = report.skipped_locked.saturating_add(1);
+            }
+        }
+        let remaining = self.collect_eviction_candidates(&mut report)?;
+        report.objects_after = remaining.len() as u64;
+        report.logical_bytes_after = remaining.iter().fold(0u64, |total, candidate| {
+            total.saturating_add(candidate.virtual_size)
+        });
+        Ok(report)
     }
 
     pub fn select(&self, snapshot: &WindowsMountSnapshot) -> Result<WindowsMountCacheSelection> {
@@ -313,6 +400,122 @@ impl WindowsMountCache {
             }
         }
         bail!("failed to allocate a unique cache staging directory")
+    }
+
+    fn sweep_staging(
+        &self,
+        remove_all: bool,
+        report: &mut MountCacheMaintenanceReport,
+    ) -> Result<()> {
+        let now = SystemTime::now();
+        for entry in fs::read_dir(&self.layout.staging).with_context(|| {
+            format!(
+                "failed to enumerate mount cache staging {}",
+                self.layout.staging.display()
+            )
+        })? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let Some(image_id) = name.get(..64) else {
+                continue;
+            };
+            if validate_digest(image_id).is_err() {
+                continue;
+            }
+            let metadata = fs::symlink_metadata(entry.path())?;
+            let stale = remove_all
+                || metadata
+                    .modified()
+                    .ok()
+                    .and_then(|modified| now.duration_since(modified).ok())
+                    .is_some_and(|age| age.as_secs() > STAGING_MAX_AGE_SECONDS);
+            if !stale {
+                continue;
+            }
+            let lock_path = self.layout.locks.join(format!("{image_id}.lock"));
+            let Some(_lock) = DigestLock::try_acquire(&lock_path, true)? else {
+                report.skipped_locked = report.skipped_locked.saturating_add(1);
+                continue;
+            };
+            remove_tree_secure(&entry.path()).with_context(|| {
+                format!(
+                    "failed to remove stale mount cache staging {}",
+                    entry.path().display()
+                )
+            })?;
+            report.removed_staging_directories =
+                report.removed_staging_directories.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    fn collect_eviction_candidates(
+        &self,
+        report: &mut MountCacheMaintenanceReport,
+    ) -> Result<Vec<EvictionCandidate>> {
+        let mut candidates = Vec::new();
+        for entry in fs::read_dir(&self.layout.objects).with_context(|| {
+            format!(
+                "failed to enumerate mount cache objects {}",
+                self.layout.objects.display()
+            )
+        })? {
+            let entry = entry?;
+            let Some(image_id) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            if validate_digest(&image_id).is_err() {
+                continue;
+            }
+            let manifest_path = entry.path().join(MANIFEST_NAME);
+            let manifest = read_manifest(&manifest_path).and_then(|manifest| {
+                validate_manifest(&manifest, &image_id, self.limits.max_image_size)?;
+                Ok(manifest)
+            });
+            let manifest = match manifest {
+                Ok(manifest) => manifest,
+                Err(_) => {
+                    if self.try_remove_object(&image_id)? {
+                        report.removed_objects = report.removed_objects.saturating_add(1);
+                    } else {
+                        report.skipped_locked = report.skipped_locked.saturating_add(1);
+                    }
+                    continue;
+                }
+            };
+            let access_path = self.layout.access.join(&image_id);
+            let last_access = fs::symlink_metadata(&access_path)
+                .ok()
+                .filter(|metadata| metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0)
+                .and_then(|metadata| metadata.modified().ok())
+                .unwrap_or_else(|| UNIX_EPOCH + Duration::from_secs(manifest.created_unix_seconds));
+            candidates.push(EvictionCandidate {
+                image_id,
+                virtual_size: manifest.virtual_size,
+                last_access,
+            });
+        }
+        Ok(candidates)
+    }
+
+    fn try_remove_object(&self, image_id: &str) -> Result<bool> {
+        validate_digest(image_id)?;
+        let lock_path = self.layout.locks.join(format!("{image_id}.lock"));
+        let Some(_lock) = DigestLock::try_acquire(&lock_path, true)? else {
+            return Ok(false);
+        };
+        let object_dir = self.layout.objects.join(image_id);
+        if object_dir.exists() {
+            remove_object_secure(&object_dir)?;
+        }
+        let access_path = self.layout.access.join(image_id);
+        if access_path.exists() {
+            remove_file_secure(&access_path)?;
+        }
+        Ok(true)
     }
 }
 
@@ -876,6 +1079,30 @@ fn remove_tree_secure(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn remove_object_secure(path: &Path) -> Result<()> {
+    ensure_directory_no_reparse(path)?;
+    let manifest = path.join(MANIFEST_NAME);
+    if manifest.exists() {
+        remove_file_secure(&manifest)?;
+    }
+    remove_tree_secure(path)
+}
+
+fn remove_file_secure(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect cache file {}", path.display()))?;
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || metadata.is_dir() {
+        bail!(
+            "refusing to remove non-regular cache file {}",
+            path.display()
+        );
+    }
+    if metadata.file_attributes() & FILE_ATTRIBUTE_READONLY != 0 {
+        set_read_only(path, false)?;
+    }
+    fs::remove_file(path).with_context(|| format!("failed to remove cache file {}", path.display()))
+}
+
 fn wide_path(path: &Path) -> Vec<u16> {
     OsStr::new(path)
         .encode_wide()
@@ -990,9 +1217,63 @@ mod tests {
         let _ = remove_tree_secure(&cache.layout.root);
     }
 
+    #[test]
+    fn explicit_prune_skips_shared_hit_lock_then_removes_readonly_object() {
+        let root = temp_dir("prune-lock");
+        let cache = WindowsMountCache::new(&root).unwrap();
+        let snapshot = synthetic_snapshot(1, 1, 4);
+        publish_zero_object(&cache, &snapshot);
+        let WindowsMountCacheSelection::Hit(hit) = cache.select(&snapshot).unwrap() else {
+            panic!("published object should be a hit");
+        };
+
+        let active_report = cache.prune_all().unwrap();
+        assert_eq!(active_report.removed_objects, 0);
+        assert_eq!(active_report.skipped_locked, 1);
+        assert_eq!(active_report.objects_after, 1);
+        drop(hit);
+
+        let pruned = cache.prune_all().unwrap();
+        assert_eq!(pruned.removed_objects, 1);
+        assert_eq!(pruned.objects_after, 0);
+        assert!(!cache.layout.objects.join(snapshot.key.to_hex()).exists());
+        let _ = remove_tree_secure(&cache.layout.root);
+    }
+
+    #[test]
+    fn maintenance_enforces_object_count_quota_oldest_first() {
+        let root = temp_dir("eviction");
+        let limits = WindowsMountCacheLimits {
+            max_objects: 1,
+            max_total_logical_size: DEFAULT_TOTAL_LOGICAL_LIMIT,
+            ..WindowsMountCacheLimits::default()
+        };
+        let cache = WindowsMountCache::with_limits(&root, limits).unwrap();
+        let first = synthetic_snapshot(1, 1, 4);
+        let mut second = synthetic_snapshot(1, 1, 4);
+        second.key = MountSnapshotKey::from_bytes([8; 32]);
+        publish_zero_object(&cache, &first);
+        publish_zero_object(&cache, &second);
+
+        let report = cache.maintain().unwrap();
+        assert_eq!(report.removed_objects, 1);
+        assert_eq!(report.objects_after, 1);
+        assert_eq!(report.logical_bytes_after, MIN_IMAGE_SIZE);
+        cache.prune_all().unwrap();
+        let _ = remove_tree_secure(&cache.layout.root);
+    }
+
     fn hash_path(path: &Path, size: u64) -> String {
         let file = File::open(path).unwrap();
         hash_exact(&file, size).unwrap()
+    }
+
+    fn publish_zero_object(cache: &WindowsMountCache, snapshot: &WindowsMountSnapshot) {
+        let WindowsMountCacheSelection::Build(build) = cache.select(snapshot).unwrap() else {
+            panic!("new object should select a build");
+        };
+        let digest = hash_path(&build.image_path, build.virtual_size);
+        build.publish(&digest).unwrap();
     }
 
     fn synthetic_snapshot(

@@ -21,9 +21,10 @@ pub use copy::{
 };
 #[cfg(windows)]
 pub use mount_cache::{
-    mount_cache_image_sizing, MountCacheImageFormat, MountCacheImageSizing, MountCacheManifest,
-    WindowsMountCache, WindowsMountCacheBuild, WindowsMountCacheHit, WindowsMountCacheLimits,
-    WindowsMountCacheSelection,
+    mount_cache_image_sizing, MountCacheImageFormat, MountCacheImageSizing,
+    MountCacheMaintenanceReport, MountCacheManifest, WindowsMountCache, WindowsMountCacheBuild,
+    WindowsMountCacheHit, WindowsMountCacheLimits, WindowsMountCacheSelection,
+    WINDOWS_MOUNT_CACHE_DIR_ENV,
 };
 pub use mount_plan::{
     plan_windows_mounts, replan_windows_smb_mount, windows_mount_guest_source,

@@ -72,8 +72,29 @@ fn main() -> Result<()> {
             let data_dir = default_data_dir();
             assets::upgrade(&data_dir)?;
         }
-        Commands::Prune => {
+        Commands::Prune { mount_cache } => {
             let data_dir = default_data_dir();
+            if mount_cache {
+                #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+                {
+                    let cache =
+                        lsb_platform::windows_x86_64::fs::WindowsMountCache::new(&data_dir)?;
+                    let report = cache.prune_all()?;
+                    eprintln!(
+                        "lsb: removed {} mount-cache object(s) and {} staging directorie(s); skipped {} active key(s)",
+                        report.removed_objects,
+                        report.removed_staging_directories,
+                        report.skipped_locked
+                    );
+                    return Ok(());
+                }
+                #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+                {
+                    anyhow::bail!(
+                        "persistent mount-cache pruning is only available on Windows x86_64"
+                    );
+                }
+            }
             let instances_dir = format!("{}/instances", data_dir);
             let entries = match std::fs::read_dir(&instances_dir) {
                 Ok(entries) => entries,
