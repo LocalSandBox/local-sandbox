@@ -7,7 +7,7 @@ use lsb_platform::PlatformSpec;
 
 use crate::args::resolve_platform;
 use crate::context::{
-    copy_file, ensure_docker_available, env_value, human_size, is_native_linux_arm64, make_jobs,
+    container_engine, copy_file, env_value, human_size, is_native_linux_arm64, make_jobs,
     resolved_data_dir, run_command, workspace_root,
 };
 
@@ -121,13 +121,14 @@ pub fn build_kernel_for_platform(platform: &PlatformSpec) -> Result<()> {
             &data_dir.join("Image"),
         )?;
     } else {
-        ensure_docker_available("Docker is required to build the kernel on this host.")?;
+        let engine =
+            container_engine("Docker or Podman is required to build the kernel on this host.")?;
         println!(
-            "    Building in Docker ({} container)",
-            platform.docker_platform
+            "    Building in {} ({} container)",
+            engine, platform.docker_platform
         );
         run_command(
-            Command::new("docker")
+            Command::new(&engine)
                 .arg("run")
                 .arg("--rm")
                 .arg("--platform")
@@ -151,7 +152,7 @@ pub fn build_kernel_for_platform(platform: &PlatformSpec) -> Result<()> {
                 .arg("/bin/sh")
                 .arg("-c")
                 .arg(KERNEL_BUILD_DOCKER_SCRIPT),
-            "build kernel in Docker",
+            "build kernel in a container",
         )?;
     }
 

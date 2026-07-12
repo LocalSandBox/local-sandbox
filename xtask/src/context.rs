@@ -79,12 +79,23 @@ pub fn is_native_linux_arm64() -> bool {
     env::consts::OS == "linux" && env::consts::ARCH == "aarch64"
 }
 
-pub fn ensure_docker_available(message: &str) -> Result<()> {
-    if command_exists("docker") {
-        Ok(())
-    } else {
-        bail!("{message}");
+pub fn container_engine(message: &str) -> Result<String> {
+    if let Some(engine) = env_value("LSB_CONTAINER_ENGINE") {
+        if command_exists(&engine) {
+            return Ok(engine);
+        }
+        bail!("LSB_CONTAINER_ENGINE points to unavailable command '{engine}'. {message}");
     }
+    for engine in ["docker", "podman"] {
+        if command_exists(engine) {
+            return Ok(engine.to_string());
+        }
+    }
+    bail!("{message}");
+}
+
+pub fn container_engine_available() -> bool {
+    container_engine("a Docker-compatible container engine is required").is_ok()
 }
 
 pub fn ensure_linux_rootfs_prerequisites() -> Result<()> {
@@ -128,8 +139,24 @@ pub fn create_mount_dir() -> Result<PathBuf> {
 }
 
 pub fn command_exists(command: &str) -> bool {
-    env::var_os("PATH")
-        .is_some_and(|paths| env::split_paths(&paths).any(|path| path.join(command).is_file()))
+    let extensions = env::var("PATHEXT")
+        .ok()
+        .map(|value| {
+            value
+                .split(';')
+                .filter(|extension| !extension.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    env::var_os("PATH").is_some_and(|paths| {
+        env::split_paths(&paths).any(|path| {
+            path.join(command).is_file()
+                || extensions
+                    .iter()
+                    .any(|extension| path.join(format!("{command}{extension}")).is_file())
+        })
+    })
 }
 
 #[cfg(test)]

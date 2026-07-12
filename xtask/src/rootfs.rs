@@ -6,8 +6,9 @@ use lsb_platform::PlatformSpec;
 
 use crate::args::resolve_platform;
 use crate::context::{
-    command_exists, create_mount_dir, ensure_docker_available, ensure_linux_rootfs_prerequisites,
-    env_value, is_macos, resolved_data_dir, run_command, workspace_root,
+    container_engine, container_engine_available, create_mount_dir,
+    ensure_linux_rootfs_prerequisites, env_value, is_macos, resolved_data_dir, run_command,
+    workspace_root,
 };
 use crate::guest::build_guest_for_platform;
 use crate::kernel::build_kernel_for_platform;
@@ -348,10 +349,8 @@ pub fn prepare_rootfs_for_platform(platform: &PlatformSpec) -> Result<()> {
     println!("    Debian {} (kernel + rootfs)", DEFAULT_DEBIAN_RELEASE);
     println!();
 
-    if is_macos() && !command_exists("docker") {
-        bail!(
-            "Docker is required on macOS to create ext4 images.\n       Install Docker Desktop or use: brew install --cask docker"
-        );
+    if is_macos() && !container_engine_available() {
+        bail!("Docker or Podman is required on macOS to create ext4 images.");
     }
 
     fs::create_dir_all(&data_dir)
@@ -364,10 +363,10 @@ pub fn prepare_rootfs_for_platform(platform: &PlatformSpec) -> Result<()> {
     }
 
     if !initramfs_path.is_file() {
-        ensure_docker_available("Docker is required to build the initramfs.")?;
+        let engine = container_engine("Docker or Podman is required to build the initramfs.")?;
         println!("==> Building minimal initramfs...");
         run_command(
-            Command::new("docker")
+            Command::new(&engine)
                 .arg("run")
                 .arg("--rm")
                 .arg("--platform")
@@ -380,7 +379,7 @@ pub fn prepare_rootfs_for_platform(platform: &PlatformSpec) -> Result<()> {
                 .arg("/bin/sh")
                 .arg("-c")
                 .arg(INITRAMFS_DOCKER_SCRIPT),
-            "build initramfs in Docker",
+            "build initramfs in a container",
         )?;
         println!("    Initramfs saved to {}", initramfs_path.display());
     } else {
@@ -404,11 +403,11 @@ pub fn prepare_rootfs_for_platform(platform: &PlatformSpec) -> Result<()> {
 
         if should_use_docker_rootfs() {
             println!();
-            println!("==> Using Docker for ext4 formatting and Debian bootstrap.");
+            println!("==> Using a container for ext4 formatting and Debian bootstrap.");
             println!();
-            ensure_docker_available("Docker is required to prepare the rootfs.")?;
+            let engine = container_engine("Docker or Podman is required to prepare the rootfs.")?;
             run_command(
-                Command::new("docker")
+                Command::new(&engine)
                     .arg("run")
                     .arg("--rm")
                     .arg("--privileged")
@@ -444,7 +443,7 @@ pub fn prepare_rootfs_for_platform(platform: &PlatformSpec) -> Result<()> {
                     .arg("/bin/sh")
                     .arg("-c")
                     .arg(macos_rootfs_docker_script()),
-                "prepare rootfs in Docker",
+                "prepare rootfs in a container",
             )?;
         } else {
             ensure_linux_rootfs_prerequisites()?;

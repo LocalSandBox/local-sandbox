@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use lsb_platform::PlatformSpec;
 
 use crate::args::resolve_platform;
-use crate::context::{ensure_docker_available, env_value, is_macos, run_command, workspace_root};
+use crate::context::{container_engine, env_value, run_command, workspace_root};
 
 struct DockerGuestBuilder {
     image: &'static str,
@@ -30,15 +30,15 @@ pub fn build_guest_for_platform(platform: &PlatformSpec) -> Result<()> {
     println!("==> Building lsb-guest for {guest_target}");
 
     if let Some(builder) = docker_guest_builder(platform, &guest_target) {
-        ensure_docker_available(
-            "Docker is required to cross-build the guest binary on this host.",
+        let engine = container_engine(
+            "Docker or Podman is required to cross-build the guest binary on this host.",
         )?;
         println!(
-            "    Building in Docker ({} via {})",
-            platform.docker_platform, builder.image
+            "    Building in {} ({} via {})",
+            engine, platform.docker_platform, builder.image
         );
         run_command(
-            Command::new("docker")
+            Command::new(&engine)
                 .arg("run")
                 .arg("--rm")
                 .arg("--platform")
@@ -60,7 +60,7 @@ pub fn build_guest_for_platform(platform: &PlatformSpec) -> Result<()> {
                 .arg("--target")
                 .arg(&guest_target)
                 .arg("--release"),
-            "build lsb-guest in Docker",
+            "build lsb-guest in a container",
         )?;
     } else {
         run_command(
@@ -91,7 +91,7 @@ fn docker_guest_builder(
     _platform: &PlatformSpec,
     guest_target: &str,
 ) -> Option<DockerGuestBuilder> {
-    if is_macos() {
+    if !cfg!(target_os = "linux") {
         return match guest_target {
             "x86_64-unknown-linux-musl" => Some(DockerGuestBuilder {
                 image: "messense/rust-musl-cross:x86_64-musl",
