@@ -33,7 +33,7 @@ pub struct CopyPathError {
 }
 
 impl CopyPathError {
-    fn new(
+    pub(crate) fn new(
         operation: CopyPathOperation,
         path: impl Into<String>,
         reason: impl Into<String>,
@@ -120,6 +120,18 @@ pub struct CopyInFileIdentity {
     volume_serial_number: u32,
     file_index_high: u32,
     file_index_low: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyInSourceRootKind {
+    File,
+    Directory,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyInSourceRoot {
+    pub path: PathBuf,
+    pub kind: CopyInSourceRootKind,
 }
 
 #[derive(Debug, Default)]
@@ -267,6 +279,32 @@ fn validate_copy_in_source(source: &Path) -> Result<(), CopyPathError> {
         ));
     }
     Ok(())
+}
+
+pub fn validate_copy_in_source_root(source: &Path) -> Result<CopyInSourceRoot, CopyPathError> {
+    validate_copy_in_source(source)?;
+    let metadata = reject_reparse_point(source, CopyPathOperation::CopyInSource)?;
+    let kind = if metadata.is_file() {
+        CopyInSourceRootKind::File
+    } else if metadata.is_dir() {
+        CopyInSourceRootKind::Directory
+    } else {
+        return Err(CopyPathError::new(
+            CopyPathOperation::CopyInSource,
+            source.display().to_string(),
+            "source is not a regular file or directory",
+        ));
+    };
+    let path = source.canonicalize().map_err(|error| {
+        CopyPathError::new(
+            CopyPathOperation::CopyInSource,
+            source.display().to_string(),
+            format!("failed to canonicalize source: {error}"),
+        )
+    })?;
+    validate_existing_prefixes(&path, CopyPathOperation::CopyInSource)?;
+    reject_reparse_point(&path, CopyPathOperation::CopyInSource)?;
+    Ok(CopyInSourceRoot { path, kind })
 }
 
 pub fn validate_windows_host_path_lexical(
@@ -606,6 +644,173 @@ pub fn open_copy_in_file_checked(
     Ok(unsafe { fs::File::from_raw_handle(handle as RawHandle) })
 }
 
+pub(super) fn inspect_copy_in_path_kind(
+    path: &Path,
+) -> Result<CopyInSourceRootKind, CopyPathError> {
+    let metadata = reject_reparse_point(path, CopyPathOperation::CopyInSource)?;
+    if metadata.is_file() {
+        Ok(CopyInSourceRootKind::File)
+    } else if metadata.is_dir() {
+        Ok(CopyInSourceRootKind::Directory)
+    } else {
+        Err(CopyPathError::new(
+            CopyPathOperation::CopyInSource,
+            path.display().to_string(),
+            "only regular files and directories can be copied in",
+        ))
+    }
+}
+
+pub(super) fn validate_copy_in_component(
+    component: &str,
+    host_parent: &Path,
+    guest_parent: &str,
+) -> Result<(), CopyPathError> {
+    validate_windows_component(
+        component,
+        CopyPathOperation::CopyInSource,
+        &path_to_string(host_parent),
+    )?;
+    validate_guest_path_component(
+        component,
+        CopyPathOperation::CopyInGuestDestination,
+        guest_parent,
+    )
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StableCopyInFileMetadata {
+    attributes: u32,
+    creation_time_high: u32,
+    creation_time_low: u32,
+    last_write_time_high: u32,
+    last_write_time_low: u32,
+    volume_serial_number: u32,
+    file_size_high: u32,
+    file_size_low: u32,
+    link_count: u32,
+    file_index_high: u32,
+    file_index_low: u32,
+}
+
+#[cfg(windows)]
+pub struct CheckedCopyInFile {
+    file: fs::File,
+    initial: StableCopyInFileMetadata,
+    len: u64,
+    identity: CopyInFileIdentity,
+}
+
+#[cfg(windows)]
+impl CheckedCopyInFile {
+    pub fn file_mut(&mut self) -> &mut fs::File {
+        &mut self.file
+    }
+
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+
+    pub fn identity(&self) -> CopyInFileIdentity {
+        self.identity
+    }
+
+    pub fn validate_unchanged(&self, path: &Path) -> Result<(), CopyPathError> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        };
+
+        let mut info = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
+        let ok = unsafe { GetFileInformationByHandle(self.file.as_raw_handle() as _, &mut info) };
+        if ok == 0 {
+            return Err(CopyPathError::new(
+                CopyPathOperation::CopyInSource,
+                path.display().to_string(),
+                format!(
+                    "failed to re-inspect Windows copy-in file handle: {}",
+                    std::io::Error::last_os_error()
+                ),
+            ));
+        }
+        validate_copy_in_file_info(path, &info, Some(self.len), Some(self.identity))?;
+        if stable_copy_in_file_metadata(&info) != self.initial {
+            return Err(CopyPathError::new(
+                CopyPathOperation::CopyInSource,
+                path.display().to_string(),
+                "copy-in source metadata changed while its content was being read",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+pub fn open_copy_in_file_for_snapshot(
+    path: &Path,
+    expected_len: Option<u64>,
+    expected_identity: Option<CopyInFileIdentity>,
+) -> Result<CheckedCopyInFile, CopyPathError> {
+    validate_windows_host_path_lexical(path, CopyPathOperation::CopyInSource)?;
+    let (handle, info) = open_windows_file_handle(
+        path,
+        windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ,
+        windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL
+            | windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT
+            | windows_sys::Win32::Storage::FileSystem::FILE_FLAG_SEQUENTIAL_SCAN,
+        CopyPathOperation::CopyInSource,
+    )?;
+    if let Err(error) = validate_copy_in_file_info(path, &info, expected_len, expected_identity) {
+        let _ = unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+        return Err(error);
+    }
+    use std::os::windows::io::{FromRawHandle, RawHandle};
+    Ok(CheckedCopyInFile {
+        file: unsafe { fs::File::from_raw_handle(handle as RawHandle) },
+        initial: stable_copy_in_file_metadata(&info),
+        len: windows_file_len(&info),
+        identity: copy_in_file_identity_from_info(&info),
+    })
+}
+
+#[cfg(windows)]
+pub struct CheckedCopyInDirectory {
+    _file: fs::File,
+}
+
+#[cfg(windows)]
+pub fn open_copy_in_directory_checked(
+    path: &Path,
+) -> Result<CheckedCopyInDirectory, CopyPathError> {
+    use std::os::windows::io::{FromRawHandle, RawHandle};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+    };
+
+    validate_windows_host_path_lexical(path, CopyPathOperation::CopyInSource)?;
+    let (handle, info) = open_windows_file_handle(
+        path,
+        FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+        CopyPathOperation::CopyInSource,
+    )?;
+    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
+    {
+        let _ = unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+        return Err(CopyPathError::new(
+            CopyPathOperation::CopyInSource,
+            path.display().to_string(),
+            "copy-in directory is not a regular non-reparse directory",
+        ));
+    }
+    Ok(CheckedCopyInDirectory {
+        _file: unsafe { fs::File::from_raw_handle(handle as RawHandle) },
+    })
+}
+
 #[cfg(windows)]
 fn inspect_copy_in_file_for_plan(
     path: &Path,
@@ -651,10 +856,11 @@ fn open_windows_file_handle(
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, OPEN_EXISTING,
+        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_SHARE_READ,
+        OPEN_EXISTING,
     };
 
+    validate_existing_prefixes(path, operation)?;
     let path_text = path.display().to_string();
     let mut wide_path = path.as_os_str().encode_wide().collect::<Vec<_>>();
     wide_path.push(0);
@@ -663,7 +869,7 @@ fn open_windows_file_handle(
         CreateFileW(
             wide_path.as_ptr(),
             desired_access,
-            FILE_SHARE_READ | FILE_SHARE_DELETE,
+            FILE_SHARE_READ,
             std::ptr::null(),
             OPEN_EXISTING,
             flags_and_attributes,
@@ -693,7 +899,31 @@ fn open_windows_file_handle(
         ));
     }
 
+    if let Err(error) = validate_existing_prefixes(path, operation) {
+        let _ = unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+        return Err(error);
+    }
+
     Ok((handle, info))
+}
+
+#[cfg(windows)]
+fn stable_copy_in_file_metadata(
+    info: &windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION,
+) -> StableCopyInFileMetadata {
+    StableCopyInFileMetadata {
+        attributes: info.dwFileAttributes,
+        creation_time_high: info.ftCreationTime.dwHighDateTime,
+        creation_time_low: info.ftCreationTime.dwLowDateTime,
+        last_write_time_high: info.ftLastWriteTime.dwHighDateTime,
+        last_write_time_low: info.ftLastWriteTime.dwLowDateTime,
+        volume_serial_number: info.dwVolumeSerialNumber,
+        file_size_high: info.nFileSizeHigh,
+        file_size_low: info.nFileSizeLow,
+        link_count: info.nNumberOfLinks,
+        file_index_high: info.nFileIndexHigh,
+        file_index_low: info.nFileIndexLow,
+    }
 }
 
 #[cfg(windows)]
@@ -1150,6 +1380,39 @@ mod tests {
 
         assert_eq!(err.operation(), CopyPathOperation::CopyInSource);
         assert!(err.reason().contains("hardlinked files"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn checked_snapshot_file_blocks_write_delete_and_rename_handles() {
+        let root = temp_dir("checked-share-mode");
+        fs::create_dir_all(&root).expect("fixture root");
+
+        for operation in ["write", "delete", "rename"] {
+            let path = root.join(format!("{operation}.txt"));
+            fs::write(&path, b"content").expect("fixture file");
+            let checked =
+                open_copy_in_file_for_snapshot(&path, Some(7), None).expect("checked read handle");
+            match operation {
+                "write" => assert!(
+                    fs::OpenOptions::new().write(true).open(&path).is_err(),
+                    "write handle should be blocked while checked read is active"
+                ),
+                "delete" => assert!(
+                    fs::remove_file(&path).is_err(),
+                    "delete should be blocked while checked read is active"
+                ),
+                "rename" => assert!(
+                    fs::rename(&path, root.join("renamed.txt")).is_err(),
+                    "rename should be blocked while checked read is active"
+                ),
+                _ => unreachable!(),
+            }
+            drop(checked);
+            fs::remove_file(&path).expect("file should be removable after checked read closes");
+        }
 
         let _ = fs::remove_dir_all(root);
     }

@@ -6,7 +6,8 @@ use anyhow::{anyhow, Result};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 
 use crate::{
-    PlatformControlSessionKind, PlatformControlStream, PlatformVm, PlatformVmConfig, VmState,
+    PlatformControlSessionKind, PlatformControlStream, PlatformDataDisk, PlatformDiskFormat,
+    PlatformVm, PlatformVmConfig, VmState,
 };
 
 use super::config::WindowsVmConfig;
@@ -14,13 +15,14 @@ use super::control::{mux::MuxSessionKind, VirtioSerialControlEndpoint};
 use super::errors::unsupported;
 use super::network::qemu_network_config;
 use super::qemu::boot::{launch_windows_qemu_boot, WindowsQemuBoot, WindowsQemuBootConfig};
-use super::qemu::config::QemuDiskImageFormat;
+use super::qemu::config::{QemuDataDiskConfig, QemuDiskImageFormat};
 
 struct WindowsVm {
     config: WindowsVmConfig,
     state_tx: Sender<VmState>,
     state_rx: Receiver<VmState>,
     boot: Mutex<Option<WindowsQemuBoot>>,
+    data_disks: Mutex<Vec<PlatformDataDisk>>,
 }
 
 impl WindowsVm {
@@ -32,10 +34,11 @@ impl WindowsVm {
             state_tx,
             state_rx,
             boot: Mutex::new(None),
+            data_disks: Mutex::new(Vec::new()),
         }
     }
 
-    fn direct_boot_config(&self) -> Result<WindowsQemuBootConfig> {
+    fn direct_boot_config(&self, data_disks: &[PlatformDataDisk]) -> Result<WindowsQemuBootConfig> {
         self.ensure_supported_config()?;
         let initrd_path = self.config.initrd_path.clone().ok_or_else(|| {
             anyhow!(
@@ -52,6 +55,20 @@ impl WindowsVm {
         );
         config.data_dir = self.config.data_dir.clone().map(PathBuf::from);
         config.root_disk_format = root_disk_format_for_path(&self.config.rootfs_path)?;
+        config.data_disks = data_disks
+            .iter()
+            .map(|disk| QemuDataDiskConfig {
+                id: disk.id.clone(),
+                path: disk.path.clone(),
+                format: match disk.format {
+                    PlatformDiskFormat::Raw => QemuDiskImageFormat::Raw,
+                    PlatformDiskFormat::Qcow2 => QemuDiskImageFormat::Qcow2,
+                },
+                read_only: disk.read_only,
+                serial: disk.serial.clone(),
+                virtual_size_bytes: disk.virtual_size_bytes,
+            })
+            .collect();
         config.control_endpoint = Some(VirtioSerialControlEndpoint::for_instance(
             &instance_dir_for_rootfs(&self.config.rootfs_path)?,
         )?);
@@ -97,7 +114,12 @@ impl PlatformVm for WindowsVm {
         }
 
         self.send_state(VmState::Starting);
-        let config = match self.direct_boot_config() {
+        let data_disks = self
+            .data_disks
+            .lock()
+            .map_err(|_| anyhow!("Windows QEMU data disk lock poisoned"))?
+            .clone();
+        let config = match self.direct_boot_config(&data_disks) {
             Ok(config) => config,
             Err(err) => {
                 self.send_state(VmState::Error);
@@ -156,6 +178,24 @@ impl PlatformVm for WindowsVm {
                     .map(|ready| ready.capabilities.clone())
             })
             .unwrap_or_default()
+    }
+
+    fn configure_data_disks(&self, disks: Vec<PlatformDataDisk>) -> Result<()> {
+        let boot = self
+            .boot
+            .lock()
+            .map_err(|_| anyhow!("Windows QEMU boot state lock poisoned"))?;
+        if boot.is_some() {
+            return Err(anyhow!(
+                "Windows QEMU data disks can only be replaced while the VM is stopped"
+            ));
+        }
+        let mut configured = self
+            .data_disks
+            .lock()
+            .map_err(|_| anyhow!("Windows QEMU data disk lock poisoned"))?;
+        *configured = disks;
+        Ok(())
     }
 
     fn connect_control(&self) -> Result<PlatformControlStream> {
@@ -278,7 +318,10 @@ fn root_disk_format_for_path(rootfs_path: &str) -> Result<QemuDiskImageFormat> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{PlatformNetworkAttachment, PlatformSharedDir, PlatformVmConfig};
+    use crate::{
+        PlatformDataDisk, PlatformDiskFormat, PlatformNetworkAttachment, PlatformSharedDir,
+        PlatformVmConfig,
+    };
 
     fn test_config() -> PlatformVmConfig {
         PlatformVmConfig {
@@ -363,13 +406,41 @@ mod tests {
     }
 
     #[test]
+    fn windows_vm_replaces_data_disks_while_stopped_and_after_failed_start() {
+        let mut config = test_config();
+        config.rootfs_path = "/tmp/lsb/instances/data-disks/rootfs.ext4".to_string();
+        let vm = WindowsVm::new(config);
+        let disk = PlatformDataDisk {
+            id: "cache0".to_string(),
+            path: PathBuf::from("cache.ext4"),
+            format: PlatformDiskFormat::Raw,
+            read_only: true,
+            serial: "lsb-cache-0".to_string(),
+            virtual_size_bytes: 4096,
+        };
+
+        vm.configure_data_disks(vec![disk.clone()])
+            .expect("stopped VM should accept data disks");
+        let configured = vm.data_disks.lock().unwrap().clone();
+        assert_eq!(configured, vec![disk]);
+        let boot_config = vm.direct_boot_config(&configured).unwrap();
+        assert_eq!(boot_config.data_disks.len(), 1);
+        assert!(boot_config.data_disks[0].read_only);
+
+        vm.start().expect_err("missing assets should fail start");
+        vm.configure_data_disks(Vec::new())
+            .expect("failed start should leave data disks replaceable");
+        assert!(vm.data_disks.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn direct_boot_config_enables_private_control_endpoint() {
         let mut config = test_config();
         config.rootfs_path = "/tmp/lsb/instances/12345/rootfs.ext4".to_string();
         let vm = WindowsVm::new(config);
 
         let boot_config = vm
-            .direct_boot_config()
+            .direct_boot_config(&[])
             .expect("supported config should build");
         let endpoint = boot_config
             .control_endpoint
@@ -399,7 +470,7 @@ mod tests {
         let vm = WindowsVm::new(config);
 
         let boot_config = vm
-            .direct_boot_config()
+            .direct_boot_config(&[])
             .expect("qcow2 root disk config should build");
 
         assert_eq!(boot_config.root_disk_format, QemuDiskImageFormat::Qcow2);
@@ -412,7 +483,7 @@ mod tests {
         let vm = WindowsVm::new(config);
 
         let boot_config = vm
-            .direct_boot_config()
+            .direct_boot_config(&[])
             .expect("raw ext4 root disk config should build");
 
         assert_eq!(boot_config.root_disk_format, QemuDiskImageFormat::Raw);
@@ -425,7 +496,7 @@ mod tests {
         let vm = WindowsVm::new(config);
 
         let err = vm
-            .direct_boot_config()
+            .direct_boot_config(&[])
             .expect_err("unknown disk extension should fail closed");
         let message = err.to_string();
 
@@ -445,7 +516,7 @@ mod tests {
         let vm = WindowsVm::new(config);
 
         let boot_config = vm
-            .direct_boot_config()
+            .direct_boot_config(&[])
             .expect("proxy stream network config should build");
 
         let super::super::qemu::config::QemuNetworkConfig::ProxyStream(proxy) = boot_config.network
@@ -467,7 +538,7 @@ mod tests {
         let vm = WindowsVm::new(config);
 
         let err = vm
-            .direct_boot_config()
+            .direct_boot_config(&[])
             .expect_err("legacy fd network attachment should fail closed");
         let message = err.to_string();
 

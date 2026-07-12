@@ -1,12 +1,13 @@
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use super::config::{
-    QemuBootConfig, QemuControlChannelConfig, QemuDiskConfig, QemuKernelAppend, QemuNetworkConfig,
-    QemuProxyStreamNetworkConfig, QemuQmpEndpoint, QemuSerialConfig, CONTROL_BUS_ID,
-    CONTROL_CHARDEV_ID, DEFAULT_CPU_MODEL, DEFAULT_MACHINE_TYPE, FORWARD_CHARDEV_ID,
-    PROXY_NETDEV_ID, ROOT_DRIVE_ID,
+    QemuBootConfig, QemuControlChannelConfig, QemuDataDiskConfig, QemuDiskConfig, QemuKernelAppend,
+    QemuNetworkConfig, QemuProxyStreamNetworkConfig, QemuQmpEndpoint, QemuSerialConfig,
+    CONTROL_BUS_ID, CONTROL_CHARDEV_ID, DEFAULT_CPU_MODEL, DEFAULT_MACHINE_TYPE,
+    FORWARD_CHARDEV_ID, PROXY_NETDEV_ID, ROOT_DRIVE_ID,
 };
 use super::preflight::PRODUCTION_ACCELERATOR;
 
@@ -55,6 +56,7 @@ impl QemuArgvBuilder {
         validate_path("kernel_image", &self.config.kernel_image)?;
         validate_path("initrd_image", &self.config.initrd_image)?;
         validate_path("root_disk.path", &self.config.root_disk.path)?;
+        validate_data_disks(&self.config.data_disks)?;
         validate_machine(&self.config)?;
 
         let mut command = QemuCommandParts::default();
@@ -109,6 +111,19 @@ impl QemuArgvBuilder {
             "-device",
             format!("virtio-blk-pci,drive={ROOT_DRIVE_ID}"),
         );
+        for disk in &self.config.data_disks {
+            push_pair_redacted(
+                &mut command,
+                "-drive",
+                data_drive_arg(disk)?,
+                data_drive_arg_redacted(disk),
+            );
+            push_pair(
+                &mut command,
+                "-device",
+                format!("virtio-blk-pci,drive={},serial={}", disk.id, disk.serial),
+            );
+        }
         push_serial(&mut command, &self.config.serial)?;
 
         if self.config.control_channel.is_some() || self.config.forward_channel.is_some() {
@@ -322,6 +337,54 @@ fn drive_arg_redacted(disk: &QemuDiskConfig) -> String {
     )
 }
 
+fn validate_data_disks(disks: &[QemuDataDiskConfig]) -> Result<(), QemuArgvError> {
+    let mut ids = HashSet::new();
+    let mut serials = HashSet::new();
+    for disk in disks {
+        validate_path("data_disks.path", &disk.path)?;
+        validate_qemu_identifier("data_disks.id", &disk.id)?;
+        validate_qemu_identifier("data_disks.serial", &disk.serial)?;
+        if disk.id == ROOT_DRIVE_ID || !ids.insert(disk.id.as_str()) {
+            return Err(QemuArgvError::InvalidQemuOptionValue {
+                field: "data_disks.id",
+                reason: "must be unique and must not use the reserved root id",
+            });
+        }
+        if !serials.insert(disk.serial.as_str()) {
+            return Err(QemuArgvError::InvalidQemuOptionValue {
+                field: "data_disks.serial",
+                reason: "must be unique",
+            });
+        }
+        if disk.virtual_size_bytes == 0 {
+            return Err(QemuArgvError::InvalidNumericInput {
+                field: "data_disks.virtual_size_bytes",
+                reason: "must be greater than zero",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn data_drive_arg(disk: &QemuDataDiskConfig) -> Result<String, QemuArgvError> {
+    Ok(format!(
+        "if=none,id={},file={},format={},readonly={}",
+        disk.id,
+        path_as_qemu_option_value("data_disks.path", &disk.path)?,
+        disk.format.as_qemu_arg(),
+        if disk.read_only { "on" } else { "off" }
+    ))
+}
+
+fn data_drive_arg_redacted(disk: &QemuDataDiskConfig) -> String {
+    format!(
+        "if=none,id={},file=<data-disk>,format={},readonly={}",
+        disk.id,
+        disk.format.as_qemu_arg(),
+        if disk.read_only { "on" } else { "off" }
+    )
+}
+
 fn push_serial(
     command: &mut QemuCommandParts,
     serial: &QemuSerialConfig,
@@ -461,6 +524,20 @@ fn validate_qemu_suboption(field: &'static str, value: &str) -> Result<(), QemuA
     Ok(())
 }
 
+fn validate_qemu_identifier(field: &'static str, value: &str) -> Result<(), QemuArgvError> {
+    validate_qemu_suboption(field, value)?;
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(QemuArgvError::InvalidQemuOptionValue {
+            field,
+            reason: "must contain only ASCII letters, digits, '.', '-', or '_'",
+        });
+    }
+    Ok(())
+}
+
 fn render_diagnostic_arg(value: &str) -> String {
     if value.chars().any(char::is_whitespace) {
         format!("\"{}\"", value.replace('"', "\\\""))
@@ -473,8 +550,8 @@ fn render_diagnostic_arg(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::windows_x86_64::qemu::config::{
-        QemuControlChannelConfig, QemuNetworkConfig, QemuProxyStreamNetworkConfig, QemuQmpEndpoint,
-        QemuRootMode,
+        QemuControlChannelConfig, QemuDataDiskConfig, QemuDiskImageFormat, QemuNetworkConfig,
+        QemuProxyStreamNetworkConfig, QemuQmpEndpoint, QemuRootMode,
     };
 
     fn base_config() -> QemuBootConfig {
@@ -565,6 +642,81 @@ mod tests {
             .argv
             .iter()
             .any(|arg| arg.to_string_lossy().contains("format=qcow2")));
+    }
+
+    #[test]
+    fn typed_data_disks_follow_root_and_redact_paths() {
+        let mut config = base_config();
+        config.data_disks = vec![
+            QemuDataDiskConfig {
+                id: "cache0".to_string(),
+                path: PathBuf::from(r"C:\cache path\object,one.ext4"),
+                format: QemuDiskImageFormat::Raw,
+                read_only: true,
+                serial: "lsb-cache-0".to_string(),
+                virtual_size_bytes: 4096,
+            },
+            QemuDataDiskConfig {
+                id: "cache1".to_string(),
+                path: PathBuf::from(r"C:\cache\staging.ext4"),
+                format: QemuDiskImageFormat::Raw,
+                read_only: false,
+                serial: "lsb-cache-1".to_string(),
+                virtual_size_bytes: 8192,
+            },
+        ];
+
+        let command = build(config);
+        let argv = argv_as_strings(&command);
+        let root_index = argv
+            .iter()
+            .position(|arg| arg == "virtio-blk-pci,drive=root")
+            .unwrap();
+        let first_index = argv
+            .iter()
+            .position(|arg| arg.contains("id=cache0"))
+            .unwrap();
+        let second_index = argv
+            .iter()
+            .position(|arg| arg.contains("id=cache1"))
+            .unwrap();
+
+        assert!(root_index < first_index && first_index < second_index);
+        assert!(argv.iter().any(|arg| {
+            arg == r"if=none,id=cache0,file=C:\cache path\object,,one.ext4,format=raw,readonly=on"
+        }));
+        assert!(argv
+            .iter()
+            .any(|arg| arg == "virtio-blk-pci,drive=cache0,serial=lsb-cache-0"));
+        assert!(argv
+            .iter()
+            .any(|arg| arg.contains("id=cache1") && arg.contains("readonly=off")));
+        let diagnostic = command.sanitized_display();
+        assert!(diagnostic.contains("file=<data-disk>"));
+        assert!(!diagnostic.contains("cache path"));
+        assert!(!diagnostic.contains("staging.ext4"));
+    }
+
+    #[test]
+    fn typed_data_disks_reject_duplicate_or_unsafe_identifiers() {
+        let disk = QemuDataDiskConfig {
+            id: "cache0".to_string(),
+            path: PathBuf::from(r"C:\cache\object.ext4"),
+            format: QemuDiskImageFormat::Raw,
+            read_only: true,
+            serial: "serial0".to_string(),
+            virtual_size_bytes: 4096,
+        };
+        let mut duplicate = base_config();
+        duplicate.data_disks = vec![disk.clone(), disk.clone()];
+        assert!(QemuArgvBuilder::new(duplicate).build().is_err());
+
+        let mut unsafe_id = base_config();
+        unsafe_id.data_disks = vec![QemuDataDiskConfig {
+            id: "cache,escape".to_string(),
+            ..disk
+        }];
+        assert!(QemuArgvBuilder::new(unsafe_id).build().is_err());
     }
 
     #[test]

@@ -36,15 +36,16 @@ use lsb_platform::windows_x86_64::fs::smb::{
 };
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use lsb_platform::windows_x86_64::fs::{
-    join_guest_child, open_copy_in_file_checked, plan_copy_in, validate_copy_out_destination,
-    validate_guest_absolute_path, validate_guest_path_component,
+    join_guest_child, open_copy_in_file_checked, open_copy_in_file_for_snapshot, plan_copy_in,
+    validate_copy_out_destination, validate_guest_absolute_path, validate_guest_path_component,
     validate_windows_host_path_lexical, CaseFoldSet, CopyInEntryKind, CopyInFileIdentity,
     CopyInPlan, CopyPathOperation,
 };
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use lsb_platform::windows_x86_64::fs::{
-    plan_windows_mounts, replan_windows_mount_import, replan_windows_smb_mount, WindowsMountImport,
-    WindowsMountMode, WindowsMountSpec, WINDOWS_MOUNT_STAGING_ROOT,
+    plan_windows_mounts, replan_windows_smb_mount, snapshot_windows_mount, WindowsMountDescriptor,
+    WindowsMountMode, WindowsMountSnapshot, WindowsMountSnapshotEntry,
+    WindowsMountSnapshotEntryKind, WindowsMountSpec, WINDOWS_MOUNT_STAGING_ROOT,
 };
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use lsb_platform::PlatformControlSessionKind;
@@ -273,9 +274,6 @@ impl VmConfigBuilder {
             }
         };
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        mount_metrics
-            .initialize_mounts(windows_mount_source_summaries(&mount_plan.windows_imports));
-        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         let windows_smb_instance_id = windows_smb_instance_id(&rootfs_path);
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         let windows_smb_cleanup_manifest_path =
@@ -337,7 +335,7 @@ pub struct Sandbox {
     vm: Arc<dyn PlatformVm>,
     mounts: Mutex<Vec<MountRequest>>,
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    windows_mounts: Mutex<Vec<WindowsMountImport>>,
+    windows_mounts: Mutex<Vec<WindowsMountDescriptor>>,
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     windows_smb_mounts: Mutex<Vec<WindowsSmbMount>>,
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -360,37 +358,21 @@ struct SandboxMountPlan {
     shared_dirs: Vec<PlatformSharedDir>,
     mount_requests: Vec<MountRequest>,
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    windows_imports: Vec<WindowsMountImport>,
+    windows_imports: Vec<WindowsMountDescriptor>,
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     windows_smb_mounts: Vec<WindowsSmbMount>,
 }
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-fn windows_mount_source_summaries(imports: &[WindowsMountImport]) -> Vec<MountSourceSummary> {
-    imports
+fn windows_mount_source_summaries(snapshots: &[WindowsMountSnapshot]) -> Vec<MountSourceSummary> {
+    snapshots
         .iter()
-        .map(|import| {
-            let mut file_count = 0u64;
-            let mut directory_count = 0u64;
-            let mut logical_bytes = 0u64;
-            for entry in &import.copy_plan.entries {
-                match entry.kind {
-                    CopyInEntryKind::Directory => {
-                        directory_count = directory_count.saturating_add(1);
-                    }
-                    CopyInEntryKind::File { len, .. } => {
-                        file_count = file_count.saturating_add(1);
-                        logical_bytes = logical_bytes.saturating_add(len);
-                    }
-                }
-            }
-            MountSourceSummary {
-                mount_id: import.tag.clone(),
-                file_count,
-                directory_count,
-                logical_bytes,
-                entries_visited: import.copy_plan.entries.len() as u64,
-            }
+        .map(|snapshot| MountSourceSummary {
+            mount_id: snapshot.descriptor.tag.clone(),
+            file_count: snapshot.file_count,
+            directory_count: snapshot.directory_count,
+            logical_bytes: snapshot.logical_bytes,
+            entries_visited: snapshot.entries.len() as u64,
         })
         .collect()
 }
@@ -505,6 +487,36 @@ impl Sandbox {
         self.mount_metrics.begin_start();
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        self.mount_metrics
+            .set_failure_context(FailedPhase::SnapshotWalk, ErrorCategory::UnsafeSource);
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        let snapshot_started = Instant::now();
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        let windows_mount_snapshots = match self.snapshot_windows_mounts() {
+            Ok(snapshots) => snapshots,
+            Err(error) => {
+                self.mount_metrics
+                    .add_duration(DurationMetric::SnapshotWalk, snapshot_started.elapsed());
+                self.mount_metrics.finish_current_failure();
+                return Err(error).context("Failed to snapshot Windows mounts");
+            }
+        };
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            self.mount_metrics
+                .add_duration(DurationMetric::SnapshotWalk, snapshot_started.elapsed());
+            self.mount_metrics
+                .initialize_mounts(windows_mount_source_summaries(&windows_mount_snapshots));
+            let snapshot_bytes = windows_mount_snapshots
+                .iter()
+                .fold(0u64, |total, snapshot| {
+                    total.saturating_add(snapshot.logical_bytes)
+                });
+            self.mount_metrics
+                .record_snapshot_bytes_hashed(snapshot_bytes);
+        }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         if let Err(error) = self
             .prepare_windows_smb_mounts()
             .context("Failed to prepare Windows SMB mounts")
@@ -536,7 +548,7 @@ impl Sandbox {
             .add_duration(DurationMetric::GuestReady, guest_ready_started.elapsed());
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        if let Err(error) = self.initialize_windows_mounts() {
+        if let Err(error) = self.initialize_windows_mounts(&windows_mount_snapshots) {
             let _ = self.vm.stop();
             self.cleanup_windows_smb_mounts_best_effort();
             self.mount_metrics.finish_current_failure();
@@ -757,6 +769,7 @@ impl Sandbox {
             offset: None,
             truncate: None,
             defer_sync: None,
+            mode: None,
         };
 
         self.send_write_file_request(&req, content)
@@ -770,6 +783,7 @@ impl Sandbox {
                 offset: Some(0),
                 truncate: Some(true),
                 defer_sync: None,
+                mode: None,
             };
             return self.send_write_file_request(&req, &[]);
         }
@@ -784,6 +798,7 @@ impl Sandbox {
                 offset: Some(offset as u64),
                 truncate: Some(offset == 0),
                 defer_sync: None,
+                mode: None,
             };
             self.send_write_file_request(&req, chunk)?;
             offset = end;
@@ -903,6 +918,7 @@ impl Sandbox {
             &MkdirRequest {
                 path: path.to_string(),
                 recursive,
+                mode: None,
             },
         )
     }
@@ -1053,6 +1069,7 @@ impl Sandbox {
                         &MkdirRequest {
                             path: entry.guest_path.clone(),
                             recursive: true,
+                            mode: None,
                         },
                     )
                     .with_context(|| format!("copy-in create guest dir '{}'", entry.guest_path))?,
@@ -1129,11 +1146,18 @@ impl Sandbox {
                 .with_context(|| format!("reading copy-in source '{}'", host_path.display()))?;
             if len == 0 {
                 if first {
-                    self.write_guest_file_range(guest_path, 0, true, &[], defer_sync)?;
+                    self.write_guest_file_range(guest_path, 0, true, &[], defer_sync, None)?;
                 }
                 break;
             }
-            self.write_guest_file_range(guest_path, offset, first, &buffer[..len], defer_sync)?;
+            self.write_guest_file_range(
+                guest_path,
+                offset,
+                first,
+                &buffer[..len],
+                defer_sync,
+                None,
+            )?;
             offset += len as u64;
             first = false;
         }
@@ -1172,6 +1196,7 @@ impl Sandbox {
                         true,
                         &[],
                         defer_sync,
+                        None,
                     )?;
                 }
                 break;
@@ -1184,6 +1209,7 @@ impl Sandbox {
                 first,
                 &buffer[..len],
                 defer_sync,
+                None,
             )?;
             offset += len as u64;
             first = false;
@@ -1200,6 +1226,7 @@ impl Sandbox {
         truncate: bool,
         content: &[u8],
         defer_sync: bool,
+        mode: Option<u32>,
     ) -> Result<()> {
         let req = WriteFileRequest {
             path: guest_path.to_string(),
@@ -1207,6 +1234,7 @@ impl Sandbox {
             offset: Some(offset),
             truncate: Some(truncate),
             defer_sync: defer_sync.then_some(true),
+            mode,
         };
         self.send_write_file_request(&req, content)
     }
@@ -1221,6 +1249,7 @@ impl Sandbox {
         truncate: bool,
         content: &[u8],
         defer_sync: bool,
+        mode: Option<u32>,
     ) -> Result<()> {
         let req = WriteFileRequest {
             path: guest_path.to_string(),
@@ -1228,6 +1257,7 @@ impl Sandbox {
             offset: Some(offset),
             truncate: Some(truncate),
             defer_sync: defer_sync.then_some(true),
+            mode,
         };
         self.send_write_file_request_on_session(writer, reader, &req, content)
     }
@@ -2226,12 +2256,24 @@ impl Sandbox {
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    fn initialize_windows_mounts(&self) -> Result<()> {
-        let imports = self
+    fn snapshot_windows_mounts(&self) -> Result<Vec<WindowsMountSnapshot>> {
+        let descriptors = self
             .windows_mounts
             .lock()
             .map_err(|_| anyhow::anyhow!("Windows mount import lock poisoned"))?
             .clone();
+        descriptors
+            .iter()
+            .map(|descriptor| {
+                snapshot_windows_mount(descriptor).with_context(|| {
+                    format!("snapshotting Windows mount '{}' source", descriptor.tag)
+                })
+            })
+            .collect()
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn initialize_windows_mounts(&self, snapshots: &[WindowsMountSnapshot]) -> Result<()> {
         let has_pending_mounts = !self
             .mounts
             .lock()
@@ -2243,13 +2285,13 @@ impl Sandbox {
             .map_err(|_| anyhow::anyhow!("mount request lock poisoned"))?
             .iter()
             .any(|request| matches!(request, MountRequest::Smb { .. }));
-        if imports.is_empty() && !has_pending_mounts {
+        if snapshots.is_empty() && !has_pending_mounts {
             return Ok(());
         }
 
         let _metrics_guard = self.mount_metrics.begin_mount_init();
 
-        if !imports.is_empty() {
+        if !snapshots.is_empty() {
             self.mount_metrics
                 .set_failure_context(FailedPhase::Transfer, ErrorCategory::ProtocolFailure);
             self.ensure_file_range_io("Windows mount import")?;
@@ -2257,29 +2299,10 @@ impl Sandbox {
         if has_pending_smb_mounts {
             self.ensure_cifs_mount("Windows SMB direct mount")?;
         }
-        let mut refreshed_imports = Vec::with_capacity(imports.len());
-        for import in &imports {
-            self.mount_metrics
-                .set_failure_context(FailedPhase::Replan, ErrorCategory::UnsafeSource);
-            let replan_started = Instant::now();
-            let refreshed_result = replan_windows_mount_import(import);
-            self.mount_metrics
-                .add_duration(DurationMetric::Replan, replan_started.elapsed());
-            let refreshed = refreshed_result.with_context(|| {
-                format!(
-                    "revalidating Windows mount '{}' source before import",
-                    import.tag
-                )
-            })?;
-            self.mount_metrics
-                .record_tree_walk(refreshed.copy_plan.entries.len() as u64);
-            refreshed_imports.push(refreshed);
-        }
-
         let result = if self.supports_session_mux() {
-            self.initialize_windows_mounts_mux(&refreshed_imports)
+            self.initialize_windows_mounts_mux(snapshots)
         } else {
-            self.initialize_windows_mounts_legacy(&refreshed_imports)
+            self.initialize_windows_mounts_legacy(snapshots)
         };
         if result.is_ok() {
             self.windows_mounts
@@ -2291,7 +2314,7 @@ impl Sandbox {
         result
     }
 
-    fn initialize_windows_mounts_mux(&self, imports: &[WindowsMountImport]) -> Result<()> {
+    fn initialize_windows_mounts_mux(&self, snapshots: &[WindowsMountSnapshot]) -> Result<()> {
         let defer_sync = self.supports_deferred_file_sync();
         self.mount_metrics
             .set_failure_context(FailedPhase::Transfer, ErrorCategory::TransportFailure);
@@ -2300,17 +2323,14 @@ impl Sandbox {
                 .set_failure_context(FailedPhase::Transfer, ErrorCategory::SourceMutation);
             let transfer_started = Instant::now();
             let transfer_result: Result<()> = (|| {
-                for import in imports {
-                    self.copy_from_host_plan_on_session(
-                        writer,
-                        reader,
-                        &import.copy_plan,
-                        defer_sync,
+                for snapshot in snapshots {
+                    self.copy_windows_mount_snapshot_on_session(
+                        writer, reader, snapshot, defer_sync,
                     )
                     .with_context(|| {
                         format!(
                             "copying Windows mount '{}' into guest staging path '{}'",
-                            import.tag, import.guest_source
+                            snapshot.descriptor.tag, snapshot.descriptor.guest_source
                         )
                     })?;
                 }
@@ -2320,7 +2340,7 @@ impl Sandbox {
                 .add_duration(DurationMetric::Transfer, transfer_started.elapsed());
             transfer_result?;
 
-            if defer_sync && !imports.is_empty() {
+            if defer_sync && !snapshots.is_empty() {
                 self.sync_windows_mount_import_on_session(writer, reader)?;
             }
 
@@ -2334,16 +2354,16 @@ impl Sandbox {
         })
     }
 
-    fn initialize_windows_mounts_legacy(&self, imports: &[WindowsMountImport]) -> Result<()> {
+    fn initialize_windows_mounts_legacy(&self, snapshots: &[WindowsMountSnapshot]) -> Result<()> {
         let defer_sync = self.supports_deferred_file_sync();
-        for import in imports {
+        for snapshot in snapshots {
             self.mount_metrics
                 .set_failure_context(FailedPhase::Transfer, ErrorCategory::SourceMutation);
             let mux_open_before = self
                 .mount_metrics
                 .duration_ms(DurationMetric::MuxSessionOpen);
             let transfer_started = Instant::now();
-            let copy_result = self.copy_from_host_plan_legacy(&import.copy_plan, defer_sync);
+            let copy_result = self.copy_windows_mount_snapshot_legacy(snapshot, defer_sync);
             let transfer_elapsed_ms = transfer_started.elapsed().as_secs_f64() * 1000.0;
             let mux_open_after = self
                 .mount_metrics
@@ -2355,12 +2375,12 @@ impl Sandbox {
             copy_result.with_context(|| {
                 format!(
                     "copying Windows mount '{}' into guest staging path '{}'",
-                    import.tag, import.guest_source
+                    snapshot.descriptor.tag, snapshot.descriptor.guest_source
                 )
             })?;
         }
 
-        if defer_sync && !imports.is_empty() {
+        if defer_sync && !snapshots.is_empty() {
             self.mount_metrics
                 .set_failure_context(FailedPhase::Barrier, ErrorCategory::BarrierFailed);
             self.with_guest_control_session("mount import sync", |writer, reader| {
@@ -2377,6 +2397,146 @@ impl Sandbox {
                 .add_duration(DurationMetric::OverlayMount, overlay_started.elapsed());
             result
         })
+    }
+
+    fn copy_windows_mount_snapshot_legacy(
+        &self,
+        snapshot: &WindowsMountSnapshot,
+        defer_sync: bool,
+    ) -> Result<()> {
+        for entry in &snapshot.entries {
+            match entry.kind {
+                WindowsMountSnapshotEntryKind::Directory { mode } => self
+                    .void_fs_op(
+                        frame::MKDIR_REQ,
+                        &MkdirRequest {
+                            path: entry.guest_path.clone(),
+                            recursive: true,
+                            mode: Some(mode),
+                        },
+                    )
+                    .with_context(|| {
+                        format!("creating mount snapshot directory '{}'", entry.guest_path)
+                    })?,
+                WindowsMountSnapshotEntryKind::File { mode, .. } => self
+                    .transfer_windows_mount_snapshot_file(entry, |offset, truncate, data| {
+                        self.write_guest_file_range(
+                            &entry.guest_path,
+                            offset,
+                            truncate,
+                            data,
+                            defer_sync,
+                            Some(mode),
+                        )
+                    })?,
+            }
+        }
+        Ok(())
+    }
+
+    fn copy_windows_mount_snapshot_on_session(
+        &self,
+        writer: &mut impl Write,
+        reader: &mut impl Read,
+        snapshot: &WindowsMountSnapshot,
+        defer_sync: bool,
+    ) -> Result<()> {
+        for entry in &snapshot.entries {
+            match entry.kind {
+                WindowsMountSnapshotEntryKind::Directory { mode } => self
+                    .void_fs_op_on_session(
+                        writer,
+                        reader,
+                        frame::MKDIR_REQ,
+                        &MkdirRequest {
+                            path: entry.guest_path.clone(),
+                            recursive: true,
+                            mode: Some(mode),
+                        },
+                    )
+                    .with_context(|| {
+                        format!("creating mount snapshot directory '{}'", entry.guest_path)
+                    })?,
+                WindowsMountSnapshotEntryKind::File { mode, .. } => self
+                    .transfer_windows_mount_snapshot_file(entry, |offset, truncate, data| {
+                        self.write_guest_file_range_on_session(
+                            writer,
+                            reader,
+                            &entry.guest_path,
+                            offset,
+                            truncate,
+                            data,
+                            defer_sync,
+                            Some(mode),
+                        )
+                    })?,
+            }
+        }
+        Ok(())
+    }
+
+    fn transfer_windows_mount_snapshot_file(
+        &self,
+        entry: &WindowsMountSnapshotEntry,
+        mut write_chunk: impl FnMut(u64, bool, &[u8]) -> Result<()>,
+    ) -> Result<()> {
+        let WindowsMountSnapshotEntryKind::File {
+            len,
+            identity,
+            digest: expected_digest,
+            ..
+        } = entry.kind
+        else {
+            bail!("mount snapshot transfer received a directory entry");
+        };
+        let mut checked =
+            open_copy_in_file_for_snapshot(&entry.host_path, Some(len), Some(identity))
+                .with_context(|| {
+                    format!(
+                        "reopening mount snapshot source '{}'",
+                        entry.host_path.display()
+                    )
+                })?;
+        let mut hasher = blake3::Hasher::new();
+        let mut buffer = vec![0u8; FILE_TRANSFER_CHUNK_SIZE];
+        let mut offset = 0u64;
+        let mut first = true;
+        loop {
+            let count = checked.file_mut().read(&mut buffer).with_context(|| {
+                format!(
+                    "reading mount snapshot source '{}'",
+                    entry.host_path.display()
+                )
+            })?;
+            if count == 0 {
+                if first {
+                    write_chunk(0, true, &[])?;
+                }
+                break;
+            }
+            write_chunk(offset, first, &buffer[..count])?;
+            hasher.update(&buffer[..count]);
+            offset = offset.saturating_add(count as u64);
+            first = false;
+        }
+        if offset != len {
+            bail!(
+                "mount snapshot source '{}' changed length during transfer: expected {} bytes, read {} bytes",
+                entry.host_path.display(),
+                len,
+                offset
+            );
+        }
+        checked.validate_unchanged(&entry.host_path)?;
+        if hasher.finalize().as_bytes() != &expected_digest {
+            bail!(
+                "mount snapshot source '{}' content changed between snapshot and transfer",
+                entry.host_path.display()
+            );
+        }
+        self.mount_metrics
+            .record_transfer_verification_bytes_hashed(offset);
+        Ok(())
     }
 
     fn sync_windows_mount_import_on_session(
@@ -3189,17 +3349,22 @@ mod tests {
             }
         }
 
-        let plan =
-            plan_copy_in(&source, "/tmp/lsb/mounts/mount0/source").expect("copy plan should build");
+        let snapshot = snapshot_windows_mount(&WindowsMountDescriptor {
+            tag: "mount0".to_string(),
+            host_root: source.clone(),
+            guest_source: "/tmp/lsb/mounts/mount0/source".to_string(),
+            guest_target: "/workspace".to_string(),
+        })
+        .expect("mount snapshot should build");
         let sandbox = sandbox_with_mount_requests(vec![MountRequest::Overlay {
             source: "/tmp/lsb/mounts/mount0/source".to_string(),
             target: "/workspace".to_string(),
         }]);
 
         let mut scripted_responses = Vec::new();
-        for entry in &plan.entries {
+        for entry in &snapshot.entries {
             match entry.kind {
-                CopyInEntryKind::Directory => frame::send_json(
+                WindowsMountSnapshotEntryKind::Directory { .. } => frame::send_json(
                     &mut scripted_responses,
                     frame::FS_OK_RESP,
                     &FsOkResponse {
@@ -3208,7 +3373,7 @@ mod tests {
                     },
                 )
                 .expect("mkdir response"),
-                CopyInEntryKind::File { .. } => frame::send_json(
+                WindowsMountSnapshotEntryKind::File { .. } => frame::send_json(
                     &mut scripted_responses,
                     frame::WRITE_FILE_RESP,
                     &WriteFileResponse {
@@ -3243,7 +3408,7 @@ mod tests {
         let mut reader = Cursor::new(scripted_responses);
         let mut writer = Vec::new();
         sandbox
-            .copy_from_host_plan_on_session(&mut writer, &mut reader, &plan, true)
+            .copy_windows_mount_snapshot_on_session(&mut writer, &mut reader, &snapshot, true)
             .expect("copy transcript");
         sandbox
             .sync_windows_mount_import_on_session(&mut writer, &mut reader)
@@ -3266,6 +3431,9 @@ mod tests {
             match frame_type {
                 frame::MKDIR_REQ => {
                     assert_eq!(mount_requests, 0);
+                    let request: MkdirRequest =
+                        serde_json::from_slice(&payload).expect("mkdir request json");
+                    assert_eq!(request.mode, Some(lsb_proto::MOUNT_IMPORT_DIRECTORY_MODE));
                     directory_requests += 1;
                 }
                 frame::WRITE_FILE_REQ => {
@@ -3274,6 +3442,7 @@ mod tests {
                     let request: WriteFileRequest =
                         serde_json::from_slice(&payload).expect("write request json");
                     assert_eq!(request.defer_sync, Some(true));
+                    assert_eq!(request.mode, Some(lsb_proto::MOUNT_IMPORT_FILE_MODE));
                     write_requests += 1;
                 }
                 frame::WRITE_FILE_DATA => {
@@ -3298,6 +3467,37 @@ mod tests {
         assert_eq!(mount_requests, 1);
         assert!(sandbox.mounts.lock().expect("mount lock").is_empty());
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn windows_mount_transfer_rejects_same_length_content_mutation() {
+        let root = temp_dir("mount-transfer-mutation");
+        let source = root.join("src");
+        std::fs::create_dir_all(&source).expect("fixture source");
+        let file = source.join("input.txt");
+        write_fixture(&file, b"before");
+        let snapshot = snapshot_windows_mount(&WindowsMountDescriptor {
+            tag: "mount0".to_string(),
+            host_root: source,
+            guest_source: "/tmp/lsb/mounts/mount0/source".to_string(),
+            guest_target: "/workspace".to_string(),
+        })
+        .expect("mount snapshot");
+        let entry = snapshot
+            .entries
+            .iter()
+            .find(|entry| matches!(entry.kind, WindowsMountSnapshotEntryKind::File { .. }))
+            .expect("snapshot file entry");
+
+        write_fixture(&file, b"after!");
+        let sandbox = sandbox_with_mount_requests(Vec::new());
+        let error = sandbox
+            .transfer_windows_mount_snapshot_file(entry, |_, _, _| Ok(()))
+            .expect_err("changed content should reject transfer");
+
+        assert!(error.to_string().contains("content changed"));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -4301,6 +4501,37 @@ mod tests {
                 assert_eq!(
                     sandbox.read_file("/workspace/nested/data.txt")?,
                     b"nested from host"
+                );
+
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                let code = sandbox.exec(
+                    &[
+                        "/bin/sh",
+                        "-c",
+                        "stat -c '%a:%n' /workspace /workspace/nested /workspace/hello.txt",
+                    ],
+                    &mut stdout,
+                    &mut stderr,
+                )?;
+                assert_eq!(
+                    code,
+                    0,
+                    "mount mode assertion failed: {}",
+                    String::from_utf8_lossy(&stderr)
+                );
+                let modes = String::from_utf8_lossy(&stdout);
+                assert!(
+                    modes.contains("755:/workspace\n"),
+                    "unexpected modes: {modes}"
+                );
+                assert!(
+                    modes.contains("755:/workspace/nested\n"),
+                    "unexpected modes: {modes}"
+                );
+                assert!(
+                    modes.contains("644:/workspace/hello.txt\n"),
+                    "unexpected modes: {modes}"
                 );
 
                 sandbox.write_file("/workspace/guest.txt", b"guest write")?;

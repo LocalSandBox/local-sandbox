@@ -37,6 +37,7 @@ pub(crate) enum DurationMetric {
 pub(crate) enum FailedPhase {
     Configuration,
     InitialPlan,
+    SnapshotWalk,
     VmCreate,
     GuestReady,
     Replan,
@@ -430,10 +431,19 @@ impl WindowsMountMetrics {
         });
     }
 
-    pub(crate) fn record_tree_walk(&self, entries_visited: u64) {
+    pub(crate) fn record_snapshot_bytes_hashed(&self, bytes: u64) {
         self.with_state(|state| {
-            state.record.full_tree_walk_count = state.record.full_tree_walk_count.saturating_add(1);
-            state.record.entries_visited_per_walk.push(entries_visited);
+            state.record.snapshot_bytes_hashed =
+                state.record.snapshot_bytes_hashed.saturating_add(bytes)
+        });
+    }
+
+    pub(crate) fn record_transfer_verification_bytes_hashed(&self, bytes: u64) {
+        self.with_state(|state| {
+            state.record.transfer_verification_bytes_hashed = state
+                .record
+                .transfer_verification_bytes_hashed
+                .saturating_add(bytes)
         });
     }
 
@@ -648,7 +658,8 @@ mod tests {
             logical_bytes: 11,
             entries_visited: 3,
         }]);
-        metrics.record_tree_walk(3);
+        metrics.record_snapshot_bytes_hashed(11);
+        metrics.record_transfer_verification_bytes_hashed(11);
         metrics.record_mux_file_session(Duration::from_millis(1), true);
         metrics.record_filesystem_request();
         metrics.record_filesystem_response();
@@ -664,8 +675,10 @@ mod tests {
         assert_eq!(value["file_count"], 2);
         assert_eq!(value["directory_count"], 1);
         assert_eq!(value["logical_source_bytes"], 11);
-        assert_eq!(value["full_tree_walk_count"], 2);
-        assert_eq!(value["entries_visited_per_walk"], serde_json::json!([3, 3]));
+        assert_eq!(value["full_tree_walk_count"], 1);
+        assert_eq!(value["entries_visited_per_walk"], serde_json::json!([3]));
+        assert_eq!(value["snapshot_bytes_hashed"], 11);
+        assert_eq!(value["transfer_verification_bytes_hashed"], 11);
         assert_eq!(value["mux_file_sessions"], 1);
         assert_eq!(value["filesystem_requests"], 1);
         assert_eq!(value["filesystem_responses"], 1);

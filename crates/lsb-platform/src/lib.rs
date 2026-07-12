@@ -8,6 +8,7 @@ use std::env;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, TcpStream};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
@@ -247,6 +248,24 @@ pub struct PlatformSharedDir {
     pub read_only: bool,
 }
 
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlatformDiskFormat {
+    Raw,
+    Qcow2,
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlatformDataDisk {
+    pub id: String,
+    pub path: PathBuf,
+    pub format: PlatformDiskFormat,
+    pub read_only: bool,
+    pub serial: String,
+    pub virtual_size_bytes: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlatformQemuStreamNetworkAttachment {
     pub host: Ipv4Addr,
@@ -426,6 +445,16 @@ pub trait PlatformVm: Send + Sync {
     fn state_channel(&self) -> crossbeam_channel::Receiver<VmState>;
     fn guest_capabilities(&self) -> Vec<String> {
         Vec::new()
+    }
+    #[doc(hidden)]
+    fn configure_data_disks(&self, disks: Vec<PlatformDataDisk>) -> Result<()> {
+        if disks.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "secondary data disks are not implemented for this platform backend"
+            ))
+        }
     }
     fn connect_control(&self) -> Result<PlatformControlStream>;
     #[doc(hidden)]

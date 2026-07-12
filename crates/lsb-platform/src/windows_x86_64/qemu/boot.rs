@@ -15,7 +15,10 @@ use crate::windows_x86_64::control::{
 };
 
 use super::argv::{QemuArgvBuilder, QemuArgvError};
-use super::config::{QemuBootConfig as QemuArgvBootConfig, QemuDiskImageFormat, QemuNetworkConfig};
+use super::config::{
+    QemuBootConfig as QemuArgvBootConfig, QemuDataDiskConfig, QemuDiskImageFormat,
+    QemuNetworkConfig,
+};
 use super::discovery::{QemuDiscovery, StdQemuDiscoveryHost};
 use super::preflight::{QemuPreflight, QemuPreflightReport};
 use super::process::{
@@ -45,6 +48,7 @@ pub(crate) struct WindowsQemuBootConfig {
     pub initrd_image: PathBuf,
     pub rootfs_image: PathBuf,
     pub root_disk_format: QemuDiskImageFormat,
+    pub data_disks: Vec<QemuDataDiskConfig>,
     pub memory_bytes: u64,
     pub vcpu_count: usize,
     pub diagnostic_label: Option<String>,
@@ -70,6 +74,7 @@ impl WindowsQemuBootConfig {
             initrd_image: initrd_image.into(),
             rootfs_image: rootfs_image.into(),
             root_disk_format: QemuDiskImageFormat::Raw,
+            data_disks: Vec::new(),
             memory_bytes,
             vcpu_count,
             diagnostic_label: None,
@@ -598,6 +603,18 @@ pub(crate) fn launch_windows_qemu_boot(
                 error,
             )
         })?;
+    let mut data_disks = config.data_disks.clone();
+    for disk in &mut data_disks {
+        disk.path =
+            require_existing_file("data disk", &disk.path, &artifacts).map_err(|error| {
+                record_error(
+                    &artifacts,
+                    config.boot_observation_timeout,
+                    observation_goal,
+                    error,
+                )
+            })?;
+    }
     let memory_mib = memory_mib(config.memory_bytes, &artifacts).map_err(|error| {
         record_error(
             &artifacts,
@@ -660,6 +677,7 @@ pub(crate) fn launch_windows_qemu_boot(
     if let Some(endpoint) = &config.control_endpoint {
         argv_config.control_channel = Some(endpoint.qemu_config());
     }
+    argv_config.data_disks = data_disks;
     if let Some(endpoint) = &config.forward_endpoint {
         argv_config.forward_channel = Some(endpoint.qemu_config());
     }

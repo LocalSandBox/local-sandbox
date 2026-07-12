@@ -20,6 +20,7 @@ pub(crate) struct QemuBootConfig {
     pub kernel_image: PathBuf,
     pub initrd_image: PathBuf,
     pub root_disk: QemuDiskConfig,
+    pub data_disks: Vec<QemuDataDiskConfig>,
     pub machine: QemuMachineConfig,
     pub kernel_append: QemuKernelAppend,
     pub serial: QemuSerialConfig,
@@ -85,6 +86,7 @@ impl QemuBootConfig {
             kernel_image: kernel_image.into(),
             initrd_image: initrd_image.into(),
             root_disk,
+            data_disks: Vec::new(),
             machine: QemuMachineConfig {
                 memory_mib,
                 vcpu_count,
@@ -133,6 +135,16 @@ pub(crate) struct QemuMachineConfig {
 pub(crate) struct QemuDiskConfig {
     pub path: PathBuf,
     pub format: QemuDiskImageFormat,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct QemuDataDiskConfig {
+    pub id: String,
+    pub path: PathBuf,
+    pub format: QemuDiskImageFormat,
+    pub read_only: bool,
+    pub serial: String,
+    pub virtual_size_bytes: u64,
 }
 
 impl QemuDiskConfig {

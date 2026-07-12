@@ -255,6 +255,19 @@ mod file_transfer {
         let mut file = options.open(&req.path)?;
         file.seek(SeekFrom::Start(req.offset.unwrap_or(0)))?;
         file.write_all(data)?;
+        #[cfg(unix)]
+        if let Some(mode) = req.mode {
+            use std::os::unix::fs::PermissionsExt;
+            if mode & !0o7777 != 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "file mode contains unsupported bits",
+                ));
+            }
+            file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+        }
+        #[cfg(not(unix))]
+        let _ = req.mode;
         if req.defer_sync.unwrap_or(false) {
             Ok(())
         } else {
@@ -282,6 +295,7 @@ mod file_transfer {
                 offset: Some(0),
                 truncate: Some(true),
                 defer_sync: None,
+                mode: None,
             };
             write_file_range(&first, b"hello").expect("first chunk should write");
 
@@ -291,6 +305,7 @@ mod file_transfer {
                 offset: Some(5),
                 truncate: Some(false),
                 defer_sync: None,
+                mode: None,
             };
             write_file_range(&second, b" world").expect("second chunk should write");
 
@@ -313,6 +328,7 @@ mod file_transfer {
                 offset: Some(0),
                 truncate: Some(true),
                 defer_sync: Some(true),
+                mode: None,
             };
             write_file_range_with_sync(&deferred, b"hello", |_| {
                 sync_calls.fetch_add(1, Ordering::Relaxed);
@@ -332,6 +348,30 @@ mod file_transfer {
             .expect("durable write");
             assert_eq!(sync_calls.load(Ordering::Relaxed), 1);
 
+            let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn ranged_write_applies_requested_mode() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let root = temp_dir("write-mode");
+            let path = root.join("out.txt");
+            let request = WriteFileRequest {
+                path: path.display().to_string(),
+                len: 4,
+                offset: Some(0),
+                truncate: Some(true),
+                defer_sync: Some(true),
+                mode: Some(lsb_proto::MOUNT_IMPORT_FILE_MODE),
+            };
+            write_file_range(&request, b"data").expect("write with mode");
+
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                lsb_proto::MOUNT_IMPORT_FILE_MODE
+            );
             let _ = std::fs::remove_dir_all(root);
         }
 
@@ -2010,6 +2050,7 @@ mod guest {
                 offset: Some(0),
                 truncate: Some(true),
                 defer_sync: Some(true),
+                mode: None,
             };
             let mut deferred_data = Cursor::new(write_data_frame(b"hello"));
             let mut deferred_response = Vec::new();
@@ -2112,6 +2153,30 @@ mod guest {
             let _ = std::fs::remove_dir_all(root);
         }
 
+        #[test]
+        fn mkdir_handler_applies_requested_mode() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let root = temp_dir("mkdir-mode");
+            let path = root.join("nested");
+            let mut response = Vec::new();
+            handle_mkdir(
+                &MkdirRequest {
+                    path: path.display().to_string(),
+                    recursive: true,
+                    mode: Some(lsb_proto::MOUNT_IMPORT_DIRECTORY_MODE),
+                },
+                &mut response,
+            );
+
+            assert_response_type(&response, frame::FS_OK_RESP);
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                lsb_proto::MOUNT_IMPORT_DIRECTORY_MODE
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
+
         fn write_data_frame(data: &[u8]) -> Vec<u8> {
             let mut frame_data = Vec::new();
             frame::write_frame(&mut frame_data, frame::WRITE_FILE_DATA, data)
@@ -2155,7 +2220,20 @@ mod guest {
             std::fs::create_dir_all(&req.path)
         } else {
             std::fs::create_dir(&req.path)
-        };
+        }
+        .and_then(|()| {
+            if let Some(mode) = req.mode {
+                use std::os::unix::fs::PermissionsExt;
+                if mode & !0o7777 != 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "directory mode contains unsupported bits",
+                    ));
+                }
+                std::fs::set_permissions(&req.path, std::fs::Permissions::from_mode(mode))?;
+            }
+            Ok(())
+        });
         match result {
             Ok(()) => send_fs_ok(writer),
             Err(e) => send_fs_err(writer, format!("mkdir {}: {}", req.path, e)),

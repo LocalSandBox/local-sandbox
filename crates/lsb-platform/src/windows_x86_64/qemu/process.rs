@@ -1453,12 +1453,12 @@ mod tests {
     #[test]
     fn spawn_failure_updates_status_artifact_to_failed() {
         let artifact_dir = temp_artifact_dir("spawn-failure");
-        let bad_executable = artifact_dir.join("not-qemu.exe");
-        fs::create_dir_all(&artifact_dir).expect("artifact dir should be writable");
-        fs::write(&bad_executable, "not an executable").expect("bad executable should be writable");
-        let mut command = fake_command();
-        command.program = bad_executable;
-        let mut supervisor = QemuSupervisor::new(QemuSupervisorConfig::new(command, artifact_dir));
+        let missing_working_directory = artifact_dir.join("missing-working-directory");
+        let mut supervisor = QemuSupervisor::new(QemuSupervisorConfig::new(
+            fake_command(),
+            artifact_dir.clone(),
+        ));
+        supervisor.config.working_directory = missing_working_directory;
 
         let err = supervisor
             .start()

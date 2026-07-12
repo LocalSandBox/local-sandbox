@@ -968,6 +968,7 @@ name = "lsb-platform"
 version = "0.4.4"
 dependencies = [
  "anyhow",
+ "blake3",
  "block2",
  "crossbeam-channel",
  "dispatch2",
@@ -986,6 +987,7 @@ dependencies = [
 name = "lsb-proto"
 version = "0.4.4"
 dependencies = [
+ "blake3",
  "serde",
  "serde_json",
 ]
@@ -1049,6 +1051,7 @@ name = "lsb-vm"
 version = "0.4.4"
 dependencies = [
  "anyhow",
+ "blake3",
  "crossbeam-channel",
  "lsb-platform",
  "lsb-proto",

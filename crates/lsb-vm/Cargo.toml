@@ -7,6 +7,7 @@ license = "Apache-2.0"
 repository = "https://github.com/LocalSandBox/local-sandbox.git"
 
 [dependencies]
+blake3 = "1"
 lsb-platform = { version = "0.4.4", path = "../lsb-platform" }
 lsb-proto = { version = "0.4.4", path = "../lsb-proto" }
 anyhow = "1"

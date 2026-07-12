@@ -8,6 +8,7 @@ repository = "https://github.com/LocalSandBox/local-sandbox.git"
 
 [dependencies]
 anyhow = "1"
+blake3 = "1"
 crossbeam-channel = "0.5"
 getrandom = "0.3"
 lsb-proto = { version = "0.4.4", path = "../lsb-proto" }

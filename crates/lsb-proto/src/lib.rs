@@ -7,7 +7,14 @@ use std::collections::HashMap;
 /// Length = size of type byte + payload (excludes the 4-byte length prefix).
 /// Max frame size: 1 MB.
 pub mod frame;
+pub mod mount_cache;
 pub mod mux;
+
+pub use mount_cache::{
+    MountSnapshotEncodingError, MountSnapshotKey, MountSnapshotKeyEncoder,
+    MOUNT_CACHE_KEY_ABI_VERSION, MOUNT_IMPORT_DIRECTORY_MODE, MOUNT_IMPORT_FILE_MODE,
+    MOUNT_IMPORT_SEMANTICS_VERSION,
+};
 
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const CAP_FILE_RANGE_IO: &str = "file_range_io";
@@ -276,6 +283,8 @@ pub struct WriteFileRequest {
     pub truncate: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub defer_sync: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -304,6 +313,8 @@ pub struct MkdirRequest {
     pub path: String,
     #[serde(default = "default_true")]
     pub recursive: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -639,6 +650,7 @@ mod tests {
             offset: None,
             truncate: None,
             defer_sync: None,
+            mode: None,
         };
 
         let read_json = serde_json::to_string(&read).expect("read request should serialize");
@@ -661,6 +673,7 @@ mod tests {
             offset: Some(1024),
             truncate: Some(false),
             defer_sync: None,
+            mode: None,
         };
 
         let read_json = serde_json::to_string(&read).expect("read request should serialize");
@@ -680,6 +693,7 @@ mod tests {
             offset: Some(0),
             truncate: Some(true),
             defer_sync: Some(true),
+            mode: None,
         };
         let sync = SyncFsRequest {
             path: "/tmp/lsb/mounts".to_string(),

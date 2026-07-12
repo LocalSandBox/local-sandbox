@@ -7,8 +7,8 @@ use lsb_proto::MountRequest;
 
 use super::smb::{WindowsSmbAccess, WindowsSmbMount};
 use super::{
-    join_guest_child, plan_copy_in, validate_guest_absolute_path, validate_guest_path_component,
-    CopyInEntryKind, CopyInPlan, CopyPathError, CopyPathOperation,
+    join_guest_child, validate_copy_in_source_root, validate_guest_absolute_path,
+    validate_guest_path_component, CopyInSourceRootKind, CopyPathError, CopyPathOperation,
 };
 
 pub const WINDOWS_MOUNT_STAGING_ROOT: &str = "/tmp/lsb/mounts";
@@ -59,18 +59,17 @@ impl WindowsMountSpec {
 
 #[derive(Debug, Clone)]
 pub struct WindowsMountPlan {
-    pub imports: Vec<WindowsMountImport>,
+    pub imports: Vec<WindowsMountDescriptor>,
     pub smb_directs: Vec<WindowsSmbMount>,
     pub mount_requests: Vec<MountRequest>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WindowsMountImport {
+pub struct WindowsMountDescriptor {
     pub tag: String,
-    pub host_path: PathBuf,
+    pub host_root: PathBuf,
     pub guest_source: String,
     pub guest_target: String,
-    pub copy_plan: CopyInPlan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,20 +138,19 @@ pub fn plan_windows_mounts(
         match spec.mode {
             WindowsMountMode::Overlay => {
                 let guest_source = windows_mount_guest_source(&spec.tag);
-                let copy_plan = plan_copy_in(&spec.host_path, &guest_source)?;
-                if !copy_plan_root_is_directory(&copy_plan) {
+                let source = validate_copy_in_source_root(&spec.host_path)?;
+                if source.kind != CopyInSourceRootKind::Directory {
                     return Err(WindowsMountPlanError::SourceNotDirectory {
                         tag: spec.tag.clone(),
                         path: spec.host_path.display().to_string(),
                     });
                 }
 
-                imports.push(WindowsMountImport {
+                imports.push(WindowsMountDescriptor {
                     tag: spec.tag.clone(),
-                    host_path: copy_plan.source_root.clone(),
+                    host_root: source.path,
                     guest_source: guest_source.clone(),
                     guest_target: spec.guest_path.clone(),
-                    copy_plan,
                 });
                 mount_requests.push(MountRequest::Overlay {
                     source: guest_source,
@@ -187,26 +185,6 @@ pub fn plan_windows_mounts(
     })
 }
 
-pub fn replan_windows_mount_import(
-    import: &WindowsMountImport,
-) -> Result<WindowsMountImport, WindowsMountPlanError> {
-    let copy_plan = plan_copy_in(&import.host_path, &import.guest_source)?;
-    if !copy_plan_root_is_directory(&copy_plan) {
-        return Err(WindowsMountPlanError::SourceNotDirectory {
-            tag: import.tag.clone(),
-            path: import.host_path.display().to_string(),
-        });
-    }
-
-    Ok(WindowsMountImport {
-        tag: import.tag.clone(),
-        host_path: copy_plan.source_root.clone(),
-        guest_source: import.guest_source.clone(),
-        guest_target: import.guest_target.clone(),
-        copy_plan,
-    })
-}
-
 pub fn replan_windows_smb_mount(
     mount: &WindowsSmbMount,
 ) -> Result<WindowsSmbMount, WindowsMountPlanError> {
@@ -223,8 +201,8 @@ fn plan_direct_smb_mount(
     guest_path: &str,
     access: WindowsSmbAccess,
 ) -> Result<WindowsSmbMount, WindowsMountPlanError> {
-    let validation_plan = plan_copy_in(host_path, guest_path)?;
-    if !copy_plan_root_is_directory(&validation_plan) {
+    let source = validate_copy_in_source_root(host_path)?;
+    if source.kind != CopyInSourceRootKind::Directory {
         return Err(WindowsMountPlanError::SourceNotDirectory {
             tag: tag.to_string(),
             path: host_path.display().to_string(),
@@ -232,17 +210,10 @@ fn plan_direct_smb_mount(
     }
 
     Ok(WindowsSmbMount {
-        source: validation_plan.source_root,
+        source: source.path,
         target: guest_path.to_string(),
         access,
     })
-}
-
-fn copy_plan_root_is_directory(plan: &CopyInPlan) -> bool {
-    plan.entries
-        .iter()
-        .find(|entry| entry.guest_path == plan.guest_root)
-        .is_some_and(|entry| matches!(entry.kind, CopyInEntryKind::Directory))
 }
 
 fn reject_reserved_mount_target(target: &str) -> Result<(), WindowsMountPlanError> {
@@ -290,7 +261,7 @@ mod tests {
         assert_eq!(import.tag, "mount0");
         assert_eq!(import.guest_source, "/tmp/lsb/mounts/mount0/source");
         assert_eq!(import.guest_target, "/workspace");
-        assert_eq!(import.copy_plan.guest_root, import.guest_source);
+        assert_eq!(import.host_root, source.canonicalize().unwrap());
         assert!(matches!(
             plan.mount_requests[0],
             MountRequest::Overlay { ref source, ref target }
@@ -465,16 +436,15 @@ mod tests {
     }
 
     #[test]
-    fn replan_mount_import_rejects_entry_replaced_with_symlink_after_initial_plan() {
-        let root = temp_dir("replan-symlink");
+    fn mount_plan_does_not_visit_overlay_descendants() {
+        let root = temp_dir("root-only");
         let source = root.join("src");
         fs::create_dir_all(&source).expect("fixture source dir");
         write_fixture(&source.join("input.txt"), b"safe");
 
         let plan =
             plan_windows_mounts(&[WindowsMountSpec::overlay("mount0", &source, "/workspace")])
-                .expect("initial mount plan should build");
-        let import = &plan.imports[0];
+                .expect("root-only mount plan should build");
 
         fs::remove_file(source.join("input.txt")).expect("remove planned file");
         write_fixture(&root.join("target.txt"), b"target");
@@ -499,11 +469,8 @@ mod tests {
             }
         }
 
-        let err = replan_windows_mount_import(import)
-            .expect_err("replan should reject replaced symlink entry");
-
-        assert!(matches!(err, WindowsMountPlanError::InvalidPath(_)));
-        assert!(err.to_string().contains("symlinks"));
+        assert_eq!(plan.imports.len(), 1);
+        assert_eq!(plan.imports[0].host_root, source.canonicalize().unwrap());
 
         let _ = fs::remove_dir_all(root);
     }
