@@ -542,6 +542,13 @@ impl WindowsMountMetrics {
         });
     }
 
+    pub(crate) fn record_cache_import_batch(&self, bytes: u64, file_chunks: u64) {
+        self.with_state(|state| {
+            state.record.bytes_transferred = state.record.bytes_transferred.saturating_add(bytes);
+            state.record.chunk_count = state.record.chunk_count.saturating_add(file_chunks);
+        });
+    }
+
     #[allow(dead_code)]
     pub(crate) fn record_final_barrier(&self) {
         self.with_state(|state| {

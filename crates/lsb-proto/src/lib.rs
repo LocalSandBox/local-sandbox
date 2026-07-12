@@ -23,6 +23,7 @@ pub const CAP_CIFS_MOUNT: &str = "cifs_mount";
 pub const CAP_SESSION_MUX: &str = "session_mux";
 pub const CAP_DEFERRED_FILE_SYNC: &str = "deferred_file_sync";
 pub const CAP_MOUNT_CACHE_V1: &str = "mount_cache_v1";
+pub const CAP_MOUNT_CACHE_IMPORT_BATCH_V1: &str = "mount_cache_import_batch_v1";
 pub const FILE_TRANSFER_CHUNK_SIZE: usize = 512 * 1024;
 
 // --- Guest lifecycle protocol ---
@@ -306,6 +307,11 @@ pub enum MountCacheRequest {
         expected_size: u64,
         expected_key: String,
     },
+    ImportBatch {
+        image_id: String,
+        entries: Vec<MountCacheImportEntry>,
+        data_len: u32,
+    },
     SealBuild {
         image_id: String,
         expected_key: String,
@@ -325,6 +331,7 @@ pub enum MountCacheRequest {
 pub enum MountCacheAction {
     PrepareBuild,
     PrepareHit,
+    ImportBatch,
     SealBuild,
     AbortBuild,
     MountOverlay,
@@ -368,6 +375,20 @@ pub enum MountCacheRejectReason {
     Unsupported,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MountCacheImportEntry {
+    Directory {
+        path: String,
+    },
+    FileChunk {
+        path: String,
+        offset: u64,
+        len: u32,
+        truncate: bool,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MountCacheValidationError(&'static str);
 
@@ -384,6 +405,7 @@ impl MountCacheRequest {
         match self {
             Self::PrepareBuild { .. } => MountCacheAction::PrepareBuild,
             Self::PrepareHit { .. } => MountCacheAction::PrepareHit,
+            Self::ImportBatch { .. } => MountCacheAction::ImportBatch,
             Self::SealBuild { .. } => MountCacheAction::SealBuild,
             Self::AbortBuild { .. } => MountCacheAction::AbortBuild,
             Self::MountOverlay { .. } => MountCacheAction::MountOverlay,
@@ -394,6 +416,7 @@ impl MountCacheRequest {
         match self {
             Self::PrepareBuild { image_id, .. }
             | Self::PrepareHit { image_id, .. }
+            | Self::ImportBatch { image_id, .. }
             | Self::SealBuild { image_id, .. }
             | Self::AbortBuild { image_id }
             | Self::MountOverlay { image_id, .. } => image_id,
@@ -435,6 +458,52 @@ impl MountCacheRequest {
                     expected_key,
                     "expected_key must be a lowercase BLAKE3 digest",
                 )?;
+            }
+            Self::ImportBatch {
+                entries, data_len, ..
+            } => {
+                if entries.is_empty() || entries.len() > 4096 {
+                    return Err(MountCacheValidationError(
+                        "cache import batch must contain 1 to 4096 entries",
+                    ));
+                }
+                if *data_len as usize > frame::MAX_FRAME_PAYLOAD {
+                    return Err(MountCacheValidationError(
+                        "cache import batch data exceeds the frame limit",
+                    ));
+                }
+                let mut expected_data = 0u64;
+                for entry in entries {
+                    let path = match entry {
+                        MountCacheImportEntry::Directory { path }
+                        | MountCacheImportEntry::FileChunk { path, .. } => path,
+                    };
+                    validate_import_path(path)?;
+                    if let MountCacheImportEntry::FileChunk {
+                        offset,
+                        len,
+                        truncate,
+                        ..
+                    } = entry
+                    {
+                        if *truncate && *offset != 0 {
+                            return Err(MountCacheValidationError(
+                                "a truncating cache file chunk must start at offset zero",
+                            ));
+                        }
+                        offset
+                            .checked_add(u64::from(*len))
+                            .ok_or(MountCacheValidationError("cache file chunk range overflow"))?;
+                        expected_data = expected_data.checked_add(u64::from(*len)).ok_or(
+                            MountCacheValidationError("cache import batch length overflow"),
+                        )?;
+                    }
+                }
+                if expected_data != u64::from(*data_len) {
+                    return Err(MountCacheValidationError(
+                        "cache import batch data length does not match its entries",
+                    ));
+                }
             }
             Self::SealBuild { expected_key, .. } => {
                 validate_digest(
@@ -486,7 +555,9 @@ impl MountCacheResponse {
                     ));
                 }
                 let valid_shape = match action {
-                    MountCacheAction::PrepareBuild | MountCacheAction::AbortBuild => {
+                    MountCacheAction::PrepareBuild
+                    | MountCacheAction::ImportBatch
+                    | MountCacheAction::AbortBuild => {
                         binding_id.is_none()
                             && computed_key.is_none()
                             && raw_device_digest.is_none()
@@ -562,6 +633,25 @@ fn validate_image_size(size: u64) -> Result<(), MountCacheValidationError> {
         Err(MountCacheValidationError(
             "expected_size must be at least 128 MiB and sector aligned",
         ))
+    }
+}
+
+fn validate_import_path(path: &str) -> Result<(), MountCacheValidationError> {
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.ends_with('/')
+        || path.contains("//")
+        || path.contains('\\')
+        || path.contains('\0')
+        || path
+            .split('/')
+            .any(|component| component.is_empty() || component == "." || component == "..")
+    {
+        Err(MountCacheValidationError(
+            "cache import path must be a canonical relative path",
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -687,9 +777,9 @@ mod tests {
     use super::{
         decode_forward_close, decode_forward_payload, encode_forward_close, encode_forward_payload,
         ExecRequest, ForwardRequest, ForwardResponse, GuestReady, GuestTransport, MountCacheAction,
-        MountCacheRejectReason, MountCacheRequest, MountCacheResponse, MountRequest,
-        ReadFileRequest, SyncFsRequest, WriteFileRequest, CAP_MOUNT_CACHE_V1, CAP_SESSION_MUX,
-        PROTOCOL_VERSION,
+        MountCacheImportEntry, MountCacheRejectReason, MountCacheRequest, MountCacheResponse,
+        MountRequest, ReadFileRequest, SyncFsRequest, WriteFileRequest,
+        CAP_MOUNT_CACHE_IMPORT_BATCH_V1, CAP_MOUNT_CACHE_V1, CAP_SESSION_MUX, PROTOCOL_VERSION,
     };
     use crate::frame;
 
@@ -970,7 +1060,13 @@ mod tests {
         const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         let mut ready = GuestReady::new(GuestTransport::VirtioSerial, "0.5.2-test");
         ready.capabilities.push(CAP_MOUNT_CACHE_V1.to_string());
-        assert_eq!(ready.capabilities, [CAP_MOUNT_CACHE_V1]);
+        ready
+            .capabilities
+            .push(CAP_MOUNT_CACHE_IMPORT_BATCH_V1.to_string());
+        assert_eq!(
+            ready.capabilities,
+            [CAP_MOUNT_CACHE_V1, CAP_MOUNT_CACHE_IMPORT_BATCH_V1]
+        );
 
         let request = MountCacheRequest::PrepareBuild {
             image_id: DIGEST.to_string(),
@@ -1032,6 +1128,62 @@ mod tests {
             r#"{{"action":"prepare_hit","image_id":"{DIGEST}","serial":"cache0","expected_size":134217728,"expected_key":"{DIGEST}","extra":true}}"#
         );
         assert!(serde_json::from_str::<MountCacheRequest>(&unknown).is_err());
+    }
+
+    #[test]
+    fn mount_cache_import_batch_validates_paths_ranges_and_data_length() {
+        const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let request = MountCacheRequest::ImportBatch {
+            image_id: DIGEST.to_string(),
+            entries: vec![
+                MountCacheImportEntry::Directory {
+                    path: "nested".to_string(),
+                },
+                MountCacheImportEntry::FileChunk {
+                    path: "nested/file.txt".to_string(),
+                    offset: 0,
+                    len: 5,
+                    truncate: true,
+                },
+            ],
+            data_len: 5,
+        };
+        request.validate().expect("batch should validate");
+        let json = serde_json::to_string(&request).expect("batch should serialize");
+        assert!(json.contains(r#""action":"import_batch""#));
+        assert_eq!(
+            serde_json::from_str::<MountCacheRequest>(&json).unwrap(),
+            request
+        );
+
+        let invalid_path = MountCacheRequest::ImportBatch {
+            image_id: DIGEST.to_string(),
+            entries: vec![MountCacheImportEntry::Directory {
+                path: "../escape".to_string(),
+            }],
+            data_len: 0,
+        };
+        assert!(invalid_path.validate().is_err());
+        let invalid_length = MountCacheRequest::ImportBatch {
+            image_id: DIGEST.to_string(),
+            entries: vec![MountCacheImportEntry::FileChunk {
+                path: "file".to_string(),
+                offset: 0,
+                len: 4,
+                truncate: true,
+            }],
+            data_len: 3,
+        };
+        assert!(invalid_length.validate().is_err());
+
+        let response = MountCacheResponse::Ready {
+            action: MountCacheAction::ImportBatch,
+            image_id: DIGEST.to_string(),
+            binding_id: None,
+            computed_key: None,
+            raw_device_digest: None,
+        };
+        response.validate_for(&request).unwrap();
     }
 
     #[test]

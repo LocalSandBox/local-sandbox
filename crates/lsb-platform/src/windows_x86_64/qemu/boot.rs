@@ -528,7 +528,7 @@ impl fmt::Display for QemuBootError {
                 ..
             } => write!(
                 f,
-                "the Windows guest advertised unsupported runtime capabilities during readiness: {}. The Windows backend currently accepts the base guest-ready handshake plus '{}', '{}', '{}', '{}', '{}', and '{}' capabilities. Update lsb-proto and host handling before advertising additional capabilities. serial excerpt: {}.{}",
+                "the Windows guest advertised unsupported runtime capabilities during readiness: {}. The Windows backend currently accepts the base guest-ready handshake plus '{}', '{}', '{}', '{}', '{}', '{}', and '{}' capabilities. Update lsb-proto and host handling before advertising additional capabilities. serial excerpt: {}.{}",
                 capability_summary(capabilities),
                 lsb_proto::CAP_FILE_RANGE_IO,
                 lsb_proto::CAP_PORT_FORWARD,
@@ -536,6 +536,7 @@ impl fmt::Display for QemuBootError {
                 lsb_proto::CAP_SESSION_MUX,
                 lsb_proto::CAP_DEFERRED_FILE_SYNC,
                 lsb_proto::CAP_MOUNT_CACHE_V1,
+                lsb_proto::CAP_MOUNT_CACHE_IMPORT_BATCH_V1,
                 empty_as_placeholder(serial_excerpt),
                 self.artifact_sentence()
             ),
@@ -1581,6 +1582,7 @@ fn unsupported_guest_capabilities(capabilities: &[String]) -> Vec<String> {
                     | lsb_proto::CAP_SESSION_MUX
                     | lsb_proto::CAP_DEFERRED_FILE_SYNC
                     | lsb_proto::CAP_MOUNT_CACHE_V1
+                    | lsb_proto::CAP_MOUNT_CACHE_IMPORT_BATCH_V1
             )
         })
         .cloned()

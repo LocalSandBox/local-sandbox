@@ -48,6 +48,9 @@ mod control_transport {
                     ready
                         .capabilities
                         .push(lsb_proto::CAP_MOUNT_CACHE_V1.to_string());
+                    ready
+                        .capabilities
+                        .push(lsb_proto::CAP_MOUNT_CACHE_IMPORT_BATCH_V1.to_string());
                 }
                 Some(ready)
             }
@@ -149,6 +152,12 @@ mod control_transport {
                 ready
                     .capabilities
                     .contains(&lsb_proto::CAP_MOUNT_CACHE_V1.to_string()),
+                cache_formatter_path().is_some()
+            );
+            assert_eq!(
+                ready
+                    .capabilities
+                    .contains(&lsb_proto::CAP_MOUNT_CACHE_IMPORT_BATCH_V1.to_string()),
                 cache_formatter_path().is_some()
             );
         }
@@ -1795,8 +1804,33 @@ mod guest {
                     let _ = frame::write_frame(writer, frame::ERROR, message.as_bytes());
                     return true;
                 }
+                let import_data = if matches!(&request, MountCacheRequest::ImportBatch { .. }) {
+                    match frame::read_frame(reader) {
+                        Ok(Some((frame::MOUNT_CACHE_DATA, data))) => Some(data),
+                        Ok(Some((message_type, _))) => {
+                            let message = format!(
+                                "invalid mount cache import data frame type 0x{message_type:02x}"
+                            );
+                            let _ = frame::write_frame(writer, frame::ERROR, message.as_bytes());
+                            return true;
+                        }
+                        Ok(None) | Err(_) => {
+                            let _ = frame::write_frame(
+                                writer,
+                                frame::ERROR,
+                                b"missing mount cache import data frame",
+                            );
+                            return true;
+                        }
+                    }
+                } else {
+                    None
+                };
                 let response = match cache.lock() {
-                    Ok(mut cache) => cache.handle(request.clone()),
+                    Ok(mut cache) => match import_data {
+                        Some(data) => cache.import_batch(request.clone(), &data),
+                        None => cache.handle(request.clone()),
+                    },
                     Err(_) => Err("mount cache manager lock was poisoned".to_string()),
                 };
                 match response {

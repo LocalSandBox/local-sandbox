@@ -1,18 +1,19 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use lsb_proto::{
-    MountCacheAction, MountCacheRejectReason, MountCacheRequest, MountCacheResponse,
-    MountSnapshotKeyEncoder, MOUNT_IMPORT_DIRECTORY_MODE, MOUNT_IMPORT_FILE_MODE,
+    MountCacheAction, MountCacheImportEntry, MountCacheRejectReason, MountCacheRequest,
+    MountCacheResponse, MountSnapshotKeyEncoder, MOUNT_IMPORT_DIRECTORY_MODE,
+    MOUNT_IMPORT_FILE_MODE,
 };
 
 const CACHE_MOUNT_ROOT: &str = "/tmp/lsb/cache-images";
@@ -81,6 +82,9 @@ impl MountCacheManager {
                 expected_size,
                 expected_key,
             } => self.prepare_hit(image_id, serial, expected_size, expected_key),
+            MountCacheRequest::ImportBatch { .. } => {
+                Err("cache import batch requires its data frame".to_string())
+            }
             MountCacheRequest::SealBuild {
                 image_id,
                 expected_key,
@@ -92,6 +96,42 @@ impl MountCacheManager {
                 target,
             } => self.mount_overlay(image_id, binding_id, target),
         }
+    }
+
+    pub(crate) fn import_batch(
+        &mut self,
+        request: MountCacheRequest,
+        data: &[u8],
+    ) -> Result<MountCacheResponse, String> {
+        request.validate().map_err(|error| error.to_string())?;
+        let MountCacheRequest::ImportBatch {
+            image_id,
+            entries,
+            data_len,
+        } = request
+        else {
+            return Err("expected a cache import batch request".to_string());
+        };
+        if data.len() != data_len as usize {
+            return Err("cache import data frame length changed after validation".to_string());
+        }
+        let Some(image) = self.images.get(&image_id) else {
+            return Err(format!("cache image {image_id} was not prepared"));
+        };
+        if image.phase != CacheImagePhase::Building {
+            return Err(format!("cache image {image_id} is not in build state"));
+        }
+        let source = image.mount_dir.join("source");
+        if let Err(error) = apply_import_batch(&source, &entries, data) {
+            eprintln!("lsb-guest: cache import batch rejected: {error}");
+            self.rollback_image(&image_id)?;
+            return Ok(rejected(
+                MountCacheAction::ImportBatch,
+                image_id,
+                MountCacheRejectReason::MountFailed,
+            ));
+        }
+        Ok(ready(MountCacheAction::ImportBatch, image_id))
     }
 
     fn prepare_build(
@@ -466,6 +506,71 @@ fn create_directory_with_mode(path: &Path, mode: u32) -> io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
 
+fn apply_import_batch(
+    source: &Path,
+    entries: &[MountCacheImportEntry],
+    data: &[u8],
+) -> io::Result<()> {
+    let mut data_offset = 0usize;
+    for entry in entries {
+        match entry {
+            MountCacheImportEntry::Directory { path } => {
+                let target = source.join(path);
+                create_directory_with_mode(&target, MOUNT_IMPORT_DIRECTORY_MODE)?;
+            }
+            MountCacheImportEntry::FileChunk {
+                path,
+                offset,
+                len,
+                truncate,
+            } => {
+                let length = *len as usize;
+                let end = data_offset.checked_add(length).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "cache batch data overflow")
+                })?;
+                let bytes = data.get(data_offset..end).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "cache batch data is incomplete",
+                    )
+                })?;
+                let target = source.join(path);
+                let mut options = OpenOptions::new();
+                options
+                    .write(true)
+                    .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+                if *truncate {
+                    options.create_new(true).mode(MOUNT_IMPORT_FILE_MODE);
+                }
+                let mut file = options.open(&target)?;
+                let metadata = file.metadata()?;
+                if !metadata.file_type().is_file()
+                    || metadata.nlink() != 1
+                    || metadata.len() != *offset
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "cache import file is not a sequential single-link regular file",
+                    ));
+                }
+                file.seek(SeekFrom::Start(*offset))?;
+                file.write_all(bytes)?;
+                if *truncate {
+                    file.set_permissions(std::fs::Permissions::from_mode(MOUNT_IMPORT_FILE_MODE))?;
+                }
+                data_offset = end;
+            }
+        }
+    }
+    if data_offset != data.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "cache batch contains unreferenced data",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_target(target: &str) -> Result<(), String> {
     let path = Path::new(target);
     if target == "/" || !path.is_absolute() {
@@ -800,7 +905,6 @@ fn write_sentinel(mount_dir: &Path, expected_key: &str) -> io::Result<()> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true).mode(0o600);
     let mut file = options.open(path)?;
-    use std::io::Write;
     file.write_all(format!("abi=1\nkey={expected_key}\n").as_bytes())?;
     file.sync_all()
 }
@@ -1200,6 +1304,72 @@ mod tests {
         std::fs::rename(root.join("renamed"), root.join("one")).unwrap();
         write_mode_replace(&root.join("one"), b"diff");
         assert_ne!(hash_source_tree(&root).unwrap(), original);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn import_batches_create_normalized_directories_and_sequential_file_chunks() {
+        let root = temp_dir("batch-import");
+        create_directory_with_mode(&root, MOUNT_IMPORT_DIRECTORY_MODE).unwrap();
+        apply_import_batch(
+            &root,
+            &[
+                MountCacheImportEntry::Directory {
+                    path: "nested".to_string(),
+                },
+                MountCacheImportEntry::FileChunk {
+                    path: "nested/file.txt".to_string(),
+                    offset: 0,
+                    len: 2,
+                    truncate: true,
+                },
+            ],
+            b"he",
+        )
+        .unwrap();
+        apply_import_batch(
+            &root,
+            &[MountCacheImportEntry::FileChunk {
+                path: "nested/file.txt".to_string(),
+                offset: 2,
+                len: 3,
+                truncate: false,
+            }],
+            b"llo",
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read(root.join("nested/file.txt")).unwrap(),
+            b"hello"
+        );
+        assert_eq!(
+            std::fs::metadata(root.join("nested"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            MOUNT_IMPORT_DIRECTORY_MODE
+        );
+        assert_eq!(
+            std::fs::metadata(root.join("nested/file.txt"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            MOUNT_IMPORT_FILE_MODE
+        );
+        assert!(apply_import_batch(
+            &root,
+            &[MountCacheImportEntry::FileChunk {
+                path: "nested/file.txt".to_string(),
+                offset: 99,
+                len: 1,
+                truncate: false,
+            }],
+            b"x",
+        )
+        .is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 

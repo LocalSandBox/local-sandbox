@@ -69,8 +69,9 @@ use lsb_proto::{
 use lsb_proto::{ForwardRequest, ForwardResponse};
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use lsb_proto::{
-    MountCacheRequest, MountCacheResponse, CAP_CIFS_MOUNT, CAP_DEFERRED_FILE_SYNC,
-    CAP_MOUNT_CACHE_V1, CAP_SESSION_MUX,
+    MountCacheImportEntry, MountCacheRejectReason, MountCacheRequest, MountCacheResponse,
+    CAP_CIFS_MOUNT, CAP_DEFERRED_FILE_SYNC, CAP_MOUNT_CACHE_IMPORT_BATCH_V1, CAP_MOUNT_CACHE_V1,
+    CAP_SESSION_MUX,
 };
 #[cfg(target_os = "macos")]
 use lsb_proto::{VSOCK_PORT, VSOCK_PORT_FORWARD};
@@ -115,6 +116,10 @@ const MS_RDONLY: u64 = 1;
 static COPY_OUT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 static PORT_FORWARD_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+const MOUNT_CACHE_BATCH_DATA_SIZE: usize = 512 * 1024;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+const MOUNT_CACHE_BATCH_METADATA_BUDGET: usize = 256 * 1024;
 
 #[derive(Debug, Clone)]
 pub enum MountConfig {
@@ -426,6 +431,20 @@ enum WindowsMountCacheImageState {
     PublishEligible { raw_device_digest: String },
     Fallback,
 }
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[derive(Debug)]
+struct MountCacheImportRejected(MountCacheRejectReason);
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+impl std::fmt::Display for MountCacheImportRejected {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "guest rejected cache import batch: {:?}", self.0)
+    }
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+impl std::error::Error for MountCacheImportRejected {}
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 impl WindowsMountCacheLease {
@@ -2433,10 +2452,10 @@ impl Sandbox {
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn supports_mount_cache(&self) -> bool {
-        self.vm
-            .guest_capabilities()
+        let capabilities = self.vm.guest_capabilities();
+        [CAP_MOUNT_CACHE_V1, CAP_MOUNT_CACHE_IMPORT_BATCH_V1]
             .iter()
-            .any(|capability| capability == CAP_MOUNT_CACHE_V1)
+            .all(|required| capabilities.iter().any(|capability| capability == required))
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -2945,30 +2964,25 @@ impl Sandbox {
         self.with_guest_control_session("mount init", |writer, reader| {
             self.mount_metrics
                 .set_failure_context(FailedPhase::Transfer, ErrorCategory::SourceMutation);
-            let transfer_started = Instant::now();
-            let transfer_result: Result<()> = (|| {
-                if cache_run.has_selected_routes() {
-                    self.initialize_mount_cache_on_session(writer, reader, snapshots, cache_run)?;
+            if cache_run.has_selected_routes() {
+                self.initialize_mount_cache_on_session(writer, reader, snapshots, cache_run)?;
+            }
+            for (snapshot_index, snapshot) in snapshots.iter().enumerate() {
+                if cache_run.route_is_selected(snapshot_index) {
+                    continue;
                 }
-                for (snapshot_index, snapshot) in snapshots.iter().enumerate() {
-                    if cache_run.route_is_selected(snapshot_index) {
-                        continue;
-                    }
-                    self.copy_windows_mount_snapshot_on_session(
-                        writer, reader, snapshot, defer_sync,
+                let transfer_started = Instant::now();
+                let copy_result = self
+                    .copy_windows_mount_snapshot_on_session(writer, reader, snapshot, defer_sync);
+                self.mount_metrics
+                    .add_duration(DurationMetric::Transfer, transfer_started.elapsed());
+                copy_result.with_context(|| {
+                    format!(
+                        "copying Windows mount '{}' into guest staging path '{}'",
+                        snapshot.descriptor.tag, snapshot.descriptor.guest_source
                     )
-                    .with_context(|| {
-                        format!(
-                            "copying Windows mount '{}' into guest staging path '{}'",
-                            snapshot.descriptor.tag, snapshot.descriptor.guest_source
-                        )
-                    })?;
-                }
-                Ok(())
-            })();
-            self.mount_metrics
-                .add_duration(DurationMetric::Transfer, transfer_started.elapsed());
-            transfer_result?;
+                })?;
+            }
 
             if defer_sync && cache_run.has_fallback_routes() {
                 self.sync_windows_mount_import_on_session(writer, reader)?;
@@ -2991,7 +3005,6 @@ impl Sandbox {
         snapshots: &[WindowsMountSnapshot],
         cache_run: &mut WindowsMountCacheRun,
     ) -> Result<()> {
-        let defer_sync = self.supports_deferred_file_sync();
         for image_index in 0..cache_run.images.len() {
             if matches!(
                 cache_run.images[image_index].state,
@@ -3071,14 +3084,25 @@ impl Sandbox {
                 let snapshot = snapshots.get(snapshot_index).ok_or_else(|| {
                     anyhow::anyhow!("cache image binding references a missing snapshot")
                 })?;
-                let cache_source = format!("/tmp/lsb/cache-images/{image_id}/source");
-                if let Err(error) = self.copy_windows_mount_snapshot_to_source_on_session(
-                    writer,
-                    reader,
-                    snapshot,
-                    &cache_source,
-                    defer_sync,
-                ) {
+                let transfer_started = Instant::now();
+                let copy_result = self.copy_windows_mount_snapshot_to_cache_on_session(
+                    writer, reader, snapshot, &image_id,
+                );
+                self.mount_metrics
+                    .add_duration(DurationMetric::Transfer, transfer_started.elapsed());
+                if let Err(error) = copy_result {
+                    if let Some(rejected) = error.downcast_ref::<MountCacheImportRejected>() {
+                        eprintln!(
+                            "lsb: guest rejected mount cache image {image_id} during import ({:?}); using copy fallback",
+                            rejected.0
+                        );
+                        cache_run.fallback_image(
+                            image_index,
+                            format!("guest cache import rejected: {:?}", rejected.0),
+                            false,
+                        );
+                        continue;
+                    }
                     let abort = MountCacheRequest::AbortBuild {
                         image_id: image_id.clone(),
                     };
@@ -3346,6 +3370,142 @@ impl Sandbox {
                     })?,
             }
         }
+        Ok(())
+    }
+
+    fn copy_windows_mount_snapshot_to_cache_on_session(
+        &self,
+        writer: &mut impl Write,
+        reader: &mut impl Read,
+        snapshot: &WindowsMountSnapshot,
+        image_id: &str,
+    ) -> Result<()> {
+        let mut entries = Vec::<MountCacheImportEntry>::new();
+        let mut data = Vec::<u8>::new();
+        let mut metadata_bytes = 0usize;
+        for entry in &snapshot.entries {
+            if entry.relative_path.is_empty() {
+                continue;
+            }
+            match entry.kind {
+                WindowsMountSnapshotEntryKind::Directory { .. } => {
+                    let entry_cost = entry.relative_path.len().saturating_add(64);
+                    if !entries.is_empty()
+                        && (entries.len() >= 1024
+                            || metadata_bytes.saturating_add(entry_cost)
+                                > MOUNT_CACHE_BATCH_METADATA_BUDGET)
+                    {
+                        self.flush_mount_cache_import_batch(
+                            writer,
+                            reader,
+                            image_id,
+                            &mut entries,
+                            &mut data,
+                        )?;
+                        metadata_bytes = 0;
+                    }
+                    entries.push(MountCacheImportEntry::Directory {
+                        path: entry.relative_path.clone(),
+                    });
+                    metadata_bytes = metadata_bytes.saturating_add(entry_cost);
+                }
+                WindowsMountSnapshotEntryKind::File { .. } => {
+                    self.transfer_windows_mount_snapshot_file(entry, |offset, truncate, bytes| {
+                        let entry_cost = entry.relative_path.len().saturating_add(96);
+                        if !entries.is_empty()
+                            && (entries.len() >= 1024
+                                || metadata_bytes.saturating_add(entry_cost)
+                                    > MOUNT_CACHE_BATCH_METADATA_BUDGET
+                                || data.len().saturating_add(bytes.len())
+                                    > MOUNT_CACHE_BATCH_DATA_SIZE)
+                        {
+                            self.flush_mount_cache_import_batch(
+                                writer,
+                                reader,
+                                image_id,
+                                &mut entries,
+                                &mut data,
+                            )?;
+                            metadata_bytes = 0;
+                        }
+                        entries.push(MountCacheImportEntry::FileChunk {
+                            path: entry.relative_path.clone(),
+                            offset,
+                            len: u32::try_from(bytes.len())
+                                .context("cache import chunk exceeds u32")?,
+                            truncate,
+                        });
+                        data.extend_from_slice(bytes);
+                        metadata_bytes = metadata_bytes.saturating_add(entry_cost);
+                        if data.len() >= MOUNT_CACHE_BATCH_DATA_SIZE {
+                            self.flush_mount_cache_import_batch(
+                                writer,
+                                reader,
+                                image_id,
+                                &mut entries,
+                                &mut data,
+                            )?;
+                            metadata_bytes = 0;
+                        }
+                        Ok(())
+                    })?;
+                }
+            }
+        }
+        self.flush_mount_cache_import_batch(writer, reader, image_id, &mut entries, &mut data)
+    }
+
+    fn flush_mount_cache_import_batch(
+        &self,
+        writer: &mut impl Write,
+        reader: &mut impl Read,
+        image_id: &str,
+        entries: &mut Vec<MountCacheImportEntry>,
+        data: &mut Vec<u8>,
+    ) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let file_chunks = entries
+            .iter()
+            .filter(|entry| matches!(entry, MountCacheImportEntry::FileChunk { .. }))
+            .count() as u64;
+        let request = MountCacheRequest::ImportBatch {
+            image_id: image_id.to_string(),
+            entries: std::mem::take(entries),
+            data_len: u32::try_from(data.len()).context("cache import batch exceeds u32")?,
+        };
+        request
+            .validate()
+            .context("validating host cache import batch")?;
+        frame::send_json(writer, frame::MOUNT_CACHE_REQ, &request)
+            .context("sending cache import batch request")?;
+        frame::write_frame(writer, frame::MOUNT_CACHE_DATA, data)
+            .context("sending cache import batch data")?;
+        self.mount_metrics.record_filesystem_request();
+        let (message_type, payload) = read_response_frame(reader, "mount cache import")
+            .context("reading cache import batch response")?;
+        self.mount_metrics.record_filesystem_response();
+        if message_type == frame::ERROR {
+            bail!(
+                "guest mount cache import protocol error: {}",
+                String::from_utf8_lossy(&payload)
+            );
+        }
+        if message_type != frame::MOUNT_CACHE_RESP {
+            bail!("unexpected frame type 0x{message_type:02x} in cache import batch response");
+        }
+        let response: MountCacheResponse =
+            serde_json::from_slice(&payload).context("decoding cache import batch response")?;
+        response
+            .validate_for(&request)
+            .context("validating cache import batch response")?;
+        if let MountCacheResponse::Rejected { reason, .. } = response {
+            return Err(anyhow::Error::new(MountCacheImportRejected(reason)));
+        }
+        self.mount_metrics
+            .record_cache_import_batch(data.len() as u64, file_chunks);
+        data.clear();
         Ok(())
     }
 
@@ -4617,6 +4777,50 @@ mod tests {
         assert_eq!(sync_requests, 1);
         assert_eq!(mount_requests, 1);
         assert!(sandbox.mounts.lock().expect("mount lock").is_empty());
+
+        let image_id = snapshot.key.to_hex();
+        let mut batch_responses = Vec::new();
+        for _ in 0..10 {
+            frame::send_json(
+                &mut batch_responses,
+                frame::MOUNT_CACHE_RESP,
+                &MountCacheResponse::Ready {
+                    action: lsb_proto::MountCacheAction::ImportBatch,
+                    image_id: image_id.clone(),
+                    binding_id: None,
+                    computed_key: None,
+                    raw_device_digest: None,
+                },
+            )
+            .unwrap();
+        }
+        let mut batch_writer = Vec::new();
+        sandbox
+            .copy_windows_mount_snapshot_to_cache_on_session(
+                &mut batch_writer,
+                &mut Cursor::new(batch_responses),
+                &snapshot,
+                &image_id,
+            )
+            .expect("cache batch transcript");
+        let frames = collect_frames(&batch_writer);
+        let batch_requests = frames
+            .iter()
+            .filter(|(message_type, _)| *message_type == frame::MOUNT_CACHE_REQ)
+            .count();
+        let batch_data = frames
+            .iter()
+            .filter(|(message_type, _)| *message_type == frame::MOUNT_CACHE_DATA)
+            .collect::<Vec<_>>();
+        assert_eq!(batch_requests, 3);
+        assert_eq!(batch_data.len(), 3);
+        assert_eq!(
+            batch_data
+                .iter()
+                .map(|(_, payload)| payload.len())
+                .sum::<usize>(),
+            4_000
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }

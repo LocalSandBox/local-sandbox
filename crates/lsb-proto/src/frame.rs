@@ -53,6 +53,7 @@ pub const SYNC_FS_REQ: u8 = 0x4E;
 // negotiation so pre-cache guests continue to ignore an entirely older dialect.
 pub const MOUNT_CACHE_REQ: u8 = 0x50;
 pub const MOUNT_CACHE_RESP: u8 = 0x51;
+pub const MOUNT_CACHE_DATA: u8 = 0x52;
 
 pub const MAX_FRAME_LEN: u32 = 1 << 20; // 1 MB
 pub const MAX_FRAME_PAYLOAD: usize = MAX_FRAME_LEN as usize - 1;
