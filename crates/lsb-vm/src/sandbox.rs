@@ -790,6 +790,18 @@ impl Sandbox {
     }
 
     fn send_write_file_request(&self, req: &WriteFileRequest, content: &[u8]) -> Result<()> {
+        self.with_guest_control_session("write_file", |writer, reader| {
+            self.send_write_file_request_on_session(writer, reader, req, content)
+        })
+    }
+
+    fn send_write_file_request_on_session(
+        &self,
+        writer: &mut impl Write,
+        reader: &mut impl Read,
+        req: &WriteFileRequest,
+        content: &[u8],
+    ) -> Result<()> {
         if content.len() > frame::MAX_FRAME_PAYLOAD {
             bail!(
                 "write_file chunk for '{}' is {} bytes, exceeding protocol payload limit {}",
@@ -799,78 +811,86 @@ impl Sandbox {
             );
         }
 
-        self.with_guest_control_session("write_file", |writer, reader| {
-            frame::send_json(writer, frame::WRITE_FILE_REQ, req)?;
-            frame::write_frame(writer, frame::WRITE_FILE_DATA, content)?;
-            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-            if self.mount_metrics.mount_init_active() {
-                self.mount_metrics.record_filesystem_request();
-            }
+        frame::send_json(writer, frame::WRITE_FILE_REQ, req)?;
+        frame::write_frame(writer, frame::WRITE_FILE_DATA, content)?;
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        if self.mount_metrics.mount_init_active() {
+            self.mount_metrics.record_filesystem_request();
+        }
 
-            let (msg_type, payload) =
-                read_response_frame(reader, "write_file").context("reading write_file response")?;
-            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-            if self.mount_metrics.mount_init_active() {
-                self.mount_metrics.record_filesystem_response();
-            }
-            if msg_type == frame::ERROR {
-                bail!("{}", String::from_utf8_lossy(&payload));
-            }
-            if msg_type != frame::WRITE_FILE_RESP {
-                bail!("unexpected frame type 0x{msg_type:02x} in write_file response");
-            }
+        let (msg_type, payload) =
+            read_response_frame(reader, "write_file").context("reading write_file response")?;
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        if self.mount_metrics.mount_init_active() {
+            self.mount_metrics.record_filesystem_response();
+        }
+        if msg_type == frame::ERROR {
+            bail!("{}", String::from_utf8_lossy(&payload));
+        }
+        if msg_type != frame::WRITE_FILE_RESP {
+            bail!("unexpected frame type 0x{msg_type:02x} in write_file response");
+        }
 
-            let resp: WriteFileResponse =
-                serde_json::from_slice(&payload).context("parsing write_file response")?;
+        let resp: WriteFileResponse =
+            serde_json::from_slice(&payload).context("parsing write_file response")?;
 
-            if !resp.ok {
-                bail!(
-                    "write_file failed: {}",
-                    resp.error.unwrap_or_else(|| "unknown error".into())
-                );
-            }
+        if !resp.ok {
+            bail!(
+                "write_file failed: {}",
+                resp.error.unwrap_or_else(|| "unknown error".into())
+            );
+        }
 
-            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-            if self.mount_metrics.mount_init_active() {
-                self.mount_metrics.record_legacy_write(content.len() as u64);
-            }
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        if self.mount_metrics.mount_init_active() {
+            self.mount_metrics.record_legacy_write(content.len() as u64);
+        }
 
-            Ok(())
-        })
+        Ok(())
     }
 
     /// Send a request and expect FS_OK_RESP or ERROR. Used by void fs ops.
     fn void_fs_op(&self, req_frame: u8, req: &impl serde::Serialize) -> Result<()> {
         self.with_guest_control_session("filesystem operation", |writer, reader| {
-            frame::send_json(writer, req_frame, req)?;
-            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-            if self.mount_metrics.mount_init_active() {
-                self.mount_metrics.record_filesystem_request();
-            }
-
-            let response = read_response_frame(reader, "filesystem operation")
-                .context("reading fs op response")?;
-            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-            if self.mount_metrics.mount_init_active() {
-                self.mount_metrics.record_filesystem_response();
-            }
-            match response {
-                (frame::FS_OK_RESP, payload) => {
-                    let resp: FsOkResponse =
-                        serde_json::from_slice(&payload).context("parsing fs ok response")?;
-                    if !resp.ok {
-                        bail!("{}", resp.error.unwrap_or_else(|| "unknown error".into()));
-                    }
-                    Ok(())
-                }
-                (frame::ERROR, payload) => {
-                    bail!("{}", String::from_utf8_lossy(&payload));
-                }
-                (other, _) => {
-                    bail!("unexpected frame type 0x{:02x}", other);
-                }
-            }
+            self.void_fs_op_on_session(writer, reader, req_frame, req)
         })
+    }
+
+    fn void_fs_op_on_session(
+        &self,
+        writer: &mut impl Write,
+        reader: &mut impl Read,
+        req_frame: u8,
+        req: &impl serde::Serialize,
+    ) -> Result<()> {
+        frame::send_json(writer, req_frame, req)?;
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        if self.mount_metrics.mount_init_active() {
+            self.mount_metrics.record_filesystem_request();
+        }
+
+        let response = read_response_frame(reader, "filesystem operation")
+            .context("reading fs op response")?;
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        if self.mount_metrics.mount_init_active() {
+            self.mount_metrics.record_filesystem_response();
+        }
+        match response {
+            (frame::FS_OK_RESP, payload) => {
+                let resp: FsOkResponse =
+                    serde_json::from_slice(&payload).context("parsing fs ok response")?;
+                if !resp.ok {
+                    bail!("{}", resp.error.unwrap_or_else(|| "unknown error".into()));
+                }
+                Ok(())
+            }
+            (frame::ERROR, payload) => {
+                bail!("{}", String::from_utf8_lossy(&payload));
+            }
+            (other, _) => {
+                bail!("unexpected frame type 0x{:02x}", other);
+            }
+        }
     }
 
     pub fn mkdir(&self, path: &str, recursive: bool) -> Result<()> {
@@ -979,6 +999,16 @@ impl Sandbox {
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn copy_from_host_plan(&self, plan: &CopyInPlan) -> Result<()> {
+        if self.supports_session_mux() {
+            return self.with_guest_control_session("copy_from_host", |writer, reader| {
+                self.copy_from_host_plan_on_session(writer, reader, plan)
+            });
+        }
+        self.copy_from_host_plan_legacy(plan)
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn copy_from_host_plan_legacy(&self, plan: &CopyInPlan) -> Result<()> {
         for entry in &plan.entries {
             match &entry.kind {
                 CopyInEntryKind::Directory => {
@@ -988,6 +1018,42 @@ impl Sandbox {
                 }
                 CopyInEntryKind::File { len, identity } => self
                     .copy_host_file_to_guest(&entry.host_path, *len, *identity, &entry.guest_path)
+                    .with_context(|| format!("copy-in file to '{}'", entry.guest_path))?,
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn copy_from_host_plan_on_session(
+        &self,
+        writer: &mut impl Write,
+        reader: &mut impl Read,
+        plan: &CopyInPlan,
+    ) -> Result<()> {
+        for entry in &plan.entries {
+            match &entry.kind {
+                CopyInEntryKind::Directory => self
+                    .void_fs_op_on_session(
+                        writer,
+                        reader,
+                        frame::MKDIR_REQ,
+                        &MkdirRequest {
+                            path: entry.guest_path.clone(),
+                            recursive: true,
+                        },
+                    )
+                    .with_context(|| format!("copy-in create guest dir '{}'", entry.guest_path))?,
+                CopyInEntryKind::File { len, identity } => self
+                    .copy_host_file_to_guest_on_session(
+                        writer,
+                        reader,
+                        &entry.host_path,
+                        *len,
+                        *identity,
+                        &entry.guest_path,
+                    )
                     .with_context(|| format!("copy-in file to '{}'", entry.guest_path))?,
             }
         }
@@ -1063,6 +1129,54 @@ impl Sandbox {
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn copy_host_file_to_guest_on_session(
+        &self,
+        writer: &mut impl Write,
+        reader: &mut impl Read,
+        host_path: &Path,
+        expected_len: u64,
+        expected_identity: CopyInFileIdentity,
+        guest_path: &str,
+    ) -> Result<()> {
+        let mut file = open_copy_in_file_checked(host_path, expected_len, expected_identity)
+            .with_context(|| format!("opening copy-in source '{}'", host_path.display()))?;
+        let mut buffer = vec![0u8; FILE_TRANSFER_CHUNK_SIZE];
+        let mut offset = 0u64;
+        let mut first = true;
+
+        loop {
+            let len = file
+                .read(&mut buffer)
+                .with_context(|| format!("reading copy-in source '{}'", host_path.display()))?;
+            if len == 0 {
+                if first {
+                    self.write_guest_file_range_on_session(
+                        writer,
+                        reader,
+                        guest_path,
+                        0,
+                        true,
+                        &[],
+                    )?;
+                }
+                break;
+            }
+            self.write_guest_file_range_on_session(
+                writer,
+                reader,
+                guest_path,
+                offset,
+                first,
+                &buffer[..len],
+            )?;
+            offset += len as u64;
+            first = false;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn write_guest_file_range(
         &self,
         guest_path: &str,
@@ -1077,6 +1191,25 @@ impl Sandbox {
             truncate: Some(truncate),
         };
         self.send_write_file_request(&req, content)
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn write_guest_file_range_on_session(
+        &self,
+        writer: &mut impl Write,
+        reader: &mut impl Read,
+        guest_path: &str,
+        offset: u64,
+        truncate: bool,
+        content: &[u8],
+    ) -> Result<()> {
+        let req = WriteFileRequest {
+            path: guest_path.to_string(),
+            len: content.len() as u64,
+            offset: Some(offset),
+            truncate: Some(truncate),
+        };
+        self.send_write_file_request_on_session(writer, reader, &req, content)
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -2096,6 +2229,7 @@ impl Sandbox {
         if has_pending_smb_mounts {
             self.ensure_cifs_mount("Windows SMB direct mount")?;
         }
+        let mut refreshed_imports = Vec::with_capacity(imports.len());
         for import in &imports {
             self.mount_metrics
                 .set_failure_context(FailedPhase::Replan, ErrorCategory::UnsafeSource);
@@ -2111,14 +2245,66 @@ impl Sandbox {
             })?;
             self.mount_metrics
                 .record_tree_walk(refreshed.copy_plan.entries.len() as u64);
+            refreshed_imports.push(refreshed);
+        }
 
+        let result = if self.supports_session_mux() {
+            self.initialize_windows_mounts_mux(&refreshed_imports)
+        } else {
+            self.initialize_windows_mounts_legacy(&refreshed_imports)
+        };
+        if result.is_ok() {
+            self.windows_mounts
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Windows mount import lock poisoned"))?
+                .clear();
+            self.mount_metrics.mark_fallback_mounts_used();
+        }
+        result
+    }
+
+    fn initialize_windows_mounts_mux(&self, imports: &[WindowsMountImport]) -> Result<()> {
+        self.mount_metrics
+            .set_failure_context(FailedPhase::Transfer, ErrorCategory::TransportFailure);
+        self.with_guest_control_session("mount init", |writer, reader| {
+            self.mount_metrics
+                .set_failure_context(FailedPhase::Transfer, ErrorCategory::SourceMutation);
+            let transfer_started = Instant::now();
+            let transfer_result: Result<()> = (|| {
+                for import in imports {
+                    self.copy_from_host_plan_on_session(writer, reader, &import.copy_plan)
+                        .with_context(|| {
+                            format!(
+                                "copying Windows mount '{}' into guest staging path '{}'",
+                                import.tag, import.guest_source
+                            )
+                        })?;
+                }
+                Ok(())
+            })();
+            self.mount_metrics
+                .add_duration(DurationMetric::Transfer, transfer_started.elapsed());
+            transfer_result?;
+
+            self.mount_metrics
+                .set_failure_context(FailedPhase::OverlayMount, ErrorCategory::GuestRejected);
+            let overlay_started = Instant::now();
+            let result = self.send_mount_requests(writer, reader);
+            self.mount_metrics
+                .add_duration(DurationMetric::OverlayMount, overlay_started.elapsed());
+            result
+        })
+    }
+
+    fn initialize_windows_mounts_legacy(&self, imports: &[WindowsMountImport]) -> Result<()> {
+        for import in imports {
             self.mount_metrics
                 .set_failure_context(FailedPhase::Transfer, ErrorCategory::SourceMutation);
             let mux_open_before = self
                 .mount_metrics
                 .duration_ms(DurationMetric::MuxSessionOpen);
             let transfer_started = Instant::now();
-            let copy_result = self.copy_from_host_plan(&refreshed.copy_plan);
+            let copy_result = self.copy_from_host_plan_legacy(&import.copy_plan);
             let transfer_elapsed_ms = transfer_started.elapsed().as_secs_f64() * 1000.0;
             let mux_open_after = self
                 .mount_metrics
@@ -2130,28 +2316,20 @@ impl Sandbox {
             copy_result.with_context(|| {
                 format!(
                     "copying Windows mount '{}' into guest staging path '{}'",
-                    refreshed.tag, refreshed.guest_source
+                    import.tag, import.guest_source
                 )
             })?;
         }
 
         self.mount_metrics
             .set_failure_context(FailedPhase::OverlayMount, ErrorCategory::GuestRejected);
-        let result = self.with_guest_control_session("mount init", |writer, reader| {
+        self.with_guest_control_session("mount init", |writer, reader| {
             let overlay_started = Instant::now();
             let result = self.send_mount_requests(writer, reader);
             self.mount_metrics
                 .add_duration(DurationMetric::OverlayMount, overlay_started.elapsed());
             result
-        });
-        if result.is_ok() {
-            self.windows_mounts
-                .lock()
-                .map_err(|_| anyhow::anyhow!("Windows mount import lock poisoned"))?
-                .clear();
-            self.mount_metrics.mark_fallback_mounts_used();
-        }
-        result
+        })
     }
 }
 
@@ -2920,6 +3098,110 @@ mod tests {
                 panic!("expected overlay request")
             }
         }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn windows_mount_transcript_uses_one_supplied_session_for_2000_files() {
+        let root = temp_dir("persistent-mount-transcript");
+        let source = root.join("src");
+        for directory_index in 0..100 {
+            let directory = source.join(format!("dir-{directory_index:03}"));
+            std::fs::create_dir_all(&directory).expect("fixture directory");
+            for file_index in 0..20 {
+                write_fixture(
+                    &directory.join(format!("file-{file_index:03}.bin")),
+                    &[directory_index as u8, file_index as u8],
+                );
+            }
+        }
+
+        let plan =
+            plan_copy_in(&source, "/tmp/lsb/mounts/mount0/source").expect("copy plan should build");
+        let sandbox = sandbox_with_mount_requests(vec![MountRequest::Overlay {
+            source: "/tmp/lsb/mounts/mount0/source".to_string(),
+            target: "/workspace".to_string(),
+        }]);
+
+        let mut scripted_responses = Vec::new();
+        for entry in &plan.entries {
+            match entry.kind {
+                CopyInEntryKind::Directory => frame::send_json(
+                    &mut scripted_responses,
+                    frame::FS_OK_RESP,
+                    &FsOkResponse {
+                        ok: true,
+                        error: None,
+                    },
+                )
+                .expect("mkdir response"),
+                CopyInEntryKind::File { .. } => frame::send_json(
+                    &mut scripted_responses,
+                    frame::WRITE_FILE_RESP,
+                    &WriteFileResponse {
+                        ok: true,
+                        error: None,
+                    },
+                )
+                .expect("write response"),
+            }
+        }
+        frame::send_json(
+            &mut scripted_responses,
+            frame::MOUNT_RESP,
+            &MountResponse {
+                source: "/tmp/lsb/mounts/mount0/source".to_string(),
+                target: "/workspace".to_string(),
+                ok: true,
+                error: None,
+            },
+        )
+        .expect("mount response");
+
+        let mut reader = Cursor::new(scripted_responses);
+        let mut writer = Vec::new();
+        sandbox
+            .copy_from_host_plan_on_session(&mut writer, &mut reader, &plan)
+            .expect("copy transcript");
+        sandbox
+            .send_mount_requests(&mut writer, &mut reader)
+            .expect("mount transcript");
+        assert_eq!(reader.position(), reader.get_ref().len() as u64);
+
+        let mut emitted = Cursor::new(writer);
+        let mut directory_requests = 0usize;
+        let mut write_requests = 0usize;
+        let mut data_frames = 0usize;
+        let mut mount_requests = 0usize;
+        while emitted.position() < emitted.get_ref().len() as u64 {
+            let (frame_type, _) = frame::read_frame(&mut emitted)
+                .expect("read emitted request frame")
+                .expect("emitted request frame");
+            match frame_type {
+                frame::MKDIR_REQ => {
+                    assert_eq!(mount_requests, 0);
+                    directory_requests += 1;
+                }
+                frame::WRITE_FILE_REQ => {
+                    assert_eq!(mount_requests, 0);
+                    write_requests += 1;
+                }
+                frame::WRITE_FILE_DATA => {
+                    assert_eq!(mount_requests, 0);
+                    data_frames += 1;
+                }
+                frame::MOUNT_REQ => mount_requests += 1,
+                other => panic!("unexpected transcript frame 0x{other:02x}"),
+            }
+        }
+
+        assert_eq!(directory_requests, 101);
+        assert_eq!(write_requests, 2_000);
+        assert_eq!(data_frames, 2_000);
+        assert_eq!(mount_requests, 1);
+        assert!(sandbox.mounts.lock().expect("mount lock").is_empty());
 
         let _ = std::fs::remove_dir_all(root);
     }
