@@ -752,14 +752,35 @@ pub fn open_copy_in_file_for_snapshot(
     expected_len: Option<u64>,
     expected_identity: Option<CopyInFileIdentity>,
 ) -> Result<CheckedCopyInFile, CopyPathError> {
+    open_copy_in_file_for_snapshot_with_prefix_checks(path, expected_len, expected_identity, true)
+}
+
+#[cfg(windows)]
+pub(super) fn open_copy_in_file_for_pinned_snapshot(
+    path: &Path,
+) -> Result<CheckedCopyInFile, CopyPathError> {
+    // The snapshot walker retains no-delete-share handles for every ancestor
+    // directory, so repeating path-based ancestor checks for each file would
+    // add thousands of redundant metadata opens.
+    open_copy_in_file_for_snapshot_with_prefix_checks(path, None, None, false)
+}
+
+#[cfg(windows)]
+fn open_copy_in_file_for_snapshot_with_prefix_checks(
+    path: &Path,
+    expected_len: Option<u64>,
+    expected_identity: Option<CopyInFileIdentity>,
+    check_prefixes: bool,
+) -> Result<CheckedCopyInFile, CopyPathError> {
     validate_windows_host_path_lexical(path, CopyPathOperation::CopyInSource)?;
-    let (handle, info) = open_windows_file_handle(
+    let (handle, info) = open_windows_file_handle_with_prefix_checks(
         path,
         windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ,
         windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL
             | windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT
             | windows_sys::Win32::Storage::FileSystem::FILE_FLAG_SEQUENTIAL_SCAN,
         CopyPathOperation::CopyInSource,
+        check_prefixes,
     )?;
     if let Err(error) = validate_copy_in_file_info(path, &info, expected_len, expected_identity) {
         let _ = unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
@@ -853,6 +874,29 @@ fn open_windows_file_handle(
     ),
     CopyPathError,
 > {
+    open_windows_file_handle_with_prefix_checks(
+        path,
+        desired_access,
+        flags_and_attributes,
+        operation,
+        true,
+    )
+}
+
+#[cfg(windows)]
+fn open_windows_file_handle_with_prefix_checks(
+    path: &Path,
+    desired_access: u32,
+    flags_and_attributes: u32,
+    operation: CopyPathOperation,
+    check_prefixes: bool,
+) -> Result<
+    (
+        windows_sys::Win32::Foundation::HANDLE,
+        windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION,
+    ),
+    CopyPathError,
+> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::FileSystem::{
@@ -860,7 +904,9 @@ fn open_windows_file_handle(
         OPEN_EXISTING,
     };
 
-    validate_existing_prefixes(path, operation)?;
+    if check_prefixes {
+        validate_existing_prefixes(path, operation)?;
+    }
     let path_text = path.display().to_string();
     let mut wide_path = path.as_os_str().encode_wide().collect::<Vec<_>>();
     wide_path.push(0);
@@ -899,9 +945,11 @@ fn open_windows_file_handle(
         ));
     }
 
-    if let Err(error) = validate_existing_prefixes(path, operation) {
-        let _ = unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
-        return Err(error);
+    if check_prefixes {
+        if let Err(error) = validate_existing_prefixes(path, operation) {
+            let _ = unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+            return Err(error);
+        }
     }
 
     Ok((handle, info))
@@ -1414,6 +1462,30 @@ mod tests {
             fs::remove_file(&path).expect("file should be removable after checked read closes");
         }
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn checked_snapshot_directory_blocks_delete_and_rename() {
+        let root = temp_dir("checked-directory-share-mode");
+        let directory = root.join("directory");
+        fs::create_dir_all(&directory).expect("fixture directory");
+        let checked = open_copy_in_directory_checked(&directory)
+            .expect("checked directory handle should open");
+
+        assert!(
+            fs::remove_dir(&directory).is_err(),
+            "delete should be blocked while the directory is pinned"
+        );
+        assert!(
+            fs::rename(&directory, root.join("renamed")).is_err(),
+            "rename should be blocked while the directory is pinned"
+        );
+
+        drop(checked);
+        fs::rename(&directory, root.join("renamed"))
+            .expect("rename should succeed after the pinned handle closes");
         let _ = fs::remove_dir_all(root);
     }
 

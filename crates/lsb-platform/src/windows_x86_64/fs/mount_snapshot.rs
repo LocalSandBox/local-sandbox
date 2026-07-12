@@ -6,11 +6,13 @@ use lsb_proto::{
     MountSnapshotKey, MountSnapshotKeyEncoder, MOUNT_IMPORT_DIRECTORY_MODE, MOUNT_IMPORT_FILE_MODE,
 };
 
-use super::copy::{inspect_copy_in_path_kind, validate_copy_in_component};
+use super::copy::{
+    inspect_copy_in_path_kind, open_copy_in_file_for_pinned_snapshot, validate_copy_in_component,
+};
 use super::{
-    join_guest_child, open_copy_in_directory_checked, open_copy_in_file_for_snapshot,
-    validate_copy_in_source_root, CaseFoldSet, CopyInFileIdentity, CopyInSourceRootKind,
-    CopyPathError, CopyPathOperation, WindowsMountDescriptor,
+    join_guest_child, open_copy_in_directory_checked, validate_copy_in_source_root, CaseFoldSet,
+    CopyInFileIdentity, CopyInSourceRootKind, CopyPathError, CopyPathOperation,
+    WindowsMountDescriptor,
 };
 
 const SNAPSHOT_READ_BUFFER_SIZE: usize = 512 * 1024;
@@ -182,7 +184,7 @@ fn snapshot_file(
     guest_path: String,
     state: &mut SnapshotState,
 ) -> Result<(), CopyPathError> {
-    let mut checked = open_copy_in_file_for_snapshot(host_path, None, None)?;
+    let mut checked = open_copy_in_file_for_pinned_snapshot(host_path)?;
     let len = checked.len();
     let identity = checked.identity();
     state
