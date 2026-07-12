@@ -44,9 +44,35 @@ mod control_transport {
                 ready
                     .capabilities
                     .push(lsb_proto::CAP_DEFERRED_FILE_SYNC.to_string());
+                if cache_formatter_path().is_some() {
+                    ready
+                        .capabilities
+                        .push(lsb_proto::CAP_MOUNT_CACHE_V1.to_string());
+                }
                 Some(ready)
             }
         }
+    }
+
+    pub(crate) fn cache_formatter_path() -> Option<PathBuf> {
+        ["/sbin/mkfs.ext4", "/usr/sbin/mkfs.ext4"]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|path| formatter_is_executable(path))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn formatter_is_executable(path: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+
+        path.metadata()
+            .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn formatter_is_executable(_path: &Path) -> bool {
+        false
     }
 
     pub(crate) fn discover_virtio_serial_device(
@@ -111,15 +137,19 @@ mod control_transport {
             assert_eq!(ready.protocol_version, lsb_proto::PROTOCOL_VERSION);
             assert_eq!(ready.transport, lsb_proto::GuestTransport::VirtioSerial);
             assert_eq!(ready.guest_version, env!("CARGO_PKG_VERSION"));
+            let expected = [
+                lsb_proto::CAP_FILE_RANGE_IO,
+                lsb_proto::CAP_PORT_FORWARD,
+                lsb_proto::CAP_CIFS_MOUNT,
+                lsb_proto::CAP_SESSION_MUX,
+                lsb_proto::CAP_DEFERRED_FILE_SYNC,
+            ];
+            assert_eq!(&ready.capabilities[..expected.len()], expected);
             assert_eq!(
-                ready.capabilities,
-                [
-                    lsb_proto::CAP_FILE_RANGE_IO,
-                    lsb_proto::CAP_PORT_FORWARD,
-                    lsb_proto::CAP_CIFS_MOUNT,
-                    lsb_proto::CAP_SESSION_MUX,
-                    lsb_proto::CAP_DEFERRED_FILE_SYNC
-                ]
+                ready
+                    .capabilities
+                    .contains(&lsb_proto::CAP_MOUNT_CACHE_V1.to_string()),
+                cache_formatter_path().is_some()
             );
         }
 
@@ -772,6 +802,9 @@ mod smb_mount {
 }
 
 #[cfg(target_os = "linux")]
+mod mount_cache_runtime;
+
+#[cfg(target_os = "linux")]
 mod guest {
     use std::ffi::CString;
     use std::fs::{File, OpenOptions};
@@ -788,14 +821,15 @@ mod guest {
 
     use super::control_transport::{self, GuestControlTransport};
     use super::file_transfer;
+    use super::mount_cache_runtime::MountCacheManager;
     use super::smb_mount;
     use lsb_proto::frame;
     use lsb_proto::{mux, mux::MuxFrame};
     use lsb_proto::{
         ChmodRequest, CopyRequest, DirEntry, ExecRequest, ForwardRequest, ForwardResponse,
-        FsOkResponse, MkdirRequest, MountRequest, MountResponse, ReadDirRequest, ReadDirResponse,
-        ReadFileRequest, RemoveRequest, RenameRequest, StatRequest, StatResponse, SyncFsRequest,
-        WatchEvent, WatchRequest, WriteFileRequest, WriteFileResponse,
+        FsOkResponse, MkdirRequest, MountCacheRequest, MountRequest, MountResponse, ReadDirRequest,
+        ReadDirResponse, ReadFileRequest, RemoveRequest, RenameRequest, StatRequest, StatResponse,
+        SyncFsRequest, WatchEvent, WatchRequest, WriteFileRequest, WriteFileResponse,
     };
     use lsb_proto::{VSOCK_PORT, VSOCK_PORT_FORWARD};
 
@@ -1668,7 +1702,10 @@ mod guest {
         }
     }
 
-    fn handle_mux_virtual_session(session: MuxVirtualSession) {
+    fn handle_mux_virtual_session(
+        session: MuxVirtualSession,
+        cache: Arc<Mutex<MountCacheManager>>,
+    ) {
         let mut reader = session.clone();
         let mut writer = session;
 
@@ -1682,7 +1719,7 @@ mod guest {
                 }
             };
 
-            if handle_simple_control_frame(msg_type, &payload, &mut reader, &mut writer) {
+            if handle_simple_control_frame(msg_type, &payload, &mut reader, &mut writer, &cache) {
                 continue;
             }
 
@@ -1737,12 +1774,46 @@ mod guest {
         payload: &[u8],
         reader: &mut R,
         writer: &mut W,
+        cache: &Arc<Mutex<MountCacheManager>>,
     ) -> bool
     where
         R: Read,
         W: Write,
     {
         match msg_type {
+            frame::MOUNT_CACHE_REQ => {
+                let request: MountCacheRequest = match serde_json::from_slice(payload) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        let message = format!("invalid mount cache request: {error}");
+                        let _ = frame::write_frame(writer, frame::ERROR, message.as_bytes());
+                        return true;
+                    }
+                };
+                if let Err(error) = request.validate() {
+                    let message = format!("invalid mount cache request: {error}");
+                    let _ = frame::write_frame(writer, frame::ERROR, message.as_bytes());
+                    return true;
+                }
+                let response = match cache.lock() {
+                    Ok(mut cache) => cache.handle(request.clone()),
+                    Err(_) => Err("mount cache manager lock was poisoned".to_string()),
+                };
+                match response {
+                    Ok(response) => {
+                        if let Err(error) = response.validate_for(&request) {
+                            let message = format!("invalid internal mount cache response: {error}");
+                            let _ = frame::write_frame(writer, frame::ERROR, message.as_bytes());
+                        } else {
+                            let _ = frame::send_json(writer, frame::MOUNT_CACHE_RESP, &response);
+                        }
+                    }
+                    Err(error) => {
+                        let _ = frame::write_frame(writer, frame::ERROR, error.as_bytes());
+                    }
+                }
+                true
+            }
             frame::MOUNT_REQ => {
                 let mount_req: MountRequest = match serde_json::from_slice(payload) {
                     Ok(r) => r,
@@ -2133,7 +2204,8 @@ mod guest {
                 frame::SYNC_FS_REQ,
                 &payload,
                 &mut reader,
-                &mut success
+                &mut success,
+                &Arc::new(Mutex::new(MountCacheManager::default()))
             ));
             assert_response_type(&success, frame::FS_OK_RESP);
 
@@ -2146,7 +2218,8 @@ mod guest {
                 frame::SYNC_FS_REQ,
                 &payload,
                 &mut reader,
-                &mut error
+                &mut error,
+                &Arc::new(Mutex::new(MountCacheManager::default()))
             ));
             assert_response_type(&error, frame::ERROR);
 
@@ -4036,7 +4109,7 @@ mod guest {
         open_virtio_serial_stream(lsb_proto::VIRTIO_SERIAL_FORWARD_PORT_NAME, "forward")
     }
 
-    fn handle_virtio_serial_control_stream<S>(stream: S)
+    fn handle_virtio_serial_control_stream<S>(stream: S, cache: Arc<Mutex<MountCacheManager>>)
     where
         S: PhysicalControlStream,
     {
@@ -4068,8 +4141,9 @@ mod guest {
 
         let mux = GuestMux::start(reader, writer);
         while let Some(session) = mux.accept_session() {
+            let cache = cache.clone();
             std::thread::spawn(move || {
-                handle_mux_virtual_session(session);
+                handle_mux_virtual_session(session, cache);
             });
         }
     }
@@ -4082,9 +4156,10 @@ mod guest {
 
         std::thread::spawn(run_virtio_serial_forward_loop);
 
+        let cache = Arc::new(Mutex::new(MountCacheManager::default()));
         loop {
             let stream = open_virtio_serial_control_stream();
-            handle_virtio_serial_control_stream(stream);
+            handle_virtio_serial_control_stream(stream, cache.clone());
             eprintln!("lsb-guest: virtio-serial control stream closed; reopening");
             reap_zombies();
         }

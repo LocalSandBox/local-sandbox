@@ -22,6 +22,7 @@ pub const CAP_PORT_FORWARD: &str = "port_forward";
 pub const CAP_CIFS_MOUNT: &str = "cifs_mount";
 pub const CAP_SESSION_MUX: &str = "session_mux";
 pub const CAP_DEFERRED_FILE_SYNC: &str = "deferred_file_sync";
+pub const CAP_MOUNT_CACHE_V1: &str = "mount_cache_v1";
 pub const FILE_TRANSFER_CHUNK_SIZE: usize = 512 * 1024;
 
 // --- Guest lifecycle protocol ---
@@ -287,6 +288,283 @@ pub struct WriteFileRequest {
     pub mode: Option<u32>,
 }
 
+// --- Persistent mount-cache protocol ---
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MountCacheRequest {
+    PrepareBuild {
+        image_id: String,
+        serial: String,
+        expected_size: u64,
+        expected_key: String,
+        inode_count: u64,
+    },
+    PrepareHit {
+        image_id: String,
+        serial: String,
+        expected_size: u64,
+        expected_key: String,
+    },
+    SealBuild {
+        image_id: String,
+        expected_key: String,
+    },
+    AbortBuild {
+        image_id: String,
+    },
+    MountOverlay {
+        image_id: String,
+        binding_id: String,
+        target: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MountCacheAction {
+    PrepareBuild,
+    PrepareHit,
+    SealBuild,
+    AbortBuild,
+    MountOverlay,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MountCacheResponse {
+    Ready {
+        action: MountCacheAction,
+        image_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        binding_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        computed_key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        raw_device_digest: Option<String>,
+    },
+    Rejected {
+        action: MountCacheAction,
+        image_id: String,
+        reason: MountCacheRejectReason,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MountCacheRejectReason {
+    FormatterUnavailable,
+    FormatterFailed,
+    DeviceNotFound,
+    RootDevice,
+    NonVirtioDevice,
+    SerialMismatch,
+    SizeMismatch,
+    ReadOnlyMismatch,
+    DeviceMounted,
+    InvalidSourceTree,
+    SourceKeyMismatch,
+    MountFailed,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MountCacheValidationError(&'static str);
+
+impl std::fmt::Display for MountCacheValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for MountCacheValidationError {}
+
+impl MountCacheRequest {
+    pub fn action(&self) -> MountCacheAction {
+        match self {
+            Self::PrepareBuild { .. } => MountCacheAction::PrepareBuild,
+            Self::PrepareHit { .. } => MountCacheAction::PrepareHit,
+            Self::SealBuild { .. } => MountCacheAction::SealBuild,
+            Self::AbortBuild { .. } => MountCacheAction::AbortBuild,
+            Self::MountOverlay { .. } => MountCacheAction::MountOverlay,
+        }
+    }
+
+    pub fn image_id(&self) -> &str {
+        match self {
+            Self::PrepareBuild { image_id, .. }
+            | Self::PrepareHit { image_id, .. }
+            | Self::SealBuild { image_id, .. }
+            | Self::AbortBuild { image_id }
+            | Self::MountOverlay { image_id, .. } => image_id,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), MountCacheValidationError> {
+        validate_digest(
+            self.image_id(),
+            "image_id must be a lowercase BLAKE3 digest",
+        )?;
+        match self {
+            Self::PrepareBuild {
+                serial,
+                expected_size,
+                expected_key,
+                inode_count,
+                ..
+            } => {
+                validate_token(serial, "serial is not a valid protocol token")?;
+                validate_image_size(*expected_size)?;
+                validate_digest(
+                    expected_key,
+                    "expected_key must be a lowercase BLAKE3 digest",
+                )?;
+                if *inode_count < 1024 {
+                    return Err(MountCacheValidationError("inode_count is too small"));
+                }
+            }
+            Self::PrepareHit {
+                serial,
+                expected_size,
+                expected_key,
+                ..
+            } => {
+                validate_token(serial, "serial is not a valid protocol token")?;
+                validate_image_size(*expected_size)?;
+                validate_digest(
+                    expected_key,
+                    "expected_key must be a lowercase BLAKE3 digest",
+                )?;
+            }
+            Self::SealBuild { expected_key, .. } => {
+                validate_digest(
+                    expected_key,
+                    "expected_key must be a lowercase BLAKE3 digest",
+                )?;
+            }
+            Self::AbortBuild { .. } => {}
+            Self::MountOverlay {
+                binding_id, target, ..
+            } => {
+                validate_token(binding_id, "binding_id is not a valid protocol token")?;
+                if !target.starts_with('/') || target.as_bytes().contains(&0) {
+                    return Err(MountCacheValidationError("target must be an absolute path"));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl MountCacheResponse {
+    pub fn validate_for(
+        &self,
+        request: &MountCacheRequest,
+    ) -> Result<(), MountCacheValidationError> {
+        let expected_action = request.action();
+        let expected_image = request.image_id();
+        match self {
+            Self::Rejected {
+                action, image_id, ..
+            } => {
+                if *action != expected_action || image_id != expected_image {
+                    return Err(MountCacheValidationError(
+                        "cache response does not match its request",
+                    ));
+                }
+            }
+            Self::Ready {
+                action,
+                image_id,
+                binding_id,
+                computed_key,
+                raw_device_digest,
+            } => {
+                if *action != expected_action || image_id != expected_image {
+                    return Err(MountCacheValidationError(
+                        "cache response does not match its request",
+                    ));
+                }
+                let valid_shape = match action {
+                    MountCacheAction::PrepareBuild | MountCacheAction::AbortBuild => {
+                        binding_id.is_none()
+                            && computed_key.is_none()
+                            && raw_device_digest.is_none()
+                    }
+                    MountCacheAction::PrepareHit => {
+                        binding_id.is_none()
+                            && computed_key.is_some()
+                            && raw_device_digest.is_none()
+                    }
+                    MountCacheAction::SealBuild => {
+                        binding_id.is_none()
+                            && computed_key.is_some()
+                            && raw_device_digest.is_some()
+                    }
+                    MountCacheAction::MountOverlay => {
+                        binding_id.is_some()
+                            && computed_key.is_none()
+                            && raw_device_digest.is_none()
+                    }
+                };
+                if !valid_shape {
+                    return Err(MountCacheValidationError(
+                        "cache response fields do not match its action",
+                    ));
+                }
+                if let Some(digest) = computed_key {
+                    validate_digest(digest, "computed_key must be a lowercase BLAKE3 digest")?;
+                }
+                if let Some(digest) = raw_device_digest {
+                    validate_digest(
+                        digest,
+                        "raw_device_digest must be a lowercase BLAKE3 digest",
+                    )?;
+                }
+                if let Some(binding_id) = binding_id {
+                    validate_token(binding_id, "binding_id is not a valid protocol token")?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_digest(value: &str, message: &'static str) -> Result<(), MountCacheValidationError> {
+    if value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Ok(())
+    } else {
+        Err(MountCacheValidationError(message))
+    }
+}
+
+fn validate_token(value: &str, message: &'static str) -> Result<(), MountCacheValidationError> {
+    if !value.is_empty()
+        && value.len() <= 64
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+    {
+        Ok(())
+    } else {
+        Err(MountCacheValidationError(message))
+    }
+}
+
+fn validate_image_size(size: u64) -> Result<(), MountCacheValidationError> {
+    if size >= 128 * 1024 * 1024 && size % 512 == 0 {
+        Ok(())
+    } else {
+        Err(MountCacheValidationError(
+            "expected_size must be at least 128 MiB and sector aligned",
+        ))
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct WriteFileResponse {
     pub ok: bool,
@@ -408,8 +686,10 @@ mod tests {
 
     use super::{
         decode_forward_close, decode_forward_payload, encode_forward_close, encode_forward_payload,
-        ExecRequest, ForwardRequest, ForwardResponse, GuestReady, GuestTransport, MountRequest,
-        ReadFileRequest, SyncFsRequest, WriteFileRequest, CAP_SESSION_MUX, PROTOCOL_VERSION,
+        ExecRequest, ForwardRequest, ForwardResponse, GuestReady, GuestTransport, MountCacheAction,
+        MountCacheRejectReason, MountCacheRequest, MountCacheResponse, MountRequest,
+        ReadFileRequest, SyncFsRequest, WriteFileRequest, CAP_MOUNT_CACHE_V1, CAP_SESSION_MUX,
+        PROTOCOL_VERSION,
     };
     use crate::frame;
 
@@ -683,6 +963,75 @@ mod tests {
         assert!(read_json.contains(r#""len":4096"#));
         assert!(write_json.contains(r#""offset":1024"#));
         assert!(write_json.contains(r#""truncate":false"#));
+    }
+
+    #[test]
+    fn mount_cache_capability_and_tagged_messages_round_trip() {
+        const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let mut ready = GuestReady::new(GuestTransport::VirtioSerial, "0.5.2-test");
+        ready.capabilities.push(CAP_MOUNT_CACHE_V1.to_string());
+        assert_eq!(ready.capabilities, [CAP_MOUNT_CACHE_V1]);
+
+        let request = MountCacheRequest::PrepareBuild {
+            image_id: DIGEST.to_string(),
+            serial: "lsb-cache-0".to_string(),
+            expected_size: 128 * 1024 * 1024,
+            expected_key: DIGEST.to_string(),
+            inode_count: 8192,
+        };
+        request.validate().expect("request should validate");
+        let json = serde_json::to_string(&request).expect("request should serialize");
+        assert!(json.contains(r#""action":"prepare_build""#));
+        let decoded: MountCacheRequest =
+            serde_json::from_str(&json).expect("request should deserialize");
+        assert_eq!(decoded, request);
+
+        let response = MountCacheResponse::Rejected {
+            action: MountCacheAction::PrepareBuild,
+            image_id: DIGEST.to_string(),
+            reason: MountCacheRejectReason::FormatterFailed,
+        };
+        response
+            .validate_for(&request)
+            .expect("response should match request");
+        let json = serde_json::to_string(&response).expect("response should serialize");
+        assert!(json.contains(r#""status":"rejected""#));
+        assert_eq!(
+            serde_json::from_str::<MountCacheResponse>(&json).expect("response should deserialize"),
+            response
+        );
+    }
+
+    #[test]
+    fn mount_cache_messages_reject_invalid_values_and_response_shapes() {
+        const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let request = MountCacheRequest::PrepareHit {
+            image_id: DIGEST.to_uppercase(),
+            serial: "lsb-cache-0".to_string(),
+            expected_size: 128 * 1024 * 1024,
+            expected_key: DIGEST.to_string(),
+        };
+        assert!(request.validate().is_err());
+
+        let valid_request = MountCacheRequest::PrepareHit {
+            image_id: DIGEST.to_string(),
+            serial: "lsb-cache-0".to_string(),
+            expected_size: 128 * 1024 * 1024,
+            expected_key: DIGEST.to_string(),
+        };
+        let malformed_response = MountCacheResponse::Ready {
+            action: MountCacheAction::PrepareHit,
+            image_id: DIGEST.to_string(),
+            binding_id: None,
+            computed_key: None,
+            raw_device_digest: None,
+        };
+        assert!(malformed_response.validate_for(&valid_request).is_err());
+
+        let unknown = format!(
+            r#"{{"action":"prepare_hit","image_id":"{DIGEST}","serial":"cache0","expected_size":134217728,"expected_key":"{DIGEST}","extra":true}}"#
+        );
+        assert!(serde_json::from_str::<MountCacheRequest>(&unknown).is_err());
     }
 
     #[test]
