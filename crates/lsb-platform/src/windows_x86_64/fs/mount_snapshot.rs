@@ -292,6 +292,43 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_key_ignores_timestamp_only_changes() {
+        let root = fixture("timestamp");
+        let before = snapshot_windows_mount(&descriptor(&root, "/workspace")).unwrap();
+        fs::write(root.join("hello.txt"), b"hello").unwrap();
+        let after = snapshot_windows_mount(&descriptor(&root, "/workspace")).unwrap();
+
+        assert_eq!(before.key, after.key);
+        let _ = fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn snapshot_key_detects_add_delete_rename_and_empty_directory_changes() {
+        let root = fixture("structure");
+        let original = snapshot_windows_mount(&descriptor(&root, "/workspace")).unwrap();
+
+        fs::create_dir(root.join("added-empty")).unwrap();
+        let added_empty = snapshot_windows_mount(&descriptor(&root, "/workspace")).unwrap();
+        assert_ne!(added_empty.key, original.key);
+        fs::remove_dir(root.join("added-empty")).unwrap();
+
+        fs::rename(root.join("hello.txt"), root.join("renamed.txt")).unwrap();
+        let renamed = snapshot_windows_mount(&descriptor(&root, "/workspace")).unwrap();
+        assert_ne!(renamed.key, original.key);
+        fs::rename(root.join("renamed.txt"), root.join("hello.txt")).unwrap();
+
+        fs::remove_file(root.join("nested/world.txt")).unwrap();
+        let deleted = snapshot_windows_mount(&descriptor(&root, "/workspace")).unwrap();
+        assert_ne!(deleted.key, original.key);
+
+        write(&root.join("nested/world.txt"), b"world");
+        write(&root.join("added.txt"), b"added");
+        let added_file = snapshot_windows_mount(&descriptor(&root, "/workspace")).unwrap();
+        assert_ne!(added_file.key, original.key);
+        let _ = fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
     fn snapshot_preserves_empty_and_non_ascii_directories_in_parent_first_order() {
         let root = temp_dir("unicode").join("src");
         fs::create_dir_all(root.join("caf\u{00e9}/empty")).unwrap();

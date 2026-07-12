@@ -64,6 +64,22 @@ source on Windows is more involved; developers should normally download the
 released runtime assets instead of running the rootfs preparation pipeline
 locally.
 
+Developers who need matching local guest assets can use Podman without Docker
+or host Linux filesystem tools. Use an empty data directory because `xtask`
+preserves assets that already exist:
+
+```powershell
+$env:LSB_CONTAINER_ENGINE = "podman"
+$env:LSB_FORCE_DOCKER_ROOTFS = "1"
+$env:LSB_DATA_DIR = "$PWD\target\local-runtime"
+cargo run -p xtask -- build-guest --platform windows-x86_64
+cargo run -p xtask -- prepare-rootfs --platform windows-x86_64
+```
+
+The container rootfs path bootstraps into a normal directory and populates the
+ext4 image with `mkfs.ext4 -d`; it does not require a loop device inside the
+Podman VM.
+
 ## Usage
 
 ```sh
@@ -144,6 +160,38 @@ lsb run --mount ./src:/workspace --mount ./data:/data -- sh
 ```
 
 Mounts can also be set in `lsb.json` (see [Config file](#config-file)).
+
+Windows overlay imports use a persistent content-addressed cache under
+`%LOCALAPPDATA%\lsb\mount-cache\v1`. LocalSandbox securely walks and hashes the
+complete source tree on every start, so timestamps alone do not change the key
+and same-length content changes do. The first run for a key builds and seals an
+ext4 lower image. Later runs attach the published image read-only, validate its
+full raw digest on the host, and validate the source tree again in the guest
+before creating a fresh tmpfs overlay. Guest writes therefore never change the
+host or cached lower image and never reappear in a later run.
+
+Cache failures are correctness-preserving: lock contention, image creation,
+formatting, validation, or guest rejection routes that mount through the normal
+copy importer instead of exposing stale content. Identical source digests in
+one VM share one read-only disk but receive separate overlay upper/work
+directories for each target. A build is published only after the VM stops and
+the host verifies that its raw image still matches the digest returned by the
+guest seal operation.
+
+The default cache limits are 4 GiB of logical images, 64 objects, and 30 days
+since access. Staging directories older than one hour and incomplete objects
+are recovered during maintenance. Remove inactive cache objects explicitly;
+this does not prune VM instances:
+
+```powershell
+lsb prune --mount-cache
+```
+
+For isolated tests and benchmarks, `LSB_WINDOWS_MOUNT_CACHE_DIR` changes the
+cache data-directory base. `LSB_WINDOWS_MOUNT_METRICS_PATH` writes structured
+startup metrics including cache decisions, fallbacks, transferred bytes, tree
+and raw-image hashing, and terminal publication outcomes. Do not point either
+variable at an untrusted or shared directory.
 
 > **Note:** Directory mounts require checkpoints created on v0.1.11+. Existing checkpoints work normally for all other features. Run `lsb upgrade` to get the latest version.
 

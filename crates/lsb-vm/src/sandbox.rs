@@ -385,7 +385,7 @@ struct SandboxMountPlan {
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 struct WindowsMountCacheRun {
-    _cache: Option<WindowsMountCache>,
+    cache: Option<WindowsMountCache>,
     images: Vec<WindowsMountCacheRunImage>,
     routes: Vec<WindowsMountCacheRoute>,
 }
@@ -397,6 +397,7 @@ struct WindowsMountCacheRunImage {
     lease: WindowsMountCacheLease,
     state: WindowsMountCacheImageState,
     binding_indices: Vec<usize>,
+    invalidate_after_stop: bool,
 }
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -483,7 +484,7 @@ impl WindowsMountCacheRun {
     fn all_fallback(snapshots: &[WindowsMountSnapshot], reason: impl Into<String>) -> Self {
         let reason = reason.into();
         Self {
-            _cache: None,
+            cache: None,
             images: Vec::new(),
             routes: snapshots
                 .iter()
@@ -606,10 +607,16 @@ impl WindowsMountCacheRun {
             })
     }
 
-    fn fallback_image(&mut self, image_index: usize, reason: impl Into<String>) {
+    fn fallback_image(
+        &mut self,
+        image_index: usize,
+        reason: impl Into<String>,
+        invalidate_hit: bool,
+    ) {
         let reason = reason.into();
         if let Some(image) = self.images.get_mut(image_index) {
             image.state = WindowsMountCacheImageState::Fallback;
+            image.invalidate_after_stop |= invalidate_hit && image.lease.is_hit();
         }
         for route in &mut self.routes {
             if matches!(
@@ -671,6 +678,23 @@ impl WindowsMountCacheRun {
             match &mut image.lease {
                 WindowsMountCacheLease::Hit(hit) => {
                     drop(hit.take());
+                    if image.invalidate_after_stop {
+                        match self.cache.as_ref().map(|cache| cache.invalidate(&image.image_id)) {
+                            Some(Ok(true)) => eprintln!(
+                                "lsb: invalidated guest-rejected mount cache object {}",
+                                image.image_id
+                            ),
+                            Some(Ok(false)) => eprintln!(
+                                "lsb: deferred invalidation of active mount cache object {}",
+                                image.image_id
+                            ),
+                            Some(Err(error)) => eprintln!(
+                                "lsb: failed to invalidate guest-rejected mount cache object {}: {error:#}",
+                                image.image_id
+                            ),
+                            None => {}
+                        }
+                    }
                 }
                 WindowsMountCacheLease::Build(build) => {
                     let Some(build) = build.take() else {
@@ -2761,7 +2785,7 @@ impl Sandbox {
     fn plan_windows_mount_cache(&self, snapshots: &[WindowsMountSnapshot]) -> WindowsMountCacheRun {
         if snapshots.is_empty() {
             return WindowsMountCacheRun {
-                _cache: None,
+                cache: None,
                 images: Vec::new(),
                 routes: Vec::new(),
             };
@@ -2811,6 +2835,7 @@ impl Sandbox {
                         lease: WindowsMountCacheLease::Hit(Some(hit)),
                         state: WindowsMountCacheImageState::Selected,
                         binding_indices: vec![snapshot_index],
+                        invalidate_after_stop: false,
                     });
                     digests.insert(image_id, Some(image_index));
                     routes.push(WindowsMountCacheRoute::Selected {
@@ -2826,6 +2851,7 @@ impl Sandbox {
                         lease: WindowsMountCacheLease::Build(Some(build)),
                         state: WindowsMountCacheImageState::Selected,
                         binding_indices: vec![snapshot_index],
+                        invalidate_after_stop: false,
                     });
                     digests.insert(image_id, Some(image_index));
                     routes.push(WindowsMountCacheRoute::Selected {
@@ -2847,7 +2873,7 @@ impl Sandbox {
         }
 
         WindowsMountCacheRun {
-            _cache: Some(cache),
+            cache: Some(cache),
             images,
             routes,
         }
@@ -3013,6 +3039,7 @@ impl Sandbox {
                     cache_run.fallback_image(
                         image_index,
                         format!("guest cache prepare rejected: {reason:?}"),
+                        is_hit,
                     );
                     continue;
                 }
@@ -3078,6 +3105,7 @@ impl Sandbox {
                         cache_run.fallback_image(
                             image_index,
                             format!("guest cache seal rejected: {reason:?}"),
+                            false,
                         );
                         continue;
                     }
@@ -3142,6 +3170,7 @@ impl Sandbox {
                 cache_run.fallback_image(
                     image_index,
                     format!("guest cache overlay rejected: {reason:?}"),
+                    false,
                 );
                 continue;
             }
@@ -4281,7 +4310,12 @@ mod tests {
 
         assert!(cache_run.has_fallback_routes());
         assert_eq!(sandbox.mounts.lock().unwrap().len(), 1);
-        drop(cache_run);
+        cache_run.finalize_after_stop(&sandbox.mount_metrics);
+        let cache = WindowsMountCache::new(&sandbox.windows_data_dir).unwrap();
+        let WindowsMountCacheSelection::Build(build) = cache.select(&snapshot).unwrap() else {
+            panic!("guest-rejected hit should be invalidated for rebuild");
+        };
+        build.discard().unwrap();
         let _ = fs::remove_dir_all(fixture);
         cleanup_test_cache_data(&sandbox.windows_data_dir);
     }

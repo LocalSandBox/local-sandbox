@@ -81,7 +81,7 @@ fn main() -> Result<()> {
                         lsb_platform::windows_x86_64::fs::WindowsMountCache::new(&data_dir)?;
                     let report = cache.prune_all()?;
                     eprintln!(
-                        "lsb: removed {} mount-cache object(s) and {} staging directorie(s); skipped {} active key(s)",
+                        "lsb: removed {} mount-cache object(s) and {} staging item(s); skipped {} active key(s)",
                         report.removed_objects,
                         report.removed_staging_directories,
                         report.skipped_locked

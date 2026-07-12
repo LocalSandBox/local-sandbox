@@ -249,6 +249,10 @@ impl WindowsMountCache {
         Ok(report)
     }
 
+    pub fn invalidate(&self, image_id: &str) -> Result<bool> {
+        self.try_remove_object(image_id)
+    }
+
     pub fn select(&self, snapshot: &WindowsMountSnapshot) -> Result<WindowsMountCacheSelection> {
         let image_id = snapshot.key.to_hex();
         validate_digest(&image_id)?;
