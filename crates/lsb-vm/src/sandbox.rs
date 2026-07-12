@@ -43,15 +43,17 @@ use lsb_platform::windows_x86_64::fs::{
 };
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use lsb_platform::windows_x86_64::fs::{
-    plan_windows_mounts, replan_windows_smb_mount, snapshot_windows_mount, WindowsMountDescriptor,
-    WindowsMountMode, WindowsMountSnapshot, WindowsMountSnapshotEntry,
+    plan_windows_mounts, replan_windows_smb_mount, snapshot_windows_mount, WindowsMountCache,
+    WindowsMountCacheBuild, WindowsMountCacheHit, WindowsMountCacheSelection,
+    WindowsMountDescriptor, WindowsMountMode, WindowsMountSnapshot, WindowsMountSnapshotEntry,
     WindowsMountSnapshotEntryKind, WindowsMountSpec, WINDOWS_MOUNT_STAGING_ROOT,
 };
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use lsb_platform::PlatformControlSessionKind;
 use lsb_platform::PlatformControlStream;
 use lsb_platform::{
-    self, PlatformNetworkAttachment, PlatformSharedDir, PlatformVm, PlatformVmConfig, VmState,
+    self, PlatformDataDisk, PlatformDiskFormat, PlatformNetworkAttachment, PlatformSharedDir,
+    PlatformVm, PlatformVmConfig, VmState,
 };
 
 use lsb_proto::{
@@ -66,7 +68,10 @@ use lsb_proto::{
 ))]
 use lsb_proto::{ForwardRequest, ForwardResponse};
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-use lsb_proto::{CAP_CIFS_MOUNT, CAP_DEFERRED_FILE_SYNC, CAP_SESSION_MUX};
+use lsb_proto::{
+    MountCacheRequest, MountCacheResponse, CAP_CIFS_MOUNT, CAP_DEFERRED_FILE_SYNC,
+    CAP_MOUNT_CACHE_V1, CAP_SESSION_MUX,
+};
 #[cfg(target_os = "macos")]
 use lsb_proto::{VSOCK_PORT, VSOCK_PORT_FORWARD};
 
@@ -259,6 +264,12 @@ impl VmConfigBuilder {
 
         let memory_bytes = self.memory_mb * 1024 * 1024;
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        let windows_data_dir = PathBuf::from(
+            self.data_dir
+                .clone()
+                .unwrap_or_else(lsb_platform::default_data_dir),
+        );
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         mount_metrics.set_failure_context(FailedPhase::InitialPlan, ErrorCategory::UnsafeSource);
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         let initial_plan_started = Instant::now();
@@ -319,6 +330,10 @@ impl VmConfigBuilder {
             windows_smb_instance_id,
             #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
             windows_smb_cleanup_manifest_path,
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            windows_data_dir,
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            windows_mount_cache_run: Mutex::new(None),
             #[cfg(not(target_os = "macos"))]
             control_session: Mutex::new(()),
             #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -346,6 +361,10 @@ pub struct Sandbox {
     windows_smb_instance_id: String,
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     windows_smb_cleanup_manifest_path: PathBuf,
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    windows_data_dir: PathBuf,
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    windows_mount_cache_run: Mutex<Option<WindowsMountCacheRun>>,
     #[cfg(not(target_os = "macos"))]
     control_session: Mutex<()>,
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -361,6 +380,275 @@ struct SandboxMountPlan {
     windows_imports: Vec<WindowsMountDescriptor>,
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     windows_smb_mounts: Vec<WindowsSmbMount>,
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+struct WindowsMountCacheRun {
+    _cache: Option<WindowsMountCache>,
+    images: Vec<WindowsMountCacheRunImage>,
+    routes: Vec<WindowsMountCacheRoute>,
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+struct WindowsMountCacheRunImage {
+    image_id: String,
+    serial: String,
+    lease: WindowsMountCacheLease,
+    state: WindowsMountCacheImageState,
+    binding_indices: Vec<usize>,
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+enum WindowsMountCacheLease {
+    Hit(Option<WindowsMountCacheHit>),
+    Build(Option<WindowsMountCacheBuild>),
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[derive(Debug, Clone)]
+enum WindowsMountCacheRoute {
+    Selected {
+        image_index: usize,
+        binding_id: String,
+    },
+    Fallback {
+        reason: String,
+    },
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+enum WindowsMountCacheImageState {
+    Selected,
+    Sealed { raw_device_digest: String },
+    AllBindingsMounted { raw_device_digest: Option<String> },
+    PublishEligible { raw_device_digest: String },
+    Fallback,
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+impl WindowsMountCacheLease {
+    fn image_path(&self) -> &Path {
+        match self {
+            Self::Hit(Some(hit)) => &hit.image_path,
+            Self::Build(Some(build)) => &build.image_path,
+            Self::Hit(None) | Self::Build(None) => {
+                panic!("mount cache lease was already finalized")
+            }
+        }
+    }
+
+    fn virtual_size(&self) -> u64 {
+        match self {
+            Self::Hit(Some(hit)) => hit.virtual_size,
+            Self::Build(Some(build)) => build.virtual_size,
+            Self::Hit(None) | Self::Build(None) => {
+                panic!("mount cache lease was already finalized")
+            }
+        }
+    }
+
+    fn inode_count(&self) -> u64 {
+        match self {
+            Self::Hit(Some(hit)) => hit.inode_count,
+            Self::Build(Some(build)) => build.inode_count,
+            Self::Hit(None) | Self::Build(None) => {
+                panic!("mount cache lease was already finalized")
+            }
+        }
+    }
+
+    fn is_hit(&self) -> bool {
+        matches!(self, Self::Hit(Some(_)))
+    }
+
+    fn take_and_discard(&mut self) {
+        match self {
+            Self::Hit(hit) => {
+                drop(hit.take());
+            }
+            Self::Build(build) => {
+                if let Some(build) = build.take() {
+                    if let Err(error) = build.discard() {
+                        eprintln!("lsb: failed to discard mount cache staging image: {error:#}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+impl WindowsMountCacheRun {
+    fn all_fallback(snapshots: &[WindowsMountSnapshot], reason: impl Into<String>) -> Self {
+        let reason = reason.into();
+        Self {
+            _cache: None,
+            images: Vec::new(),
+            routes: snapshots
+                .iter()
+                .map(|_| WindowsMountCacheRoute::Fallback {
+                    reason: reason.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    fn data_disks(&self) -> Vec<PlatformDataDisk> {
+        self.images
+            .iter()
+            .enumerate()
+            .map(|(index, image)| PlatformDataDisk {
+                id: format!("cache{index}"),
+                path: image.lease.image_path().to_path_buf(),
+                format: PlatformDiskFormat::Raw,
+                read_only: image.lease.is_hit(),
+                serial: image.serial.clone(),
+                virtual_size_bytes: image.lease.virtual_size(),
+            })
+            .collect()
+    }
+
+    fn has_disks(&self) -> bool {
+        !self.images.is_empty()
+    }
+
+    fn route_is_selected(&self, snapshot_index: usize) -> bool {
+        matches!(
+            self.routes.get(snapshot_index),
+            Some(WindowsMountCacheRoute::Selected { .. })
+        )
+    }
+
+    fn has_selected_routes(&self) -> bool {
+        self.routes
+            .iter()
+            .any(|route| matches!(route, WindowsMountCacheRoute::Selected { .. }))
+    }
+
+    fn has_fallback_routes(&self) -> bool {
+        self.routes
+            .iter()
+            .any(|route| matches!(route, WindowsMountCacheRoute::Fallback { .. }))
+    }
+
+    fn report_fallbacks(&self) {
+        let reasons = self
+            .routes
+            .iter()
+            .filter_map(|route| match route {
+                WindowsMountCacheRoute::Fallback { reason } => Some(reason.as_str()),
+                WindowsMountCacheRoute::Selected { .. } => None,
+            })
+            .collect::<HashSet<_>>();
+        for reason in reasons {
+            eprintln!("lsb: Windows mount cache fallback: {reason}");
+        }
+    }
+
+    fn needs_payload_transfer(&self) -> bool {
+        self.has_fallback_routes()
+            || self.images.iter().any(|image| {
+                matches!(image.lease, WindowsMountCacheLease::Build(Some(_)))
+                    && !matches!(image.state, WindowsMountCacheImageState::Fallback)
+            })
+    }
+
+    fn fallback_image(&mut self, image_index: usize, reason: impl Into<String>) {
+        let reason = reason.into();
+        if let Some(image) = self.images.get_mut(image_index) {
+            image.state = WindowsMountCacheImageState::Fallback;
+        }
+        for route in &mut self.routes {
+            if matches!(
+                route,
+                WindowsMountCacheRoute::Selected {
+                    image_index: selected,
+                    ..
+                } if *selected == image_index
+            ) {
+                *route = WindowsMountCacheRoute::Fallback {
+                    reason: reason.clone(),
+                };
+            }
+        }
+    }
+
+    fn disable_before_boot(&mut self, reason: impl Into<String>) {
+        let reason = reason.into();
+        for image in &mut self.images {
+            image.lease.take_and_discard();
+            image.state = WindowsMountCacheImageState::Fallback;
+        }
+        for route in &mut self.routes {
+            *route = WindowsMountCacheRoute::Fallback {
+                reason: reason.clone(),
+            };
+        }
+        self.images.clear();
+    }
+
+    fn disable_while_running(&mut self, reason: impl Into<String>) {
+        let reason = reason.into();
+        for image in &mut self.images {
+            image.state = WindowsMountCacheImageState::Fallback;
+        }
+        for route in &mut self.routes {
+            *route = WindowsMountCacheRoute::Fallback {
+                reason: reason.clone(),
+            };
+        }
+    }
+
+    fn mark_startup_succeeded(&mut self) {
+        for image in &mut self.images {
+            if let WindowsMountCacheImageState::AllBindingsMounted {
+                raw_device_digest: Some(raw_device_digest),
+            } = &image.state
+            {
+                image.state = WindowsMountCacheImageState::PublishEligible {
+                    raw_device_digest: raw_device_digest.clone(),
+                };
+            }
+        }
+    }
+
+    fn finalize_after_stop(mut self) {
+        for image in &mut self.images {
+            match &mut image.lease {
+                WindowsMountCacheLease::Hit(hit) => {
+                    drop(hit.take());
+                }
+                WindowsMountCacheLease::Build(build) => {
+                    let Some(build) = build.take() else {
+                        continue;
+                    };
+                    match &image.state {
+                        WindowsMountCacheImageState::PublishEligible { raw_device_digest } => {
+                            match build.publish(raw_device_digest) {
+                                Ok(path) => eprintln!(
+                                    "lsb: published mount cache object {} at {}",
+                                    image.image_id,
+                                    path.display()
+                                ),
+                                Err(error) => eprintln!(
+                                    "lsb: discarded mount cache object {} after verification: {error:#}",
+                                    image.image_id
+                                ),
+                            }
+                        }
+                        _ => {
+                            if let Err(error) = build.discard() {
+                                eprintln!(
+                                    "lsb: failed to discard ineligible mount cache object {}: {error:#}",
+                                    image.image_id
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -517,6 +805,22 @@ impl Sandbox {
         }
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        let mut windows_mount_cache_run = self.plan_windows_mount_cache(&windows_mount_snapshots);
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        if windows_mount_cache_run.has_disks() {
+            let disks = windows_mount_cache_run.data_disks();
+            if let Err(error) = self.vm.configure_data_disks(disks) {
+                eprintln!(
+                    "lsb: mount cache disk configuration failed; using copy fallback: {error:#}"
+                );
+                windows_mount_cache_run
+                    .disable_before_boot(format!("cache disk configuration failed: {error:#}"));
+                let _ = self.vm.configure_data_disks(Vec::new());
+            }
+        }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         if let Err(error) = self
             .prepare_windows_smb_mounts()
             .context("Failed to prepare Windows SMB mounts")
@@ -533,7 +837,33 @@ impl Sandbox {
             .set_failure_context(FailedPhase::GuestReady, ErrorCategory::VmStartFailed);
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         let guest_ready_started = Instant::now();
-        if let Err(error) = self.vm.start().context("Failed to start VM") {
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        let vm_start_result = match self.vm.start() {
+            Ok(()) => Ok(()),
+            Err(first_error) if windows_mount_cache_run.has_disks() => {
+                eprintln!(
+                    "lsb: VM start with mount cache disks failed; retrying once without cache disks: {first_error:#}"
+                );
+                let clear_result = self.vm.configure_data_disks(Vec::new());
+                windows_mount_cache_run.disable_before_boot(format!(
+                    "VM start with cache disks failed: {first_error:#}"
+                ));
+                match clear_result {
+                    Ok(()) => self.vm.start().with_context(|| {
+                        format!(
+                            "VM start failed after diskless retry; initial cache-disk start error: {first_error:#}"
+                        )
+                    }),
+                    Err(error) => Err(error).context(format!(
+                        "failed to clear cache disks after VM start error: {first_error:#}"
+                    )),
+                }
+            }
+            Err(error) => Err(error),
+        };
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        let vm_start_result = self.vm.start();
+        if let Err(error) = vm_start_result.context("Failed to start VM") {
             #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
             {
                 self.mount_metrics
@@ -548,15 +878,37 @@ impl Sandbox {
             .add_duration(DurationMetric::GuestReady, guest_ready_started.elapsed());
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        if let Err(error) = self.initialize_windows_mounts(&windows_mount_snapshots) {
+        if !self.supports_mount_cache() && windows_mount_cache_run.has_disks() {
+            windows_mount_cache_run.disable_while_running(
+                "guest does not advertise persistent mount-cache capability",
+            );
+        }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        if let Err(error) =
+            self.initialize_windows_mounts(&windows_mount_snapshots, &mut windows_mount_cache_run)
+        {
             let _ = self.vm.stop();
+            let _ = self.vm.configure_data_disks(Vec::new());
             self.cleanup_windows_smb_mounts_best_effort();
             self.mount_metrics.finish_current_failure();
             return Err(error).context("Failed to initialize Windows mounts");
         }
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        self.mount_metrics.complete_start();
+        {
+            windows_mount_cache_run.mark_startup_succeeded();
+            let mut active_cache = self
+                .windows_mount_cache_run
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Windows mount cache run lock poisoned"))?;
+            if active_cache.is_some() {
+                let _ = self.vm.stop();
+                bail!("a Windows mount cache run is already active");
+            }
+            *active_cache = Some(windows_mount_cache_run);
+            self.mount_metrics.complete_start();
+        }
 
         Ok(())
     }
@@ -566,6 +918,19 @@ impl Sandbox {
         {
             self.sync_windows_smb_mounts_best_effort();
             let stop_result = self.vm.stop().context("Failed to stop VM");
+            if stop_result.is_ok() {
+                if let Err(error) = self.vm.configure_data_disks(Vec::new()) {
+                    eprintln!("lsb: failed to clear stopped mount cache disks: {error:#}");
+                }
+                let cache_run = self
+                    .windows_mount_cache_run
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("Windows mount cache run lock poisoned"))?
+                    .take();
+                if let Some(cache_run) = cache_run {
+                    cache_run.finalize_after_stop();
+                }
+            }
             let cleanup_result = self.cleanup_windows_smb_mounts();
             let result = match (stop_result, cleanup_result) {
                 (Ok(()), Ok(())) => Ok(()),
@@ -1931,6 +2296,14 @@ impl Sandbox {
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn supports_mount_cache(&self) -> bool {
+        self.vm
+            .guest_capabilities()
+            .iter()
+            .any(|capability| capability == CAP_MOUNT_CACHE_V1)
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn supports_cifs_mount(&self) -> bool {
         self.vm
             .guest_capabilities()
@@ -2273,7 +2646,102 @@ impl Sandbox {
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    fn initialize_windows_mounts(&self, snapshots: &[WindowsMountSnapshot]) -> Result<()> {
+    fn plan_windows_mount_cache(&self, snapshots: &[WindowsMountSnapshot]) -> WindowsMountCacheRun {
+        if snapshots.is_empty() {
+            return WindowsMountCacheRun {
+                _cache: None,
+                images: Vec::new(),
+                routes: Vec::new(),
+            };
+        }
+        let cache = match WindowsMountCache::new(&self.windows_data_dir) {
+            Ok(cache) => cache,
+            Err(error) => {
+                return WindowsMountCacheRun::all_fallback(
+                    snapshots,
+                    format!("mount cache initialization failed: {error:#}"),
+                );
+            }
+        };
+        let mut images = Vec::<WindowsMountCacheRunImage>::new();
+        let mut routes = Vec::with_capacity(snapshots.len());
+        let mut digests = HashMap::<String, Option<usize>>::new();
+
+        for (snapshot_index, snapshot) in snapshots.iter().enumerate() {
+            let image_id = snapshot.key.to_hex();
+            if let Some(existing) = digests.get(&image_id) {
+                match existing {
+                    Some(image_index) => {
+                        images[*image_index].binding_indices.push(snapshot_index);
+                        routes.push(WindowsMountCacheRoute::Selected {
+                            image_index: *image_index,
+                            binding_id: format!("binding-{}", snapshot.descriptor.tag),
+                        });
+                    }
+                    None => routes.push(WindowsMountCacheRoute::Fallback {
+                        reason: "cache selection for this content digest was bypassed".to_string(),
+                    }),
+                }
+                continue;
+            }
+
+            match cache.select(snapshot) {
+                Ok(WindowsMountCacheSelection::Hit(hit)) => {
+                    let image_index = images.len();
+                    images.push(WindowsMountCacheRunImage {
+                        image_id: image_id.clone(),
+                        serial: format!("lsb-cache-{image_index}"),
+                        lease: WindowsMountCacheLease::Hit(Some(hit)),
+                        state: WindowsMountCacheImageState::Selected,
+                        binding_indices: vec![snapshot_index],
+                    });
+                    digests.insert(image_id, Some(image_index));
+                    routes.push(WindowsMountCacheRoute::Selected {
+                        image_index,
+                        binding_id: format!("binding-{}", snapshot.descriptor.tag),
+                    });
+                }
+                Ok(WindowsMountCacheSelection::Build(build)) => {
+                    let image_index = images.len();
+                    images.push(WindowsMountCacheRunImage {
+                        image_id: image_id.clone(),
+                        serial: format!("lsb-cache-{image_index}"),
+                        lease: WindowsMountCacheLease::Build(Some(build)),
+                        state: WindowsMountCacheImageState::Selected,
+                        binding_indices: vec![snapshot_index],
+                    });
+                    digests.insert(image_id, Some(image_index));
+                    routes.push(WindowsMountCacheRoute::Selected {
+                        image_index,
+                        binding_id: format!("binding-{}", snapshot.descriptor.tag),
+                    });
+                }
+                Ok(WindowsMountCacheSelection::Bypass { reason }) => {
+                    digests.insert(image_id, None);
+                    routes.push(WindowsMountCacheRoute::Fallback { reason });
+                }
+                Err(error) => {
+                    digests.insert(image_id, None);
+                    routes.push(WindowsMountCacheRoute::Fallback {
+                        reason: format!("cache selection failed: {error:#}"),
+                    });
+                }
+            }
+        }
+
+        WindowsMountCacheRun {
+            _cache: Some(cache),
+            images,
+            routes,
+        }
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn initialize_windows_mounts(
+        &self,
+        snapshots: &[WindowsMountSnapshot],
+        cache_run: &mut WindowsMountCacheRun,
+    ) -> Result<()> {
         let has_pending_mounts = !self
             .mounts
             .lock()
@@ -2291,7 +2759,12 @@ impl Sandbox {
 
         let _metrics_guard = self.mount_metrics.begin_mount_init();
 
-        if !snapshots.is_empty() {
+        if cache_run.has_selected_routes() && !self.supports_session_mux() {
+            cache_run.disable_while_running(
+                "guest mount cache requires the persistent mux file session",
+            );
+        }
+        if cache_run.needs_payload_transfer() {
             self.mount_metrics
                 .set_failure_context(FailedPhase::Transfer, ErrorCategory::ProtocolFailure);
             self.ensure_file_range_io("Windows mount import")?;
@@ -2300,7 +2773,7 @@ impl Sandbox {
             self.ensure_cifs_mount("Windows SMB direct mount")?;
         }
         let result = if self.supports_session_mux() {
-            self.initialize_windows_mounts_mux(snapshots)
+            self.initialize_windows_mounts_mux(snapshots, cache_run)
         } else {
             self.initialize_windows_mounts_legacy(snapshots)
         };
@@ -2309,12 +2782,19 @@ impl Sandbox {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("Windows mount import lock poisoned"))?
                 .clear();
-            self.mount_metrics.mark_fallback_mounts_used();
+            if cache_run.has_fallback_routes() {
+                self.mount_metrics.mark_fallback_mounts_used();
+                cache_run.report_fallbacks();
+            }
         }
         result
     }
 
-    fn initialize_windows_mounts_mux(&self, snapshots: &[WindowsMountSnapshot]) -> Result<()> {
+    fn initialize_windows_mounts_mux(
+        &self,
+        snapshots: &[WindowsMountSnapshot],
+        cache_run: &mut WindowsMountCacheRun,
+    ) -> Result<()> {
         let defer_sync = self.supports_deferred_file_sync();
         self.mount_metrics
             .set_failure_context(FailedPhase::Transfer, ErrorCategory::TransportFailure);
@@ -2323,7 +2803,13 @@ impl Sandbox {
                 .set_failure_context(FailedPhase::Transfer, ErrorCategory::SourceMutation);
             let transfer_started = Instant::now();
             let transfer_result: Result<()> = (|| {
-                for snapshot in snapshots {
+                if cache_run.has_selected_routes() {
+                    self.initialize_mount_cache_on_session(writer, reader, snapshots, cache_run)?;
+                }
+                for (snapshot_index, snapshot) in snapshots.iter().enumerate() {
+                    if cache_run.route_is_selected(snapshot_index) {
+                        continue;
+                    }
                     self.copy_windows_mount_snapshot_on_session(
                         writer, reader, snapshot, defer_sync,
                     )
@@ -2340,7 +2826,7 @@ impl Sandbox {
                 .add_duration(DurationMetric::Transfer, transfer_started.elapsed());
             transfer_result?;
 
-            if defer_sync && !snapshots.is_empty() {
+            if defer_sync && cache_run.has_fallback_routes() {
                 self.sync_windows_mount_import_on_session(writer, reader)?;
             }
 
@@ -2352,6 +2838,255 @@ impl Sandbox {
                 .add_duration(DurationMetric::OverlayMount, overlay_started.elapsed());
             result
         })
+    }
+
+    fn initialize_mount_cache_on_session(
+        &self,
+        writer: &mut impl Write,
+        reader: &mut impl Read,
+        snapshots: &[WindowsMountSnapshot],
+        cache_run: &mut WindowsMountCacheRun,
+    ) -> Result<()> {
+        let defer_sync = self.supports_deferred_file_sync();
+        for image_index in 0..cache_run.images.len() {
+            if matches!(
+                cache_run.images[image_index].state,
+                WindowsMountCacheImageState::Fallback
+            ) {
+                continue;
+            }
+            let image_id = cache_run.images[image_index].image_id.clone();
+            let serial = cache_run.images[image_index].serial.clone();
+            let expected_size = cache_run.images[image_index].lease.virtual_size();
+            let inode_count = cache_run.images[image_index].lease.inode_count();
+            let is_hit = cache_run.images[image_index].lease.is_hit();
+            let prepare = if is_hit {
+                MountCacheRequest::PrepareHit {
+                    image_id: image_id.clone(),
+                    serial,
+                    expected_size,
+                    expected_key: image_id.clone(),
+                }
+            } else {
+                MountCacheRequest::PrepareBuild {
+                    image_id: image_id.clone(),
+                    serial,
+                    expected_size,
+                    expected_key: image_id.clone(),
+                    inode_count,
+                }
+            };
+            let prepare_response =
+                self.send_mount_cache_request_on_session(writer, reader, &prepare)?;
+            match prepare_response {
+                MountCacheResponse::Rejected { reason, .. } => {
+                    eprintln!(
+                        "lsb: guest rejected mount cache image {image_id} during prepare ({reason:?}); using copy fallback"
+                    );
+                    cache_run.fallback_image(
+                        image_index,
+                        format!("guest cache prepare rejected: {reason:?}"),
+                    );
+                    continue;
+                }
+                MountCacheResponse::Ready { computed_key, .. } => {
+                    if is_hit && computed_key.as_deref() != Some(image_id.as_str()) {
+                        bail!(
+                            "guest cache hit validation returned a different source key for {image_id}"
+                        );
+                    }
+                }
+            }
+
+            let mut raw_device_digest = None;
+            if !is_hit {
+                let snapshot_index = *cache_run.images[image_index]
+                    .binding_indices
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("cache image has no mount bindings"))?;
+                let snapshot = snapshots.get(snapshot_index).ok_or_else(|| {
+                    anyhow::anyhow!("cache image binding references a missing snapshot")
+                })?;
+                let cache_source = format!("/tmp/lsb/cache-images/{image_id}/source");
+                if let Err(error) = self.copy_windows_mount_snapshot_to_source_on_session(
+                    writer,
+                    reader,
+                    snapshot,
+                    &cache_source,
+                    defer_sync,
+                ) {
+                    let abort = MountCacheRequest::AbortBuild {
+                        image_id: image_id.clone(),
+                    };
+                    let _ = self.send_mount_cache_request_on_session(writer, reader, &abort);
+                    return Err(error).context(format!(
+                        "copying Windows mount '{}' into cache build image",
+                        snapshot.descriptor.tag
+                    ));
+                }
+                let seal = MountCacheRequest::SealBuild {
+                    image_id: image_id.clone(),
+                    expected_key: image_id.clone(),
+                };
+                match self.send_mount_cache_request_on_session(writer, reader, &seal)? {
+                    MountCacheResponse::Rejected { reason, .. } => {
+                        eprintln!(
+                            "lsb: guest rejected mount cache image {image_id} during seal ({reason:?}); using copy fallback"
+                        );
+                        cache_run.fallback_image(
+                            image_index,
+                            format!("guest cache seal rejected: {reason:?}"),
+                        );
+                        continue;
+                    }
+                    MountCacheResponse::Ready {
+                        computed_key,
+                        raw_device_digest: sealed_digest,
+                        ..
+                    } => {
+                        if computed_key.as_deref() != Some(image_id.as_str()) {
+                            bail!(
+                                "guest cache seal returned a different source key for {image_id}"
+                            );
+                        }
+                        let digest = sealed_digest.ok_or_else(|| {
+                            anyhow::anyhow!("guest cache seal omitted its raw-device digest")
+                        })?;
+                        cache_run.images[image_index].state = WindowsMountCacheImageState::Sealed {
+                            raw_device_digest: digest.clone(),
+                        };
+                    }
+                }
+            }
+
+            let binding_indices = cache_run.images[image_index].binding_indices.clone();
+            let mut rejected = None;
+            for snapshot_index in &binding_indices {
+                let snapshot = snapshots.get(*snapshot_index).ok_or_else(|| {
+                    anyhow::anyhow!("cache binding references a missing snapshot")
+                })?;
+                let binding_id = match cache_run.routes.get(*snapshot_index) {
+                    Some(WindowsMountCacheRoute::Selected {
+                        image_index: selected_image,
+                        binding_id,
+                    }) if *selected_image == image_index => binding_id.clone(),
+                    _ => bail!("cache binding route changed before overlay mount"),
+                };
+                let request = MountCacheRequest::MountOverlay {
+                    image_id: image_id.clone(),
+                    binding_id,
+                    target: snapshot.descriptor.guest_target.clone(),
+                };
+                if let MountCacheResponse::Rejected { reason, .. } =
+                    self.send_mount_cache_request_on_session(writer, reader, &request)?
+                {
+                    rejected = Some(reason);
+                    break;
+                }
+            }
+            if let Some(reason) = rejected {
+                eprintln!(
+                    "lsb: guest rejected mount cache overlay for {image_id} ({reason:?}); using copy fallback"
+                );
+                cache_run.fallback_image(
+                    image_index,
+                    format!("guest cache overlay rejected: {reason:?}"),
+                );
+                continue;
+            }
+
+            if !is_hit {
+                raw_device_digest = match &cache_run.images[image_index].state {
+                    WindowsMountCacheImageState::Sealed { raw_device_digest } => {
+                        Some(raw_device_digest.clone())
+                    }
+                    _ => bail!("cache build lost its sealed state before binding mounts"),
+                };
+            }
+            self.consume_cache_mount_requests(snapshots, &binding_indices)?;
+            cache_run.images[image_index].state =
+                WindowsMountCacheImageState::AllBindingsMounted { raw_device_digest };
+        }
+        Ok(())
+    }
+
+    fn send_mount_cache_request_on_session(
+        &self,
+        writer: &mut impl Write,
+        reader: &mut impl Read,
+        request: &MountCacheRequest,
+    ) -> Result<MountCacheResponse> {
+        request
+            .validate()
+            .context("validating host mount cache request")?;
+        frame::send_json(writer, frame::MOUNT_CACHE_REQ, request)
+            .context("sending mount cache request")?;
+        self.mount_metrics.record_filesystem_request();
+        let (msg_type, payload) =
+            read_response_frame(reader, "mount cache").context("reading mount cache response")?;
+        self.mount_metrics.record_filesystem_response();
+        if msg_type == frame::ERROR {
+            bail!(
+                "guest mount cache protocol error: {}",
+                String::from_utf8_lossy(&payload)
+            );
+        }
+        if msg_type != frame::MOUNT_CACHE_RESP {
+            bail!("unexpected frame type 0x{msg_type:02x} in mount cache response");
+        }
+        let response: MountCacheResponse =
+            serde_json::from_slice(&payload).context("decoding mount cache response")?;
+        response
+            .validate_for(request)
+            .context("validating mount cache response")?;
+        Ok(response)
+    }
+
+    fn consume_cache_mount_requests(
+        &self,
+        snapshots: &[WindowsMountSnapshot],
+        snapshot_indices: &[usize],
+    ) -> Result<()> {
+        let mut mounts = self
+            .mounts
+            .lock()
+            .map_err(|_| anyhow::anyhow!("mount request lock poisoned"))?;
+        let mut positions = Vec::with_capacity(snapshot_indices.len());
+        for snapshot_index in snapshot_indices {
+            let snapshot = snapshots.get(*snapshot_index).ok_or_else(|| {
+                anyhow::anyhow!("cache mount consumption references a missing snapshot")
+            })?;
+            let matching = mounts
+                .iter()
+                .enumerate()
+                .filter_map(|(position, request)| match request {
+                    MountRequest::Overlay { source, target }
+                        if source == &snapshot.descriptor.guest_source
+                            && target == &snapshot.descriptor.guest_target =>
+                    {
+                        Some(position)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if matching.len() != 1 {
+                bail!(
+                    "cache mount '{}' expected exactly one pending legacy request, found {}",
+                    snapshot.descriptor.tag,
+                    matching.len()
+                );
+            }
+            positions.push(matching[0]);
+        }
+        positions.sort_unstable();
+        positions.dedup();
+        if positions.len() != snapshot_indices.len() {
+            bail!("multiple cache bindings resolved to the same pending mount request");
+        }
+        for position in positions.into_iter().rev() {
+            mounts.remove(position);
+        }
+        Ok(())
     }
 
     fn initialize_windows_mounts_legacy(&self, snapshots: &[WindowsMountSnapshot]) -> Result<()> {
@@ -2441,7 +3176,29 @@ impl Sandbox {
         snapshot: &WindowsMountSnapshot,
         defer_sync: bool,
     ) -> Result<()> {
+        self.copy_windows_mount_snapshot_to_source_on_session(
+            writer,
+            reader,
+            snapshot,
+            &snapshot.descriptor.guest_source,
+            defer_sync,
+        )
+    }
+
+    fn copy_windows_mount_snapshot_to_source_on_session(
+        &self,
+        writer: &mut impl Write,
+        reader: &mut impl Read,
+        snapshot: &WindowsMountSnapshot,
+        guest_source: &str,
+        defer_sync: bool,
+    ) -> Result<()> {
         for entry in &snapshot.entries {
+            let guest_path = if entry.relative_path.is_empty() {
+                guest_source.to_string()
+            } else {
+                join_guest_child(guest_source, &entry.relative_path)
+            };
             match entry.kind {
                 WindowsMountSnapshotEntryKind::Directory { mode } => self
                     .void_fs_op_on_session(
@@ -2449,20 +3206,18 @@ impl Sandbox {
                         reader,
                         frame::MKDIR_REQ,
                         &MkdirRequest {
-                            path: entry.guest_path.clone(),
+                            path: guest_path.clone(),
                             recursive: true,
                             mode: Some(mode),
                         },
                     )
-                    .with_context(|| {
-                        format!("creating mount snapshot directory '{}'", entry.guest_path)
-                    })?,
+                    .with_context(|| format!("creating mount snapshot directory '{guest_path}'"))?,
                 WindowsMountSnapshotEntryKind::File { mode, .. } => self
                     .transfer_windows_mount_snapshot_file(entry, |offset, truncate, data| {
                         self.write_guest_file_range_on_session(
                             writer,
                             reader,
-                            &entry.guest_path,
+                            &guest_path,
                             offset,
                             truncate,
                             data,
@@ -3213,6 +3968,10 @@ mod tests {
             #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
             windows_smb_cleanup_manifest_path: temp_dir("test-instance")
                 .join("windows-smb-cleanup.json"),
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            windows_data_dir: temp_dir("test-cache-data"),
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            windows_mount_cache_run: Mutex::new(None),
             #[cfg(not(target_os = "macos"))]
             control_session: Mutex::new(()),
             #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -3220,6 +3979,213 @@ mod tests {
             #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
             mount_metrics: WindowsMountMetrics::default(),
         }
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn mount_cache_hit_sends_zero_file_payload_and_consumes_legacy_route() {
+        let fixture = temp_dir("cache-hit-fixture");
+        fs::create_dir_all(&fixture).unwrap();
+        fs::write(fixture.join("hello.txt"), b"hello").unwrap();
+        let snapshot = snapshot_windows_mount(&WindowsMountDescriptor {
+            tag: "mount0".to_string(),
+            host_root: fixture.clone(),
+            guest_source: "/tmp/lsb/mounts/mount0/source".to_string(),
+            guest_target: "/workspace".to_string(),
+        })
+        .unwrap();
+        let sandbox = sandbox_with_mount_requests(vec![MountRequest::Overlay {
+            source: snapshot.descriptor.guest_source.clone(),
+            target: snapshot.descriptor.guest_target.clone(),
+        }]);
+        seed_mount_cache_hit(&sandbox.windows_data_dir, &snapshot);
+        let mut cache_run = sandbox.plan_windows_mount_cache(std::slice::from_ref(&snapshot));
+        assert!(cache_run.images[0].lease.is_hit());
+
+        let image_id = snapshot.key.to_hex();
+        let mut responses = Vec::new();
+        frame::send_json(
+            &mut responses,
+            frame::MOUNT_CACHE_RESP,
+            &MountCacheResponse::Ready {
+                action: lsb_proto::MountCacheAction::PrepareHit,
+                image_id: image_id.clone(),
+                binding_id: None,
+                computed_key: Some(image_id.clone()),
+                raw_device_digest: None,
+            },
+        )
+        .unwrap();
+        frame::send_json(
+            &mut responses,
+            frame::MOUNT_CACHE_RESP,
+            &MountCacheResponse::Ready {
+                action: lsb_proto::MountCacheAction::MountOverlay,
+                image_id,
+                binding_id: Some("binding-mount0".to_string()),
+                computed_key: None,
+                raw_device_digest: None,
+            },
+        )
+        .unwrap();
+        let mut writer = Vec::new();
+        sandbox
+            .initialize_mount_cache_on_session(
+                &mut writer,
+                &mut Cursor::new(responses),
+                std::slice::from_ref(&snapshot),
+                &mut cache_run,
+            )
+            .unwrap();
+
+        let frames = collect_frames(&writer);
+        assert_eq!(frames.len(), 2);
+        assert!(frames
+            .iter()
+            .all(|(message_type, _)| *message_type == frame::MOUNT_CACHE_REQ));
+        assert!(sandbox.mounts.lock().unwrap().is_empty());
+        drop(cache_run);
+        let _ = fs::remove_dir_all(fixture);
+        cleanup_test_cache_data(&sandbox.windows_data_dir);
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn duplicate_snapshot_digests_attach_one_disk_with_distinct_bindings() {
+        let fixture = temp_dir("cache-dedup-fixture");
+        fs::create_dir_all(&fixture).unwrap();
+        fs::write(fixture.join("hello.txt"), b"hello").unwrap();
+        let first = snapshot_windows_mount(&WindowsMountDescriptor {
+            tag: "mount0".to_string(),
+            host_root: fixture.clone(),
+            guest_source: "/tmp/lsb/mounts/mount0/source".to_string(),
+            guest_target: "/one".to_string(),
+        })
+        .unwrap();
+        let second = snapshot_windows_mount(&WindowsMountDescriptor {
+            tag: "mount1".to_string(),
+            host_root: fixture.clone(),
+            guest_source: "/tmp/lsb/mounts/mount1/source".to_string(),
+            guest_target: "/two".to_string(),
+        })
+        .unwrap();
+        assert_eq!(first.key, second.key);
+        let sandbox = sandbox_with_mount_requests(Vec::new());
+        let mut cache_run = sandbox.plan_windows_mount_cache(&[first, second]);
+
+        assert_eq!(cache_run.images.len(), 1);
+        assert_eq!(cache_run.data_disks().len(), 1);
+        assert_eq!(cache_run.images[0].binding_indices, [0, 1]);
+        assert!(matches!(
+            &cache_run.routes[0],
+            WindowsMountCacheRoute::Selected { binding_id, .. } if binding_id == "binding-mount0"
+        ));
+        assert!(matches!(
+            &cache_run.routes[1],
+            WindowsMountCacheRoute::Selected { binding_id, .. } if binding_id == "binding-mount1"
+        ));
+        cache_run.disable_before_boot("test cleanup");
+        let _ = fs::remove_dir_all(fixture);
+        cleanup_test_cache_data(&sandbox.windows_data_dir);
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn cache_rejection_keeps_exactly_one_legacy_fallback_route() {
+        let fixture = temp_dir("cache-reject-fixture");
+        fs::create_dir_all(&fixture).unwrap();
+        fs::write(fixture.join("hello.txt"), b"hello").unwrap();
+        let snapshot = snapshot_windows_mount(&WindowsMountDescriptor {
+            tag: "mount0".to_string(),
+            host_root: fixture.clone(),
+            guest_source: "/tmp/lsb/mounts/mount0/source".to_string(),
+            guest_target: "/workspace".to_string(),
+        })
+        .unwrap();
+        let sandbox = sandbox_with_mount_requests(vec![MountRequest::Overlay {
+            source: snapshot.descriptor.guest_source.clone(),
+            target: snapshot.descriptor.guest_target.clone(),
+        }]);
+        seed_mount_cache_hit(&sandbox.windows_data_dir, &snapshot);
+        let mut cache_run = sandbox.plan_windows_mount_cache(std::slice::from_ref(&snapshot));
+        let mut responses = Vec::new();
+        frame::send_json(
+            &mut responses,
+            frame::MOUNT_CACHE_RESP,
+            &MountCacheResponse::Rejected {
+                action: lsb_proto::MountCacheAction::PrepareHit,
+                image_id: snapshot.key.to_hex(),
+                reason: lsb_proto::MountCacheRejectReason::InvalidSourceTree,
+            },
+        )
+        .unwrap();
+        sandbox
+            .initialize_mount_cache_on_session(
+                &mut Vec::new(),
+                &mut Cursor::new(responses),
+                std::slice::from_ref(&snapshot),
+                &mut cache_run,
+            )
+            .unwrap();
+
+        assert!(cache_run.has_fallback_routes());
+        assert_eq!(sandbox.mounts.lock().unwrap().len(), 1);
+        drop(cache_run);
+        let _ = fs::remove_dir_all(fixture);
+        cleanup_test_cache_data(&sandbox.windows_data_dir);
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn seed_mount_cache_hit(data_dir: &Path, snapshot: &WindowsMountSnapshot) {
+        let cache = WindowsMountCache::new(data_dir).unwrap();
+        let WindowsMountCacheSelection::Build(build) = cache.select(snapshot).unwrap() else {
+            panic!("cache seed should select a build");
+        };
+        let mut file = std::fs::File::open(&build.image_path).unwrap();
+        let mut hasher = blake3::Hasher::new();
+        let mut buffer = vec![0u8; 1024 * 1024];
+        let mut remaining = build.virtual_size;
+        while remaining != 0 {
+            let wanted = remaining.min(buffer.len() as u64) as usize;
+            file.read_exact(&mut buffer[..wanted]).unwrap();
+            hasher.update(&buffer[..wanted]);
+            remaining -= wanted as u64;
+        }
+        let digest = hasher.finalize().to_hex();
+        drop(file);
+        build.publish(&digest).unwrap();
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn collect_frames(bytes: &[u8]) -> Vec<(u8, Vec<u8>)> {
+        let mut reader = Cursor::new(bytes);
+        let mut frames = Vec::new();
+        while let Some(frame) = frame::read_frame(&mut reader).unwrap() {
+            frames.push(frame);
+        }
+        frames
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn cleanup_test_cache_data(path: &Path) {
+        fn clear_readonly(path: &Path) {
+            let Ok(metadata) = fs::symlink_metadata(path) else {
+                return;
+            };
+            if metadata.is_dir() {
+                if let Ok(entries) = fs::read_dir(path) {
+                    for entry in entries.flatten() {
+                        clear_readonly(&entry.path());
+                    }
+                }
+            } else if metadata.permissions().readonly() {
+                let mut permissions = metadata.permissions();
+                permissions.set_readonly(false);
+                let _ = fs::set_permissions(path, permissions);
+            }
+        }
+        clear_readonly(path);
+        let _ = fs::remove_dir_all(path);
     }
 
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
