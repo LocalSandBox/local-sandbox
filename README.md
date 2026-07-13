@@ -193,6 +193,18 @@ startup metrics including cache decisions, fallbacks, transferred bytes, tree
 and raw-image hashing, and terminal publication outcomes. Do not point either
 variable at an untrusted or shared directory.
 
+The ignored `lsb-vm` WHPX mount-cache tests use the direct backend and must be
+given a disposable copy of `rootfs.ext4`; direct tests may modify that file.
+The CLI-based recovery harness safely uses checkpoint overlays and verifies
+synchronized concurrent builders plus forced interruption and retry:
+
+```powershell
+.\scripts\test-windows-mount-cache-recovery.ps1 `
+  -Kernel <Image> -Initrd <initramfs.cpio.gz> -Rootfs <rootfs.ext4> `
+  -FixtureRoot <2000-file-fixture> -Qemu <qemu-system-x86_64.exe> `
+  -QemuImg <qemu-img.exe>
+```
+
 > **Note:** Directory mounts require checkpoints created on v0.1.11+. Existing checkpoints work normally for all other features. Run `lsb upgrade` to get the latest version.
 
 ### Port forwarding

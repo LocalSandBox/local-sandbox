@@ -6174,6 +6174,313 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU, and disposable LocalSandbox assets"]
+    fn windows_qemu_mount_cache_invalidation_smoke() {
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        {
+            eprintln!("skipping Windows QEMU mount-cache invalidation smoke on non-Windows host");
+        }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            let kernel = required_env_path("LSB_WINDOWS_BOOT_KERNEL");
+            let initrd = required_env_path("LSB_WINDOWS_BOOT_INITRD");
+            let rootfs = required_env_path("LSB_WINDOWS_BOOT_ROOTFS");
+            let host_root = temp_dir("mount-cache-invalidation-smoke");
+            let source = host_root.join("source");
+            let data_dir = host_root.join("data");
+            std::fs::create_dir_all(source.join("baseline-empty"))
+                .expect("invalidation fixture directories");
+            let primary = source.join("primary.txt");
+            std::fs::write(&primary, b"AAAA").expect("invalidation fixture file");
+
+            let initial =
+                build_windows_overlay_test_sandbox(&kernel, &initrd, &rootfs, &data_dir, &source);
+            initial.start().expect("initial cache build should start");
+            assert_windows_mount_cache_kind(&initial, false);
+            initial.stop().expect("initial cache build should stop");
+
+            let original_modified = std::fs::metadata(&primary).unwrap().modified().unwrap();
+            std::fs::write(&primary, b"BBBB").expect("same-length mutation");
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&primary)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(original_modified))
+                .unwrap();
+            let content_mutation =
+                build_windows_overlay_test_sandbox(&kernel, &initrd, &rootfs, &data_dir, &source);
+            content_mutation
+                .start()
+                .expect("same-length mutation should start");
+            assert_windows_mount_cache_kind(&content_mutation, false);
+            assert_eq!(
+                content_mutation
+                    .read_file("/workspace/primary.txt")
+                    .unwrap(),
+                b"BBBB"
+            );
+            content_mutation.stop().unwrap();
+
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&primary)
+                .unwrap()
+                .set_times(
+                    std::fs::FileTimes::new()
+                        .set_modified(original_modified + Duration::from_secs(120)),
+                )
+                .unwrap();
+            let timestamp_only =
+                build_windows_overlay_test_sandbox(&kernel, &initrd, &rootfs, &data_dir, &source);
+            timestamp_only
+                .start()
+                .expect("timestamp-only change should start");
+            assert_windows_mount_cache_kind(&timestamp_only, true);
+            timestamp_only.stop().unwrap();
+
+            let added = source.join("added.txt");
+            std::fs::write(&added, b"added").unwrap();
+            let addition =
+                build_windows_overlay_test_sandbox(&kernel, &initrd, &rootfs, &data_dir, &source);
+            addition.start().expect("added file should start");
+            assert_windows_mount_cache_kind(&addition, false);
+            assert_eq!(
+                addition.read_file("/workspace/added.txt").unwrap(),
+                b"added"
+            );
+            addition.stop().unwrap();
+
+            std::fs::remove_file(&primary).unwrap();
+            let deletion =
+                build_windows_overlay_test_sandbox(&kernel, &initrd, &rootfs, &data_dir, &source);
+            deletion.start().expect("deleted file should start");
+            assert_windows_mount_cache_kind(&deletion, false);
+            assert!(deletion.read_file("/workspace/primary.txt").is_err());
+            deletion.stop().unwrap();
+
+            std::fs::rename(&added, source.join("renamed.txt")).unwrap();
+            let rename =
+                build_windows_overlay_test_sandbox(&kernel, &initrd, &rootfs, &data_dir, &source);
+            rename.start().expect("renamed file should start");
+            assert_windows_mount_cache_kind(&rename, false);
+            assert!(rename.read_file("/workspace/added.txt").is_err());
+            assert_eq!(
+                rename.read_file("/workspace/renamed.txt").unwrap(),
+                b"added"
+            );
+            rename.stop().unwrap();
+
+            std::fs::create_dir(source.join("new-empty")).unwrap();
+            let empty_directory =
+                build_windows_overlay_test_sandbox(&kernel, &initrd, &rootfs, &data_dir, &source);
+            empty_directory
+                .start()
+                .expect("new empty directory should start");
+            assert_windows_mount_cache_kind(&empty_directory, false);
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            assert_eq!(
+                empty_directory
+                    .exec(
+                        &["/bin/sh", "-c", "test -d /workspace/new-empty"],
+                        &mut stdout,
+                        &mut stderr,
+                    )
+                    .unwrap(),
+                0,
+                "empty directory missing: {}",
+                String::from_utf8_lossy(&stderr)
+            );
+            empty_directory.stop().unwrap();
+
+            WindowsMountCache::new(&data_dir)
+                .unwrap()
+                .prune_all()
+                .unwrap();
+            let _ = std::fs::remove_dir_all(&host_root);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU, and disposable LocalSandbox assets"]
+    fn windows_qemu_mount_cache_post_seal_tamper_smoke() {
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        {
+            eprintln!("skipping Windows QEMU post-seal tamper smoke on non-Windows host");
+        }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            let kernel = required_env_path("LSB_WINDOWS_BOOT_KERNEL");
+            let initrd = required_env_path("LSB_WINDOWS_BOOT_INITRD");
+            let rootfs = required_env_path("LSB_WINDOWS_BOOT_ROOTFS");
+            let host_root = temp_dir("mount-cache-post-seal-tamper-smoke");
+            let source = host_root.join("source");
+            let data_dir = host_root.join("data");
+            std::fs::create_dir_all(&source).unwrap();
+            std::fs::write(source.join("content.txt"), b"untampered").unwrap();
+            let snapshot = snapshot_windows_mount(&WindowsMountDescriptor {
+                tag: "mount0".to_string(),
+                host_root: source.clone(),
+                guest_source: "/tmp/lsb/mounts/mount0/source".to_string(),
+                guest_target: "/workspace".to_string(),
+            })
+            .unwrap();
+            let object_dir = data_dir
+                .join("mount-cache/v1/objects")
+                .join(snapshot.key.to_hex());
+
+            let tampered =
+                build_windows_overlay_test_sandbox(&kernel, &initrd, &rootfs, &data_dir, &source);
+            tampered.start().expect("tamper candidate should start");
+            assert_windows_mount_cache_kind(&tampered, false);
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            let exit_code = tampered
+                .exec(
+                    &[
+                        "/bin/sh",
+                        "-c",
+                        "blockdev --setrw /dev/vdb && printf X | dd of=/dev/vdb bs=1 seek=0 conv=notrunc status=none",
+                    ],
+                    &mut stdout,
+                    &mut stderr,
+                )
+                .unwrap();
+            assert_eq!(
+                exit_code,
+                0,
+                "post-seal tamper failed: {}",
+                String::from_utf8_lossy(&stderr)
+            );
+            tampered.stop().expect("tampered candidate should stop");
+            assert!(!object_dir.join("manifest.json").exists());
+
+            let retry =
+                build_windows_overlay_test_sandbox(&kernel, &initrd, &rootfs, &data_dir, &source);
+            retry.start().expect("clean retry should start");
+            assert_windows_mount_cache_kind(&retry, false);
+            retry.stop().expect("clean retry should publish");
+            assert!(object_dir.join("manifest.json").exists());
+
+            WindowsMountCache::new(&data_dir)
+                .unwrap()
+                .prune_all()
+                .unwrap();
+            let _ = std::fs::remove_dir_all(&host_root);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU, and disposable LocalSandbox assets"]
+    fn windows_qemu_mount_cache_sentinel_rejection_smoke() {
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        {
+            eprintln!("skipping Windows QEMU sentinel rejection smoke on non-Windows host");
+        }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            let kernel = required_env_path("LSB_WINDOWS_BOOT_KERNEL");
+            let initrd = required_env_path("LSB_WINDOWS_BOOT_INITRD");
+            let rootfs = required_env_path("LSB_WINDOWS_BOOT_ROOTFS");
+            let host_root = temp_dir("mount-cache-sentinel-rejection-smoke");
+            let source = host_root.join("source");
+            let data_dir = host_root.join("data");
+            std::fs::create_dir_all(&source).unwrap();
+            std::fs::write(source.join("content.txt"), b"sentinel fixture").unwrap();
+            let snapshot = snapshot_windows_mount(&WindowsMountDescriptor {
+                tag: "mount0".to_string(),
+                host_root: source.clone(),
+                guest_source: "/tmp/lsb/mounts/mount0/source".to_string(),
+                guest_target: "/workspace".to_string(),
+            })
+            .unwrap();
+            let image_id = snapshot.key.to_hex();
+            let object_dir = data_dir.join("mount-cache/v1/objects").join(&image_id);
+
+            let builder =
+                build_windows_overlay_test_sandbox(&kernel, &initrd, &rootfs, &data_dir, &source);
+            builder.start().expect("sentinel builder should start");
+            assert_windows_mount_cache_kind(&builder, false);
+            let private_mount = format!("/tmp/lsb/cache-images/{image_id}");
+            let wrong_key = "ff".repeat(32);
+            let command = format!(
+                "set -eu; blockdev --setrw /dev/vdb; mount -o remount,rw {private_mount}; printf 'abi=1\\nkey={wrong_key}\\n' > {private_mount}/.lsb-mount-cache-v1; sync"
+            );
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            let exit_code = builder
+                .exec(&["/bin/sh", "-c", &command], &mut stdout, &mut stderr)
+                .unwrap();
+            assert_eq!(
+                exit_code,
+                0,
+                "sentinel tamper failed: {}",
+                String::from_utf8_lossy(&stderr)
+            );
+
+            builder
+                .vm
+                .stop()
+                .expect("sentinel builder VM should stop directly");
+            let mut cache_run = builder
+                .windows_mount_cache_run
+                .lock()
+                .unwrap()
+                .take()
+                .expect("sentinel cache run should remain available");
+            let image_path = cache_run.images[0].lease.image_path().to_path_buf();
+            let image_size = cache_run.images[0].lease.virtual_size();
+            let tampered_digest = hash_windows_cache_test_image(&image_path, image_size);
+            cache_run.images[0].state = WindowsMountCacheImageState::PublishEligible {
+                raw_device_digest: tampered_digest,
+            };
+            cache_run.finalize_after_stop(&builder.mount_metrics);
+            assert!(object_dir.join("manifest.json").exists());
+
+            let rejected_hit =
+                build_windows_overlay_test_sandbox(&kernel, &initrd, &rootfs, &data_dir, &source);
+            rejected_hit
+                .start()
+                .expect("sentinel mismatch should use copy fallback");
+            {
+                let active = rejected_hit.windows_mount_cache_run.lock().unwrap();
+                let cache_run = active
+                    .as_ref()
+                    .expect("rejected hit run should remain active");
+                assert!(cache_run.images[0].lease.is_hit());
+                assert!(matches!(
+                    cache_run.images[0].state,
+                    WindowsMountCacheImageState::Fallback
+                ));
+                assert!(cache_run.has_fallback_routes());
+            }
+            assert_eq!(
+                rejected_hit.read_file("/workspace/content.txt").unwrap(),
+                b"sentinel fixture"
+            );
+            rejected_hit
+                .stop()
+                .expect("sentinel fallback should stop cleanly");
+            assert!(!object_dir.exists());
+
+            let retry =
+                build_windows_overlay_test_sandbox(&kernel, &initrd, &rootfs, &data_dir, &source);
+            retry.start().expect("sentinel retry should rebuild");
+            assert_windows_mount_cache_kind(&retry, false);
+            retry.stop().expect("sentinel retry should publish");
+
+            WindowsMountCache::new(&data_dir)
+                .unwrap()
+                .prune_all()
+                .unwrap();
+            let _ = std::fs::remove_dir_all(&host_root);
+        }
+    }
+
+    #[test]
     #[ignore = "requires elevated Windows 11 x86_64 with WHPX, QEMU, SMB, and disposable LocalSandbox assets"]
     fn windows_qemu_direct_smb_failure_cleanup_smoke() {
         #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
@@ -6449,6 +6756,30 @@ mod tests {
             })
             .build()
             .expect("Windows overlay test sandbox should build")
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn assert_windows_mount_cache_kind(sandbox: &Sandbox, expected_hit: bool) {
+        let active = sandbox.windows_mount_cache_run.lock().unwrap();
+        let cache_run = active.as_ref().expect("cache run should remain active");
+        assert_eq!(cache_run.images.len(), 1);
+        assert_eq!(cache_run.images[0].lease.is_hit(), expected_hit);
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn hash_windows_cache_test_image(path: &Path, size: u64) -> String {
+        let mut file = std::fs::File::open(path).expect("cache test image should open");
+        let mut hasher = blake3::Hasher::new();
+        let mut buffer = vec![0u8; 1024 * 1024];
+        let mut remaining = size;
+        while remaining != 0 {
+            let wanted = remaining.min(buffer.len() as u64) as usize;
+            file.read_exact(&mut buffer[..wanted])
+                .expect("cache test image should contain its advertised size");
+            hasher.update(&buffer[..wanted]);
+            remaining -= wanted as u64;
+        }
+        hasher.finalize().to_hex().to_string()
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
