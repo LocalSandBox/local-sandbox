@@ -1,0 +1,59 @@
+crates/lsb-vm/src/sandbox.rs
+  s_fca965c173d458::t_9ea36b2ad27562 25-27,59-60,67-68
+  s_fca965c173d458::t_75b56df463fdc9 57,2966,3012,3229,3262,3310,3356,3392,3475,3530,3547,3593,3658
+  s_fca965c173d458::t_ad94a53ff0bf28 62-63
+crates/lsb-platform/Cargo.toml
+  s_b0243c51576509::t_8b7388e65002bd 3,14
+crates/lsb-proto/Cargo.toml
+  s_b0243c51576509::t_8b7388e65002bd 3
+bindings/nodejs/npm/darwin-x64/package.json
+  s_b0243c51576509::t_8b7388e65002bd 3
+bindings/nodejs/npm/win32-x64-msvc/package.json
+  s_b0243c51576509::t_8b7388e65002bd 3
+crates/lsb-proxy/Cargo.toml
+  s_b0243c51576509::t_8b7388e65002bd 3
+bindings/nodejs/package.json
+  s_b0243c51576509::t_8b7388e65002bd 3
+Cargo.lock
+  s_b0243c51576509::t_83b8ce462e3dbb 936,959,969,989,998,1018,1037,1052
+crates/lsb-cli/Cargo.toml
+  s_b0243c51576509::t_8b7388e65002bd 3
+crates/lsb-vm/src/lib.rs
+  s_fca965c173d458::t_9ea36b2ad27562 3
+bindings/nodejs/Cargo.toml
+  s_b0243c51576509::t_8b7388e65002bd 5
+bindings/nodejs/npm/darwin-arm64/package.json
+  s_b0243c51576509::t_8b7388e65002bd 3
+crates/lsb-sdk/Cargo.toml
+  s_b0243c51576509::t_8b7388e65002bd 3,10-14
+crates/lsb-vm/Cargo.toml
+  s_b0243c51576509::t_8b7388e65002bd 3,11-12
+crates/lsb-store/Cargo.toml
+  s_b0243c51576509::t_8b7388e65002bd 3,13
+crates/lsb-guest/Cargo.toml
+  s_b0243c51576509::t_8b7388e65002bd 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "7a05a9f8795c8dee1b2fbfedfeb1df924f660f2a",
+  "prompts": {},
+  "sessions": {
+    "s_b0243c51576509": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5973-12b6-78e3-a319-b6782f14356a",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    },
+    "s_fca965c173d458": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5979-4f1e-7723-a8f3-1c68ddd3d110",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}
