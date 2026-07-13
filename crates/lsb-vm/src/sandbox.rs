@@ -6042,6 +6042,146 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU, and disposable LocalSandbox assets"]
+    fn windows_qemu_mount_cache_concurrent_read_only_hits_smoke() {
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        {
+            eprintln!("skipping Windows QEMU concurrent mount-cache hit smoke on non-Windows host");
+        }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            if let Some(value) = std::env::var_os("LSB_WINDOWS_MOUNT_CACHE_DIR") {
+                assert!(
+                    value.is_empty(),
+                    "LSB_WINDOWS_MOUNT_CACHE_DIR must be unset so this test uses an isolated cache"
+                );
+            }
+
+            let kernel = required_env_path("LSB_WINDOWS_BOOT_KERNEL");
+            let initrd = required_env_path("LSB_WINDOWS_BOOT_INITRD");
+            let rootfs = required_env_path("LSB_WINDOWS_BOOT_ROOTFS");
+            let host_root = temp_dir("mount-cache-concurrent-read-only-hits-smoke");
+            let source = host_root.join("source");
+            let data_dir = host_root.join("data");
+            let first_rootfs = host_root.join("first/rootfs.ext4");
+            let second_rootfs = host_root.join("second/rootfs.ext4");
+            std::fs::create_dir_all(&source).expect("concurrent-hit fixture directory");
+            std::fs::write(source.join("content.txt"), b"shared published cache image")
+                .expect("concurrent-hit fixture file");
+
+            // Each running VM needs an independent writable root disk and control endpoint.
+            copy_windows_test_rootfs(&rootfs, &first_rootfs);
+            copy_windows_test_rootfs(&rootfs, &second_rootfs);
+
+            let publisher =
+                build_windows_overlay_test_sandbox(&kernel, &initrd, &rootfs, &data_dir, &source);
+            publisher
+                .start()
+                .expect("mount-cache publisher should start");
+            assert_windows_mount_cache_kind(&publisher, false);
+            assert_eq!(
+                publisher.read_file("/workspace/content.txt").unwrap(),
+                b"shared published cache image"
+            );
+            publisher
+                .stop()
+                .expect("mount-cache publisher should stop and publish");
+
+            let first = build_windows_overlay_test_sandbox(
+                &kernel,
+                &initrd,
+                &first_rootfs,
+                &data_dir,
+                &source,
+            );
+            let second = build_windows_overlay_test_sandbox(
+                &kernel,
+                &initrd,
+                &second_rootfs,
+                &data_dir,
+                &source,
+            );
+            let start_gate = Arc::new(std::sync::Barrier::new(3));
+            let (first_start, second_start) = std::thread::scope(|scope| {
+                let first_gate = Arc::clone(&start_gate);
+                let first_sandbox = &first;
+                let first_handle = scope.spawn(move || {
+                    first_gate.wait();
+                    first_sandbox.start()
+                });
+
+                let second_gate = Arc::clone(&start_gate);
+                let second_sandbox = &second;
+                let second_handle = scope.spawn(move || {
+                    second_gate.wait();
+                    second_sandbox.start()
+                });
+
+                start_gate.wait();
+                (
+                    first_handle
+                        .join()
+                        .expect("first start thread should not panic"),
+                    second_handle
+                        .join()
+                        .expect("second start thread should not panic"),
+                )
+            });
+
+            if first_start.is_err() || second_start.is_err() {
+                if first_start.is_ok() {
+                    let _ = first.stop();
+                }
+                if second_start.is_ok() {
+                    let _ = second.stop();
+                }
+                panic!(
+                    "both cache-hit VMs should start concurrently: first={first_start:?}, second={second_start:?}"
+                );
+            }
+
+            let first_image = windows_mount_cache_hit_image_path(&first);
+            let second_image = windows_mount_cache_hit_image_path(&second);
+            assert_eq!(
+                first_image, second_image,
+                "both VMs must attach the same published cache image"
+            );
+            assert!(
+                std::fs::metadata(&first_image)
+                    .expect("published cache image metadata")
+                    .permissions()
+                    .readonly(),
+                "the published cache image must be read-only on the host"
+            );
+
+            for (name, sandbox) in [("first", &first), ("second", &second)] {
+                assert_eq!(
+                    sandbox.read_file("/workspace/content.txt").unwrap(),
+                    b"shared published cache image",
+                    "{name} VM should read the shared cache content"
+                );
+                assert_windows_cache_device_read_only(name, sandbox);
+            }
+
+            first
+                .stop()
+                .expect("first concurrent cache-hit VM should stop cleanly");
+            assert_eq!(
+                second.read_file("/workspace/content.txt").unwrap(),
+                b"shared published cache image",
+                "second VM must retain its cache lease after the first VM stops"
+            );
+            assert_windows_cache_device_read_only("second surviving", &second);
+            second
+                .stop()
+                .expect("second concurrent cache-hit VM should stop cleanly");
+
+            let _ = std::fs::remove_dir_all(&host_root);
+        }
+    }
+
+    #[test]
     #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU, and preserved pre-cache LocalSandbox assets"]
     fn windows_qemu_old_guest_mount_fallback_smoke() {
         #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
@@ -6776,11 +6916,64 @@ mod tests {
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn copy_windows_test_rootfs(source: &Path, destination: &Path) {
+        std::fs::create_dir_all(
+            destination
+                .parent()
+                .expect("test rootfs destination should have an instance directory"),
+        )
+        .expect("test rootfs instance directory");
+        let copied = std::fs::copy(source, destination).expect("copy disposable test rootfs");
+        assert_eq!(
+            copied,
+            std::fs::metadata(source)
+                .expect("source test rootfs metadata")
+                .len(),
+            "test rootfs copy should be complete"
+        );
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn assert_windows_mount_cache_kind(sandbox: &Sandbox, expected_hit: bool) {
         let active = sandbox.windows_mount_cache_run.lock().unwrap();
         let cache_run = active.as_ref().expect("cache run should remain active");
         assert_eq!(cache_run.images.len(), 1);
         assert_eq!(cache_run.images[0].lease.is_hit(), expected_hit);
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn windows_mount_cache_hit_image_path(sandbox: &Sandbox) -> PathBuf {
+        let active = sandbox.windows_mount_cache_run.lock().unwrap();
+        let cache_run = active.as_ref().expect("cache hit should remain active");
+        assert_eq!(cache_run.images.len(), 1);
+        assert!(cache_run.images[0].lease.is_hit());
+        let disks = cache_run.data_disks();
+        assert_eq!(disks.len(), 1);
+        assert!(
+            disks[0].read_only,
+            "a published cache hit must be configured as a read-only data disk"
+        );
+        cache_run.images[0].lease.image_path().to_path_buf()
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn assert_windows_cache_device_read_only(name: &str, sandbox: &Sandbox) {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let exit_code = sandbox
+            .exec(
+                &["/bin/sh", "-c", "test \"$(blockdev --getro /dev/vdb)\" = 1"],
+                &mut stdout,
+                &mut stderr,
+            )
+            .expect("query cache block-device mode");
+        assert_eq!(
+            exit_code,
+            0,
+            "{name} VM cache device should be read-only: stdout={} stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
