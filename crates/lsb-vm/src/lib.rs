@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+#[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
 mod mount_metrics;
 mod sandbox;
 

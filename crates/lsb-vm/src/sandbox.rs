@@ -22,7 +22,9 @@ use std::sync::{Arc, Mutex};
     target_os = "macos",
     all(target_os = "windows", target_arch = "x86_64")
 ))]
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use crossbeam_channel::Receiver;
@@ -52,15 +54,18 @@ use lsb_platform::windows_x86_64::fs::{
 use lsb_platform::PlatformControlSessionKind;
 use lsb_platform::PlatformControlStream;
 use lsb_platform::{
-    self, PlatformDataDisk, PlatformDiskFormat, PlatformNetworkAttachment, PlatformSharedDir,
-    PlatformVm, PlatformVmConfig, VmState,
+    self, PlatformNetworkAttachment, PlatformSharedDir, PlatformVm, PlatformVmConfig, VmState,
 };
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use lsb_platform::{PlatformDataDisk, PlatformDiskFormat};
 
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use lsb_proto::SyncFsRequest;
 use lsb_proto::{
     frame, ChmodRequest, CopyRequest, ExecRequest, FsOkResponse, MkdirRequest, MountRequest,
     MountResponse, PortMapping, ReadDirRequest, ReadDirResponse, ReadFileRequest, RemoveRequest,
-    RenameRequest, StatRequest, StatResponse, SyncFsRequest, WatchRequest, WriteFileRequest,
-    WriteFileResponse, CAP_FILE_RANGE_IO, FILE_TRANSFER_CHUNK_SIZE,
+    RenameRequest, StatRequest, StatResponse, WatchRequest, WriteFileRequest, WriteFileResponse,
+    CAP_FILE_RANGE_IO, FILE_TRANSFER_CHUNK_SIZE,
 };
 #[cfg(any(
     target_os = "macos",
@@ -2958,6 +2963,7 @@ impl Sandbox {
         result
     }
 
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn initialize_windows_mounts_mux(
         &self,
         snapshots: &[WindowsMountSnapshot],
@@ -3003,6 +3009,7 @@ impl Sandbox {
         })
     }
 
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn initialize_mount_cache_on_session(
         &self,
         writer: &mut impl Write,
@@ -3219,6 +3226,7 @@ impl Sandbox {
         Ok(())
     }
 
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn send_mount_cache_request_on_session(
         &self,
         writer: &mut impl Write,
@@ -3251,6 +3259,7 @@ impl Sandbox {
         Ok(response)
     }
 
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn consume_cache_mount_requests(
         &self,
         snapshots: &[WindowsMountSnapshot],
@@ -3298,6 +3307,7 @@ impl Sandbox {
         Ok(())
     }
 
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn initialize_windows_mounts_legacy(&self, snapshots: &[WindowsMountSnapshot]) -> Result<()> {
         let defer_sync = self.supports_deferred_file_sync();
         for snapshot in snapshots {
@@ -3343,6 +3353,7 @@ impl Sandbox {
         })
     }
 
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn copy_windows_mount_snapshot_legacy(
         &self,
         snapshot: &WindowsMountSnapshot,
@@ -3378,6 +3389,7 @@ impl Sandbox {
         Ok(())
     }
 
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn copy_windows_mount_snapshot_to_cache_on_session(
         &self,
         writer: &mut impl Write,
@@ -3460,6 +3472,7 @@ impl Sandbox {
         self.flush_mount_cache_import_batch(writer, reader, image_id, &mut entries, &mut data)
     }
 
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn flush_mount_cache_import_batch(
         &self,
         writer: &mut impl Write,
@@ -3514,6 +3527,7 @@ impl Sandbox {
         Ok(())
     }
 
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn copy_windows_mount_snapshot_on_session(
         &self,
         writer: &mut impl Write,
@@ -3530,6 +3544,7 @@ impl Sandbox {
         )
     }
 
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn copy_windows_mount_snapshot_to_source_on_session(
         &self,
         writer: &mut impl Write,
@@ -3575,6 +3590,7 @@ impl Sandbox {
         Ok(())
     }
 
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn transfer_windows_mount_snapshot_file(
         &self,
         entry: &WindowsMountSnapshotEntry,
@@ -3639,6 +3655,7 @@ impl Sandbox {
         Ok(())
     }
 
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn sync_windows_mount_import_on_session(
         &self,
         writer: &mut impl Write,
