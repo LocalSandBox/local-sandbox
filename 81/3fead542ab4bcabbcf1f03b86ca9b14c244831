@@ -1,0 +1,22 @@
+crates/lsb-vm/src/sandbox.rs
+  s_9ced846b37d3ff::t_6164b569e3478b 6123-6125,6965
+  s_9ced846b37d3ff::t_1e50db568497b3 6045-6122,6126-6183,6918-6935,6944-6964,6966-6977
+  s_9ced846b37d3ff::t_a66ae7f06ef9d5 6044
+  s_9ced846b37d3ff::t_e986dd547b5dd3 6978
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "813fead542ab4bcabbcf1f03b86ca9b14c244831",
+  "prompts": {},
+  "sessions": {
+    "s_9ced846b37d3ff": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5b3c-a725-7fe0-b2b1-352a31da4ef9",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
