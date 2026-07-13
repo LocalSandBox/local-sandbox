@@ -257,16 +257,56 @@ function Get-RuntimeAssets {
         }
     }
 
-    $qemuCurrentPath = Join-Path $dataDir "tools\qemu\current.json"
     $qemu = $null
-    if (Test-Path -LiteralPath $qemuCurrentPath -PathType Leaf) {
+    $qemuOverride = [Environment]::GetEnvironmentVariable("LSB_QEMU")
+    if (-not [string]::IsNullOrWhiteSpace($qemuOverride)) {
+        $qemuExecutable = Resolve-FullPath $qemuOverride
+        if (-not (Test-Path -LiteralPath $qemuExecutable -PathType Leaf)) {
+            throw "LSB_QEMU does not identify a file: $qemuExecutable"
+        }
+        $qemuImgOverride = [Environment]::GetEnvironmentVariable("LSB_QEMU_IMG")
+        $qemuImg = if (-not [string]::IsNullOrWhiteSpace($qemuImgOverride)) {
+            Resolve-FullPath $qemuImgOverride
+        }
+        else {
+            Join-Path (Split-Path -Parent $qemuExecutable) "qemu-img.exe"
+        }
+        $qemu = [ordered]@{
+            source                  = "LSB_QEMU"
+            current_manifest_path   = $null
+            current_manifest_sha256 = $null
+            package_version         = $null
+            executable_sha256       = Get-Sha256 $qemuExecutable
+            qemu_img_sha256         = if (Test-Path -LiteralPath $qemuImg -PathType Leaf) {
+                Get-Sha256 $qemuImg
+            }
+            else {
+                $null
+            }
+            version                 = Get-CommandOutput -Command $qemuExecutable -Arguments @("--version")
+            executable_path         = $qemuExecutable
+            qemu_img_path           = $qemuImg
+            package_directory       = Split-Path -Parent $qemuExecutable
+        }
+    }
+    $qemuCurrentPath = Join-Path $dataDir "tools\qemu\current.json"
+    if ($null -eq $qemu -and (Test-Path -LiteralPath $qemuCurrentPath -PathType Leaf)) {
         $current = Get-Content -LiteralPath $qemuCurrentPath -Raw | ConvertFrom-Json
         $qemuExecutable = [string]$current.qemu_system_x86_64
+        $qemuImg = [string]$current.qemu_img
         $qemu = [ordered]@{
+            source                  = "managed"
+            current_manifest_path   = $qemuCurrentPath
             current_manifest_sha256 = Get-Sha256 $qemuCurrentPath
             package_version         = [string]$current.package_version
             executable_sha256       = if (Test-Path -LiteralPath $qemuExecutable -PathType Leaf) {
                 Get-Sha256 $qemuExecutable
+            }
+            else {
+                $null
+            }
+            qemu_img_sha256         = if (Test-Path -LiteralPath $qemuImg -PathType Leaf) {
+                Get-Sha256 $qemuImg
             }
             else {
                 $null
@@ -278,6 +318,7 @@ function Get-RuntimeAssets {
                 $null
             }
             executable_path         = $qemuExecutable
+            qemu_img_path           = $qemuImg
             package_directory       = if (-not [string]::IsNullOrWhiteSpace($qemuExecutable)) {
                 Split-Path -Parent $qemuExecutable
             }
@@ -331,9 +372,11 @@ function Copy-BaselineArtifacts {
     if ($null -ne $Runtime.qemu) {
         $qemuDestination = Join-Path $Destination "runtime\qemu"
         Copy-Item -LiteralPath $Runtime.qemu.package_directory -Destination $qemuDestination -Recurse
-        $currentDestination = Join-Path $Destination "runtime\qemu-current.json"
-        $sourceCurrent = Join-Path $Runtime.data_dir "tools\qemu\current.json"
-        Copy-Item -LiteralPath $sourceCurrent -Destination $currentDestination
+        if (-not [string]::IsNullOrWhiteSpace($Runtime.qemu.current_manifest_path) -and
+            (Test-Path -LiteralPath $Runtime.qemu.current_manifest_path -PathType Leaf)) {
+            $currentDestination = Join-Path $Destination "runtime\qemu-current.json"
+            Copy-Item -LiteralPath $Runtime.qemu.current_manifest_path -Destination $currentDestination
+        }
     }
 
     $artifactManifest = Write-FixtureManifest -Root $Destination -ManifestPath ($manifestPath + ".pending")

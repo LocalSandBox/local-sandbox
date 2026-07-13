@@ -1287,6 +1287,27 @@ mod tests {
         )
         .unwrap();
         assert!(hash_source_tree(&root).is_err());
+        std::fs::set_permissions(
+            root.join("hello.txt"),
+            std::fs::Permissions::from_mode(MOUNT_IMPORT_FILE_MODE),
+        )
+        .unwrap();
+        std::fs::set_permissions(root.join("empty"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        assert!(hash_source_tree(&root).is_err());
+        std::fs::set_permissions(
+            root.join("empty"),
+            std::fs::Permissions::from_mode(MOUNT_IMPORT_DIRECTORY_MODE),
+        )
+        .unwrap();
+        std::fs::hard_link(root.join("hello.txt"), root.join("hard-link")).unwrap();
+        assert!(hash_source_tree(&root).is_err());
+        std::fs::remove_file(root.join("hard-link")).unwrap();
+        let fifo = root.join("fifo");
+        let fifo_name = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo_name.as_ptr(), 0o600) }, 0);
+        assert!(hash_source_tree(&root).is_err());
+        std::fs::remove_file(fifo).unwrap();
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1303,6 +1324,8 @@ mod tests {
         assert_ne!(hash_source_tree(&root).unwrap(), original);
         std::fs::rename(root.join("renamed"), root.join("one")).unwrap();
         write_mode_replace(&root.join("one"), b"diff");
+        assert_ne!(hash_source_tree(&root).unwrap(), original);
+        std::fs::remove_file(root.join("one")).unwrap();
         assert_ne!(hash_source_tree(&root).unwrap(), original);
         let _ = std::fs::remove_dir_all(root);
     }

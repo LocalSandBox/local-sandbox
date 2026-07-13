@@ -7,6 +7,10 @@
 - Added `lsb init --fix` and the Rust/Node initialization `fix` option to apply
   all available automatic host configuration repairs, including the Windows
   direct SMB mount policy repair.
+- Added a bounded, content-addressed Windows overlay mount cache under
+  `%LOCALAPPDATA%\lsb\mount-cache\v1`. Cache images are atomically published,
+  validated before every read-only hit, invalidated by content rather than
+  timestamps, and can be removed explicitly with `lsb prune --mount-cache`.
 
 ## 0.4.0
 

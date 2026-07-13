@@ -1189,6 +1189,36 @@ mod tests {
     }
 
     #[test]
+    fn explicit_prune_removes_interrupted_staging_and_manifestless_readonly_objects() {
+        let root = temp_dir("orphan-cleanup");
+        let cache = WindowsMountCache::new(&root).unwrap();
+        let digest = "04".repeat(32);
+
+        let staging = cache.layout.staging.join(format!("{digest}-interrupted"));
+        fs::create_dir_all(&staging).unwrap();
+        let staging_image = staging.join(IMAGE_NAME);
+        fs::write(&staging_image, b"partial").unwrap();
+        let mut staging_permissions = fs::metadata(&staging_image).unwrap().permissions();
+        staging_permissions.set_readonly(true);
+        fs::set_permissions(&staging_image, staging_permissions).unwrap();
+
+        let object = cache.layout.objects.join(&digest);
+        fs::create_dir_all(&object).unwrap();
+        let object_image = object.join(IMAGE_NAME);
+        fs::write(&object_image, b"orphan").unwrap();
+        let mut object_permissions = fs::metadata(&object_image).unwrap().permissions();
+        object_permissions.set_readonly(true);
+        fs::set_permissions(&object_image, object_permissions).unwrap();
+
+        let report = cache.prune_all().unwrap();
+        assert_eq!(report.removed_staging_directories, 1);
+        assert_eq!(report.removed_objects, 1);
+        assert!(!staging.exists());
+        assert!(!object.exists());
+        let _ = remove_tree_secure(&cache.layout.root);
+    }
+
+    #[test]
     fn post_stop_publication_rejects_mutation_and_publishes_atomically() {
         let root = temp_dir("publication");
         let cache = WindowsMountCache::new(&root).unwrap();

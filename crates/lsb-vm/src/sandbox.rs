@@ -764,6 +764,13 @@ impl WindowsMountCacheRun {
 }
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn capabilities_support_mount_cache(capabilities: &[String]) -> bool {
+    [CAP_MOUNT_CACHE_V1, CAP_MOUNT_CACHE_IMPORT_BATCH_V1]
+        .iter()
+        .all(|required| capabilities.iter().any(|capability| capability == required))
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 fn cache_bypass_decision(reason: &str) -> CacheDecision {
     if reason.contains("another process") {
         CacheDecision::BusyBypass
@@ -2453,9 +2460,7 @@ impl Sandbox {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn supports_mount_cache(&self) -> bool {
         let capabilities = self.vm.guest_capabilities();
-        [CAP_MOUNT_CACHE_V1, CAP_MOUNT_CACHE_IMPORT_BATCH_V1]
-            .iter()
-            .all(|required| capabilities.iter().any(|capability| capability == required))
+        capabilities_support_mount_cache(&capabilities)
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -4260,6 +4265,8 @@ fn relay(a: TcpStream, b: TcpStream) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    use sha2::{Digest, Sha256};
     use std::io::Cursor;
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     use std::path::PathBuf;
@@ -4478,6 +4485,62 @@ mod tests {
         build.discard().unwrap();
         let _ = fs::remove_dir_all(fixture);
         cleanup_test_cache_data(&sandbox.windows_data_dir);
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn mount_cache_requires_base_and_batch_capabilities() {
+        assert!(!capabilities_support_mount_cache(&[]));
+        assert!(!capabilities_support_mount_cache(&[
+            CAP_MOUNT_CACHE_V1.to_string()
+        ]));
+        assert!(!capabilities_support_mount_cache(&[
+            CAP_MOUNT_CACHE_IMPORT_BATCH_V1.to_string()
+        ]));
+        assert!(capabilities_support_mount_cache(&[
+            CAP_MOUNT_CACHE_V1.to_string(),
+            CAP_MOUNT_CACHE_IMPORT_BATCH_V1.to_string(),
+        ]));
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn sealed_or_mounted_build_without_startup_success_is_discarded() {
+        for mounted in [false, true] {
+            let fixture = temp_dir(if mounted {
+                "cache-mounted-discard-fixture"
+            } else {
+                "cache-sealed-discard-fixture"
+            });
+            fs::create_dir_all(&fixture).unwrap();
+            fs::write(fixture.join("hello.txt"), b"hello").unwrap();
+            let snapshot = snapshot_windows_mount(&WindowsMountDescriptor {
+                tag: "mount0".to_string(),
+                host_root: fixture.clone(),
+                guest_source: "/tmp/lsb/mounts/mount0/source".to_string(),
+                guest_target: "/workspace".to_string(),
+            })
+            .unwrap();
+            let sandbox = sandbox_with_mount_requests(Vec::new());
+            let mut cache_run = sandbox.plan_windows_mount_cache(std::slice::from_ref(&snapshot));
+            let raw_device_digest = "05".repeat(32);
+            cache_run.images[0].state = if mounted {
+                WindowsMountCacheImageState::AllBindingsMounted {
+                    raw_device_digest: Some(raw_device_digest),
+                }
+            } else {
+                WindowsMountCacheImageState::Sealed { raw_device_digest }
+            };
+            cache_run.finalize_after_stop(&sandbox.mount_metrics);
+
+            let cache = WindowsMountCache::new(&sandbox.windows_data_dir).unwrap();
+            let WindowsMountCacheSelection::Build(build) = cache.select(&snapshot).unwrap() else {
+                panic!("an ineligible build must not leave a cache hit");
+            };
+            build.discard().unwrap();
+            let _ = fs::remove_dir_all(fixture);
+            cleanup_test_cache_data(&sandbox.windows_data_dir);
+        }
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -5708,7 +5771,8 @@ mod tests {
             let stop_result = sandbox.stop();
             watch_reader
                 .join()
-                .expect("Windows watch reader thread should not panic");
+                .expect("Windows watch reader thread should not panic")
+                .expect("Windows watch reader should stop cleanly");
 
             result.expect("Windows spawn/watch smoke should pass");
             stop_result.expect("Windows spawn/watch smoke QEMU should stop cleanly");
@@ -5825,17 +5889,15 @@ mod tests {
             let _ = std::fs::remove_dir_all(&host_root);
             let source = host_root.join("source");
             let export = host_root.join("export");
-            std::fs::create_dir_all(source.join("nested")).expect("mount fixture dirs");
+            let data_dir = host_root.join("data");
+            let expected_manifest = create_windows_mount_benchmark_fixture(&source);
             std::fs::create_dir_all(&export).expect("export fixture dir");
-            std::fs::write(source.join("hello.txt"), b"hello from host")
-                .expect("mount fixture file");
-            std::fs::write(source.join("nested/data.txt"), b"nested from host")
-                .expect("nested mount fixture file");
 
             let sandbox = Sandbox::builder()
                 .kernel(kernel.display().to_string())
                 .initrd(initrd.display().to_string())
                 .rootfs(rootfs.display().to_string())
+                .data_dir(data_dir.display().to_string())
                 .console(false)
                 .mount(MountConfig::Overlay {
                     host_path: source.display().to_string(),
@@ -5847,16 +5909,19 @@ mod tests {
             sandbox
                 .start()
                 .expect("Windows mount smoke should import and mount the source snapshot");
+            {
+                let active = sandbox.windows_mount_cache_run.lock().unwrap();
+                let cache_run = active.as_ref().expect("cache run should remain active");
+                assert_eq!(cache_run.images.len(), 1);
+                assert!(!cache_run.images[0].lease.is_hit());
+                assert!(matches!(
+                    cache_run.images[0].state,
+                    WindowsMountCacheImageState::PublishEligible { .. }
+                ));
+            }
 
             let result = (|| -> Result<()> {
-                assert_eq!(
-                    sandbox.read_file("/workspace/hello.txt")?,
-                    b"hello from host"
-                );
-                assert_eq!(
-                    sandbox.read_file("/workspace/nested/data.txt")?,
-                    b"nested from host"
-                );
+                assert_eq!(guest_mount_manifest(&sandbox)?, expected_manifest);
 
                 let mut stdout = Vec::new();
                 let mut stderr = Vec::new();
@@ -5864,7 +5929,7 @@ mod tests {
                     &[
                         "/bin/sh",
                         "-c",
-                        "stat -c '%a:%n' /workspace /workspace/nested /workspace/hello.txt",
+                        "stat -c '%a:%n' /workspace /workspace/dir-000 /workspace/dir-000/file-000.bin",
                     ],
                     &mut stdout,
                     &mut stderr,
@@ -5881,11 +5946,11 @@ mod tests {
                     "unexpected modes: {modes}"
                 );
                 assert!(
-                    modes.contains("755:/workspace/nested\n"),
+                    modes.contains("755:/workspace/dir-000\n"),
                     "unexpected modes: {modes}"
                 );
                 assert!(
-                    modes.contains("644:/workspace/hello.txt\n"),
+                    modes.contains("644:/workspace/dir-000/file-000.bin\n"),
                     "unexpected modes: {modes}"
                 );
 
@@ -5909,9 +5974,202 @@ mod tests {
             })();
 
             let stop_result = sandbox.stop();
-            let _ = std::fs::remove_dir_all(&host_root);
             result.expect("Windows mount smoke should pass");
             stop_result.expect("Windows mount smoke QEMU should stop cleanly");
+            std::fs::remove_file(source.join("after-start.txt"))
+                .expect("restore the original source key before the cache-hit run");
+
+            let hit_sandbox = Sandbox::builder()
+                .kernel(kernel.display().to_string())
+                .initrd(initrd.display().to_string())
+                .rootfs(rootfs.display().to_string())
+                .data_dir(data_dir.display().to_string())
+                .console(false)
+                .mount(MountConfig::Overlay {
+                    host_path: source.display().to_string(),
+                    guest_path: "/workspace".into(),
+                })
+                .build()
+                .expect("Windows mount cache-hit sandbox should build");
+            hit_sandbox
+                .start()
+                .expect("Windows mount cache-hit sandbox should start");
+            {
+                let active = hit_sandbox.windows_mount_cache_run.lock().unwrap();
+                let cache_run = active.as_ref().expect("cache hit should remain active");
+                assert_eq!(cache_run.images.len(), 1);
+                assert!(cache_run.images[0].lease.is_hit());
+            }
+            assert_eq!(
+                guest_mount_manifest(&hit_sandbox).expect("cache-hit manifest"),
+                expected_manifest
+            );
+            assert!(hit_sandbox.read_file("/workspace/guest.txt").is_err());
+            assert!(hit_sandbox.read_file("/workspace/after-start.txt").is_err());
+            let active_prune = WindowsMountCache::new(&data_dir)
+                .unwrap()
+                .prune_all()
+                .unwrap();
+            assert_eq!(active_prune.removed_objects, 0);
+            assert_eq!(active_prune.skipped_locked, 1);
+            hit_sandbox
+                .stop()
+                .expect("Windows mount cache-hit QEMU should stop cleanly");
+
+            WindowsMountCache::new(&data_dir)
+                .unwrap()
+                .prune_all()
+                .unwrap();
+            let _ = std::fs::remove_dir_all(&host_root);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU, and preserved pre-cache LocalSandbox assets"]
+    fn windows_qemu_old_guest_mount_fallback_smoke() {
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        {
+            eprintln!("skipping Windows QEMU old-guest fallback smoke on non-Windows host");
+        }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            let kernel = required_env_path("LSB_WINDOWS_OLD_BOOT_KERNEL");
+            let initrd = required_env_path("LSB_WINDOWS_OLD_BOOT_INITRD");
+            let rootfs = required_env_path("LSB_WINDOWS_OLD_BOOT_ROOTFS");
+            let host_root = rootfs
+                .parent()
+                .expect("old rootfs should live in a work directory")
+                .join("old-guest-mount-fixture");
+            let _ = std::fs::remove_dir_all(&host_root);
+            let source = host_root.join("source");
+            let data_dir = temp_dir("old-guest-cache-data");
+            let expected_manifest = create_windows_mount_benchmark_fixture(&source);
+
+            let sandbox = Sandbox::builder()
+                .kernel(kernel.display().to_string())
+                .initrd(initrd.display().to_string())
+                .rootfs(rootfs.display().to_string())
+                .data_dir(data_dir.display().to_string())
+                .console(false)
+                .mount(MountConfig::Overlay {
+                    host_path: source.display().to_string(),
+                    guest_path: "/workspace".into(),
+                })
+                .build()
+                .expect("old-guest fallback sandbox should build");
+            sandbox
+                .start()
+                .expect("old-guest fallback should import the complete fixture");
+
+            let capabilities = sandbox.vm.guest_capabilities();
+            assert!(capabilities.iter().any(|value| value == CAP_SESSION_MUX));
+            assert!(!capabilities.iter().any(|value| value == CAP_MOUNT_CACHE_V1));
+            assert!(!capabilities
+                .iter()
+                .any(|value| value == CAP_MOUNT_CACHE_IMPORT_BATCH_V1));
+            {
+                let active = sandbox.windows_mount_cache_run.lock().unwrap();
+                let cache_run = active.as_ref().expect("fallback run should remain active");
+                assert_eq!(cache_run.images.len(), 1);
+                assert!(matches!(
+                    cache_run.images[0].state,
+                    WindowsMountCacheImageState::Fallback
+                ));
+                assert!(cache_run.has_fallback_routes());
+            }
+            assert_eq!(
+                guest_mount_manifest(&sandbox).expect("old-guest fallback manifest"),
+                expected_manifest
+            );
+            sandbox
+                .stop()
+                .expect("old-guest fallback QEMU should stop cleanly");
+            let _ = std::fs::remove_dir_all(&host_root);
+            let _ = std::fs::remove_dir_all(&data_dir);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU, and disposable LocalSandbox assets"]
+    fn windows_qemu_mount_cache_corruption_smoke() {
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        {
+            eprintln!("skipping Windows QEMU mount-cache corruption smoke on non-Windows host");
+        }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            let kernel = required_env_path("LSB_WINDOWS_BOOT_KERNEL");
+            let initrd = required_env_path("LSB_WINDOWS_BOOT_INITRD");
+            let rootfs = required_env_path("LSB_WINDOWS_BOOT_ROOTFS");
+            let host_root = temp_dir("mount-cache-corruption-smoke");
+            let source = host_root.join("source");
+            let data_dir = host_root.join("data");
+            std::fs::create_dir_all(&source).expect("corruption fixture directory");
+            std::fs::write(source.join("content.txt"), b"expected content")
+                .expect("corruption fixture file");
+            let snapshot = snapshot_windows_mount(&WindowsMountDescriptor {
+                tag: "mount0".to_string(),
+                host_root: source.clone(),
+                guest_source: "/tmp/lsb/mounts/mount0/source".to_string(),
+                guest_target: "/workspace".to_string(),
+            })
+            .expect("corruption fixture snapshot");
+            let object_dir = data_dir
+                .join("mount-cache/v1/objects")
+                .join(snapshot.key.to_hex());
+
+            for (run_index, expect_hit) in [false, false, false, true].into_iter().enumerate() {
+                let sandbox = build_windows_overlay_test_sandbox(
+                    &kernel, &initrd, &rootfs, &data_dir, &source,
+                );
+                sandbox.start().unwrap_or_else(|error| {
+                    panic!("corruption recovery run {run_index} should start: {error:#}")
+                });
+                {
+                    let active = sandbox.windows_mount_cache_run.lock().unwrap();
+                    let cache_run = active.as_ref().expect("cache run should remain active");
+                    assert_eq!(cache_run.images.len(), 1);
+                    assert_eq!(cache_run.images[0].lease.is_hit(), expect_hit);
+                }
+                assert_eq!(
+                    sandbox.read_file("/workspace/content.txt").unwrap(),
+                    b"expected content"
+                );
+                sandbox.stop().unwrap_or_else(|error| {
+                    panic!("corruption recovery run {run_index} should stop: {error:#}")
+                });
+
+                match run_index {
+                    0 => {
+                        let image = object_dir.join("image.ext4");
+                        let mut permissions = std::fs::metadata(&image).unwrap().permissions();
+                        permissions.set_readonly(false);
+                        std::fs::set_permissions(&image, permissions).unwrap();
+                        std::fs::OpenOptions::new()
+                            .write(true)
+                            .open(&image)
+                            .unwrap()
+                            .set_len(64 * 1024 * 1024)
+                            .unwrap();
+                        let mut permissions = std::fs::metadata(&image).unwrap().permissions();
+                        permissions.set_readonly(true);
+                        std::fs::set_permissions(&image, permissions).unwrap();
+                    }
+                    1 => {
+                        std::fs::write(object_dir.join("manifest.json"), b"{}")
+                            .expect("replace cache manifest with invalid JSON shape");
+                    }
+                    _ => {}
+                }
+            }
+
+            WindowsMountCache::new(&data_dir)
+                .unwrap()
+                .prune_all()
+                .unwrap();
+            let _ = std::fs::remove_dir_all(&host_root);
         }
     }
 
@@ -6120,6 +6378,77 @@ mod tests {
         std::env::var_os(name)
             .map(PathBuf::from)
             .unwrap_or_else(|| panic!("{name} must point to a disposable boot asset path"))
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn create_windows_mount_benchmark_fixture(source: &Path) -> String {
+        use std::fmt::Write as _;
+
+        let mut manifest = String::new();
+        for directory_index in 0..100 {
+            let directory_name = format!("dir-{directory_index:03}");
+            let directory = source.join(&directory_name);
+            std::fs::create_dir_all(&directory).expect("benchmark fixture directory");
+            for file_index in 0..20 {
+                let file_name = format!("file-{file_index:03}.bin");
+                let mut payload = [0u8; 1024];
+                for (byte_index, byte) in payload.iter_mut().enumerate() {
+                    *byte = ((directory_index * 31 + file_index * 17 + byte_index) % 256) as u8;
+                }
+                std::fs::write(directory.join(&file_name), payload)
+                    .expect("benchmark fixture file");
+                let digest = Sha256::digest(payload);
+                for byte in digest {
+                    write!(&mut manifest, "{byte:02x}").unwrap();
+                }
+                writeln!(&mut manifest, "  ./{directory_name}/{file_name}").unwrap();
+            }
+        }
+        manifest
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn guest_mount_manifest(sandbox: &Sandbox) -> Result<String> {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let exit_code = sandbox.exec(
+            &[
+                "/bin/sh",
+                "-c",
+                "cd /workspace && find . -type f | LC_ALL=C sort | while IFS= read -r path; do sha256sum \"$path\"; done",
+            ],
+            &mut stdout,
+            &mut stderr,
+        )?;
+        if exit_code != 0 {
+            bail!(
+                "guest fixture manifest failed with {exit_code}: {}",
+                String::from_utf8_lossy(&stderr)
+            );
+        }
+        String::from_utf8(stdout).context("guest fixture manifest was not UTF-8")
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn build_windows_overlay_test_sandbox(
+        kernel: &Path,
+        initrd: &Path,
+        rootfs: &Path,
+        data_dir: &Path,
+        source: &Path,
+    ) -> Sandbox {
+        Sandbox::builder()
+            .kernel(kernel.display().to_string())
+            .initrd(initrd.display().to_string())
+            .rootfs(rootfs.display().to_string())
+            .data_dir(data_dir.display().to_string())
+            .console(false)
+            .mount(MountConfig::Overlay {
+                host_path: source.display().to_string(),
+                guest_path: "/workspace".into(),
+            })
+            .build()
+            .expect("Windows overlay test sandbox should build")
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
