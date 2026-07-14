@@ -1,0 +1,19 @@
+crates/lsb-sdk/src/host_tools.rs
+  s_259016ed0e85d9::t_b4ebbc187a5d4b 195,214
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "a843f07bc0cd0574a376c80ccb2d2511fad873a0",
+  "prompts": {},
+  "sessions": {
+    "s_259016ed0e85d9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f60a6-fb85-7813-a3c9-09154066aca7",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
