@@ -87,6 +87,39 @@ console.log(init.dataDir, init.version, init.downloaded)
 `Sandbox.start()` defaults to the initialized `VERSION` in the runtime data directory. You only need
 to pass a version when preparing or booting from an older pinned base.
 
+To show first-start download progress, pass `onProgress` while keeping the returned promise as the
+completion and error channel:
+
+```ts
+const init = await initSandbox({
+  onProgress(progress) {
+    if (progress.downloadedBytes !== undefined && progress.totalBytes !== undefined) {
+      const percent = Math.min(
+        100,
+        Math.floor((progress.downloadedBytes / progress.totalBytes) * 100),
+      )
+      process.stdout.write(`\r${progress.phase}: ${percent}%`)
+    } else {
+      console.log(progress.phase)
+    }
+  },
+})
+
+console.log(`\nready: ${init.dataDir}`)
+```
+
+Download counters represent compressed response bytes consumed. `totalBytes` is omitted when the
+server does not provide a valid positive `Content-Length`; `downloadedBytes` still advances in that
+case. Runtime download and extraction are pipelined, so they appear as the single
+`downloading-and-extracting-runtime-assets` phase.
+
+On a first Windows startup, managed host tools and runtime assets are separate downloads. The byte
+counter resets to zero when the runtime-assets download begins. Ready assets do not emit download
+phases, while `force: true` downloads them again. Notifications are queued non-blockingly on the
+JavaScript thread, so a slow handler does not control installation speed and the promise may settle
+before the final queued callback runs. The callback return value is ignored and the callback must
+not throw.
+
 On Windows, pass `fix: true` from an elevated process to apply every available automatic host
 configuration repair. The result reports each attempted fix and whether it changed the host.
 

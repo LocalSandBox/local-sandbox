@@ -7,7 +7,8 @@ use napi::bindgen_prelude::Either;
 #[cfg(lsb_nodejs_supported)]
 use crate::types::{
   DirEntry, ExecResult, ExposeHostConfig, MountConfig, PortMappingConfig, SandboxAssetPaths,
-  SandboxFixResult, SandboxInitOptions, SandboxInitResult, SecretConfig, StartOptions, StatResult,
+  SandboxFixResult, SandboxInitOptions, SandboxInitProgress, SandboxInitProgressPhase,
+  SandboxInitResult, SecretConfig, StartOptions, StatResult,
 };
 
 // Conversion layer between JS options and the Rust SDK. Keeping validation here
@@ -241,5 +242,37 @@ pub(crate) fn map_init_result(result: lsb_sdk::SandboxInitResult) -> SandboxInit
       checkpointsDir: result.paths.checkpoints_dir,
       instancesDir: result.paths.instances_dir,
     },
+  }
+}
+
+#[cfg(lsb_nodejs_supported)]
+pub(crate) fn map_init_progress(progress: lsb_sdk::SandboxInitProgress) -> SandboxInitProgress {
+  let phase = match progress.phase {
+    lsb_sdk::SandboxInitProgressPhase::Checking => SandboxInitProgressPhase::Checking,
+    lsb_sdk::SandboxInitProgressPhase::ApplyingFixes => SandboxInitProgressPhase::ApplyingFixes,
+    lsb_sdk::SandboxInitProgressPhase::DownloadingHostTools => {
+      SandboxInitProgressPhase::DownloadingHostTools
+    }
+    lsb_sdk::SandboxInitProgressPhase::VerifyingHostTools => {
+      SandboxInitProgressPhase::VerifyingHostTools
+    }
+    lsb_sdk::SandboxInitProgressPhase::ExtractingHostTools => {
+      SandboxInitProgressPhase::ExtractingHostTools
+    }
+    lsb_sdk::SandboxInitProgressPhase::ValidatingHostTools => {
+      SandboxInitProgressPhase::ValidatingHostTools
+    }
+    lsb_sdk::SandboxInitProgressPhase::DownloadingAndExtractingRuntimeAssets => {
+      SandboxInitProgressPhase::DownloadingAndExtractingRuntimeAssets
+    }
+    lsb_sdk::SandboxInitProgressPhase::PinningRuntimeAssets => {
+      SandboxInitProgressPhase::PinningRuntimeAssets
+    }
+  };
+
+  SandboxInitProgress {
+    phase,
+    downloadedBytes: progress.downloaded_bytes.map(|bytes| bytes as f64),
+    totalBytes: progress.total_bytes.map(|bytes| bytes as f64),
   }
 }

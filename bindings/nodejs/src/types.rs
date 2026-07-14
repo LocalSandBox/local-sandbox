@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use napi::threadsafe_function::ThreadsafeFunction;
+use napi::Status;
 use napi_derive::napi;
 
 // These structs define the JavaScript-facing data shapes. Field names stay in
@@ -93,9 +95,34 @@ pub struct StartOptions {
   pub network: Option<NetworkConfig>,
 }
 
-/// Options used when initializing sandbox runtime assets.
+/// Stages reported while sandbox runtime initialization runs.
+#[napi(string_enum = "kebab-case")]
+pub enum SandboxInitProgressPhase {
+  Checking,
+  ApplyingFixes,
+  DownloadingHostTools,
+  VerifyingHostTools,
+  ExtractingHostTools,
+  ValidatingHostTools,
+  DownloadingAndExtractingRuntimeAssets,
+  PinningRuntimeAssets,
+}
+
+/// Observational progress emitted while sandbox runtime initialization runs.
 #[allow(non_snake_case)]
 #[napi(object)]
+pub struct SandboxInitProgress {
+  /// Current initialization stage.
+  pub phase: SandboxInitProgressPhase,
+  /// Compressed response bytes consumed; present only during a download phase.
+  pub downloadedBytes: Option<f64>,
+  /// Positive Content-Length supplied by the server, when available.
+  pub totalBytes: Option<f64>,
+}
+
+/// Options used when initializing sandbox runtime assets.
+#[allow(non_snake_case)]
+#[napi(object, object_to_js = false)]
 pub struct SandboxInitOptions {
   /// Runtime data directory. Defaults to the platform runtime data directory.
   pub dataDir: Option<String>,
@@ -105,6 +132,9 @@ pub struct SandboxInitOptions {
   pub force: Option<bool>,
   /// Apply every automatic host configuration fix supported by this package.
   pub fix: Option<bool>,
+  /// Receives non-blocking progress notifications on JavaScript's main thread.
+  pub onProgress:
+    Option<ThreadsafeFunction<SandboxInitProgress, (), SandboxInitProgress, Status, false>>,
 }
 
 /// Result of an automatic host configuration fix applied during initialization.
@@ -284,6 +314,7 @@ impl Default for SandboxInitOptions {
       version: None,
       force: None,
       fix: None,
+      onProgress: None,
     }
   }
 }

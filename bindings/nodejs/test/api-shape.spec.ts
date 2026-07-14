@@ -31,8 +31,25 @@ test('TypeScript declarations preserve the public Sandbox API shape', (t) => {
   t.regex(declarations, /export declare class Sandbox/)
   t.regex(declarations, /export declare function initSandbox/)
   t.regex(declarations, /export interface SandboxFixResult/)
+  t.regex(declarations, /export interface SandboxInitProgress/)
+  t.regex(declarations, /SandboxInitProgressPhase/)
   t.regex(declarations, /fix\?: boolean/)
   t.regex(declarations, /fixes: Array<SandboxFixResult>/)
+  t.regex(declarations, /onProgress\?: \(\(arg: SandboxInitProgress\) => void\)/)
+  t.false(/onProgress\?:[^\n]*err:/i.test(declarations))
+
+  for (const phase of [
+    'checking',
+    'applying-fixes',
+    'downloading-host-tools',
+    'verifying-host-tools',
+    'extracting-host-tools',
+    'validating-host-tools',
+    'downloading-and-extracting-runtime-assets',
+    'pinning-runtime-assets',
+  ]) {
+    t.true(declarations.includes(`'${phase}'`), `missing init progress phase: ${phase}`)
+  }
 
   for (const method of sandboxMethods) {
     t.regex(declarations, new RegExp(`\\b${method}\\(`))

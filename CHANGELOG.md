@@ -4,6 +4,9 @@
 
 ## Unreleased
 
+- Added optional per-invocation progress callbacks to the backward-compatible Node.js
+  `initSandbox()` API, including initialization phases and throttled compressed-byte counters for
+  runtime assets and Windows managed host tools.
 - Added `lsb init --fix` and the Rust/Node initialization `fix` option to apply
   all available automatic host configuration repairs, including the Windows
   direct SMB mount policy repair.

@@ -319,6 +319,30 @@ export interface SandboxInitOptions {
   force?: boolean
   /** Apply every automatic host configuration fix supported by this package. */
   fix?: boolean
+  /** Receives non-blocking progress notifications on JavaScript's main thread. */
+  onProgress?: ((arg: SandboxInitProgress) => void)
+}
+
+/** Observational progress emitted while sandbox runtime initialization runs. */
+export interface SandboxInitProgress {
+  /** Current initialization stage. */
+  phase: SandboxInitProgressPhase
+  /** Compressed response bytes consumed; present only during a download phase. */
+  downloadedBytes?: number
+  /** Positive Content-Length supplied by the server, when available. */
+  totalBytes?: number
+}
+
+/** Stages reported while sandbox runtime initialization runs. */
+export declare const enum SandboxInitProgressPhase {
+  Checking = 'checking',
+  ApplyingFixes = 'applying-fixes',
+  DownloadingHostTools = 'downloading-host-tools',
+  VerifyingHostTools = 'verifying-host-tools',
+  ExtractingHostTools = 'extracting-host-tools',
+  ValidatingHostTools = 'validating-host-tools',
+  DownloadingAndExtractingRuntimeAssets = 'downloading-and-extracting-runtime-assets',
+  PinningRuntimeAssets = 'pinning-runtime-assets'
 }
 
 /** Result returned after initializing or checking sandbox runtime assets. */

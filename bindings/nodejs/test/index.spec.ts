@@ -259,7 +259,7 @@ test('unsupported platforms fail with a clear unsupported error', async (t) => {
   t.regex(initError?.message ?? '', /macOS on arm64\/x64 and Windows 11 x64|win32-x64-msvc/i)
 })
 
-test('supported builds can initialize against already-present runtime assets', async (t) => {
+test('supported builds report ready-asset progress on the JavaScript thread', async (t) => {
   const entrypoint = useBuiltEntrypoint(t)
   if (!entrypoint) {
     t.log('entrypoint not found')
@@ -280,7 +280,24 @@ test('supported builds can initialize against already-present runtime assets', a
   })
   writeFakeRuntimeAssets(dataDir)
 
-  const result = await initSandbox({ dataDir })
+  const callbackArguments: unknown[][] = []
+  const phases: string[] = []
+  const callbackThreadIds: number[] = []
+  const { threadId } = await import('node:worker_threads')
+
+  const result = await initSandbox({
+    dataDir,
+    onProgress(...args) {
+      callbackArguments.push(args)
+      const [progress] = args
+      phases.push(progress.phase)
+      callbackThreadIds.push(threadId)
+    },
+  })
+
+  // Thread-safe callbacks may still be queued when the authoritative promise
+  // resolves, so allow the JavaScript queue to drain before asserting them.
+  await new Promise<void>((resolve) => setImmediate(resolve))
 
   t.is(result.dataDir, dataDir)
   t.is(result.version, packageVersion)
@@ -288,6 +305,16 @@ test('supported builds can initialize against already-present runtime assets', a
   t.deepEqual(result.fixes, [])
   t.is(result.paths.kernel, join(dataDir, 'Image'))
   t.is(result.paths.rootfs, join(dataDir, 'rootfs.ext4'))
+  t.true(callbackArguments.length > 0)
+  t.true(callbackArguments.every((args) => args.length === 1))
+  t.true(callbackArguments.every(([progress]) => progress !== null && typeof progress === 'object'))
+  t.is(phases[0], 'checking')
+  t.true(phases.includes('pinning-runtime-assets'))
+  t.false(phases.includes('downloading-and-extracting-runtime-assets'))
+  t.true(callbackThreadIds.every((callbackThreadId) => callbackThreadId === threadId))
+
+  const withoutCallback = await initSandbox({ dataDir })
+  t.false(withoutCallback.downloaded)
 })
 
 test('supported builds validate startup inputs through the Rust SDK path', async (t) => {

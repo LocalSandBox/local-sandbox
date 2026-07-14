@@ -10,11 +10,14 @@ mod sandbox;
 mod streams;
 mod types;
 
-use napi::Result;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use napi::threadsafe_function::ThreadsafeFunctionCallMode;
+use napi::{Result, Status};
 use napi_derive::napi;
 
 #[cfg(lsb_nodejs_supported)]
-use crate::config::{build_init_options, map_init_result};
+use crate::config::{build_init_options, map_init_progress, map_init_result};
 #[cfg(lsb_nodejs_supported)]
 use crate::error::to_napi_error;
 #[cfg(not(lsb_nodejs_supported))]
@@ -26,8 +29,8 @@ pub use streams::{ByteStream, WatchStream};
 pub use types::{
   CopyOptions, DirEntry, ExecOptions, ExecResult, ExposeHostConfig, FileChangeEvent, MkdirOptions,
   MountConfig, NetworkConfig, PortMappingConfig, RemoveOptions, SandboxAssetPaths,
-  SandboxFixResult, SandboxInitOptions, SandboxInitResult, SecretConfig, SpawnOptions,
-  StartOptions, StatResult, WatchOptions,
+  SandboxFixResult, SandboxInitOptions, SandboxInitProgress, SandboxInitProgressPhase,
+  SandboxInitResult, SecretConfig, SpawnOptions, StartOptions, StatResult, WatchOptions,
 };
 
 /// Download or verify sandbox runtime assets such as kernel, rootfs, and initramfs.
@@ -37,12 +40,39 @@ pub use types::{
 pub async fn init_sandbox(opts: Option<SandboxInitOptions>) -> Result<SandboxInitResult> {
   #[cfg(lsb_nodejs_supported)]
   {
-    let opts = opts.unwrap_or_default();
-    let version = opts.version.clone();
+    let mut opts = opts.unwrap_or_default();
+    let on_progress = opts.onProgress.take();
+    let version = opts.version.take();
     let options = build_init_options(opts);
-    let result = tokio::task::spawn_blocking(move || match version {
-      Some(version) => lsb_sdk::init_sandbox_version(options, &version),
-      None => lsb_sdk::init_sandbox(options),
+    let result = tokio::task::spawn_blocking(move || {
+      if let Some(on_progress) = on_progress {
+        let closing = AtomicBool::new(false);
+        let reporter = |progress| {
+          if closing.load(Ordering::Relaxed) {
+            return;
+          }
+          let status = on_progress.call(
+            map_init_progress(progress),
+            ThreadsafeFunctionCallMode::NonBlocking,
+          );
+          if status == Status::Closing {
+            closing.store(true, Ordering::Relaxed);
+          } else {
+            debug_assert_eq!(status, Status::Ok, "unexpected progress callback status");
+          }
+        };
+        match version {
+          Some(version) => {
+            lsb_sdk::init_sandbox_version_with_progress(options, &version, &reporter)
+          }
+          None => lsb_sdk::init_sandbox_with_progress(options, &reporter),
+        }
+      } else {
+        match version {
+          Some(version) => lsb_sdk::init_sandbox_version(options, &version),
+          None => lsb_sdk::init_sandbox(options),
+        }
+      }
     })
     .await
     .map_err(|error| to_napi_error(anyhow::Error::new(error)))?
