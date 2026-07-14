@@ -88,6 +88,27 @@ pub fn init_sandbox_version_with_progress(
     version: &str,
     reporter: &dyn SandboxInitProgressReporter,
 ) -> Result<SandboxInitResult> {
+    init_sandbox_version_with_progress_and_host_tools(
+        options,
+        version,
+        reporter,
+        init_host_tools_with_progress,
+    )
+}
+
+fn init_sandbox_version_with_progress_and_host_tools<F>(
+    options: SandboxInitOptions,
+    version: &str,
+    reporter: &dyn SandboxInitProgressReporter,
+    host_tools_initializer: F,
+) -> Result<SandboxInitResult>
+where
+    F: FnOnce(
+        Option<String>,
+        bool,
+        &dyn SandboxInitProgressReporter,
+    ) -> Result<HostToolsInitResult>,
+{
     reporter.report(SandboxInitProgress::phase(
         SandboxInitProgressPhase::Checking,
     ));
@@ -103,7 +124,7 @@ pub fn init_sandbox_version_with_progress(
     } else {
         Vec::new()
     };
-    let host_tools = init_host_tools_with_progress(Some(data_dir.clone()), force, reporter)?;
+    let host_tools = host_tools_initializer(Some(data_dir.clone()), force, reporter)?;
     init_runtime_assets_for_data_dir(data_dir, version, force, Some(host_tools), fixes, reporter)
 }
 
@@ -305,6 +326,23 @@ mod tests {
 
     static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+    fn stub_host_tools(
+        data_dir: Option<String>,
+        _force: bool,
+        _reporter: &dyn SandboxInitProgressReporter,
+    ) -> Result<HostToolsInitResult> {
+        Ok(HostToolsInitResult {
+            data_dir: data_dir.expect("test data dir"),
+            supported: false,
+            package_version: None,
+            installed: false,
+            validated: false,
+            qemu_system_x86_64: None,
+            qemu_img: None,
+            current_json: None,
+        })
+    }
+
     fn temp_data_dir() -> PathBuf {
         let id = TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
         std::env::temp_dir().join(format!("lsb-sdk-assets-{}-{id}", std::process::id()))
@@ -389,7 +427,7 @@ mod tests {
         let events = RefCell::new(Vec::new());
         let reporter = |event| events.borrow_mut().push(event);
 
-        let result = init_sandbox_version_with_progress(
+        let result = init_sandbox_version_with_progress_and_host_tools(
             SandboxInitOptions {
                 data_dir: Some(data_dir.to_string_lossy().into_owned()),
                 force: false,
@@ -397,6 +435,7 @@ mod tests {
             },
             CURRENT_VERSION,
             &reporter,
+            stub_host_tools,
         )
         .expect("ready runtime init");
 
