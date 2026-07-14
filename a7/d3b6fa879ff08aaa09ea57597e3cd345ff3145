@@ -1,0 +1,39 @@
+crates/lsb-sdk/src/progress.rs
+  s_259016ed0e85d9::t_e517d9adef0fa6 109-115,122
+  s_259016ed0e85d9::t_1f7c710c9dc581 1-108,116-121,123-130,132-242
+  s_259016ed0e85d9::t_0eb9fc452bf906 131
+crates/lsb-sdk/src/lib.rs
+  s_259016ed0e85d9::t_0eb9fc452bf906 27
+  s_259016ed0e85d9::t_1f7c710c9dc581 5,21-22
+crates/lsb-sdk/src/host_tools.rs
+  s_259016ed0e85d9::t_8ca5dc5dc15141 1033-1042,1044-1064,1090-1101,1103-1107,1109-1110
+  s_259016ed0e85d9::t_0eb9fc452bf906 158,234-239
+  s_259016ed0e85d9::t_9e9eb14a78fd0e 19-23,145-152,165,168,171,177-192,214-222,229-233,240-251,281-301,333-335,338-340
+  s_259016ed0e85d9::t_6cd985a19694ea 273
+  s_259016ed0e85d9::t_e64ceb21f57d1a 1043,1102
+  s_259016ed0e85d9::t_17a0956ca2f386 1108,1111
+crates/lsb-sdk/src/assets.rs
+  s_259016ed0e85d9::t_7c58eac46c83b2 2,12-15,63-71,82-93,99-101,106,127-134,143,145-167,174-176,189-192,222-226,242-271
+  s_259016ed0e85d9::t_e517d9adef0fa6 283-284
+  s_259016ed0e85d9::t_996ff61d6a0d50 277-282
+  s_259016ed0e85d9::t_6cd985a19694ea 11,295-296,300-303,321-339,385-415,417-451,453-489,494-502,504-534,539-545,550-554
+  s_259016ed0e85d9::t_0eb9fc452bf906 107
+  s_259016ed0e85d9::t_e64ceb21f57d1a 416,452,490-493,503,535-538,546-549
+  s_259016ed0e85d9::t_da05ff3416c53b 555
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "a7d3b6fa879ff08aaa09ea57597e3cd345ff3145",
+  "prompts": {},
+  "sessions": {
+    "s_259016ed0e85d9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f60a6-fb85-7813-a3c9-09154066aca7",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
