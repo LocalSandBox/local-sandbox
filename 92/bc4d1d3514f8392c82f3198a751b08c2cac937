@@ -1,0 +1,45 @@
+crates/lsb-cli/Cargo.toml
+  s_126bf66ae08135::t_da72fbed232035 3
+bindings/nodejs/npm/darwin-x64/package.json
+  s_126bf66ae08135::t_da72fbed232035 3
+crates/lsb-store/Cargo.toml
+  s_126bf66ae08135::t_da72fbed232035 3,13
+crates/lsb-vm/Cargo.toml
+  s_126bf66ae08135::t_da72fbed232035 3,11-12
+crates/lsb-guest/Cargo.toml
+  s_126bf66ae08135::t_da72fbed232035 3
+crates/lsb-proto/Cargo.toml
+  s_126bf66ae08135::t_da72fbed232035 3
+crates/lsb-sdk/Cargo.toml
+  s_126bf66ae08135::t_da72fbed232035 3,10-14
+bindings/nodejs/Cargo.toml
+  s_126bf66ae08135::t_da72fbed232035 5
+crates/lsb-proxy/Cargo.toml
+  s_126bf66ae08135::t_da72fbed232035 3
+crates/lsb-platform/Cargo.toml
+  s_126bf66ae08135::t_da72fbed232035 3,14
+bindings/nodejs/package.json
+  s_126bf66ae08135::t_da72fbed232035 3
+bindings/nodejs/npm/darwin-arm64/package.json
+  s_126bf66ae08135::t_da72fbed232035 3
+bindings/nodejs/npm/win32-x64-msvc/package.json
+  s_126bf66ae08135::t_da72fbed232035 3
+Cargo.lock
+  s_126bf66ae08135::t_1bb3dbdfa78e25 936,959,969,989,998,1018,1037,1052
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "92bc4d1d3514f8392c82f3198a751b08c2cac937",
+  "prompts": {},
+  "sessions": {
+    "s_126bf66ae08135": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f60d0-aac8-7b93-a241-27caaab558f6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
