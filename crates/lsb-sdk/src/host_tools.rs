@@ -192,7 +192,7 @@ fn init_windows_host_tools_with_metadata_and_progress(
     reporter: &dyn SandboxInitProgressReporter,
 ) -> Result<HostToolsInitResult> {
     if !force {
-        if let Ok(install) = validate_existing_install(data_dir, &metadata, probe) {
+        if let Ok(install) = validate_existing_install(data_dir, metadata, probe) {
             return Ok(HostToolsInitResult::from_install(data_dir, install, false));
         }
     }
@@ -211,7 +211,7 @@ fn init_windows_host_tools_with_metadata_and_progress(
         now_secs()?
     ));
     let download_result = (|| {
-        download_artifact(&metadata, &archive_path, reporter)?;
+        download_artifact(metadata, &archive_path, reporter)?;
         install_managed_qemu_archive_with_progress(
             data_dir,
             metadata,
