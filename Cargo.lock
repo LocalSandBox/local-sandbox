@@ -933,7 +933,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-cli"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "base64",
@@ -956,7 +956,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-guest"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "blake3",
  "libc",
@@ -966,7 +966,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-platform"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "blake3",
@@ -986,7 +986,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-proto"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "blake3",
  "serde",
@@ -995,7 +995,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-proxy"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "boring",
@@ -1015,7 +1015,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-sdk"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "flate2",
@@ -1034,7 +1034,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-store"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1049,7 +1049,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-vm"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "blake3",

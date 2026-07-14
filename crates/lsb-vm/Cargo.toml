@@ -1,6 +1,6 @@
 [package]
 name = "lsb-vm"
-version = "0.4.5"
+version = "0.4.6"
 edition = "2021"
 description = "High-level VM management for lsb"
 license = "Apache-2.0"
@@ -8,8 +8,8 @@ repository = "https://github.com/LocalSandBox/local-sandbox.git"
 
 [dependencies]
 blake3 = "1"
-lsb-platform = { version = "0.4.5", path = "../lsb-platform" }
-lsb-proto = { version = "0.4.5", path = "../lsb-proto" }
+lsb-platform = { version = "0.4.6", path = "../lsb-platform" }
+lsb-proto = { version = "0.4.6", path = "../lsb-proto" }
 anyhow = "1"
 crossbeam-channel = "0.5"
 serde = { version = "1", features = ["derive"] }
