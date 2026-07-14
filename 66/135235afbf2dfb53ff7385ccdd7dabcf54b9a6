@@ -1,0 +1,19 @@
+PLAN.md
+  s_a747f09b22b8df::t_a614883a4ca9cd 1,5-7,9,11-13,15-16,18,20,22,24-31,33-34,36,38,40-45,47-49,51,53-64,66-67,69,71,73-75,77,79-85,88-103,107-119,122-248,252-292,296,300-308,311-330
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "66135235afbf2dfb53ff7385ccdd7dabcf54b9a6",
+  "prompts": {},
+  "sessions": {
+    "s_a747f09b22b8df": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f609a-2c74-7df3-9aad-b7986fab7e5c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
