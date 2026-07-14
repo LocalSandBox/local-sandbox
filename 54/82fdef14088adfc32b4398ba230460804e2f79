@@ -1,0 +1,19 @@
+crates/lsb-sdk/src/assets.rs
+  s_4cfd3083768340::t_05e01fafc6ed87 91-111,127,329-345,430,438
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "5482fdef14088adfc32b4398ba230460804e2f79",
+  "prompts": {},
+  "sessions": {
+    "s_4cfd3083768340": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f60e3-b80d-7e40-ba9f-1030e0f01a98",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
