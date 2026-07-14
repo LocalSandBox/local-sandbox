@@ -1,0 +1,35 @@
+bindings/nodejs/src/config.rs
+  s_259016ed0e85d9::t_0bbfb1d73f7da3 10-11,247-276
+  s_259016ed0e85d9::t_2b158d0c4e0571 277-278
+bindings/nodejs/src/types.rs
+  s_259016ed0e85d9::t_0bbfb1d73f7da3 3-4,99-111,114-125,135-137,317
+  s_259016ed0e85d9::t_2e80f792fd86f8 98
+bindings/nodejs/README.md
+  s_259016ed0e85d9::t_e834fe3721b93d 90-122
+bindings/nodejs/src/lib.rs
+  s_259016ed0e85d9::t_0bbfb1d73f7da3 13-16,20,32-33,43-45,47-75
+bindings/nodejs/test/api-shape.spec.ts
+  s_259016ed0e85d9::t_cf8d08af2abbc9 34-35,38-52
+CHANGELOG.md
+  s_259016ed0e85d9::t_e834fe3721b93d 7-9
+bindings/nodejs/test/index.spec.ts
+  s_259016ed0e85d9::t_cf8d08af2abbc9 262,283-300,308-317
+bindings/nodejs/index.d.ts
+  s_259016ed0e85d9::t_d94b5d98f40086 322-345
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "0aa6689d552e39d9f9f76889525f1c2294aa459b",
+  "prompts": {},
+  "sessions": {
+    "s_259016ed0e85d9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f60a6-fb85-7813-a3c9-09154066aca7",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
