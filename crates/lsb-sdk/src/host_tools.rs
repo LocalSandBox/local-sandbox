@@ -16,6 +16,11 @@ use lsb_platform::windows_x86_64::host_tools::{
 use sha2::{Digest, Sha256};
 use tar::Archive;
 
+use crate::progress::{
+    NoopProgressReporter, ProgressReader, SandboxInitProgress, SandboxInitProgressPhase,
+    SandboxInitProgressReporter,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostToolsInitResult {
     pub data_dir: String,
@@ -137,28 +142,54 @@ impl ManagedQemuProbe for StdManagedQemuProbe {
 }
 
 pub fn init_host_tools(data_dir: Option<String>, force: bool) -> Result<HostToolsInitResult> {
+    init_host_tools_with_progress(data_dir, force, &NoopProgressReporter)
+}
+
+pub(crate) fn init_host_tools_with_progress(
+    data_dir: Option<String>,
+    force: bool,
+    reporter: &dyn SandboxInitProgressReporter,
+) -> Result<HostToolsInitResult> {
     let data_dir = data_dir.unwrap_or_else(lsb_platform::default_data_dir);
     if !cfg!(all(target_os = "windows", target_arch = "x86_64")) {
         return Ok(HostToolsInitResult::unsupported(data_dir));
     }
 
-    init_windows_host_tools(Path::new(&data_dir), force, &StdManagedQemuProbe)
+    init_windows_host_tools(Path::new(&data_dir), force, &StdManagedQemuProbe, reporter)
 }
 
 fn init_windows_host_tools(
     data_dir: &Path,
     force: bool,
     probe: &impl ManagedQemuProbe,
+    reporter: &dyn SandboxInitProgressReporter,
 ) -> Result<HostToolsInitResult> {
     let metadata = ManagedQemuInstallMetadata::current();
-    init_windows_host_tools_with_metadata(data_dir, force, &metadata, probe)
+    init_windows_host_tools_with_metadata_and_progress(data_dir, force, &metadata, probe, reporter)
 }
 
+#[cfg(test)]
 fn init_windows_host_tools_with_metadata(
     data_dir: &Path,
     force: bool,
     metadata: &ManagedQemuInstallMetadata,
     probe: &impl ManagedQemuProbe,
+) -> Result<HostToolsInitResult> {
+    init_windows_host_tools_with_metadata_and_progress(
+        data_dir,
+        force,
+        metadata,
+        probe,
+        &NoopProgressReporter,
+    )
+}
+
+fn init_windows_host_tools_with_metadata_and_progress(
+    data_dir: &Path,
+    force: bool,
+    metadata: &ManagedQemuInstallMetadata,
+    probe: &impl ManagedQemuProbe,
+    reporter: &dyn SandboxInitProgressReporter,
 ) -> Result<HostToolsInitResult> {
     if !force {
         if let Ok(install) = validate_existing_install(data_dir, &metadata, probe) {
@@ -180,25 +211,44 @@ fn init_windows_host_tools_with_metadata(
         now_secs()?
     ));
     let download_result = (|| {
-        download_artifact(&metadata, &archive_path)?;
-        install_managed_qemu_archive(data_dir, metadata, &archive_path, force, probe)
+        download_artifact(&metadata, &archive_path, reporter)?;
+        install_managed_qemu_archive_with_progress(
+            data_dir,
+            metadata,
+            &archive_path,
+            force,
+            probe,
+            reporter,
+        )
     })();
     let _ = fs::remove_file(&archive_path);
 
     download_result
 }
 
-fn download_artifact(metadata: &ManagedQemuInstallMetadata, destination: &Path) -> Result<()> {
-    let mut response = ureq::get(&metadata.artifact_url)
-        .call()
-        .with_context(|| {
-            format!(
-                "failed to download managed QEMU artifact '{}'",
-                metadata.artifact_url
-            )
-        })?
-        .into_body()
-        .into_reader();
+fn download_artifact(
+    metadata: &ManagedQemuInstallMetadata,
+    destination: &Path,
+    reporter: &dyn SandboxInitProgressReporter,
+) -> Result<()> {
+    let response = ureq::get(&metadata.artifact_url).call().with_context(|| {
+        format!(
+            "failed to download managed QEMU artifact '{}'",
+            metadata.artifact_url
+        )
+    })?;
+    let total_bytes = response
+        .headers()
+        .get("content-length")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|total| *total > 0);
+    let mut response = ProgressReader::new(
+        response.into_body().into_reader(),
+        SandboxInitProgressPhase::DownloadingHostTools,
+        total_bytes,
+        reporter,
+    );
     let mut out = File::create(destination).with_context(|| {
         format!(
             "failed to create managed QEMU download staging file '{}'",
@@ -220,6 +270,7 @@ fn download_artifact(metadata: &ManagedQemuInstallMetadata, destination: &Path) 
     Ok(())
 }
 
+#[cfg(test)]
 fn install_managed_qemu_archive(
     data_dir: &Path,
     metadata: &ManagedQemuInstallMetadata,
@@ -227,6 +278,27 @@ fn install_managed_qemu_archive(
     _force: bool,
     probe: &impl ManagedQemuProbe,
 ) -> Result<HostToolsInitResult> {
+    install_managed_qemu_archive_with_progress(
+        data_dir,
+        metadata,
+        archive_path,
+        _force,
+        probe,
+        &NoopProgressReporter,
+    )
+}
+
+fn install_managed_qemu_archive_with_progress(
+    data_dir: &Path,
+    metadata: &ManagedQemuInstallMetadata,
+    archive_path: &Path,
+    _force: bool,
+    probe: &impl ManagedQemuProbe,
+    reporter: &dyn SandboxInitProgressReporter,
+) -> Result<HostToolsInitResult> {
+    reporter.report(SandboxInitProgress::phase(
+        SandboxInitProgressPhase::VerifyingHostTools,
+    ));
     let actual_sha = sha256_file(archive_path)?;
     if !actual_sha.eq_ignore_ascii_case(&metadata.artifact_sha256) {
         bail!(
@@ -258,8 +330,14 @@ fn install_managed_qemu_archive(
     })?;
 
     let install_result = (|| {
+        reporter.report(SandboxInitProgress::phase(
+            SandboxInitProgressPhase::ExtractingHostTools,
+        ));
         extract_managed_qemu_archive(archive_path, &temp_root, &metadata.top_level_dir)?;
         let extracted_package = temp_root.join(&metadata.top_level_dir);
+        reporter.report(SandboxInitProgress::phase(
+            SandboxInitProgressPhase::ValidatingHostTools,
+        ));
         let staged =
             validate_package_dir_contents(&extracted_package, metadata, &paths.current_json)?;
         let qemu_system_relative = staged
@@ -953,6 +1031,38 @@ mod tests {
     }
 
     #[test]
+    fn managed_qemu_install_reports_verify_extract_validate_in_order() {
+        let root = temp_dir("progress-order");
+        let data_dir = root.join("data");
+        let (archive, metadata) = write_valid_archive(&root);
+        let probe = FakeProbe::default();
+        let events = Mutex::new(Vec::new());
+        let reporter = |event| events.lock().expect("progress events lock").push(event);
+
+        install_managed_qemu_archive_with_progress(
+            &data_dir, &metadata, &archive, false, &probe, &reporter,
+        )
+        .expect("install should succeed");
+
+        let phases = events
+            .into_inner()
+            .expect("progress events")
+            .into_iter()
+            .map(|event| event.phase)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            phases,
+            vec![
+                SandboxInitProgressPhase::VerifyingHostTools,
+                SandboxInitProgressPhase::ExtractingHostTools,
+                SandboxInitProgressPhase::ValidatingHostTools,
+            ]
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn existing_valid_install_is_idempotent_without_download_or_reinstall() {
         let root = temp_dir("idempotent");
         let data_dir = root.join("data");
@@ -973,6 +1083,28 @@ mod tests {
         assert!(!second.installed);
         assert_eq!(current_before, current_after);
         assert_eq!(probe.calls.load(Ordering::SeqCst), 2);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn existing_valid_install_emits_no_windows_install_phases() {
+        let root = temp_dir("existing-progress");
+        let data_dir = root.join("data");
+        let (archive, metadata) = write_valid_archive(&root);
+        let probe = FakeProbe::default();
+        install_managed_qemu_archive(&data_dir, &metadata, &archive, false, &probe)
+            .expect("initial install");
+        let events = Mutex::new(Vec::new());
+        let reporter = |event| events.lock().expect("progress events lock").push(event);
+
+        let result = init_windows_host_tools_with_metadata_and_progress(
+            &data_dir, false, &metadata, &probe, &reporter,
+        )
+        .expect("existing install should validate");
+
+        assert!(!result.installed);
+        assert!(events.into_inner().expect("progress events").is_empty());
 
         let _ = fs::remove_dir_all(root);
     }
