@@ -40,6 +40,15 @@ pub enum LifecycleState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResourceRecord {
+    AuthorizedMountRoot {
+        mount_id: String,
+        volume_serial: u32,
+        file_index: String,
+        final_path: String,
+        access: String,
+        backend: String,
+        committed: bool,
+    },
     ProtectedFile {
         relative_path: String,
         committed: bool,
@@ -80,6 +89,34 @@ pub enum ResourceRecord {
         filter_guid: String,
         committed: bool,
     },
+}
+
+impl ResourceRecord {
+    pub fn committed(&self) -> bool {
+        match self {
+            Self::AuthorizedMountRoot { committed, .. }
+            | Self::ProtectedFile { committed, .. }
+            | Self::TemporaryAccount { committed, .. }
+            | Self::Share { committed, .. }
+            | Self::PinnedAce { committed, .. }
+            | Self::StagingRoot { committed, .. }
+            | Self::QemuProcess { committed, .. }
+            | Self::WfpFilter { committed, .. } => *committed,
+        }
+    }
+
+    pub fn set_committed(&mut self, value: bool) {
+        match self {
+            Self::AuthorizedMountRoot { committed, .. }
+            | Self::ProtectedFile { committed, .. }
+            | Self::TemporaryAccount { committed, .. }
+            | Self::Share { committed, .. }
+            | Self::PinnedAce { committed, .. }
+            | Self::StagingRoot { committed, .. }
+            | Self::QemuProcess { committed, .. }
+            | Self::WfpFilter { committed, .. } => *committed = value,
+        }
+    }
 }
 
 impl LedgerDocument {

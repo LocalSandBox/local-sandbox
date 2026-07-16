@@ -6,6 +6,8 @@ mod paths;
 #[cfg(windows)]
 mod pipe;
 #[cfg(windows)]
+pub mod resource;
+#[cfg(windows)]
 mod scm;
 #[cfg(windows)]
 pub mod security;

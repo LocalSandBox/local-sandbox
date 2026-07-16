@@ -103,6 +103,10 @@ impl ClientIdentity {
             _impersonation_token: duplicated_token,
         })
     }
+
+    pub fn duplicate_impersonation_token(&self) -> std::io::Result<OwnedHandle> {
+        self._impersonation_token.try_clone()
+    }
 }
 
 fn open_thread_token() -> Result<OwnedHandle> {
