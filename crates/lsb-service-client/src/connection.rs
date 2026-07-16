@@ -183,6 +183,136 @@ impl ServiceClient {
         }
     }
 
+    pub async fn mkdir(
+        &mut self,
+        sandbox: &RemoteSandbox,
+        path: impl Into<String>,
+        recursive: bool,
+    ) -> Result<(), ClientError> {
+        self.empty_file_request(RequestOp::Mkdir {
+            sandbox_id: sandbox.sandbox_id.clone(),
+            path: path.into(),
+            recursive,
+        })
+        .await
+    }
+
+    pub async fn read_dir(
+        &mut self,
+        sandbox: &RemoteSandbox,
+        path: impl Into<String>,
+    ) -> Result<Vec<lsb_service_proto::ServiceDirEntry>, ClientError> {
+        match self
+            .request(RequestOp::ReadDir {
+                sandbox_id: sandbox.sandbox_id.clone(),
+                path: path.into(),
+            })
+            .await?
+        {
+            ResponseValue::Directory { entries } => Ok(entries),
+            _ => Err(mismatched("ReadDir")),
+        }
+    }
+
+    pub async fn stat(
+        &mut self,
+        sandbox: &RemoteSandbox,
+        path: impl Into<String>,
+    ) -> Result<lsb_service_proto::ServiceFileStat, ClientError> {
+        match self
+            .request(RequestOp::Stat {
+                sandbox_id: sandbox.sandbox_id.clone(),
+                path: path.into(),
+            })
+            .await?
+        {
+            ResponseValue::FileStat { stat } => Ok(stat),
+            _ => Err(mismatched("Stat")),
+        }
+    }
+
+    pub async fn remove(
+        &mut self,
+        sandbox: &RemoteSandbox,
+        path: impl Into<String>,
+        recursive: bool,
+    ) -> Result<(), ClientError> {
+        self.empty_file_request(RequestOp::Remove {
+            sandbox_id: sandbox.sandbox_id.clone(),
+            path: path.into(),
+            recursive,
+        })
+        .await
+    }
+
+    pub async fn rename(
+        &mut self,
+        sandbox: &RemoteSandbox,
+        old_path: impl Into<String>,
+        new_path: impl Into<String>,
+    ) -> Result<(), ClientError> {
+        self.empty_file_request(RequestOp::Rename {
+            sandbox_id: sandbox.sandbox_id.clone(),
+            old_path: old_path.into(),
+            new_path: new_path.into(),
+        })
+        .await
+    }
+
+    pub async fn copy(
+        &mut self,
+        sandbox: &RemoteSandbox,
+        src: impl Into<String>,
+        dst: impl Into<String>,
+        recursive: bool,
+    ) -> Result<(), ClientError> {
+        self.empty_file_request(RequestOp::Copy {
+            sandbox_id: sandbox.sandbox_id.clone(),
+            src: src.into(),
+            dst: dst.into(),
+            recursive,
+        })
+        .await
+    }
+
+    pub async fn chmod(
+        &mut self,
+        sandbox: &RemoteSandbox,
+        path: impl Into<String>,
+        mode: u32,
+    ) -> Result<(), ClientError> {
+        self.empty_file_request(RequestOp::Chmod {
+            sandbox_id: sandbox.sandbox_id.clone(),
+            path: path.into(),
+            mode,
+        })
+        .await
+    }
+
+    pub async fn exists(
+        &mut self,
+        sandbox: &RemoteSandbox,
+        path: impl Into<String>,
+    ) -> Result<bool, ClientError> {
+        match self
+            .request(RequestOp::Exists {
+                sandbox_id: sandbox.sandbox_id.clone(),
+                path: path.into(),
+            })
+            .await?
+        {
+            ResponseValue::Exists { exists } => Ok(exists),
+            _ => Err(mismatched("Exists")),
+        }
+    }
+
+    async fn empty_file_request(&mut self, op: RequestOp) -> Result<(), ClientError> {
+        match self.request(op).await? {
+            ResponseValue::Empty {} => Ok(()),
+            _ => Err(mismatched("guest file operation")),
+        }
+    }
+
     pub async fn close_session(&mut self) -> Result<(), ClientError> {
         match self.request(RequestOp::CloseSession {}).await? {
             ResponseValue::Empty {} => Ok(()),
@@ -232,6 +362,10 @@ impl ServiceClient {
             Response::Err { error } => Err(ClientError::Service(error)),
         }
     }
+}
+
+fn mismatched(operation: &str) -> ClientError {
+    ClientError::Protocol(format!("{operation} returned a mismatched result"))
 }
 
 #[derive(Debug, Clone)]

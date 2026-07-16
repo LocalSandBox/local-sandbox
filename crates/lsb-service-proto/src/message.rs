@@ -149,6 +149,48 @@ impl Request {
                     return Err(ProtocolError::MessageTooLarge);
                 }
             }
+            RequestOp::Mkdir {
+                sandbox_id, path, ..
+            }
+            | RequestOp::ReadDir { sandbox_id, path }
+            | RequestOp::Stat { sandbox_id, path }
+            | RequestOp::Remove {
+                sandbox_id, path, ..
+            }
+            | RequestOp::Exists { sandbox_id, path } => {
+                validate_resource_id(sandbox_id)?;
+                validate_guest_path(path)?;
+            }
+            RequestOp::Rename {
+                sandbox_id,
+                old_path,
+                new_path,
+            } => {
+                validate_resource_id(sandbox_id)?;
+                validate_guest_path(old_path)?;
+                validate_guest_path(new_path)?;
+            }
+            RequestOp::Copy {
+                sandbox_id,
+                src,
+                dst,
+                ..
+            } => {
+                validate_resource_id(sandbox_id)?;
+                validate_guest_path(src)?;
+                validate_guest_path(dst)?;
+            }
+            RequestOp::Chmod {
+                sandbox_id,
+                path,
+                mode,
+            } => {
+                validate_resource_id(sandbox_id)?;
+                validate_guest_path(path)?;
+                if *mode > 0o7777 {
+                    return Err(ProtocolError::InvalidJson);
+                }
+            }
         }
         Ok(())
     }
@@ -178,6 +220,44 @@ pub enum RequestOp {
         cwd: Option<String>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         env: BTreeMap<String, String>,
+    },
+    Mkdir {
+        sandbox_id: String,
+        path: String,
+        recursive: bool,
+    },
+    ReadDir {
+        sandbox_id: String,
+        path: String,
+    },
+    Stat {
+        sandbox_id: String,
+        path: String,
+    },
+    Remove {
+        sandbox_id: String,
+        path: String,
+        recursive: bool,
+    },
+    Rename {
+        sandbox_id: String,
+        old_path: String,
+        new_path: String,
+    },
+    Copy {
+        sandbox_id: String,
+        src: String,
+        dst: String,
+        recursive: bool,
+    },
+    Chmod {
+        sandbox_id: String,
+        path: String,
+        mode: u32,
+    },
+    Exists {
+        sandbox_id: String,
+        path: String,
     },
     CloseSession {},
 }
@@ -249,7 +329,35 @@ pub enum ResponseValue {
         stderr: String,
         exit_code: i32,
     },
+    Directory {
+        entries: Vec<ServiceDirEntry>,
+    },
+    FileStat {
+        stat: ServiceFileStat,
+    },
+    Exists {
+        exists: bool,
+    },
     Empty {},
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceDirEntry {
+    pub name: String,
+    pub entry_type: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceFileStat {
+    pub size: u64,
+    pub mode: u32,
+    pub mtime: u64,
+    pub is_dir: bool,
+    pub is_file: bool,
+    pub is_symlink: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -465,6 +573,28 @@ mod tests {
         if let RequestOp::Exec { cwd, .. } = &mut invalid.op {
             *cwd = Some(r"C:\\caller".to_string());
         }
+        assert_eq!(invalid.validate(), Err(ProtocolError::InvalidJson));
+    }
+
+    #[test]
+    fn guest_file_contract_rejects_noncanonical_paths_and_modes() {
+        let request = Request {
+            deadline_ms: None,
+            op: RequestOp::Rename {
+                sandbox_id: "0123456789abcdef0123456789abcdef".to_string(),
+                old_path: "/workspace/a".to_string(),
+                new_path: "/workspace/b".to_string(),
+            },
+        };
+        request.validate().unwrap();
+        let invalid = Request {
+            deadline_ms: None,
+            op: RequestOp::Chmod {
+                sandbox_id: "0123456789abcdef0123456789abcdef".to_string(),
+                path: "/workspace/../etc".to_string(),
+                mode: 0o10_000,
+            },
+        };
         assert_eq!(invalid.validate(), Err(ProtocolError::InvalidJson));
     }
 }

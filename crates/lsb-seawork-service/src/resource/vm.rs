@@ -20,6 +20,7 @@ pub struct ManagedVmSpec {
 enum Command {
     Stop(mpsc::SyncSender<Result<()>>),
     Exec(ManagedExecSpec, mpsc::SyncSender<Result<ManagedExecResult>>),
+    File(ManagedFileOp, mpsc::SyncSender<Result<ManagedFileResult>>),
 }
 
 const MAX_EXEC_OUTPUT: usize = 8 * 1024 * 1024;
@@ -36,6 +37,65 @@ pub struct ManagedExecResult {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub exit_code: i32,
+}
+
+#[derive(Debug, Clone)]
+pub enum ManagedFileOp {
+    Mkdir {
+        path: String,
+        recursive: bool,
+    },
+    ReadDir {
+        path: String,
+    },
+    Stat {
+        path: String,
+    },
+    Remove {
+        path: String,
+        recursive: bool,
+    },
+    Rename {
+        old_path: String,
+        new_path: String,
+    },
+    Copy {
+        src: String,
+        dst: String,
+        recursive: bool,
+    },
+    Chmod {
+        path: String,
+        mode: u32,
+    },
+    Exists {
+        path: String,
+    },
+}
+
+#[derive(Debug)]
+pub enum ManagedFileResult {
+    Empty,
+    Directory(Vec<ManagedDirEntry>),
+    Stat(ManagedFileStat),
+    Exists(bool),
+}
+
+#[derive(Debug)]
+pub struct ManagedDirEntry {
+    pub name: String,
+    pub entry_type: String,
+    pub size: u64,
+}
+
+#[derive(Debug)]
+pub struct ManagedFileStat {
+    pub size: u64,
+    pub mode: u32,
+    pub mtime: u64,
+    pub is_dir: bool,
+    pub is_file: bool,
+    pub is_symlink: bool,
 }
 
 #[derive(Clone)]
@@ -116,6 +176,16 @@ impl ManagedVmController {
             .recv_timeout(timeout)
             .map_err(|_| anyhow::anyhow!("managed VM exec exceeded bounded deadline"))?
     }
+
+    pub fn file(&self, op: ManagedFileOp, timeout: Duration) -> Result<ManagedFileResult> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.commands
+            .try_send(Command::File(op, reply))
+            .map_err(|_| anyhow::anyhow!("managed VM command queue is unavailable"))?;
+        response
+            .recv_timeout(timeout)
+            .map_err(|_| anyhow::anyhow!("managed VM file operation exceeded bounded deadline"))?
+    }
 }
 
 impl Drop for ManagedVm {
@@ -171,6 +241,9 @@ fn run(
             Ok(Command::Exec(spec, reply)) => {
                 let _ = reply.send(exec(&sandbox, spec));
             }
+            Ok(Command::File(op, reply)) => {
+                let _ = reply.send(file_op(&sandbox, op));
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let _ = sandbox.stop();
@@ -178,6 +251,67 @@ fn run(
                 return;
             }
         }
+    }
+}
+
+fn file_op(sandbox: &lsb_vm::Sandbox, op: ManagedFileOp) -> Result<ManagedFileResult> {
+    match op {
+        ManagedFileOp::Mkdir { path, recursive } => {
+            sandbox.mkdir(&path, recursive)?;
+            Ok(ManagedFileResult::Empty)
+        }
+        ManagedFileOp::ReadDir { path } => {
+            let response = sandbox.read_dir(&path)?;
+            Ok(ManagedFileResult::Directory(
+                response
+                    .entries
+                    .into_iter()
+                    .map(|entry| ManagedDirEntry {
+                        name: entry.name,
+                        entry_type: entry.entry_type,
+                        size: entry.size,
+                    })
+                    .collect(),
+            ))
+        }
+        ManagedFileOp::Stat { path } => {
+            let stat = sandbox.stat(&path)?;
+            Ok(ManagedFileResult::Stat(ManagedFileStat {
+                size: stat.size,
+                mode: stat.mode,
+                mtime: stat.mtime,
+                is_dir: stat.is_dir,
+                is_file: stat.is_file,
+                is_symlink: stat.is_symlink,
+            }))
+        }
+        ManagedFileOp::Remove { path, recursive } => {
+            sandbox.remove(&path, recursive)?;
+            Ok(ManagedFileResult::Empty)
+        }
+        ManagedFileOp::Rename { old_path, new_path } => {
+            sandbox.rename(&old_path, &new_path)?;
+            Ok(ManagedFileResult::Empty)
+        }
+        ManagedFileOp::Copy {
+            src,
+            dst,
+            recursive,
+        } => {
+            sandbox.copy(&src, &dst, recursive)?;
+            Ok(ManagedFileResult::Empty)
+        }
+        ManagedFileOp::Chmod { path, mode } => {
+            sandbox.chmod(&path, mode)?;
+            Ok(ManagedFileResult::Empty)
+        }
+        ManagedFileOp::Exists { path } => match sandbox.stat(&path) {
+            Ok(_) => Ok(ManagedFileResult::Exists(true)),
+            Err(error) if error.to_string().contains("No such file or directory") => {
+                Ok(ManagedFileResult::Exists(false))
+            }
+            Err(error) => Err(error),
+        },
     }
 }
 

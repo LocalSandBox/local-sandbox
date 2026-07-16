@@ -222,6 +222,17 @@ async fn handle_authenticated_client(
             continue;
         }
         let deadline_ms = request.deadline_ms;
+        macro_rules! file_result {
+            ($future:expr) => {
+                match $future.await {
+                    Ok(result) => result,
+                    Err(code) => {
+                        write_error(pipe, selected, frame.header.correlation, code).await?;
+                        continue;
+                    }
+                }
+            };
+        }
         let result = match request.op {
             RequestOp::GetServiceInfo {} => ResponseValue::ServiceInfo {
                 info: context.service_info(),
@@ -295,6 +306,95 @@ async fn handle_authenticated_client(
                     continue;
                 }
             },
+            RequestOp::Mkdir {
+                sandbox_id,
+                path,
+                recursive,
+            } => file_result!(file_request(
+                context,
+                session_id,
+                identity,
+                sandbox_id,
+                crate::resource::vm::ManagedFileOp::Mkdir { path, recursive },
+                deadline_ms,
+            )),
+            RequestOp::ReadDir { sandbox_id, path } => file_result!(file_request(
+                context,
+                session_id,
+                identity,
+                sandbox_id,
+                crate::resource::vm::ManagedFileOp::ReadDir { path },
+                deadline_ms,
+            )),
+            RequestOp::Stat { sandbox_id, path } => file_result!(file_request(
+                context,
+                session_id,
+                identity,
+                sandbox_id,
+                crate::resource::vm::ManagedFileOp::Stat { path },
+                deadline_ms,
+            )),
+            RequestOp::Remove {
+                sandbox_id,
+                path,
+                recursive,
+            } => file_result!(file_request(
+                context,
+                session_id,
+                identity,
+                sandbox_id,
+                crate::resource::vm::ManagedFileOp::Remove { path, recursive },
+                deadline_ms,
+            )),
+            RequestOp::Rename {
+                sandbox_id,
+                old_path,
+                new_path,
+            } => file_result!(file_request(
+                context,
+                session_id,
+                identity,
+                sandbox_id,
+                crate::resource::vm::ManagedFileOp::Rename { old_path, new_path },
+                deadline_ms,
+            )),
+            RequestOp::Copy {
+                sandbox_id,
+                src,
+                dst,
+                recursive,
+            } => file_result!(file_request(
+                context,
+                session_id,
+                identity,
+                sandbox_id,
+                crate::resource::vm::ManagedFileOp::Copy {
+                    src,
+                    dst,
+                    recursive,
+                },
+                deadline_ms,
+            )),
+            RequestOp::Chmod {
+                sandbox_id,
+                path,
+                mode,
+            } => file_result!(file_request(
+                context,
+                session_id,
+                identity,
+                sandbox_id,
+                crate::resource::vm::ManagedFileOp::Chmod { path, mode },
+                deadline_ms,
+            )),
+            RequestOp::Exists { sandbox_id, path } => file_result!(file_request(
+                context,
+                session_id,
+                identity,
+                sandbox_id,
+                crate::resource::vm::ManagedFileOp::Exists { path },
+                deadline_ms,
+            )),
             RequestOp::CloseSession {} => {
                 write_control(
                     pipe,
@@ -318,6 +418,25 @@ async fn handle_authenticated_client(
         )
         .await?;
     }
+}
+
+async fn file_request(
+    context: &HealthContext,
+    session_id: ResourceHandle,
+    identity: &ClientIdentityKey,
+    sandbox_id: String,
+    op: crate::resource::vm::ManagedFileOp,
+    deadline_ms: Option<u32>,
+) -> std::result::Result<ResponseValue, ErrorCode> {
+    rpc::file::run(
+        context.sessions.clone(),
+        session_id,
+        identity.clone(),
+        sandbox_id,
+        op,
+        deadline_ms,
+    )
+    .await
 }
 
 async fn write_error(

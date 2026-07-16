@@ -9,7 +9,9 @@ use super::{CancellationToken, ResourceHandle};
 #[cfg(windows)]
 use crate::engine::ServiceEngineConfig;
 #[cfg(windows)]
-use crate::resource::vm::{ManagedExecResult, ManagedExecSpec, ManagedVm, ManagedVmSpec};
+use crate::resource::vm::{
+    ManagedExecResult, ManagedExecSpec, ManagedFileOp, ManagedFileResult, ManagedVm, ManagedVmSpec,
+};
 
 const MAX_RETIRED_HANDLES: usize = 4_096;
 const RETIRED_HANDLE_TTL: Duration = Duration::from_secs(10 * 60);
@@ -339,6 +341,34 @@ impl SessionManager {
             }
         };
         controller.exec(spec, timeout).map(Some)
+    }
+
+    #[cfg(windows)]
+    pub fn file_managed_vm(
+        &self,
+        session_id: ResourceHandle,
+        identity: &ClientIdentityKey,
+        handle: ResourceHandle,
+        op: ManagedFileOp,
+        timeout: Duration,
+    ) -> Result<Option<ManagedFileResult>> {
+        let controller = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
+            let Some(session) = state.sessions.get(&session_id) else {
+                return Ok(None);
+            };
+            if &session.identity != identity {
+                return Ok(None);
+            }
+            match session.sandboxes.get(&handle) {
+                Some(SandboxSlot::Running(vm)) => vm.controller(),
+                _ => return Ok(None),
+            }
+        };
+        controller.file(op, timeout).map(Some)
     }
 }
 
