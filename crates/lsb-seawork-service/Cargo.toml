@@ -1,0 +1,29 @@
+[package]
+name = "lsb-seawork-service"
+version = "0.4.6"
+edition = "2021"
+publish = false
+build = "build.rs"
+
+[dependencies]
+anyhow = "1"
+lsb-service-proto = { path = "../lsb-service-proto" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+windows-service = "0.8.1"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_IO",
+    "Win32_System_SystemServices",
+    "Win32_UI_Shell",
+] }
+
+[[bin]]
+name = "localsandbox-seawork-service"
+path = "src/main.rs"

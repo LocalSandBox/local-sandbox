@@ -1,0 +1,70 @@
+use std::ffi::OsString;
+use std::sync::mpsc;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use windows_service::define_windows_service;
+use windows_service::service::{ServiceControl, ServiceState};
+use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
+use windows_service::service_dispatcher;
+
+use crate::config::ServiceConfig;
+use crate::ledger;
+use crate::logging::JsonLogger;
+use crate::paths::ServicePaths;
+use crate::status;
+use crate::SERVICE_NAME;
+
+define_windows_service!(ffi_service_main, service_main);
+
+pub fn dispatch() -> Result<()> {
+    service_dispatcher::start(SERVICE_NAME, ffi_service_main)
+        .context("connect LocalSandboxSeaWork to the SCM dispatcher")
+}
+
+fn service_main(_arguments: Vec<OsString>) {
+    let _ = run();
+}
+
+fn run() -> Result<()> {
+    let (control_tx, control_rx) = mpsc::channel();
+    let status_handle =
+        service_control_handler::register(SERVICE_NAME, move |event| match event {
+            ServiceControl::Stop | ServiceControl::Preshutdown => {
+                let _ = control_tx.send(event);
+                ServiceControlHandlerResult::NoError
+            }
+            ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+            _ => ServiceControlHandlerResult::NotImplemented,
+        })?;
+    status_handle.set_service_status(status::pending(
+        ServiceState::StartPending,
+        1,
+        Duration::from_secs(30),
+    ))?;
+
+    let paths = ServicePaths::discover()?;
+    paths.prepare()?;
+    let logger = JsonLogger::new(&paths.logs)?;
+    logger.write(1, "startup", "START_PENDING")?;
+    let _config = ServiceConfig::load_or_default(&paths.config)?;
+    let reconciliation = ledger::reconcile(&paths.ledger, &paths.quarantine)?;
+    if !reconciliation.admissions_open {
+        logger.write(3, "reconcile", "HEALTH_ONLY_QUARANTINE")?;
+    }
+
+    status_handle.set_service_status(status::running())?;
+    logger.write(1, "runtime", "RUNNING")?;
+    let control = control_rx
+        .recv()
+        .context("SCM control channel disconnected")?;
+    let wait_hint = if control == ServiceControl::Preshutdown {
+        Duration::from_secs(60)
+    } else {
+        Duration::from_secs(30)
+    };
+    status_handle.set_service_status(status::pending(ServiceState::StopPending, 1, wait_hint))?;
+    logger.write(2, "shutdown", "STOP_PENDING")?;
+    status_handle.set_service_status(status::stopped())?;
+    Ok(())
+}

@@ -1034,6 +1034,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "lsb-seawork-service"
+version = "0.4.6"
+dependencies = [
+ "anyhow",
+ "lsb-service-proto",
+ "serde",
+ "serde_json",
+ "tokio",
+ "windows-service",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "lsb-service-proto"
 version = "0.4.6"
 dependencies = [
