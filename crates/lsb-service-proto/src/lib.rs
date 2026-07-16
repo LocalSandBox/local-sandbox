@@ -8,6 +8,7 @@ pub use error::{ErrorCode, ErrorEnvelope, ProtocolError};
 pub use frame::{Correlation, Frame, FrameHeader, FrameKind};
 pub use message::{
     parse_control, CapabilityHealth, Health, HealthState, Hello, HelloReply, Request, RequestOp,
-    Response, ResponseValue, ServiceInfo,
+    Response, ResponseValue, SelectedMount, ServiceInfo, ServiceMountSpec, ServiceNetworkSpec,
+    ServicePortSpec,
 };
 pub use version::{negotiate, HexU64, ProtocolRange, ProtocolVersion, CURRENT, SUPPORTED};

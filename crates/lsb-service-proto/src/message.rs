@@ -48,11 +48,92 @@ pub struct Request {
     pub op: RequestOp,
 }
 
+impl Request {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        match &self.op {
+            RequestOp::GetServiceInfo {}
+            | RequestOp::HealthCheck {}
+            | RequestOp::CloseSession {} => {}
+            RequestOp::StartSandbox {
+                cpus,
+                memory_mib,
+                disk_mib,
+                mounts,
+                ports,
+                network,
+            } => {
+                if !(1..=16).contains(cpus)
+                    || !(256..=32 * 1024).contains(memory_mib)
+                    || !(512..=64 * 1024).contains(disk_mib)
+                    || mounts.len() > 32
+                    || ports.len() > 32
+                {
+                    return Err(ProtocolError::InvalidJson);
+                }
+                for mount in mounts {
+                    validate_string(&mount.host_path)?;
+                    validate_string(&mount.guest_path)?;
+                }
+                for port in ports {
+                    if port.guest_port == 0 || port.host_port == Some(0) {
+                        return Err(ProtocolError::InvalidJson);
+                    }
+                }
+                if let Some(network) = network {
+                    if network.allowed_hosts.len() > 256 {
+                        return Err(ProtocolError::InvalidJson);
+                    }
+                    for host in &network.allowed_hosts {
+                        validate_string(host)?;
+                    }
+                }
+            }
+            RequestOp::StopSandbox { sandbox_id } => validate_resource_id(sandbox_id)?,
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RequestOp {
     GetServiceInfo {},
     HealthCheck {},
+    StartSandbox {
+        cpus: u16,
+        memory_mib: u32,
+        disk_mib: u32,
+        mounts: Vec<ServiceMountSpec>,
+        ports: Vec<ServicePortSpec>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        network: Option<ServiceNetworkSpec>,
+    },
+    StopSandbox {
+        sandbox_id: String,
+    },
+    CloseSession {},
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceMountSpec {
+    pub host_path: String,
+    pub guest_path: String,
+    pub read_only: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServicePortSpec {
+    pub guest_port: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_port: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceNetworkSpec {
+    pub allowed_hosts: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,8 +146,25 @@ pub enum Response {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResponseValue {
-    ServiceInfo { info: ServiceInfo },
-    Health { health: Health },
+    ServiceInfo {
+        info: ServiceInfo,
+    },
+    Health {
+        health: Health,
+    },
+    SandboxStarted {
+        sandbox_id: String,
+        mounts: Vec<SelectedMount>,
+        host_ports: Vec<u16>,
+    },
+    Empty {},
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectedMount {
+    pub guest_path: String,
+    pub backend: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +220,17 @@ pub fn parse_control<T: DeserializeOwned>(payload: &[u8]) -> Result<T, ProtocolE
 fn validate_string(value: &str) -> Result<(), ProtocolError> {
     if value.len() > MAX_STRING_LEN {
         return Err(ProtocolError::MessageTooLarge);
+    }
+    Ok(())
+}
+
+fn validate_resource_id(value: &str) -> Result<(), ProtocolError> {
+    if value.len() != 32
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(ProtocolError::InvalidJson);
     }
     Ok(())
 }
@@ -192,13 +301,39 @@ mod tests {
     }
 
     #[test]
-    fn request_surface_is_health_only() {
+    fn request_surface_has_no_trusted_runtime_fields() {
         let info: Request = parse_control(br#"{"op":{"type":"get_service_info"}}"#).unwrap();
         assert!(matches!(info.op, RequestOp::GetServiceInfo {}));
-        let sandbox = br#"{"op":{"type":"start_sandbox","cpus":2}}"#;
+        let sandbox = br#"{"op":{"type":"start_sandbox","cpus":2,"memory_mib":2048,"disk_mib":4096,"mounts":[],"ports":[]}}"#;
+        let request: Request = parse_control(sandbox).unwrap();
+        request.validate().unwrap();
+        let forbidden = br#"{"op":{"type":"start_sandbox","cpus":2,"memory_mib":2048,"disk_mib":4096,"mounts":[],"ports":[],"data_dir":"C:\\caller"}}"#;
         assert_eq!(
-            parse_control::<Request>(sandbox),
+            parse_control::<Request>(forbidden),
             Err(ProtocolError::InvalidJson)
         );
+    }
+
+    #[test]
+    fn sandbox_request_bounds_and_resource_ids_are_strict() {
+        let oversized = Request {
+            deadline_ms: None,
+            op: RequestOp::StartSandbox {
+                cpus: 17,
+                memory_mib: 2048,
+                disk_mib: 4096,
+                mounts: Vec::new(),
+                ports: Vec::new(),
+                network: None,
+            },
+        };
+        assert_eq!(oversized.validate(), Err(ProtocolError::InvalidJson));
+        let stop = Request {
+            deadline_ms: None,
+            op: RequestOp::StopSandbox {
+                sandbox_id: "not-an-id".to_string(),
+            },
+        };
+        assert_eq!(stop.validate(), Err(ProtocolError::InvalidJson));
     }
 }

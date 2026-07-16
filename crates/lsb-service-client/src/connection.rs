@@ -108,6 +108,51 @@ impl ServiceClient {
         }
     }
 
+    pub async fn start_sandbox(
+        &mut self,
+        options: StartSandboxOptions,
+    ) -> Result<RemoteSandbox, ClientError> {
+        match self
+            .request(RequestOp::StartSandbox {
+                cpus: options.cpus,
+                memory_mib: options.memory_mib,
+                disk_mib: options.disk_mib,
+                mounts: options.mounts,
+                ports: options.ports,
+                network: options.network,
+            })
+            .await?
+        {
+            ResponseValue::SandboxStarted { sandbox_id, .. } => Ok(RemoteSandbox { sandbox_id }),
+            _ => Err(ClientError::Protocol(
+                "StartSandbox returned a mismatched result".to_string(),
+            )),
+        }
+    }
+
+    pub async fn stop_sandbox(&mut self, sandbox: &RemoteSandbox) -> Result<(), ClientError> {
+        match self
+            .request(RequestOp::StopSandbox {
+                sandbox_id: sandbox.sandbox_id.clone(),
+            })
+            .await?
+        {
+            ResponseValue::Empty {} => Ok(()),
+            _ => Err(ClientError::Protocol(
+                "StopSandbox returned a mismatched result".to_string(),
+            )),
+        }
+    }
+
+    pub async fn close_session(&mut self) -> Result<(), ClientError> {
+        match self.request(RequestOp::CloseSession {}).await? {
+            ResponseValue::Empty {} => Ok(()),
+            _ => Err(ClientError::Protocol(
+                "CloseSession returned a mismatched result".to_string(),
+            )),
+        }
+    }
+
     async fn request(&mut self, op: RequestOp) -> Result<ResponseValue, ClientError> {
         let sequence = self.next_sequence;
         self.next_sequence = self
@@ -147,6 +192,40 @@ impl ServiceClient {
             }
             Response::Err { error } => Err(ClientError::Protocol(error.message)),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StartSandboxOptions {
+    pub cpus: u16,
+    pub memory_mib: u32,
+    pub disk_mib: u32,
+    pub mounts: Vec<lsb_service_proto::ServiceMountSpec>,
+    pub ports: Vec<lsb_service_proto::ServicePortSpec>,
+    pub network: Option<lsb_service_proto::ServiceNetworkSpec>,
+}
+
+impl Default for StartSandboxOptions {
+    fn default() -> Self {
+        Self {
+            cpus: 2,
+            memory_mib: 2048,
+            disk_mib: 4096,
+            mounts: Vec::new(),
+            ports: Vec::new(),
+            network: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteSandbox {
+    sandbox_id: String,
+}
+
+impl RemoteSandbox {
+    pub fn id(&self) -> &str {
+        &self.sandbox_id
     }
 }
 
