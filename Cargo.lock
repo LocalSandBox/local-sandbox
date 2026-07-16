@@ -999,6 +999,7 @@ version = "0.4.6"
 dependencies = [
  "anyhow",
  "boring",
+ "httparse",
  "libc",
  "lru",
  "rcgen",

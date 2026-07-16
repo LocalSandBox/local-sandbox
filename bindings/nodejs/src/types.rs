@@ -16,6 +16,33 @@ pub struct SecretConfig {
   pub hosts: Vec<String>,
 }
 
+/// Optional destination scope for an intercepted request header.
+#[allow(non_snake_case)]
+#[napi(object)]
+pub struct HostScopeConfig {
+  /// Host patterns that may receive the header.
+  pub allow: Option<Vec<String>>,
+  /// Host patterns that must not receive the header. Deny takes precedence.
+  pub deny: Option<Vec<String>>,
+}
+
+/// Request header set by the HTTPS interceptor.
+#[allow(non_snake_case)]
+#[napi(object)]
+pub struct RequestHeaderConfig {
+  pub name: String,
+  pub value: String,
+  pub hosts: Option<HostScopeConfig>,
+}
+
+/// Opt-in HTTPS request interception configuration.
+#[allow(non_snake_case)]
+#[napi(object)]
+pub struct HttpsInterceptionConfig {
+  pub enabled: bool,
+  pub requestHeaders: Vec<RequestHeaderConfig>,
+}
+
 /// Host port made reachable from inside the guest via host.lsb.internal.
 #[allow(non_snake_case)]
 #[napi(object)]
@@ -36,6 +63,8 @@ pub struct NetworkConfig {
   pub exposeHost: Option<Vec<ExposeHostConfig>>,
   /// Secrets injected by the proxy for allowed hosts.
   pub secrets: Option<HashMap<String, SecretConfig>>,
+  /// HTTPS request interception and header mutation.
+  pub httpsInterception: Option<HttpsInterceptionConfig>,
 }
 
 /// Host-to-guest TCP port forwarding rule.

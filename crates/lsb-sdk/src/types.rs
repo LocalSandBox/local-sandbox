@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use lsb_proto::PortMapping;
-use lsb_proxy::config::{ExposeHostMapping, SecretConfig};
+use lsb_proxy::config::{ExposeHostMapping, HttpsInterceptionConfig, SecretConfig};
 use lsb_vm::MountConfig;
 
 /// Configuration for booting a sandbox VM.
@@ -24,6 +24,8 @@ pub struct SandboxConfig {
     pub secrets: HashMap<String, SecretConfig>,
     /// Allowed domain patterns for network access.
     pub allowed_hosts: Vec<String>,
+    /// Opt-in HTTPS request interception and request-header mutation.
+    pub https_interception: HttpsInterceptionConfig,
     /// Port forwards (host -> guest).
     pub ports: Vec<PortMapping>,
     /// Host ports exposed to the guest via host.lsb.internal.
@@ -47,6 +49,7 @@ impl Default for SandboxConfig {
             allow_net: false,
             secrets: HashMap::new(),
             allowed_hosts: vec![],
+            https_interception: HttpsInterceptionConfig::default(),
             ports: vec![],
             expose_host: vec![],
             from: None,

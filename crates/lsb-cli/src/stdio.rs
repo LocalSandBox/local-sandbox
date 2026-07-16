@@ -367,9 +367,9 @@ pub(crate) fn run_stdio(prepared: &PreparedVm) -> Result<i32> {
     )?);
     sandbox.start()?;
 
-    // Inject CA cert and secret placeholders when MITM is needed
+    // Install the interception CA independently from secret environment setup.
     let secret_env: HashMap<String, String> = if let Some(ref handle) = proxy_handle {
-        if !handle.placeholders.is_empty() {
+        if handle.requires_guest_ca {
             sandbox.write_file(
                 "/usr/local/share/ca-certificates/lsb-proxy.crt",
                 &handle.ca_cert_pem,
@@ -752,6 +752,9 @@ pub(crate) fn run_stdio(prepared: &PreparedVm) -> Result<i32> {
                     &sandbox,
                     prepared,
                     nbd_handle.as_ref(),
+                    proxy_handle
+                        .as_ref()
+                        .is_some_and(|handle| handle.requires_guest_ca),
                     req.id,
                     &params.name,
                     &out,
@@ -1017,10 +1020,21 @@ fn handle_checkpoint(
     sandbox: &Sandbox,
     prepared: &PreparedVm,
     nbd_handle: Option<&lsb_store::NbdHandle>,
+    remove_ephemeral_ca: bool,
     id: serde_json::Value,
     name: &str,
     out: &SharedWriter,
 ) -> Result<()> {
+    if remove_ephemeral_ca {
+        if let Err(e) = vm::remove_proxy_ca(sandbox) {
+            return send_error_shared(
+                out,
+                id,
+                SERVER_ERROR,
+                format!("checkpoint proxy CA cleanup failed: {}", e),
+            );
+        }
+    }
     let mut discard_out = Vec::new();
     let mut discard_err = Vec::new();
     if let Err(e) = sandbox.exec(&["sync"], &mut discard_out, &mut discard_err) {

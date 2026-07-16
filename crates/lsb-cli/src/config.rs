@@ -34,11 +34,38 @@ pub(crate) struct SecretEntry {
 pub(crate) struct NetworkEntry {
     /// Allowed domain patterns. Empty or absent = allow all.
     pub allow: Option<Vec<String>>,
+    /// Opt-in HTTPS request interception.
+    pub https_interception: Option<HttpsInterceptionEntry>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct HttpsInterceptionEntry {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub request_headers: Vec<RequestHeaderEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RequestHeaderEntry {
+    pub name: String,
+    pub value: String,
+    #[serde(default)]
+    pub hosts: HostScopeEntry,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct HostScopeEntry {
+    pub allow: Option<Vec<String>>,
+    pub deny: Option<Vec<String>>,
 }
 
 impl LsbConfig {
     /// Convert config sections into a ProxyConfig for lsb-proxy.
-    pub fn to_proxy_config(&self) -> lsb_proxy::config::ProxyConfig {
+    pub fn to_proxy_config(&self) -> Result<lsb_proxy::config::ProxyConfig> {
         let mut proxy = lsb_proxy::config::ProxyConfig::default();
 
         if let Some(ref secrets) = self.secrets {
@@ -57,6 +84,23 @@ impl LsbConfig {
             if let Some(ref allow) = network.allow {
                 proxy.network.allow = allow.clone();
             }
+            if let Some(ref interception) = network.https_interception {
+                proxy.https_interception = lsb_proxy::HttpsInterceptionConfig {
+                    enabled: interception.enabled,
+                    request_headers: interception
+                        .request_headers
+                        .iter()
+                        .map(|rule| lsb_proxy::RequestHeaderRule {
+                            name: rule.name.clone(),
+                            value: rule.value.clone(),
+                            hosts: lsb_proxy::HostScope {
+                                allow: rule.hosts.allow.clone(),
+                                deny: rule.hosts.deny.clone(),
+                            },
+                        })
+                        .collect(),
+                };
+            }
         }
 
         if let Some(ref mappings) = self.expose_host {
@@ -67,7 +111,8 @@ impl LsbConfig {
             }
         }
 
-        proxy
+        proxy.validate()?;
+        Ok(proxy)
     }
 }
 
@@ -139,7 +184,7 @@ mod tests {
         )
         .expect("config should parse");
 
-        let proxy = cfg.to_proxy_config();
+        let proxy = cfg.to_proxy_config().expect("proxy config should validate");
         let secret = proxy.secrets.get("API_KEY").expect("secret should exist");
         assert_eq!(secret.value, "sk-test");
         assert_eq!(secret.hosts, vec!["api.openai.com"]);
@@ -171,11 +216,67 @@ mod tests {
         )
         .expect("config should parse");
 
-        let proxy = cfg.to_proxy_config();
+        let proxy = cfg.to_proxy_config().expect("proxy config should validate");
         assert_eq!(proxy.expose_host.len(), 2);
         assert_eq!(proxy.expose_host[0].host_port, 3000);
         assert_eq!(proxy.expose_host[0].guest_port, 8080);
         assert_eq!(proxy.expose_host[1].host_port, 5432);
         assert_eq!(proxy.expose_host[1].guest_port, 5432);
+    }
+
+    #[test]
+    fn parses_structured_https_interception_config() {
+        let cfg: LsbConfig = serde_json::from_str(
+            r#"{
+                "network": {
+                    "https_interception": {
+                        "enabled": true,
+                        "request_headers": [
+                            { "name": "User-Agent", "value": "agent/1.0" },
+                            {
+                                "name": "X-Client",
+                                "value": "sandbox",
+                                "hosts": {
+                                    "allow": ["*.example.com"],
+                                    "deny": ["private.example.com"]
+                                }
+                            }
+                        ]
+                    }
+                }
+            }"#,
+        )
+        .expect("config should parse");
+
+        let proxy = cfg.to_proxy_config().expect("proxy config should validate");
+        assert!(proxy.https_interception.enabled);
+        assert_eq!(proxy.https_interception.request_headers.len(), 2);
+        assert_eq!(
+            proxy.https_interception.request_headers[0].name,
+            "User-Agent"
+        );
+        assert_eq!(
+            proxy.https_interception.request_headers[1].hosts.allow,
+            Some(vec!["*.example.com".into()])
+        );
+        assert_eq!(
+            proxy.https_interception.request_headers[1].hosts.deny,
+            Some(vec!["private.example.com".into()])
+        );
+    }
+
+    #[test]
+    fn invalid_https_interception_fails_proxy_conversion() {
+        let empty: LsbConfig = serde_json::from_str(
+            r#"{"network":{"https_interception":{"enabled":true,"request_headers":[]}}}"#,
+        )
+        .unwrap();
+        assert!(empty.to_proxy_config().is_err());
+
+        let injection: LsbConfig = serde_json::from_str(
+            r#"{"network":{"https_interception":{"enabled":true,"request_headers":[{"name":"User-Agent","value":"safe\r\nX-Bad: yes"}]}}}"#,
+        )
+        .unwrap();
+        assert!(injection.to_proxy_config().is_err());
     }
 }

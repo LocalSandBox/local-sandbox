@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use boring::ssl::{SslConnector, SslConnectorBuilder, SslMethod};
@@ -19,7 +20,7 @@ use windows_sys::Win32::Security::Cryptography::{
     CERT_SYSTEM_STORE_LOCAL_MACHINE,
 };
 
-use crate::config::{ProxyConfig, SMB_MOUNT_PORT};
+use crate::config::{ProxyConfig, RequestHeaderRule, SMB_MOUNT_PORT};
 use crate::dns::{self, SharedDnsCache};
 use crate::stack::{ConnectionId, StackCommand, StackEvent, TcpConnection};
 use crate::stream::ChannelStream;
@@ -320,7 +321,8 @@ async fn handle_connection(
 
         if let Some(domain) = sni {
             let substitutions = config.secrets_for_domain(&domain, placeholders);
-            if !substitutions.is_empty() {
+            let header_rules = config.active_header_rules_for_domain(&domain);
+            if !substitutions.is_empty() || !header_rules.is_empty() {
                 debug!("MITM: {domain}");
                 return handle_mitm(
                     id,
@@ -331,6 +333,7 @@ async fn handle_connection(
                     cmd_tx,
                     ca,
                     substitutions,
+                    header_rules,
                     upstream_ssl,
                 )
                 .await;
@@ -475,11 +478,13 @@ async fn handle_mitm(
     cmd_tx: mpsc::UnboundedSender<StackCommand>,
     ca: Arc<tokio::sync::Mutex<CertificateAuthority>>,
     substitutions: Vec<(String, String)>,
+    header_rules: Vec<RequestHeaderRule>,
     upstream_ssl: SslConnector,
 ) -> anyhow::Result<()> {
     debug!(
-        "MITM {domain}: starting interception for {dst} with {} secret placeholder(s)",
-        substitutions.len()
+        "MITM {domain}: starting interception for {dst} with {} secret placeholder(s) and {} header rule(s)",
+        substitutions.len(),
+        header_rules.len()
     );
 
     // Get fake cert for this domain
@@ -525,29 +530,48 @@ async fn handle_mitm(
 
     let (mut guest_rd, mut guest_wr) = tokio::io::split(guest_tls);
     let (mut upstream_rd, mut upstream_wr) = tokio::io::split(upstream_tls);
+    let opaque_upgrade = Arc::new(AtomicBool::new(false));
+    let upgrade_pending = Arc::new(AtomicBool::new(false));
 
     let request_domain = domain.clone();
+    let request_opaque_upgrade = opaque_upgrade.clone();
+    let request_upgrade_pending = upgrade_pending.clone();
     let guest_to_upstream = async move {
-        relay_guest_request(
-            &request_domain,
+        let result = crate::http1::transform_requests(
             &mut guest_rd,
             &mut upstream_wr,
+            &header_rules,
             &substitutions,
+            request_opaque_upgrade,
+            request_upgrade_pending,
         )
-        .await
+        .await;
+        if result.is_err() {
+            debug!("MITM {request_domain}: rejected invalid HTTP/1.1 request");
+        }
+        result
     };
 
     let response_domain = domain.clone();
+    let response_opaque_upgrade = opaque_upgrade.clone();
+    let response_upgrade_pending = upgrade_pending.clone();
     let upstream_to_guest = async move {
-        relay_upstream_response(&response_domain, &mut upstream_rd, &mut guest_wr).await
+        relay_upstream_response(
+            &response_domain,
+            &mut upstream_rd,
+            &mut guest_wr,
+            response_opaque_upgrade,
+            response_upgrade_pending,
+        )
+        .await
     };
 
     tokio::select! {
         result = guest_to_upstream => {
             match result {
                 Ok(stats) => debug!(
-                    "MITM {domain}: guest->upstream relay ended after {} bytes in {} chunk(s), {} replacement(s)",
-                    stats.bytes, stats.chunks, stats.replacements
+                    "MITM {domain}: guest->upstream relay ended after {} bytes in {} request(s), {} replacement(s)",
+                    stats.bytes_read, stats.requests, stats.replacements
                 ),
                 Err(error) => debug!("MITM {domain}: guest->upstream relay failed: {error}"),
             }
@@ -581,10 +605,6 @@ struct HttpHeaderProgress {
 }
 
 impl HttpHeaderProgress {
-    fn observe_request(&mut self, domain: &str, data: &[u8], total_bytes: u64) {
-        self.observe(domain, data, total_bytes, "request");
-    }
-
     fn observe_response(&mut self, domain: &str, data: &[u8], total_bytes: u64) {
         self.observe(domain, data, total_bytes, "response");
     }
@@ -611,53 +631,12 @@ impl HttpHeaderProgress {
     }
 }
 
-async fn relay_guest_request<R, W>(
-    domain: &str,
-    reader: &mut R,
-    writer: &mut W,
-    substitutions: &[(String, String)],
-) -> io::Result<RelayStats>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
-    let mut stats = RelayStats::default();
-    let mut progress = HttpHeaderProgress::default();
-    let mut buf = vec![0u8; 65536];
-
-    loop {
-        let n = reader.read(&mut buf).await?;
-        if n == 0 {
-            debug!("MITM {domain}: guest closed request stream");
-            return Ok(stats);
-        }
-
-        stats.bytes += n as u64;
-        stats.chunks += 1;
-        progress.observe_request(domain, &buf[..n], stats.bytes);
-
-        let mut data = buf[..n].to_vec();
-        for (placeholder, real_value) in substitutions {
-            let (replaced, count) =
-                replace_bytes_count(&data, placeholder.as_bytes(), real_value.as_bytes());
-            stats.replacements += count as u64;
-            data = replaced;
-        }
-
-        writer.write_all(&data).await?;
-        writer.flush().await?;
-        trace!(
-            "MITM {domain}: forwarded request chunk {} byte(s), {} replacement(s) total",
-            n,
-            stats.replacements
-        );
-    }
-}
-
 async fn relay_upstream_response<R, W>(
     domain: &str,
     reader: &mut R,
     writer: &mut W,
+    opaque_upgrade: Arc<AtomicBool>,
+    upgrade_pending: Arc<AtomicBool>,
 ) -> io::Result<RelayStats>
 where
     R: AsyncRead + Unpin,
@@ -665,6 +644,7 @@ where
 {
     let mut stats = RelayStats::default();
     let mut progress = HttpHeaderProgress::default();
+    let mut upgrade_buffer = Vec::new();
     let mut buf = vec![0u8; 65536];
 
     loop {
@@ -678,35 +658,49 @@ where
         stats.chunks += 1;
         progress.observe_response(domain, &buf[..n], stats.bytes);
 
+        if upgrade_pending.load(Ordering::Acquire) && !opaque_upgrade.load(Ordering::Acquire) {
+            upgrade_buffer.extend_from_slice(&buf[..n]);
+            while let Some(end) = upgrade_buffer
+                .windows(4)
+                .position(|bytes| bytes == b"\r\n\r\n")
+                .map(|position| position + 4)
+            {
+                let response = &upgrade_buffer[..end];
+                if crate::http1::response_accepts_upgrade(response) {
+                    opaque_upgrade.store(true, Ordering::Release);
+                    upgrade_pending.store(false, Ordering::Release);
+                    upgrade_buffer.clear();
+                    debug!("MITM {domain}: HTTP upgrade accepted; switching to opaque relay");
+                    break;
+                }
+                let interim =
+                    response_status(response).is_some_and(|status| (100..200).contains(&status));
+                upgrade_buffer.drain(..end);
+                if !interim {
+                    upgrade_pending.store(false, Ordering::Release);
+                    upgrade_buffer.clear();
+                    break;
+                }
+            }
+            if upgrade_buffer.len() > 64 * 1024 {
+                upgrade_pending.store(false, Ordering::Release);
+                upgrade_buffer.clear();
+            }
+        }
+
         writer.write_all(&buf[..n]).await?;
         writer.flush().await?;
         trace!("MITM {domain}: forwarded response chunk {} byte(s)", n);
     }
 }
 
-fn replace_bytes_count(data: &[u8], from: &[u8], to: &[u8]) -> (Vec<u8>, usize) {
-    if from.is_empty() || data.len() < from.len() {
-        return (data.to_vec(), 0);
+fn response_status(response: &[u8]) -> Option<u16> {
+    let end = response.windows(2).position(|bytes| bytes == b"\r\n")?;
+    let mut parts = response[..end].split(|byte| *byte == b' ');
+    if parts.next()? != b"HTTP/1.1" {
+        return None;
     }
-
-    let mut result = Vec::with_capacity(data.len());
-    let mut replacements = 0;
-    let mut i = 0;
-
-    while i <= data.len() - from.len() {
-        if &data[i..i + from.len()] == from {
-            result.extend_from_slice(to);
-            replacements += 1;
-            i += from.len();
-        } else {
-            result.push(data[i]);
-            i += 1;
-        }
-    }
-
-    // Append remaining bytes that can't contain the pattern
-    result.extend_from_slice(&data[i..]);
-    (result, replacements)
+    std::str::from_utf8(parts.next()?).ok()?.parse().ok()
 }
 
 /// Extract SNI from a TLS ClientHello.
@@ -875,49 +869,21 @@ mod tests {
         assert_eq!(extract_sni(&[]), None);
     }
 
-    #[test]
-    fn test_replace_bytes() {
-        assert_eq!(
-            replace_bytes_count(b"hello world", b"world", b"rust").0,
-            b"hello rust"
-        );
-        assert_eq!(
-            replace_bytes_count(
-                b"key=lsb_tok_abc123&other=val",
-                b"lsb_tok_abc123",
-                b"real_secret"
-            )
-            .0,
-            b"key=real_secret&other=val"
-        );
-        assert_eq!(
-            replace_bytes_count(b"no match", b"xyz", b"abc").0,
-            b"no match"
-        );
-        assert_eq!(replace_bytes_count(b"", b"x", b"y").0, b"");
-    }
-
-    #[test]
-    fn test_replace_bytes_count() {
-        assert_eq!(
-            replace_bytes_count(b"one token two token", b"token", b"secret"),
-            (b"one secret two secret".to_vec(), 2)
-        );
-        assert_eq!(
-            replace_bytes_count(b"unchanged", b"missing", b"secret"),
-            (b"unchanged".to_vec(), 0)
-        );
-    }
-
     #[tokio::test]
     async fn upstream_response_relay_flushes_after_forwarding_chunk() {
         let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK";
         let mut reader = &response[..];
         let mut writer = FlushCountingWriter::default();
 
-        let stats = relay_upstream_response("api.example.test", &mut reader, &mut writer)
-            .await
-            .expect("response relay should succeed");
+        let stats = relay_upstream_response(
+            "api.example.test",
+            &mut reader,
+            &mut writer,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .expect("response relay should succeed");
 
         assert_eq!(writer.bytes, response);
         assert_eq!(writer.flushes, 1);
@@ -927,34 +893,6 @@ mod tests {
                 bytes: response.len() as u64,
                 chunks: 1,
                 replacements: 0,
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn guest_request_relay_substitutes_and_flushes_forwarded_chunk() {
-        let request =
-            b"GET / HTTP/1.1\r\nHost: api.example.test\r\nAuthorization: Bearer lsb_tok_test\r\n\r\n";
-        let substitutions = vec![("lsb_tok_test".to_string(), "real-token".to_string())];
-        let mut reader = &request[..];
-        let mut writer = FlushCountingWriter::default();
-
-        let stats =
-            relay_guest_request("api.example.test", &mut reader, &mut writer, &substitutions)
-                .await
-                .expect("request relay should succeed");
-
-        assert_eq!(
-            writer.bytes,
-            b"GET / HTTP/1.1\r\nHost: api.example.test\r\nAuthorization: Bearer real-token\r\n\r\n"
-        );
-        assert_eq!(writer.flushes, 1);
-        assert_eq!(
-            stats,
-            RelayStats {
-                bytes: request.len() as u64,
-                chunks: 1,
-                replacements: 1,
             }
         );
     }

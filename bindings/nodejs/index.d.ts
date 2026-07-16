@@ -234,6 +234,20 @@ export interface FileChangeEvent {
   event: string
 }
 
+/** Optional destination scope for an intercepted request header. */
+export interface HostScopeConfig {
+  /** Host patterns that may receive the header. */
+  allow?: Array<string>
+  /** Host patterns that must not receive the header. Deny takes precedence. */
+  deny?: Array<string>
+}
+
+/** Opt-in HTTPS request interception configuration. */
+export interface HttpsInterceptionConfig {
+  enabled: boolean
+  requestHeaders: Array<RequestHeaderConfig>
+}
+
 /**
  * Download or verify sandbox runtime assets such as kernel, rootfs, and initramfs.
  *
@@ -267,6 +281,8 @@ export interface NetworkConfig {
   exposeHost?: Array<ExposeHostConfig>
   /** Secrets injected by the proxy for allowed hosts. */
   secrets?: Record<string, SecretConfig>
+  /** HTTPS request interception and header mutation. */
+  httpsInterception?: HttpsInterceptionConfig
 }
 
 /** Host-to-guest TCP port forwarding rule. */
@@ -281,6 +297,13 @@ export interface PortMappingConfig {
 export interface RemoveOptions {
   /** Remove directory trees recursively. Defaults to false. */
   recursive?: boolean
+}
+
+/** Request header set by the HTTPS interceptor. */
+export interface RequestHeaderConfig {
+  name: string
+  value: string
+  hosts?: HostScopeConfig
 }
 
 /** Runtime asset paths derived from a sandbox data directory. */

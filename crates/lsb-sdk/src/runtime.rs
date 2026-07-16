@@ -644,6 +644,7 @@ fn boot_vm(config: SandboxConfig) -> Result<BootedVm> {
         config.allow_net,
         config.secrets,
         config.allowed_hosts,
+        config.https_interception,
         config.expose_host,
         needs_smb_mount_proxy,
     );
@@ -708,7 +709,7 @@ fn boot_vm(config: SandboxConfig) -> Result<BootedVm> {
     };
 
     if let Some(ref handle) = proxy_handle {
-        if !handle.placeholders.is_empty() {
+        if handle.requires_guest_ca {
             sandbox.write_file(
                 "/usr/local/share/ca-certificates/lsb-proxy.crt",
                 &handle.ca_cert_pem,
@@ -869,6 +870,7 @@ fn build_runtime_proxy_config(
     allow_net: bool,
     secrets: HashMap<String, lsb_proxy::config::SecretConfig>,
     allowed_hosts: Vec<String>,
+    https_interception: lsb_proxy::HttpsInterceptionConfig,
     expose_host: Vec<lsb_proxy::config::ExposeHostMapping>,
     needs_smb_mount_proxy: bool,
 ) -> Option<ProxyConfig> {
@@ -876,6 +878,7 @@ fn build_runtime_proxy_config(
         let mut proxy_config = ProxyConfig::default();
         proxy_config.secrets = secrets;
         proxy_config.network.allow = allowed_hosts;
+        proxy_config.https_interception = https_interception;
         proxy_config.expose_host = expose_host;
         Some(proxy_config)
     } else {
@@ -1262,6 +1265,12 @@ fn run_vm_loop(
         .as_ref()
         .map(|h| h.placeholders.clone())
         .unwrap_or_default();
+    let remove_ephemeral_ca_before_checkpoint = proxy_handle
+        .as_ref()
+        .is_some_and(|handle| handle.requires_guest_ca);
+    let proxy_ca_pem = proxy_handle
+        .as_ref()
+        .and_then(|handle| handle.requires_guest_ca.then(|| handle.ca_cert_pem.clone()));
 
     let _proxy = proxy_handle;
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -1373,9 +1382,12 @@ fn run_vm_loop(
                 let mut stopped_vm = false;
                 #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
                 let stopped_vm = false;
-                let result = (|| -> Result<()> {
+                let mut result = (|| -> Result<()> {
                     lsb_vm::validate_checkpoint_name(&name).map_err(|e| anyhow::anyhow!(e))?;
                     std::fs::create_dir_all(checkpoints_dir)?;
+                    if remove_ephemeral_ca_before_checkpoint {
+                        remove_proxy_ca(&sandbox)?;
+                    }
                     sandbox.exec(&["sync"], &mut std::io::sink(), &mut std::io::sink())?;
                     if let Some(ref handle) = nbd_handle {
                         let checkpoint_path = format!("{}/{}.idx", checkpoints_dir, name);
@@ -1425,6 +1437,18 @@ fn run_vm_loop(
                     info!("checkpoint '{}' saved", name);
                     Ok(())
                 })();
+                if !stopped_vm {
+                    if let Some(ca_pem) = proxy_ca_pem.as_deref() {
+                        let restore_result = install_proxy_ca(&sandbox, ca_pem);
+                        result = match (result, restore_result) {
+                            (Ok(()), restore) => restore,
+                            (Err(error), Ok(())) => Err(error),
+                            (Err(error), Err(restore_error)) => Err(error.context(format!(
+                                "additionally failed to restore proxy CA after checkpoint: {restore_error}"
+                            ))),
+                        };
+                    }
+                }
                 let _ = reply.send(CheckpointOutcome { result, stopped_vm });
             }
             SandboxCmd::Stop { reply } => {
@@ -1435,6 +1459,30 @@ fn run_vm_loop(
     }
 
     let _ = sandbox.stop();
+}
+
+fn remove_proxy_ca(sandbox: &lsb_vm::Sandbox) -> Result<()> {
+    sandbox.exec(
+        &["rm", "-f", "/usr/local/share/ca-certificates/lsb-proxy.crt"],
+        &mut std::io::sink(),
+        &mut std::io::sink(),
+    )?;
+    sandbox.exec(
+        &["update-ca-certificates", "--fresh"],
+        &mut std::io::sink(),
+        &mut std::io::sink(),
+    )?;
+    Ok(())
+}
+
+fn install_proxy_ca(sandbox: &lsb_vm::Sandbox, ca_pem: &[u8]) -> Result<()> {
+    sandbox.write_file("/usr/local/share/ca-certificates/lsb-proxy.crt", ca_pem)?;
+    sandbox.exec(
+        &["update-ca-certificates", "--fresh"],
+        &mut std::io::sink(),
+        &mut std::io::sink(),
+    )?;
+    Ok(())
 }
 
 fn exec_command(
@@ -1462,8 +1510,15 @@ mod tests {
 
     #[test]
     fn direct_smb_mount_without_allow_net_uses_mount_only_proxy() {
-        let proxy = build_runtime_proxy_config(false, HashMap::new(), Vec::new(), Vec::new(), true)
-            .expect("direct SMB mount should attach a proxy");
+        let proxy = build_runtime_proxy_config(
+            false,
+            HashMap::new(),
+            Vec::new(),
+            Default::default(),
+            Vec::new(),
+            true,
+        )
+        .expect("direct SMB mount should attach a proxy");
 
         assert!(proxy.is_mount_only_smb());
         assert!(proxy.permits_smb_mount_relay(
@@ -1488,6 +1543,7 @@ mod tests {
             true,
             secrets,
             vec!["api.example.test".to_string()],
+            Default::default(),
             Vec::new(),
             true,
         )
@@ -1505,13 +1561,25 @@ mod tests {
 
     #[test]
     fn no_direct_smb_mount_keeps_allow_net_semantics() {
-        assert!(
-            build_runtime_proxy_config(false, HashMap::new(), Vec::new(), Vec::new(), false)
-                .is_none()
-        );
+        assert!(build_runtime_proxy_config(
+            false,
+            HashMap::new(),
+            Vec::new(),
+            Default::default(),
+            Vec::new(),
+            false,
+        )
+        .is_none());
 
-        let proxy = build_runtime_proxy_config(true, HashMap::new(), Vec::new(), Vec::new(), false)
-            .expect("allow-net should attach a normal proxy");
+        let proxy = build_runtime_proxy_config(
+            true,
+            HashMap::new(),
+            Vec::new(),
+            Default::default(),
+            Vec::new(),
+            false,
+        )
+        .expect("allow-net should attach a normal proxy");
 
         assert!(!proxy.is_mount_only_smb());
         assert!(!proxy.permits_smb_mount_relay(

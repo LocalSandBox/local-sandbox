@@ -27,6 +27,7 @@ tokio-boring = "4"
 simple-dns = "0.9"
 lru = "0.14"
 tracing = "0.1"
+httparse = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [

@@ -56,7 +56,7 @@ pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &LsbConfig, from: Option<&str>) -> Re
     let verbose = vm.verbose;
 
     let mut proxy_config = if allow_net {
-        let mut proxy = cfg.to_proxy_config();
+        let mut proxy = cfg.to_proxy_config()?;
 
         // Merge --secret flags: NAME=VALUE@host1,host2
         for s in &vm.secret {
@@ -534,10 +534,10 @@ fn run_command_inner(
         None
     };
 
-    // Inject CA cert and secret placeholders when MITM is needed
+    // Install the interception CA independently from secret environment setup.
     let mut env = HashMap::new();
     if let Some(ref handle) = proxy_handle {
-        if !handle.placeholders.is_empty() {
+        if handle.requires_guest_ca {
             sandbox.write_file(
                 "/usr/local/share/ca-certificates/lsb-proxy.crt",
                 &handle.ca_cert_pem,
@@ -550,9 +550,9 @@ fn run_command_inner(
             if prepared.verbose {
                 eprintln!("lsb: proxy CA certificate injected");
             }
-            for (name, placeholder) in &handle.placeholders {
-                env.insert(name.clone(), placeholder.clone());
-            }
+        }
+        for (name, placeholder) in &handle.placeholders {
+            env.insert(name.clone(), placeholder.clone());
         }
     }
 
@@ -568,9 +568,19 @@ fn run_command_inner(
     };
 
     let sync_result = if sync_before_stop && command_result.is_ok() {
-        sandbox
-            .exec(&["sync"], &mut std::io::sink(), &mut std::io::sink())
-            .map(|_| ())
+        let cleanup_result = if proxy_handle
+            .as_ref()
+            .is_some_and(|handle| handle.requires_guest_ca)
+        {
+            remove_proxy_ca(&sandbox)
+        } else {
+            Ok(())
+        };
+        cleanup_result.and_then(|()| {
+            sandbox
+                .exec(&["sync"], &mut std::io::sink(), &mut std::io::sink())
+                .map(|_| ())
+        })
     } else {
         Ok(())
     };
@@ -612,6 +622,20 @@ fn run_command_inner(
         exit_code,
         nbd_handle,
     })
+}
+
+pub(crate) fn remove_proxy_ca(sandbox: &Sandbox) -> Result<()> {
+    sandbox.exec(
+        &["rm", "-f", "/usr/local/share/ca-certificates/lsb-proxy.crt"],
+        &mut std::io::sink(),
+        &mut std::io::sink(),
+    )?;
+    sandbox.exec(
+        &["update-ca-certificates", "--fresh"],
+        &mut std::io::sink(),
+        &mut std::io::sink(),
+    )?;
+    Ok(())
 }
 
 fn should_use_interactive_shell(stdin_is_terminal: bool) -> bool {

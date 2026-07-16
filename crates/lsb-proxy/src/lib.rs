@@ -4,6 +4,8 @@ mod device;
 #[cfg(any(unix, windows))]
 mod dns;
 #[cfg(any(unix, windows))]
+mod http1;
+#[cfg(any(unix, windows))]
 mod proxy;
 #[cfg(any(unix, windows))]
 mod stack;
@@ -12,7 +14,7 @@ mod stream;
 #[cfg(any(unix, windows))]
 mod tls;
 
-pub use config::ProxyConfig;
+pub use config::{HostScope, HttpsInterceptionConfig, ProxyConfig, RequestHeaderRule};
 
 #[cfg(any(unix, windows))]
 use std::collections::HashMap;
@@ -130,6 +132,8 @@ pub struct ProxyHandle {
     pub placeholders: std::collections::HashMap<String, String>,
     /// CA certificate in PEM format (for injecting into guest trust store).
     pub ca_cert_pem: Vec<u8>,
+    /// Whether this proxy configuration requires its CA in the guest trust store.
+    pub requires_guest_ca: bool,
 }
 
 #[cfg(any(unix, windows))]
@@ -292,6 +296,8 @@ pub fn start_link(
     attachment: ProxyHostAttachment,
     config: ProxyConfig,
 ) -> anyhow::Result<ProxyHandle> {
+    config.validate()?;
+    let requires_guest_ca = config.requires_guest_ca();
     // Install rustls crypto provider (process-wide, idempotent)
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
@@ -341,6 +347,7 @@ pub fn start_link(
         runtime_thread: Some(runtime_thread),
         placeholders,
         ca_cert_pem,
+        requires_guest_ca,
     })
 }
 

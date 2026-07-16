@@ -6,9 +6,10 @@ use napi::bindgen_prelude::Either;
 
 #[cfg(lsb_nodejs_supported)]
 use crate::types::{
-  DirEntry, ExecResult, ExposeHostConfig, MountConfig, PortMappingConfig, SandboxAssetPaths,
-  SandboxFixResult, SandboxInitOptions, SandboxInitProgress, SandboxInitProgressPhase,
-  SandboxInitResult, SecretConfig, StartOptions, StatResult,
+  DirEntry, ExecResult, ExposeHostConfig, HostScopeConfig, HttpsInterceptionConfig, MountConfig,
+  PortMappingConfig, RequestHeaderConfig, SandboxAssetPaths, SandboxFixResult, SandboxInitOptions,
+  SandboxInitProgress, SandboxInitProgressPhase, SandboxInitResult, SecretConfig, StartOptions,
+  StatResult,
 };
 
 // Conversion layer between JS options and the Rust SDK. Keeping validation here
@@ -85,9 +86,46 @@ pub(crate) fn build_sandbox_config(opts: StartOptions) -> anyhow::Result<lsb_sdk
         .map(|(name, secret)| Ok((name, parse_secret(secret)?)))
         .collect::<anyhow::Result<HashMap<_, _>>>()?;
     }
+
+    if let Some(interception) = network.httpsInterception {
+      config.https_interception = parse_https_interception(interception)?;
+    }
   }
 
   Ok(config)
+}
+
+#[cfg(lsb_nodejs_supported)]
+fn parse_https_interception(
+  interception: HttpsInterceptionConfig,
+) -> anyhow::Result<lsb_sdk::HttpsInterceptionConfig> {
+  let config = lsb_sdk::HttpsInterceptionConfig {
+    enabled: interception.enabled,
+    request_headers: interception
+      .requestHeaders
+      .into_iter()
+      .map(parse_request_header)
+      .collect(),
+  };
+  let proxy = lsb_sdk::ProxyConfig {
+    https_interception: config.clone(),
+    ..Default::default()
+  };
+  proxy.validate()?;
+  Ok(config)
+}
+
+#[cfg(lsb_nodejs_supported)]
+fn parse_request_header(rule: RequestHeaderConfig) -> lsb_sdk::RequestHeaderRule {
+  let HostScopeConfig { allow, deny } = rule.hosts.unwrap_or(HostScopeConfig {
+    allow: None,
+    deny: None,
+  });
+  lsb_sdk::RequestHeaderRule {
+    name: rule.name,
+    value: rule.value,
+    hosts: lsb_sdk::HostScope { allow, deny },
+  }
 }
 
 #[cfg(lsb_nodejs_supported)]
@@ -274,5 +312,61 @@ pub(crate) fn map_init_progress(progress: lsb_sdk::SandboxInitProgress) -> Sandb
     phase,
     downloadedBytes: progress.downloaded_bytes.map(|bytes| bytes as f64),
     totalBytes: progress.total_bytes.map(|bytes| bytes as f64),
+  }
+}
+
+#[cfg(all(test, lsb_nodejs_supported))]
+mod tests {
+  use super::*;
+  use crate::types::{HostScopeConfig, NetworkConfig, RequestHeaderConfig};
+
+  #[test]
+  fn converts_structured_https_interception_to_sdk_config() {
+    let options = StartOptions {
+      network: Some(NetworkConfig {
+        allow: None,
+        exposeHost: None,
+        secrets: None,
+        httpsInterception: Some(HttpsInterceptionConfig {
+          enabled: true,
+          requestHeaders: vec![RequestHeaderConfig {
+            name: "User-Agent".into(),
+            value: "node-agent/1.0".into(),
+            hosts: Some(HostScopeConfig {
+              allow: Some(vec!["*.example.com".into()]),
+              deny: Some(vec!["private.example.com".into()]),
+            }),
+          }],
+        }),
+      }),
+      ..Default::default()
+    };
+
+    let config = build_sandbox_config(options).expect("Node config should convert");
+    assert!(config.allow_net);
+    assert!(config.https_interception.enabled);
+    let rule = &config.https_interception.request_headers[0];
+    assert_eq!(rule.name, "User-Agent");
+    assert_eq!(rule.value, "node-agent/1.0");
+    assert_eq!(rule.hosts.allow, Some(vec!["*.example.com".into()]));
+    assert_eq!(rule.hosts.deny, Some(vec!["private.example.com".into()]));
+  }
+
+  #[test]
+  fn rejects_invalid_node_interception_config() {
+    let options = StartOptions {
+      network: Some(NetworkConfig {
+        allow: None,
+        exposeHost: None,
+        secrets: None,
+        httpsInterception: Some(HttpsInterceptionConfig {
+          enabled: true,
+          requestHeaders: vec![],
+        }),
+      }),
+      ..Default::default()
+    };
+
+    assert!(build_sandbox_config(options).is_err());
   }
 }
