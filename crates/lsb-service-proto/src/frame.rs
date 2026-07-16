@@ -7,6 +7,28 @@ use crate::version::ProtocolVersion;
 pub const MAGIC: [u8; 4] = *b"LSBS";
 pub const HEADER_VERSION: u8 = 1;
 
+pub fn encode_stream_payload(sequence: u64, bytes: &[u8]) -> Result<Vec<u8>, ProtocolError> {
+    if bytes.len() + crate::limits::STREAM_SEQUENCE_LEN > MAX_STREAM_PAYLOAD {
+        return Err(ProtocolError::MessageTooLarge);
+    }
+    let mut payload = Vec::with_capacity(crate::limits::STREAM_SEQUENCE_LEN + bytes.len());
+    payload.extend_from_slice(&sequence.to_le_bytes());
+    payload.extend_from_slice(bytes);
+    Ok(payload)
+}
+
+pub fn decode_stream_payload(payload: &[u8]) -> Result<(u64, &[u8]), ProtocolError> {
+    if payload.len() < crate::limits::STREAM_SEQUENCE_LEN || payload.len() > MAX_STREAM_PAYLOAD {
+        return Err(ProtocolError::TruncatedFrame);
+    }
+    let sequence = u64::from_le_bytes(
+        payload[..crate::limits::STREAM_SEQUENCE_LEN]
+            .try_into()
+            .map_err(|_| ProtocolError::TruncatedFrame)?,
+    );
+    Ok((sequence, &payload[crate::limits::STREAM_SEQUENCE_LEN..]))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum FrameKind {
@@ -204,6 +226,24 @@ mod tests {
         assert_eq!(
             Frame::read_from(&mut Cursor::new([0u8; 8])),
             Err(ProtocolError::TruncatedFrame)
+        );
+    }
+
+    #[test]
+    fn stream_payload_sequence_is_bounded_and_little_endian() {
+        let payload = encode_stream_payload(0x0102_0304_0506_0708, b"data").unwrap();
+        assert_eq!(&payload[..8], &[8, 7, 6, 5, 4, 3, 2, 1]);
+        assert_eq!(
+            decode_stream_payload(&payload).unwrap(),
+            (0x0102_0304_0506_0708, b"data".as_slice())
+        );
+        assert_eq!(
+            decode_stream_payload(&[0; 7]),
+            Err(ProtocolError::TruncatedFrame)
+        );
+        assert_eq!(
+            encode_stream_payload(1, &vec![0; MAX_STREAM_PAYLOAD]),
+            Err(ProtocolError::MessageTooLarge)
         );
     }
 }

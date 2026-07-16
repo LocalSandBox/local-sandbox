@@ -50,6 +50,90 @@ pub struct Request {
     pub op: RequestOp,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cancel {
+    pub request_id: String,
+}
+
+impl Cancel {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        validate_resource_id(&self.request_id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowUpdate {
+    pub stream_id: String,
+    pub credit_bytes: u32,
+}
+
+impl WindowUpdate {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        validate_resource_id(&self.stream_id)?;
+        if !(1..=4 * 1024 * 1024).contains(&self.credit_bytes) {
+            return Err(ProtocolError::InvalidJson);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Event {
+    ProcessExited {
+        process_id: String,
+        exit_code: i32,
+    },
+    WatchChanged {
+        watch_id: String,
+        path: String,
+        change: WatchChange,
+    },
+    StreamClosed {
+        stream_id: String,
+    },
+}
+
+impl Event {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        match self {
+            Self::ProcessExited { process_id, .. } => validate_resource_id(process_id),
+            Self::WatchChanged { watch_id, path, .. } => {
+                validate_resource_id(watch_id)?;
+                validate_guest_path(path)
+            }
+            Self::StreamClosed { stream_id } => validate_resource_id(stream_id),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WatchChange {
+    Created,
+    Modified,
+    Removed,
+    Renamed,
+    Overflow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Close {
+    pub code: CloseCode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseCode {
+    Normal,
+    ProtocolError,
+    ServiceDraining,
+    SessionClosed,
+}
+
 impl Request {
     pub fn validate(&self) -> Result<(), ProtocolError> {
         if self
@@ -596,5 +680,28 @@ mod tests {
             },
         };
         assert_eq!(invalid.validate(), Err(ProtocolError::InvalidJson));
+    }
+
+    #[test]
+    fn stream_controls_and_events_are_closed_and_bounded() {
+        let update = WindowUpdate {
+            stream_id: "0123456789abcdef0123456789abcdef".to_string(),
+            credit_bytes: 256 * 1024,
+        };
+        update.validate().unwrap();
+        let mut invalid = update;
+        invalid.credit_bytes = 0;
+        assert_eq!(invalid.validate(), Err(ProtocolError::InvalidJson));
+
+        let event = Event::WatchChanged {
+            watch_id: "fedcba9876543210fedcba9876543210".to_string(),
+            path: "/workspace/file".to_string(),
+            change: WatchChange::Modified,
+        };
+        event.validate().unwrap();
+        assert_eq!(
+            parse_control::<Close>(br#"{"code":"unknown"}"#),
+            Err(ProtocolError::InvalidJson)
+        );
     }
 }
