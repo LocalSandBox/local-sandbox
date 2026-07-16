@@ -6,12 +6,20 @@
 
 - Added opt-in HTTPS HTTP/1.1 request-header interception across `lsb.json`,
   the Rust SDK, and the Node.js binding, including caller-supplied User-Agent
-  values and SNI-based allow/deny scopes. The feature remains off by default;
-  non-applicable destinations retain blind TLS tunnelling.
+  values, per-request set/replace semantics, and SNI-based allow/deny scopes.
+  The feature remains off by default; non-applicable destinations retain blind
+  TLS tunnelling. Interception is limited to TCP port 443 with visible SNI and
+  HTTP/1.1 and does not support pinned certificates, mutual TLS, private trust
+  stores, HTTP/2, HTTP/3, or QUIC.
 - Replaced chunk-local secret substitution with a bounded framing-aware
   HTTP/1.1 transformer. Split placeholders, keep-alive and pipelined requests,
   fixed and chunked bodies, trailers, `100 Continue`, and accepted upgrades are
-  handled without stale request lengths or chunk sizes.
+  handled without stale request lengths or chunk sizes. Fixed-length bodies
+  scanned for placeholders are now streamed upstream with chunked framing,
+  which may be incompatible with origins that reject chunked request bodies.
+- Installed the ephemeral interception CA for header-only proxy sessions and
+  removed it before checkpoint persistence, then restored trust for continued
+  stdio use so saved checkpoints do not retain a stale proxy CA.
 - Added matched macOS and Windows User-Agent injection benchmark harnesses that
   retain JSONL samples, per-run logs, and schema-compatible summary JSON.
 - Added optional per-invocation progress callbacks to the backward-compatible Node.js

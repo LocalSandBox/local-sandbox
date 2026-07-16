@@ -228,6 +228,24 @@ in the guest. Certificate pinning, mutual TLS, private trust stores, HTTP/2,
 HTTP/3, QUIC, and TLS without usable SNI are unsupported. Connections without
 an applicable header or secret remain blind tunnels.
 
+Each rule has set semantics: on every request, existing instances of the named
+header are removed case-insensitively and one configured value is inserted.
+Header values may be sensitive, so prefer an `allow` scope instead of a global
+rule for credentials or private identifiers. Explicitly empty `allow` or
+`deny` arrays, duplicate names (ignoring case), and an enabled configuration
+with no rules are rejected before the sandbox starts.
+
+Routing, framing, proxy, and hop-by-hop headers such as `Host`,
+`Content-Length`, `Transfer-Encoding`, `Connection`, `Upgrade`, and `Expect`
+cannot be configured. A configuration may contain at most 64 rules, with a
+128-byte name, an 8 KiB value, and 64 KiB total across names and values.
+
+Secret substitution uses the same framing-aware HTTP/1.1 path. When a
+fixed-length request body must be scanned for a secret placeholder, the proxy
+streams it upstream with `Transfer-Encoding: chunked` so replacements cannot
+leave a stale content length. Origins that reject chunked HTTP/1.1 request
+bodies may be incompatible with body-based secret substitution.
+
 ### Start options
 
 | Option       | Type                                | Description                    |
@@ -264,11 +282,12 @@ watched for host-originated changes while guest writes remain denied.
 
 `network` enables proxy networking when present. It accepts:
 
-| Option       | Type                                 | Description                        |
-| ------------ | ------------------------------------ | ---------------------------------- |
-| `allow`      | `string[]`                           | Allowed outbound host patterns     |
-| `exposeHost` | `{ host: number; guest?: number }[]` | Host ports exposed to the guest    |
-| `secrets`    | `Record<string, SecretConfig>`       | Secrets injected via the lsb proxy |
+| Option              | Type                                 | Description                              |
+| ------------------- | ------------------------------------ | ---------------------------------------- |
+| `allow`             | `string[]`                           | Allowed outbound host patterns           |
+| `exposeHost`        | `{ host: number; guest?: number }[]` | Host ports exposed to the guest          |
+| `secrets`           | `Record<string, SecretConfig>`       | Secrets injected via the lsb proxy       |
+| `httpsInterception` | `HttpsInterceptionConfig`            | Opt-in HTTPS request-header interception |
 
 ### Stream process output
 
