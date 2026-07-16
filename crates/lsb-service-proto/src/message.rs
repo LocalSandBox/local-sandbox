@@ -241,7 +241,8 @@ impl Request {
             | RequestOp::Remove {
                 sandbox_id, path, ..
             }
-            | RequestOp::Exists { sandbox_id, path } => {
+            | RequestOp::Exists { sandbox_id, path }
+            | RequestOp::ReadFile { sandbox_id, path } => {
                 validate_resource_id(sandbox_id)?;
                 validate_guest_path(path)?;
             }
@@ -343,6 +344,10 @@ pub enum RequestOp {
         sandbox_id: String,
         path: String,
     },
+    ReadFile {
+        sandbox_id: String,
+        path: String,
+    },
     CloseSession {},
 }
 
@@ -421,6 +426,10 @@ pub enum ResponseValue {
     },
     Exists {
         exists: bool,
+    },
+    FileRead {
+        stream_id: String,
+        length: u32,
     },
     Empty {},
 }

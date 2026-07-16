@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use napi::bindgen_prelude::{Either, Result};
+use napi::bindgen_prelude::{Buffer, Either, Result};
 use napi_derive::napi;
 
 #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
@@ -362,6 +362,24 @@ impl SeaWorkSandbox {
       .await
       .exists(&self.sandbox, path)
       .await
+      .map_err(service_error);
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    {
+      let _ = path;
+      Err(unsupported_platform_error())
+    }
+  }
+
+  #[napi]
+  pub async fn read_file(&self, path: String) -> Result<Buffer> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return self
+      .client
+      .lock()
+      .await
+      .read_file(&self.sandbox, path)
+      .await
+      .map(Buffer::from)
       .map_err(service_error);
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     {

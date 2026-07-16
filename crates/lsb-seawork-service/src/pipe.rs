@@ -4,11 +4,11 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use lsb_service_proto::frame::HEADER_VERSION;
-use lsb_service_proto::limits::HEADER_LEN;
+use lsb_service_proto::limits::{HEADER_LEN, MAX_STREAM_PAYLOAD, STREAM_SEQUENCE_LEN};
 use lsb_service_proto::{
-    negotiate, parse_control, CapabilityHealth, Correlation, ErrorCode, ErrorEnvelope, FrameHeader,
-    FrameKind, Health, HealthState, Hello, HelloReply, HexU64, ProtocolRange, Request, RequestOp,
-    Response, ResponseValue, ServiceInfo, CURRENT, SUPPORTED,
+    encode_stream_payload, negotiate, parse_control, CapabilityHealth, Correlation, ErrorCode,
+    ErrorEnvelope, FrameHeader, FrameKind, Health, HealthState, Hello, HelloReply, HexU64,
+    ProtocolRange, Request, RequestOp, Response, ResponseValue, ServiceInfo, CURRENT, SUPPORTED,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{NamedPipeServer, PipeMode, ServerOptions};
@@ -395,6 +395,40 @@ async fn handle_authenticated_client(
                 crate::resource::vm::ManagedFileOp::Exists { path },
                 deadline_ms,
             )),
+            RequestOp::ReadFile { sandbox_id, path } => {
+                let bytes = match rpc::file::read(
+                    context.sessions.clone(),
+                    session_id,
+                    identity.clone(),
+                    sandbox_id,
+                    path,
+                    deadline_ms,
+                )
+                .await
+                {
+                    Ok(bytes) => bytes,
+                    Err(code) => {
+                        write_error(pipe, selected, frame.header.correlation, code).await?;
+                        continue;
+                    }
+                };
+                let stream_id = ResourceHandle::random()?.to_string();
+                write_control(
+                    pipe,
+                    FrameKind::Response,
+                    selected,
+                    frame.header.correlation,
+                    &Response::Ok {
+                        result: ResponseValue::FileRead {
+                            stream_id: stream_id.clone(),
+                            length: bytes.len().try_into().context("file length overflow")?,
+                        },
+                    },
+                )
+                .await?;
+                write_stream(pipe, selected, &stream_id, &bytes).await?;
+                continue;
+            }
             RequestOp::CloseSession {} => {
                 write_control(
                     pipe,
@@ -418,6 +452,41 @@ async fn handle_authenticated_client(
         )
         .await?;
     }
+}
+
+async fn write_stream(
+    pipe: &mut NamedPipeServer,
+    protocol: lsb_service_proto::ProtocolVersion,
+    stream_id: &str,
+    bytes: &[u8],
+) -> Result<()> {
+    let correlation = stream_correlation(stream_id)?;
+    let chunk_size = MAX_STREAM_PAYLOAD - STREAM_SEQUENCE_LEN;
+    for (sequence, chunk) in bytes.chunks(chunk_size).enumerate() {
+        let payload = encode_stream_payload(sequence.try_into()?, chunk)?;
+        let header = FrameHeader {
+            kind: FrameKind::StreamData,
+            flags: 0,
+            protocol,
+            payload_len: payload.len().try_into()?,
+            correlation,
+        }
+        .encode()?;
+        pipe.write_all(&header).await?;
+        pipe.write_all(&payload).await?;
+    }
+    pipe.flush().await?;
+    Ok(())
+}
+
+fn stream_correlation(stream_id: &str) -> Result<Correlation> {
+    if stream_id.len() != 32 {
+        bail!("invalid stream id");
+    }
+    Ok(Correlation {
+        high: u64::from_str_radix(&stream_id[..16], 16)?,
+        low: u64::from_str_radix(&stream_id[16..], 16)?,
+    })
 }
 
 async fn file_request(

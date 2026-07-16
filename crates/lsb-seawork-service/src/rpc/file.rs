@@ -26,6 +26,42 @@ pub async fn run(
     .map_err(|_| ErrorCode::InternalError)?
 }
 
+pub async fn read(
+    sessions: SessionManager,
+    session_id: ResourceHandle,
+    identity: ClientIdentityKey,
+    sandbox_id: String,
+    path: String,
+    deadline_ms: Option<u32>,
+) -> Result<Vec<u8>, ErrorCode> {
+    let handle = ResourceHandle::parse(&sandbox_id).map_err(|_| ErrorCode::InvalidRequest)?;
+    let timeout = Duration::from_millis(u64::from(deadline_ms.unwrap_or(30_000)));
+    tokio::task::spawn_blocking(move || {
+        sessions
+            .file_managed_vm(
+                session_id,
+                &identity,
+                handle,
+                ManagedFileOp::ReadFile { path },
+                timeout,
+            )
+            .map_err(|error| {
+                if error.to_string().contains("initial stream credit") {
+                    ErrorCode::OutputLimit
+                } else {
+                    ErrorCode::InternalError
+                }
+            })?
+            .ok_or(ErrorCode::ResourceNotFound)
+            .and_then(|result| match result {
+                ManagedFileResult::Bytes(bytes) => Ok(bytes),
+                _ => Err(ErrorCode::InternalError),
+            })
+    })
+    .await
+    .map_err(|_| ErrorCode::InternalError)?
+}
+
 fn to_response(result: ManagedFileResult) -> ResponseValue {
     match result {
         ManagedFileResult::Empty => ResponseValue::Empty {},
@@ -50,5 +86,6 @@ fn to_response(result: ManagedFileResult) -> ResponseValue {
             },
         },
         ManagedFileResult::Exists(exists) => ResponseValue::Exists { exists },
+        ManagedFileResult::Bytes(_) => ResponseValue::Empty {},
     }
 }

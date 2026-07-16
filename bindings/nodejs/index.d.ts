@@ -141,6 +141,7 @@ export declare class SeaWorkSandbox {
   copy(src: string, dst: string, opts?: CopyOptions | undefined | null): Promise<void>
   chmod(path: string, mode: number): Promise<void>
   exists(path: string): Promise<boolean>
+  readFile(path: string): Promise<Buffer>
   stop(): Promise<void>
 }
 

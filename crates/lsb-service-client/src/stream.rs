@@ -1,6 +1,6 @@
 use crate::ClientError;
 
-pub const INITIAL_STREAM_CREDIT: u32 = 256 * 1024;
+pub const INITIAL_STREAM_CREDIT: u32 = lsb_service_proto::limits::INITIAL_STREAM_CREDIT as u32;
 pub const MAX_STREAM_BUFFER: u32 = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

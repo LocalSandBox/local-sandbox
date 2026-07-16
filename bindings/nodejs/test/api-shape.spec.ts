@@ -68,6 +68,7 @@ test('SeaWork service declarations expose only remote sandbox inputs', (t) => {
   t.regex(declarations, /static connect\(\): Promise<SeaWorkService>/)
   t.regex(declarations, /start\(opts\?: SeaWorkStartOptions[^)]*\): Promise<SeaWorkSandbox>/)
   t.regex(declarations, /export declare class SeaWorkSandbox/)
+  t.regex(declarations, /readFile\(path: string\): Promise<Buffer>/)
 
   const options = declarations.match(/export interface SeaWorkStartOptions \{(?<body>[\s\S]*?)\n\}/)
     ?.groups?.body

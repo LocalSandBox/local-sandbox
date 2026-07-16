@@ -71,6 +71,9 @@ pub enum ManagedFileOp {
     Exists {
         path: String,
     },
+    ReadFile {
+        path: String,
+    },
 }
 
 #[derive(Debug)]
@@ -79,6 +82,7 @@ pub enum ManagedFileResult {
     Directory(Vec<ManagedDirEntry>),
     Stat(ManagedFileStat),
     Exists(bool),
+    Bytes(Vec<u8>),
 }
 
 #[derive(Debug)]
@@ -312,6 +316,13 @@ fn file_op(sandbox: &lsb_vm::Sandbox, op: ManagedFileOp) -> Result<ManagedFileRe
             }
             Err(error) => Err(error),
         },
+        ManagedFileOp::ReadFile { path } => {
+            let stat = sandbox.stat(&path)?;
+            if stat.size > lsb_service_proto::limits::INITIAL_STREAM_CREDIT as u64 {
+                bail!("file exceeds initial stream credit");
+            }
+            Ok(ManagedFileResult::Bytes(sandbox.read_file(&path)?))
+        }
     }
 }
 

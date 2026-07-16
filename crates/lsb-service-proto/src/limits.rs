@@ -2,6 +2,7 @@ pub const HEADER_LEN: usize = 32;
 pub const MAX_CONTROL_PAYLOAD: usize = 256 * 1024;
 pub const MAX_STREAM_PAYLOAD: usize = 64 * 1024;
 pub const STREAM_SEQUENCE_LEN: usize = 8;
+pub const INITIAL_STREAM_CREDIT: usize = 256 * 1024;
 pub const MAX_JSON_DEPTH: usize = 32;
 pub const MAX_STRING_LEN: usize = 32 * 1024;
 

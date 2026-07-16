@@ -3,8 +3,9 @@ use std::time::Duration;
 
 use lsb_service_proto::limits::HEADER_LEN;
 use lsb_service_proto::{
-    parse_control, Correlation, FrameHeader, FrameKind, Health, Hello, HelloReply, HexU64,
-    ProtocolVersion, Request, RequestOp, Response, ResponseValue, ServiceInfo, CURRENT, SUPPORTED,
+    decode_stream_payload, parse_control, Correlation, FrameHeader, FrameKind, Health, Hello,
+    HelloReply, HexU64, ProtocolVersion, Request, RequestOp, Response, ResponseValue, ServiceInfo,
+    CURRENT, SUPPORTED,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::NamedPipeClient;
@@ -306,6 +307,69 @@ impl ServiceClient {
         }
     }
 
+    pub async fn read_file(
+        &mut self,
+        sandbox: &RemoteSandbox,
+        path: impl Into<String>,
+    ) -> Result<Vec<u8>, ClientError> {
+        let correlation = self.next_correlation()?;
+        write_control(
+            &mut self.pipe,
+            FrameKind::Request,
+            self.protocol,
+            correlation,
+            &Request {
+                deadline_ms: None,
+                op: RequestOp::ReadFile {
+                    sandbox_id: sandbox.sandbox_id.clone(),
+                    path: path.into(),
+                },
+            },
+        )
+        .await?;
+        let frame = read_frame(&mut self.pipe).await?;
+        self.validate_response(&frame, correlation)?;
+        let (stream_id, length) = match parse_control::<Response>(&frame.payload)? {
+            Response::Ok {
+                result: ResponseValue::FileRead { stream_id, length },
+            } => (stream_id, length),
+            Response::Ok { .. } => return Err(mismatched("ReadFile")),
+            Response::Err { error } => return Err(map_service_error(error)),
+        };
+        if length as usize > lsb_service_proto::limits::INITIAL_STREAM_CREDIT {
+            return Err(ClientError::Protocol(
+                "ReadFile exceeded initial stream credit".to_string(),
+            ));
+        }
+        let stream = stream_correlation(&stream_id)?;
+        let mut bytes = Vec::with_capacity(length as usize);
+        let mut expected_sequence = 0u64;
+        while bytes.len() < length as usize {
+            let frame = read_frame(&mut self.pipe).await?;
+            if frame.header.kind != FrameKind::StreamData
+                || frame.header.protocol != self.protocol
+                || frame.header.correlation != stream
+            {
+                return Err(ClientError::Protocol(
+                    "ReadFile stream correlation/version mismatch".to_string(),
+                ));
+            }
+            let (sequence, chunk) = decode_stream_payload(&frame.payload)?;
+            if sequence != expected_sequence
+                || bytes.len().saturating_add(chunk.len()) > length as usize
+            {
+                return Err(ClientError::Protocol(
+                    "ReadFile stream sequence/length mismatch".to_string(),
+                ));
+            }
+            expected_sequence = expected_sequence
+                .checked_add(1)
+                .ok_or_else(|| ClientError::Protocol("stream sequence exhausted".to_string()))?;
+            bytes.extend_from_slice(chunk);
+        }
+        Ok(bytes)
+    }
+
     async fn empty_file_request(&mut self, op: RequestOp) -> Result<(), ClientError> {
         match self.request(op).await? {
             ResponseValue::Empty {} => Ok(()),
@@ -323,15 +387,7 @@ impl ServiceClient {
     }
 
     async fn request(&mut self, op: RequestOp) -> Result<ResponseValue, ClientError> {
-        let sequence = self.next_sequence;
-        self.next_sequence = self
-            .next_sequence
-            .checked_add(1)
-            .ok_or_else(|| ClientError::Protocol("request sequence exhausted".to_string()))?;
-        let correlation = Correlation {
-            high: self.epoch,
-            low: sequence,
-        };
+        let correlation = self.next_correlation()?;
         write_control(
             &mut self.pipe,
             FrameKind::Request,
@@ -344,6 +400,35 @@ impl ServiceClient {
         )
         .await?;
         let frame = read_frame(&mut self.pipe).await?;
+        self.validate_response(&frame, correlation)?;
+        match parse_control::<Response>(&frame.payload)? {
+            Response::Ok { result } => Ok(result),
+            Response::Err { error }
+                if error.code == lsb_service_proto::ErrorCode::IncompatibleProtocol =>
+            {
+                Err(ClientError::IncompatibleProtocol)
+            }
+            Response::Err { error } => Err(map_service_error(error)),
+        }
+    }
+
+    fn next_correlation(&mut self) -> Result<Correlation, ClientError> {
+        let sequence = self.next_sequence;
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or_else(|| ClientError::Protocol("request sequence exhausted".to_string()))?;
+        Ok(Correlation {
+            high: self.epoch,
+            low: sequence,
+        })
+    }
+
+    fn validate_response(
+        &self,
+        frame: &WireFrame,
+        correlation: Correlation,
+    ) -> Result<(), ClientError> {
         if frame.header.kind != FrameKind::Response
             || frame.header.protocol != self.protocol
             || frame.header.correlation != correlation
@@ -352,20 +437,32 @@ impl ServiceClient {
                 "response correlation/version mismatch".to_string(),
             ));
         }
-        match parse_control::<Response>(&frame.payload)? {
-            Response::Ok { result } => Ok(result),
-            Response::Err { error }
-                if error.code == lsb_service_proto::ErrorCode::IncompatibleProtocol =>
-            {
-                Err(ClientError::IncompatibleProtocol)
-            }
-            Response::Err { error } => Err(ClientError::Service(error)),
-        }
+        Ok(())
     }
 }
 
 fn mismatched(operation: &str) -> ClientError {
     ClientError::Protocol(format!("{operation} returned a mismatched result"))
+}
+
+fn map_service_error(error: lsb_service_proto::ErrorEnvelope) -> ClientError {
+    if error.code == lsb_service_proto::ErrorCode::IncompatibleProtocol {
+        ClientError::IncompatibleProtocol
+    } else {
+        ClientError::Service(error)
+    }
+}
+
+fn stream_correlation(stream_id: &str) -> Result<Correlation, ClientError> {
+    if stream_id.len() != 32 {
+        return Err(ClientError::Protocol("invalid stream id".to_string()));
+    }
+    Ok(Correlation {
+        high: u64::from_str_radix(&stream_id[..16], 16)
+            .map_err(|_| ClientError::Protocol("invalid stream id".to_string()))?,
+        low: u64::from_str_radix(&stream_id[16..], 16)
+            .map_err(|_| ClientError::Protocol("invalid stream id".to_string()))?,
+    })
 }
 
 #[derive(Debug, Clone)]
