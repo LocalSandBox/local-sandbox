@@ -3,6 +3,8 @@ pub mod ledger;
 mod logging;
 mod paths;
 #[cfg(windows)]
+mod pipe;
+#[cfg(windows)]
 mod scm;
 #[cfg(windows)]
 mod status;

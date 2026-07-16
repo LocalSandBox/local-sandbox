@@ -12,6 +12,7 @@ use crate::config::ServiceConfig;
 use crate::ledger;
 use crate::logging::JsonLogger;
 use crate::paths::ServicePaths;
+use crate::pipe::{HealthContext, HealthPipe};
 use crate::status;
 use crate::SERVICE_NAME;
 
@@ -53,6 +54,18 @@ fn run() -> Result<()> {
         logger.write(3, "reconcile", "HEALTH_ONLY_QUARANTINE")?;
     }
 
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("create service async runtime")?;
+    let pipe = runtime.block_on(async {
+        HealthPipe::bind(HealthContext {
+            admissions_open: reconciliation.admissions_open,
+        })
+    })?;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let pipe_task = runtime.spawn(pipe.run(shutdown_rx));
+
     status_handle.set_service_status(status::running())?;
     logger.write(1, "runtime", "RUNNING")?;
     let control = control_rx
@@ -65,6 +78,8 @@ fn run() -> Result<()> {
     };
     status_handle.set_service_status(status::pending(ServiceState::StopPending, 1, wait_hint))?;
     logger.write(2, "shutdown", "STOP_PENDING")?;
+    let _ = shutdown_tx.send(());
+    runtime.block_on(pipe_task)??;
     status_handle.set_service_status(status::stopped())?;
     Ok(())
 }
