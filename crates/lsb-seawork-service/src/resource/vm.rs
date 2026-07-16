@@ -24,6 +24,12 @@ pub struct ManagedVm {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+impl std::fmt::Debug for ManagedVm {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("ManagedVm").finish_non_exhaustive()
+    }
+}
+
 impl ManagedVm {
     pub fn start(
         engine: &ServiceEngineConfig,
