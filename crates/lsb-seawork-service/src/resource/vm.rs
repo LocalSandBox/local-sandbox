@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -17,6 +19,28 @@ pub struct ManagedVmSpec {
 
 enum Command {
     Stop(mpsc::SyncSender<Result<()>>),
+    Exec(ManagedExecSpec, mpsc::SyncSender<Result<ManagedExecResult>>),
+}
+
+const MAX_EXEC_OUTPUT: usize = 8 * 1024 * 1024;
+
+#[derive(Debug, Clone)]
+pub struct ManagedExecSpec {
+    pub argv: Vec<String>,
+    pub env: HashMap<String, String>,
+    pub cwd: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct ManagedExecResult {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub exit_code: i32,
+}
+
+#[derive(Clone)]
+pub struct ManagedVmController {
+    commands: mpsc::SyncSender<Command>,
 }
 
 pub struct ManagedVm {
@@ -74,6 +98,24 @@ impl ManagedVm {
         }
         result
     }
+
+    pub fn controller(&self) -> ManagedVmController {
+        ManagedVmController {
+            commands: self.commands.clone(),
+        }
+    }
+}
+
+impl ManagedVmController {
+    pub fn exec(&self, spec: ManagedExecSpec, timeout: Duration) -> Result<ManagedExecResult> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.commands
+            .try_send(Command::Exec(spec, reply))
+            .map_err(|_| anyhow::anyhow!("managed VM command queue is unavailable"))?;
+        response
+            .recv_timeout(timeout)
+            .map_err(|_| anyhow::anyhow!("managed VM exec exceeded bounded deadline"))?
+    }
 }
 
 impl Drop for ManagedVm {
@@ -126,6 +168,9 @@ fn run(
                 let _ = reply.send(result);
                 return;
             }
+            Ok(Command::Exec(spec, reply)) => {
+                let _ = reply.send(exec(&sandbox, spec));
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let _ = sandbox.stop();
@@ -133,6 +178,75 @@ fn run(
                 return;
             }
         }
+    }
+}
+
+fn exec(sandbox: &lsb_vm::Sandbox, spec: ManagedExecSpec) -> Result<ManagedExecResult> {
+    let capture = Arc::new(Mutex::new(ExecCapture::default()));
+    let mut stdout = CaptureWriter::new(capture.clone(), false);
+    let mut stderr = CaptureWriter::new(capture.clone(), true);
+    let exit_code = sandbox.exec_with_env_and_cwd(
+        &spec.argv,
+        &spec.env,
+        spec.cwd.as_deref(),
+        &mut stdout,
+        &mut stderr,
+    )?;
+    drop(stdout);
+    drop(stderr);
+    let capture = Arc::try_unwrap(capture)
+        .map_err(|_| anyhow::anyhow!("exec output capture remained shared"))?
+        .into_inner()
+        .map_err(|_| anyhow::anyhow!("exec output capture was poisoned"))?;
+    Ok(ManagedExecResult {
+        stdout: capture.stdout,
+        stderr: capture.stderr,
+        exit_code,
+    })
+}
+
+#[derive(Default)]
+struct ExecCapture {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    total: usize,
+}
+
+struct CaptureWriter {
+    capture: Arc<Mutex<ExecCapture>>,
+    stderr: bool,
+}
+
+impl CaptureWriter {
+    fn new(capture: Arc<Mutex<ExecCapture>>, stderr: bool) -> Self {
+        Self { capture, stderr }
+    }
+}
+
+impl Write for CaptureWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let mut capture = self
+            .capture
+            .lock()
+            .map_err(|_| std::io::Error::other("exec output capture poisoned"))?;
+        let total = capture
+            .total
+            .checked_add(bytes.len())
+            .ok_or_else(|| std::io::Error::other("exec output limit exceeded"))?;
+        if total > MAX_EXEC_OUTPUT {
+            return Err(std::io::Error::other("exec output limit exceeded"));
+        }
+        capture.total = total;
+        if self.stderr {
+            capture.stderr.extend_from_slice(bytes);
+        } else {
+            capture.stdout.extend_from_slice(bytes);
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -203,5 +317,15 @@ mod tests {
             memory_mib: 64,
         };
         assert!(validate_spec(&engine, &spec).is_err());
+    }
+
+    #[test]
+    fn exec_capture_enforces_one_combined_output_limit() {
+        let capture = Arc::new(Mutex::new(ExecCapture {
+            total: MAX_EXEC_OUTPUT,
+            ..ExecCapture::default()
+        }));
+        let mut writer = CaptureWriter::new(capture, true);
+        assert!(writer.write_all(&[1]).is_err());
     }
 }

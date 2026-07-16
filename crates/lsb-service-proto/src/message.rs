@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::error::{ErrorEnvelope, ProtocolError};
@@ -95,6 +97,58 @@ impl Request {
                 }
             }
             RequestOp::StopSandbox { sandbox_id } => validate_resource_id(sandbox_id)?,
+            RequestOp::Exec {
+                sandbox_id,
+                command,
+                cwd,
+                env,
+            } => {
+                validate_resource_id(sandbox_id)?;
+                match command {
+                    ServiceCommand::Argv(command) => {
+                        if command.argv.is_empty() || command.argv.len() > 256 {
+                            return Err(ProtocolError::InvalidJson);
+                        }
+                        let mut total = 0usize;
+                        for argument in &command.argv {
+                            validate_string(argument)?;
+                            total = total
+                                .checked_add(argument.len())
+                                .ok_or(ProtocolError::MessageTooLarge)?;
+                        }
+                        if total > 64 * 1024 {
+                            return Err(ProtocolError::MessageTooLarge);
+                        }
+                    }
+                    ServiceCommand::Shell(command) => {
+                        validate_string(&command.shell)?;
+                        if command.shell.is_empty() || command.shell.len() > 64 * 1024 {
+                            return Err(ProtocolError::InvalidJson);
+                        }
+                    }
+                }
+                if let Some(cwd) = cwd {
+                    validate_guest_path(cwd)?;
+                }
+                if env.len() > 256 {
+                    return Err(ProtocolError::InvalidJson);
+                }
+                let mut env_bytes = 0usize;
+                for (key, value) in env {
+                    validate_string(key)?;
+                    validate_string(value)?;
+                    if key.is_empty() || key.contains(['=', '\0']) {
+                        return Err(ProtocolError::InvalidJson);
+                    }
+                    env_bytes = env_bytes
+                        .checked_add(key.len())
+                        .and_then(|total| total.checked_add(value.len()))
+                        .ok_or(ProtocolError::MessageTooLarge)?;
+                }
+                if env_bytes > 128 * 1024 {
+                    return Err(ProtocolError::MessageTooLarge);
+                }
+            }
         }
         Ok(())
     }
@@ -117,7 +171,34 @@ pub enum RequestOp {
     StopSandbox {
         sandbox_id: String,
     },
+    Exec {
+        sandbox_id: String,
+        command: ServiceCommand,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        env: BTreeMap<String, String>,
+    },
     CloseSession {},
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ServiceCommand {
+    Argv(ArgvCommand),
+    Shell(ShellCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArgvCommand {
+    pub argv: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShellCommand {
+    pub shell: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,6 +243,11 @@ pub enum ResponseValue {
         sandbox_id: String,
         mounts: Vec<SelectedMount>,
         host_ports: Vec<u16>,
+    },
+    ExecCompleted {
+        stdout: String,
+        stderr: String,
+        exit_code: i32,
     },
     Empty {},
 }
@@ -235,6 +321,19 @@ fn validate_resource_id(value: &str) -> Result<(), ProtocolError> {
         || !value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(ProtocolError::InvalidJson);
+    }
+    Ok(())
+}
+
+fn validate_guest_path(value: &str) -> Result<(), ProtocolError> {
+    validate_string(value)?;
+    if !value.starts_with('/')
+        || value.contains(['\\', '\0'])
+        || (value.len() > 1 && value.ends_with('/'))
+        || value.split('/').any(|part| part == "." || part == "..")
+        || value.contains("//")
     {
         return Err(ProtocolError::InvalidJson);
     }
@@ -346,5 +445,26 @@ mod tests {
             op: RequestOp::HealthCheck {},
         };
         assert_eq!(deadline.validate(), Err(ProtocolError::InvalidJson));
+    }
+
+    #[test]
+    fn exec_contract_is_bounded_and_rejects_host_style_paths() {
+        let request = Request {
+            deadline_ms: Some(30_000),
+            op: RequestOp::Exec {
+                sandbox_id: "0123456789abcdef0123456789abcdef".to_string(),
+                command: ServiceCommand::Argv(ArgvCommand {
+                    argv: vec!["printf".to_string(), "ok".to_string()],
+                }),
+                cwd: Some("/workspace".to_string()),
+                env: BTreeMap::new(),
+            },
+        };
+        request.validate().unwrap();
+        let mut invalid = request;
+        if let RequestOp::Exec { cwd, .. } = &mut invalid.op {
+            *cwd = Some(r"C:\\caller".to_string());
+        }
+        assert_eq!(invalid.validate(), Err(ProtocolError::InvalidJson));
     }
 }

@@ -10,7 +10,9 @@ pub use error::ClientError;
 pub use stream::CreditWindow;
 
 #[cfg(windows)]
-pub use connection::{RemoteSandbox, ServiceClient, StartSandboxOptions};
+pub use connection::{
+    ExecOptions, RemoteCommand, RemoteExecResult, RemoteSandbox, ServiceClient, StartSandboxOptions,
+};
 
 pub const SERVICE_NAME: &str = "LocalSandboxSeaWork";
 pub const PIPE_NAME: &str = r"\\.\pipe\LocalSandbox.SeaWork.v1";

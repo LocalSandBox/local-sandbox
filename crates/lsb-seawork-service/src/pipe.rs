@@ -272,6 +272,29 @@ async fn handle_authenticated_client(
                     continue;
                 }
             },
+            RequestOp::Exec {
+                sandbox_id,
+                command,
+                cwd,
+                env,
+            } => match rpc::process::exec(
+                context.sessions.clone(),
+                session_id,
+                identity.clone(),
+                sandbox_id,
+                command,
+                cwd,
+                env,
+                deadline_ms,
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(code) => {
+                    write_error(pipe, selected, frame.header.correlation, code).await?;
+                    continue;
+                }
+            },
             RequestOp::CloseSession {} => {
                 write_control(
                     pipe,

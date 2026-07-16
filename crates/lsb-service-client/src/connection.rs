@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use lsb_service_proto::limits::HEADER_LEN;
@@ -144,6 +145,44 @@ impl ServiceClient {
         }
     }
 
+    pub async fn exec(
+        &mut self,
+        sandbox: &RemoteSandbox,
+        command: RemoteCommand,
+        options: ExecOptions,
+    ) -> Result<RemoteExecResult, ClientError> {
+        let command = match command {
+            RemoteCommand::Argv(argv) => {
+                lsb_service_proto::ServiceCommand::Argv(lsb_service_proto::ArgvCommand { argv })
+            }
+            RemoteCommand::Shell(shell) => {
+                lsb_service_proto::ServiceCommand::Shell(lsb_service_proto::ShellCommand { shell })
+            }
+        };
+        match self
+            .request(RequestOp::Exec {
+                sandbox_id: sandbox.sandbox_id.clone(),
+                command,
+                cwd: options.cwd,
+                env: options.env,
+            })
+            .await?
+        {
+            ResponseValue::ExecCompleted {
+                stdout,
+                stderr,
+                exit_code,
+            } => Ok(RemoteExecResult {
+                stdout,
+                stderr,
+                exit_code,
+            }),
+            _ => Err(ClientError::Protocol(
+                "Exec returned a mismatched result".to_string(),
+            )),
+        }
+    }
+
     pub async fn close_session(&mut self) -> Result<(), ClientError> {
         match self.request(RequestOp::CloseSession {}).await? {
             ResponseValue::Empty {} => Ok(()),
@@ -221,6 +260,25 @@ impl Default for StartSandboxOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteSandbox {
     sandbox_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteCommand {
+    Argv(Vec<String>),
+    Shell(String),
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ExecOptions {
+    pub cwd: Option<String>,
+    pub env: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteExecResult {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
 }
 
 impl RemoteSandbox {
