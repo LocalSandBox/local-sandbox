@@ -63,7 +63,7 @@ impl StagedMount {
     }
 }
 
-fn protected_identity(path: &Path) -> Result<String> {
+pub(crate) fn protected_identity(path: &Path) -> Result<String> {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;

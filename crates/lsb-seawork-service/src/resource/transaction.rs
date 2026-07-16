@@ -11,6 +11,13 @@ pub const ACCOUNT_PREFIX: &str = "lsbsw_";
 pub const SHARE_PREFIX: &str = "lsbsw-";
 pub const OWNERSHIP_MARKER_PREFIX: &str = "lsbsw:";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleanupProof {
+    Removed,
+    AlreadyAbsent,
+    IdentityMismatch,
+}
+
 pub struct ResourceTransaction {
     path: PathBuf,
     document: LedgerDocument,
@@ -108,6 +115,39 @@ pub fn generate_share_name() -> Result<String> {
     Ok(format!("{SHARE_PREFIX}{}", random_base32(26)?))
 }
 
+pub fn remove_proven_staging_root(
+    protected_instance_root: &Path,
+    relative_path: &str,
+    expected_file_id: &str,
+) -> Result<CleanupProof> {
+    let relative = Path::new(relative_path);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        || relative
+            .components()
+            .next()
+            .and_then(|component| match component {
+                std::path::Component::Normal(value) => value.to_str(),
+                _ => None,
+            })
+            != Some("mounts")
+    {
+        bail!("staging ledger path is not a safe relative mounts path");
+    }
+    let path = protected_instance_root.join(relative);
+    if !path.exists() {
+        return Ok(CleanupProof::AlreadyAbsent);
+    }
+    let actual = super::mount::protected_identity(&path)?;
+    if actual != expected_file_id {
+        return Ok(CleanupProof::IdentityMismatch);
+    }
+    std::fs::remove_dir_all(path)?;
+    Ok(CleanupProof::Removed)
+}
+
 fn random_hex_id() -> Result<String> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes)
@@ -201,5 +241,27 @@ mod tests {
         assert!(account[ACCOUNT_PREFIX.len()..]
             .bytes()
             .all(|value| value.is_ascii_lowercase() || (b'2'..=b'7').contains(&value)));
+    }
+
+    #[test]
+    fn staging_cleanup_requires_exact_protected_identity() {
+        let root = std::env::temp_dir().join(format!("lsbsw-proof-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let staging = root.join("mounts").join("0123456789abcdef0123456789abcdef");
+        std::fs::create_dir_all(&staging).unwrap();
+        assert_eq!(
+            remove_proven_staging_root(&root, "mounts/0123456789abcdef0123456789abcdef", "wrong")
+                .unwrap(),
+            CleanupProof::IdentityMismatch
+        );
+        assert!(staging.exists());
+        let identity = super::super::mount::protected_identity(&staging).unwrap();
+        assert_eq!(
+            remove_proven_staging_root(&root, "mounts/0123456789abcdef0123456789abcdef", &identity)
+                .unwrap(),
+            CleanupProof::Removed
+        );
+        assert!(!staging.exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -8,6 +8,7 @@ use crate::security::impersonation::ImpersonationGuard;
 
 use super::identity::{AuthorizedMountRoot, MountAccess};
 use super::policy::MountPolicy;
+use super::ExportOptions;
 use crate::resource::mount_sync::TreeSnapshot;
 
 enum Command {
@@ -23,6 +24,12 @@ enum Command {
         final_root: PathBuf,
         destination: PathBuf,
         reply: mpsc::SyncSender<Result<TreeSnapshot>>,
+    },
+    ExportFile {
+        protected_source: PathBuf,
+        user_destination: PathBuf,
+        options: ExportOptions,
+        reply: mpsc::SyncSender<Result<u64>>,
     },
     Stop,
 }
@@ -80,6 +87,24 @@ impl PathWorker {
             .context("filesystem worker stopped")?;
         response.recv().context("filesystem worker lost reply")?
     }
+
+    pub fn export_file(
+        &self,
+        protected_source: PathBuf,
+        user_destination: PathBuf,
+        options: ExportOptions,
+    ) -> Result<u64> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.commands
+            .send(Command::ExportFile {
+                protected_source,
+                user_destination,
+                options,
+                reply,
+            })
+            .context("filesystem worker stopped")?;
+        response.recv().context("filesystem worker lost reply")?
+    }
 }
 
 impl Drop for PathWorker {
@@ -123,9 +148,40 @@ fn run(token: OwnedHandle, policy: MountPolicy, commands: mpsc::Receiver<Command
                 );
                 let _ = reply.send(result);
             }
+            Command::ExportFile {
+                protected_source,
+                user_destination,
+                options,
+                reply,
+            } => {
+                let result = export_once(&token, &protected_source, &user_destination, options);
+                let _ = reply.send(result);
+            }
             Command::Stop => return,
         }
     }
+}
+
+fn export_once(
+    token: &OwnedHandle,
+    protected_source: &std::path::Path,
+    user_destination: &std::path::Path,
+    options: ExportOptions,
+) -> Result<u64> {
+    let metadata = std::fs::symlink_metadata(protected_source)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        anyhow::bail!("protected export source is not a regular file");
+    }
+    let mut source = std::fs::File::open(protected_source)?;
+    let guard = ImpersonationGuard::for_token(token)?;
+    let result = super::export::export_open_file_under_client_token(
+        &mut source,
+        metadata.len(),
+        user_destination,
+        options,
+    );
+    guard.revert().context("revert filesystem worker token")?;
+    result
 }
 
 fn authorize_once(

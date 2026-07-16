@@ -16,6 +16,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_WRITE_DATA, FILE_WRITE_EA, OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE, VOLUME_NAME_DOS,
 };
 use windows_sys::Win32::System::Com::CoTaskMemFree;
+use windows_sys::Win32::System::SystemInformation::GetWindowsDirectoryW;
 use windows_sys::Win32::System::WindowsProgramming::DRIVE_FIXED;
 use windows_sys::Win32::UI::Shell::{
     FOLDERID_Profile, FOLDERID_ProgramData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86,
@@ -363,16 +364,32 @@ fn protected_roots(
     let program_files_x86 = known_folder(&FOLDERID_ProgramFilesX86, std::ptr::null_mut())?;
     let profiles = known_folder(&FOLDERID_UserProfiles, std::ptr::null_mut())?;
     let caller_profile = known_folder(&FOLDERID_Profile, token.as_raw_handle() as HANDLE).ok();
+    let windows = windows_directory()?;
     Ok((
         vec![
             program_data,
             program_files,
             program_files_x86,
+            windows,
             policy.service_root().to_path_buf(),
         ],
         Some(profiles),
         caller_profile,
     ))
+}
+
+fn windows_directory() -> Result<PathBuf> {
+    let mut buffer = vec![0u16; 32_768];
+    let length = unsafe { GetWindowsDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
+    if length == 0 || length as usize >= buffer.len() {
+        bail!(
+            "GetWindowsDirectoryW failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(PathBuf::from(OsString::from_wide(
+        &buffer[..length as usize],
+    )))
 }
 
 fn known_folder(id: &windows_sys::core::GUID, token: HANDLE) -> Result<PathBuf> {
