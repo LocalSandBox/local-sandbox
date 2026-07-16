@@ -49,6 +49,30 @@ corepack yarn install
 
 ## Usage
 
+### Experimental Windows service client
+
+SeaWork integrations on Windows use the machine service instead of the direct `Sandbox` API. The
+remote API contains no caller-selected runtime directory, QEMU path, instance ID, checkpoint, or
+identity fields:
+
+```ts
+import { SeaWorkService } from '@local-sandbox/lsb-nodejs'
+
+const service = await SeaWorkService.connect()
+const health = await service.health()
+if (!health.ready) throw new Error(health.stableCode)
+
+const sandbox = await service.start({ cpus: 2, memoryMb: 2048, diskSizeMb: 4096 })
+const result = await sandbox.exec(['sh', '-lc', 'echo service-ready'])
+await sandbox.mkdir('/workspace/out', { recursive: true })
+await sandbox.stop()
+await service.close()
+```
+
+This surface currently includes lifecycle, bounded unary exec, and guest filesystem metadata and
+mutation operations. Spawn, watches, and file byte transfer remain unavailable until their credited
+stream protocol is complete. The existing `Sandbox` API remains the direct SDK compatibility path.
+
 ### Start a sandbox and run commands
 
 ```ts

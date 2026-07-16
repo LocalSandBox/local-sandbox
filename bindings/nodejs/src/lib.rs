@@ -7,6 +7,7 @@ mod config;
 mod error;
 mod process;
 mod sandbox;
+mod service;
 mod streams;
 mod types;
 
@@ -25,6 +26,9 @@ use crate::error::unsupported_platform_error;
 
 pub use process::SpawnedProcess;
 pub use sandbox::Sandbox;
+pub use service::{
+  SeaWorkExecOptions, SeaWorkHealth, SeaWorkSandbox, SeaWorkService, SeaWorkStartOptions,
+};
 pub use streams::{ByteStream, WatchStream};
 pub use types::{
   CopyOptions, DirEntry, ExecOptions, ExecResult, ExposeHostConfig, FileChangeEvent, MkdirOptions,

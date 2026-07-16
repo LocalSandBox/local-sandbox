@@ -62,3 +62,26 @@ test('TypeScript declarations do not expose platform-specific packaging details'
   t.false(/whpx/i.test(declarations))
   t.false(/windows/i.test(declarations))
 })
+
+test('SeaWork service declarations expose only remote sandbox inputs', (t) => {
+  t.regex(declarations, /export declare class SeaWorkService/)
+  t.regex(declarations, /static connect\(\): Promise<SeaWorkService>/)
+  t.regex(declarations, /start\(opts\?: SeaWorkStartOptions[^)]*\): Promise<SeaWorkSandbox>/)
+  t.regex(declarations, /export declare class SeaWorkSandbox/)
+
+  const options = declarations.match(/export interface SeaWorkStartOptions \{(?<body>[\s\S]*?)\n\}/)
+    ?.groups?.body
+  t.truthy(options)
+  t.regex(options ?? '', /cpus\?: number/)
+  t.regex(options ?? '', /memoryMb\?: number/)
+  t.regex(options ?? '', /diskSizeMb\?: number/)
+  for (const forbidden of ['dataDir', 'instanceId', 'baseVersion', 'from', 'qemu', 'identity']) {
+    t.false((options ?? '').includes(forbidden), `forbidden service option: ${forbidden}`)
+  }
+
+  const execOptions = declarations.match(
+    /export interface SeaWorkExecOptions \{(?<body>[\s\S]*?)\n\}/,
+  )?.groups?.body
+  t.truthy(execOptions)
+  t.false((execOptions ?? '').includes('shell'), 'remote exec uses the fixed guest shell contract')
+})

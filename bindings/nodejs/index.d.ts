@@ -130,6 +130,27 @@ export declare class Sandbox {
   get instanceDir(): string
 }
 
+export declare class SeaWorkSandbox {
+  get id(): string
+  exec(command: string | Array<string>, opts?: SeaWorkExecOptions | undefined | null): Promise<ExecResult>
+  mkdir(path: string, opts?: MkdirOptions | undefined | null): Promise<void>
+  readDir(path: string): Promise<Array<DirEntry>>
+  stat(path: string): Promise<StatResult>
+  remove(path: string, opts?: RemoveOptions | undefined | null): Promise<void>
+  rename(oldPath: string, newPath: string): Promise<void>
+  copy(src: string, dst: string, opts?: CopyOptions | undefined | null): Promise<void>
+  chmod(path: string, mode: number): Promise<void>
+  exists(path: string): Promise<boolean>
+  stop(): Promise<void>
+}
+
+export declare class SeaWorkService {
+  static connect(): Promise<SeaWorkService>
+  health(): Promise<SeaWorkHealth>
+  start(opts?: SeaWorkStartOptions | undefined | null): Promise<SeaWorkSandbox>
+  close(): Promise<void>
+}
+
 /**
  * Handle for a process spawned inside the sandbox.
  *
@@ -380,6 +401,24 @@ export interface SandboxInitResult {
   paths: SandboxAssetPaths
   /** Automatic host configuration fixes attempted by this call. */
   fixes: Array<SandboxFixResult>
+}
+
+export interface SeaWorkExecOptions {
+  cwd?: string
+  env?: Record<string, string>
+}
+
+export interface SeaWorkHealth {
+  ready: boolean
+  admissionsOpen: boolean
+  stableCode: string
+  bundleReady: boolean
+}
+
+export interface SeaWorkStartOptions {
+  cpus?: number
+  memoryMb?: number
+  diskSizeMb?: number
 }
 
 /** Secret value that is only exposed to requests for the listed hosts. */
