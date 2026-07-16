@@ -2,12 +2,14 @@
 
 ## Status
 
-Ready to begin Phase 0 of [plan.md](plan.md).
+Phase 0 harness is implemented; proceeding with Phase 1 while real-machine evidence is deferred.
 
 - Baseline branch: `feat/lsb-win-service`
 - Investigated commit: `c9e447cec349723f6e70ee3b78dd429af171e879`
 - LocalSandbox version: `0.4.6`
-- Current repository change: planning documents only; no production implementation exists
+- Last verified implementation commit: `685644c` (`feat(service): add Session 0 feasibility spike`)
+- Phase 0 verification: schema test, Windows compile, isolated Clippy, and PowerShell parse pass
+- Deferred verification: the current shell is not elevated and has no prepared runtime assets, so SCM LocalSystem/WHPX/SMB execution was not run; details are in `docs/windows-service-feasibility.md`
 - Source of truth: `plan.md`; this file is the lightweight entry point and progress record
 
 ## Goal
@@ -31,8 +33,8 @@ Ship a LocalSandbox-owned, x86-64 Windows SCM service that SeaWork installs once
 
 | Phase | State | Purpose |
 | --- | --- | --- |
-| 0 | Next | Prove Session 0 WHPX/QEMU, SMB, watches, WFP, networking, and teardown on real Windows |
-| 1 | Pending | Add protocol model, SCM shell, protected configuration, and ledger primitives |
+| 0 | Harness complete; real-machine evidence deferred | Prove Session 0 WHPX/QEMU, SMB, watches, WFP, networking, and teardown on real Windows |
+| 1 | Next | Add protocol model, SCM shell, protected configuration, and ledger primitives |
 | 2 | Pending | Add pipe identity, mutual authentication, sessions, quotas, and authorization foundation |
 | 3 | Pending | Add handle-safe paths, staged mounts, privileged-resource ledger, and recovery |
 | 4 | Pending | Move sandbox lifecycle behind the service; add Job and WFP containment |
@@ -45,10 +47,10 @@ Do not expose the full privileged RPC surface before Phases 1–3 are complete. 
 
 1. Read repository instructions.
 2. Read `plan.md` section 1's “How to use this plan” map—not the entire plan.
-3. For the current Phase 0 slice, read sections 2, 3, 4, 5, 6, 8, 11/Phase 0, 12, and 14. Consult section 15 only for sources needed now.
+3. For the current Phase 1 slice, read sections 3, 5, 6, 7, 9, and 11/Phase 1. Consult section 15 only for sources needed now.
 4. Recheck the branch, HEAD, worktree, toolchain, and dependency versions; preserve unrelated changes.
-5. Implement only Phase 0, retaining its reproducible Windows harness and evidence document.
-6. Do not start Phase 1 until the Phase 0 acceptance gate is recorded.
+5. Implement Phase 1 protocol, SCM shell, protected configuration, and ledger primitives without exposing sandbox RPC.
+6. Keep the Phase 0 real-machine gate in the release backlog; host ports remain disabled unless WFP isolation is proven.
 7. When advancing phases, update the table and last verified commit, then follow the new phase's reading slice.
 
 ## Release-blocking evidence
