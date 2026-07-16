@@ -109,10 +109,10 @@ function Get-ProcessTreeSnapshot {
             $children[$parent].Add([int]$item.ProcessId)
         }
         while ($pending.Count -gt 0) {
-            $pid = $pending.Dequeue()
-            if (-not $selected.Add($pid)) { continue }
-            if ($children.ContainsKey($pid)) {
-                foreach ($child in $children[$pid]) { $pending.Enqueue($child) }
+            $processId = $pending.Dequeue()
+            if (-not $selected.Add($processId)) { continue }
+            if ($children.ContainsKey($processId)) {
+                foreach ($child in $children[$processId]) { $pending.Enqueue($child) }
             }
         }
     }
@@ -124,11 +124,11 @@ function Get-ProcessTreeSnapshot {
     }
 
     $samples = [System.Collections.Generic.List[object]]::new()
-    foreach ($pid in $selected) {
+    foreach ($processId in $selected) {
         try {
-            $process = Get-Process -Id $pid -ErrorAction Stop
+            $process = Get-Process -Id $processId -ErrorAction Stop
             $samples.Add([ordered]@{
-                    pid = $pid
+                    pid = $processId
                     start_ticks = $process.StartTime.ToUniversalTime().Ticks
                     cpu_seconds = [double]$process.TotalProcessorTime.TotalSeconds
                     working_set_bytes = [uint64]$process.WorkingSet64
