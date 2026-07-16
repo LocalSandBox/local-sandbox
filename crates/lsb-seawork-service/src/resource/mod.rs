@@ -1,3 +1,8 @@
 pub mod mount;
 pub mod mount_sync;
+pub mod network;
+pub mod port;
+pub mod process;
+pub mod sandbox;
 pub mod transaction;
+pub mod watch;

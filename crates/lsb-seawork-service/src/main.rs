@@ -1,4 +1,6 @@
 mod config;
+#[cfg(windows)]
+pub mod engine;
 pub mod ipc;
 pub mod ledger;
 mod logging;
@@ -14,6 +16,8 @@ pub mod security;
 pub mod session;
 #[cfg(windows)]
 mod status;
+#[cfg(windows)]
+pub mod windows;
 
 use anyhow::{bail, Result};
 use lsb_service_proto::{CURRENT, SUPPORTED};
