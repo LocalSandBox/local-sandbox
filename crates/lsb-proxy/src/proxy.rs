@@ -11,7 +11,7 @@ use boring::ssl::{SslConnector, SslConnectorBuilder, SslMethod};
 use boring::x509::X509;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tracing::{debug, info, trace};
 #[cfg(windows)]
 use windows_sys::Win32::Security::Cryptography::{
@@ -532,10 +532,12 @@ async fn handle_mitm(
     let (mut upstream_rd, mut upstream_wr) = tokio::io::split(upstream_tls);
     let opaque_upgrade = Arc::new(AtomicBool::new(false));
     let upgrade_pending = Arc::new(AtomicBool::new(false));
+    let upgrade_notify = Arc::new(Notify::new());
 
     let request_domain = domain.clone();
     let request_opaque_upgrade = opaque_upgrade.clone();
     let request_upgrade_pending = upgrade_pending.clone();
+    let request_upgrade_notify = upgrade_notify.clone();
     let guest_to_upstream = async move {
         let result = crate::http1::transform_requests(
             &mut guest_rd,
@@ -544,6 +546,7 @@ async fn handle_mitm(
             &substitutions,
             request_opaque_upgrade,
             request_upgrade_pending,
+            request_upgrade_notify,
         )
         .await;
         if result.is_err() {
@@ -555,6 +558,7 @@ async fn handle_mitm(
     let response_domain = domain.clone();
     let response_opaque_upgrade = opaque_upgrade.clone();
     let response_upgrade_pending = upgrade_pending.clone();
+    let response_upgrade_notify = upgrade_notify.clone();
     let upstream_to_guest = async move {
         relay_upstream_response(
             &response_domain,
@@ -562,6 +566,7 @@ async fn handle_mitm(
             &mut guest_wr,
             response_opaque_upgrade,
             response_upgrade_pending,
+            response_upgrade_notify,
         )
         .await
     };
@@ -604,6 +609,7 @@ async fn relay_upstream_response<R, W>(
     writer: &mut W,
     opaque_upgrade: Arc<AtomicBool>,
     upgrade_pending: Arc<AtomicBool>,
+    upgrade_notify: Arc<Notify>,
 ) -> io::Result<RelayStats>
 where
     R: AsyncRead + Unpin,
@@ -633,6 +639,7 @@ where
                 if crate::http1::response_accepts_upgrade(response) {
                     opaque_upgrade.store(true, Ordering::Release);
                     upgrade_pending.store(false, Ordering::Release);
+                    upgrade_notify.notify_one();
                     upgrade_buffer.clear();
                     debug!("MITM {domain}: HTTP upgrade accepted; switching to opaque relay");
                     break;
@@ -845,6 +852,7 @@ mod tests {
             &mut writer,
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
+            Arc::new(Notify::new()),
         )
         .await
         .expect("response relay should succeed");
@@ -868,6 +876,7 @@ mod tests {
         let mut writer = FlushCountingWriter::default();
         let opaque = Arc::new(AtomicBool::new(false));
         let pending = Arc::new(AtomicBool::new(true));
+        let notify = Arc::new(Notify::new());
 
         relay_upstream_response(
             "api.example.test",
@@ -875,6 +884,7 @@ mod tests {
             &mut writer,
             opaque.clone(),
             pending.clone(),
+            notify.clone(),
         )
         .await
         .unwrap();
@@ -882,6 +892,9 @@ mod tests {
         assert_eq!(writer.bytes, response);
         assert!(opaque.load(Ordering::Acquire));
         assert!(!pending.load(Ordering::Acquire));
+        tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
+            .await
+            .expect("accepted upgrade should notify the request relay");
     }
 
     #[tokio::test]
@@ -898,6 +911,7 @@ mod tests {
             &mut writer,
             opaque.clone(),
             pending.clone(),
+            Arc::new(Notify::new()),
         )
         .await
         .unwrap();

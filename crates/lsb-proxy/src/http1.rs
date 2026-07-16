@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::io::{
     AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
 };
+use tokio::sync::Notify;
 
 use crate::config::RequestHeaderRule;
 
@@ -39,6 +40,7 @@ pub(crate) async fn transform_requests<R, W>(
     substitutions: &[(String, String)],
     opaque_upgrade: Arc<AtomicBool>,
     upgrade_pending: Arc<AtomicBool>,
+    upgrade_notify: Arc<Notify>,
 ) -> io::Result<TransformStats>
 where
     R: AsyncRead + Unpin,
@@ -55,7 +57,35 @@ where
             return Ok(stats);
         }
 
-        let Some(block) = read_header_block(&mut reader).await? else {
+        let mut block = Vec::new();
+        let has_headers = loop {
+            let notified = upgrade_notify.notified();
+            tokio::pin!(notified);
+
+            if opaque_upgrade.load(Ordering::Acquire) {
+                break false;
+            }
+
+            tokio::select! {
+                biased;
+                _ = &mut notified => {
+                    if opaque_upgrade.load(Ordering::Acquire) {
+                        break false;
+                    }
+                }
+                result = read_header_block(&mut reader, &mut block) => {
+                    match result? {
+                        true => break true,
+                        false => return Ok(stats),
+                    }
+                }
+            }
+        };
+        if !has_headers {
+            stats.bytes_read += block.len() as u64;
+            writer.write_all(&block).await?;
+            stats.bytes_read += tokio::io::copy(&mut reader, writer).await?;
+            writer.flush().await?;
             return Ok(stats);
         };
         stats.bytes_read += block.len() as u64;
@@ -117,24 +147,27 @@ fn substitution_bytes(substitutions: &[(String, String)]) -> io::Result<Vec<(Vec
     Ok(patterns)
 }
 
-async fn read_header_block<R>(reader: &mut R) -> io::Result<Option<Vec<u8>>>
+async fn read_header_block<R>(reader: &mut R, block: &mut Vec<u8>) -> io::Result<bool>
 where
     R: AsyncBufRead + Unpin,
 {
-    let mut block = Vec::new();
     loop {
-        let read = reader.read_until(b'\n', &mut block).await?;
+        let read = read_until_limited(
+            reader,
+            b'\n',
+            block,
+            MAX_HEADER_BYTES,
+            "HTTP request headers exceed limit",
+        )
+        .await?;
         if read == 0 {
             if block.is_empty() {
-                return Ok(None);
+                return Ok(false);
             }
             return Err(unexpected_eof("incomplete HTTP request headers"));
         }
-        if block.len() > MAX_HEADER_BYTES {
-            return Err(invalid_data("HTTP request headers exceed limit"));
-        }
         if block.ends_with(b"\r\n\r\n") {
-            return Ok(Some(block));
+            return Ok(true);
         }
         if block.ends_with(b"\n\n") {
             return Err(invalid_data("HTTP request headers require CRLF framing"));
@@ -504,14 +537,54 @@ where
     R: AsyncBufRead + Unpin,
 {
     let mut line = Vec::new();
-    let read = reader.read_until(b'\n', &mut line).await?;
+    let read = read_until_limited(
+        reader,
+        b'\n',
+        &mut line,
+        MAX_LINE_BYTES,
+        &format!("invalid HTTP {context}"),
+    )
+    .await?;
     if read == 0 {
         return Err(unexpected_eof(&format!("incomplete HTTP {context}")));
     }
-    if line.len() > MAX_LINE_BYTES || !line.ends_with(b"\r\n") {
+    if !line.ends_with(b"\r\n") {
         return Err(invalid_data(&format!("invalid HTTP {context}")));
     }
     Ok(line)
+}
+
+async fn read_until_limited<R>(
+    reader: &mut R,
+    delimiter: u8,
+    output: &mut Vec<u8>,
+    limit: usize,
+    limit_message: &str,
+) -> io::Result<usize>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let initial_length = output.len();
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok(output.len() - initial_length);
+        }
+
+        let length = available
+            .iter()
+            .position(|byte| *byte == delimiter)
+            .map_or(available.len(), |position| position + 1);
+        if output.len().saturating_add(length) > limit {
+            return Err(invalid_data(limit_message));
+        }
+
+        output.extend_from_slice(&available[..length]);
+        reader.consume(length);
+        if output.last() == Some(&delimiter) {
+            return Ok(output.len() - initial_length);
+        }
+    }
 }
 
 fn parse_chunk_size(line: &[u8]) -> io::Result<u64> {
@@ -712,6 +785,7 @@ mod tests {
             substitutions,
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
+            Arc::new(Notify::new()),
         )
         .await?;
         Ok(output)
@@ -758,6 +832,7 @@ mod tests {
             &[],
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
+            Arc::new(Notify::new()),
         )
         .await?;
         Ok(output)
@@ -876,6 +951,86 @@ mod tests {
             transform(&oversized, &[], &[]).await.unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
+    }
+
+    #[tokio::test]
+    async fn rejects_overlong_unterminated_headers_without_waiting_for_a_newline() {
+        let (mut guest, mut proxy_reader) = tokio::io::duplex(1024);
+        let relay = tokio::spawn(async move {
+            let mut output = Vec::new();
+            transform_requests(
+                &mut proxy_reader,
+                &mut output,
+                &[],
+                &[],
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(Notify::new()),
+            )
+            .await
+        });
+
+        let overlong = vec![b'x'; MAX_HEADER_BYTES + 1];
+        let _ = guest.write_all(&overlong).await;
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), relay)
+            .await
+            .expect("header limit should be enforced before EOF or a newline")
+            .expect("request relay should not panic")
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "HTTP request headers exceed limit");
+    }
+
+    #[tokio::test]
+    async fn accepted_upgrade_wakes_header_read_and_relays_opaque_bytes() {
+        let (mut guest, mut proxy_reader) = tokio::io::duplex(1024);
+        let (mut proxy_writer, mut upstream) = tokio::io::duplex(1024);
+        let opaque = Arc::new(AtomicBool::new(false));
+        let pending = Arc::new(AtomicBool::new(false));
+        let notify = Arc::new(Notify::new());
+        let relay_opaque = opaque.clone();
+        let relay_pending = pending.clone();
+        let relay_notify = notify.clone();
+        let relay = tokio::spawn(async move {
+            transform_requests(
+                &mut proxy_reader,
+                &mut proxy_writer,
+                &[],
+                &[],
+                relay_opaque,
+                relay_pending,
+                relay_notify,
+            )
+            .await
+        });
+
+        let request = b"GET /chat HTTP/1.1\r\nHost: example.test\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n";
+        guest.write_all(request).await.unwrap();
+        let mut forwarded_request = vec![0; request.len()];
+        upstream.read_exact(&mut forwarded_request).await.unwrap();
+        assert_eq!(forwarded_request, request);
+        assert!(pending.load(Ordering::Acquire));
+
+        opaque.store(true, Ordering::Release);
+        pending.store(false, Ordering::Release);
+        notify.notify_one();
+
+        let frame = b"\x81\x05hello";
+        guest.write_all(frame).await.unwrap();
+        guest.shutdown().await.unwrap();
+        let mut forwarded_frame = vec![0; frame.len()];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            upstream.read_exact(&mut forwarded_frame),
+        )
+        .await
+        .expect("accepted upgrade should wake the pending header read")
+        .unwrap();
+        assert_eq!(forwarded_frame, frame);
+
+        let stats = relay.await.unwrap().unwrap();
+        assert_eq!(stats.requests, 1);
+        assert_eq!(stats.bytes_read, (request.len() + frame.len()) as u64);
     }
 
     #[tokio::test]
