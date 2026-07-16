@@ -826,6 +826,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fixed_body_without_secrets_preserves_framing_and_bytes() {
+        let input = b"POST /upload HTTP/1.1\r\nHost: example.test\r\nContent-Length: 11\r\nX-Keep:  exact\r\n\r\nhello world";
+        let output = transform(input, &[rule("User-Agent", "agent")], &[])
+            .await
+            .unwrap();
+        assert_eq!(
+            output,
+            b"POST /upload HTTP/1.1\r\nHost: example.test\r\nContent-Length: 11\r\nX-Keep:  exact\r\nUser-Agent: agent\r\n\r\nhello world"
+        );
+    }
+
+    #[tokio::test]
     async fn chunked_substitution_spans_original_chunks_and_transforms_trailers() {
         let input = b"POST / HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\nTrailer: X-End\r\n\r\n3\r\nabc\r\n3\r\nTOK\r\n2\r\nEN\r\n0\r\nX-End: TOKEN\r\n\r\n";
         let output = transform(input, &[], &[("TOKEN".into(), "secret".into())])
@@ -908,5 +920,19 @@ mod tests {
             assert_eq!(output, b"secret", "split {split}");
             assert_eq!(replacer.replacements, 1);
         }
+    }
+
+    #[test]
+    fn streaming_replacer_handles_multiple_and_repeated_patterns_deterministically() {
+        let patterns = vec![
+            (b"ALPHA".to_vec(), b"one".to_vec()),
+            (b"BETA".to_vec(), b"two-two".to_vec()),
+        ];
+        let mut replacer = StreamingReplacer::new(&patterns);
+        let mut output = replacer.feed(b"ALPHAB");
+        output.extend(replacer.feed(b"ETA/ALPHA"));
+        output.extend(replacer.finish());
+        assert_eq!(output, b"onetwo-two/one");
+        assert_eq!(replacer.replacements, 3);
     }
 }

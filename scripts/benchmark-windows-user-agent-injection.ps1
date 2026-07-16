@@ -14,6 +14,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    throw "this benchmark requires PowerShell 7 or newer for argument-array process startup"
+}
 $script:Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $script:SchemaVersion = 1
 $script:RunSequence = 0

@@ -424,7 +424,10 @@ latency, Defender, and host load can dominate absolute values. The macOS
 harness reports private memory as `null` because RSS is the comparable
 available metric. Windows execution and result collection must be performed on
 a Windows 11 x64 host with WHPX/QEMU and initialized runtime assets; a macOS
-parser check does not constitute Windows benchmark execution.
+parser check does not constitute Windows benchmark execution. PowerShell 7 is
+required for argument-array process startup. Polling can miss very short-lived
+descendants, so process-tree CPU and memory values are operational estimates;
+each run records its scope, sample count, interval, and sampling errors.
 
 ## Agent Skill
 

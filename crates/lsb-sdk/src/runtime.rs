@@ -549,6 +549,7 @@ struct BootedVm {
 }
 
 fn boot_vm(config: SandboxConfig) -> Result<BootedVm> {
+    validate_sandbox_interception(&config)?;
     let data_dir = config.data_dir.unwrap_or_else(lsb_vm::default_data_dir);
     let paths = asset_paths(&data_dir);
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -737,6 +738,14 @@ fn boot_vm(config: SandboxConfig) -> Result<BootedVm> {
         fwd_handle,
         nbd_handle,
     })
+}
+
+fn validate_sandbox_interception(config: &SandboxConfig) -> Result<()> {
+    ProxyConfig {
+        https_interception: config.https_interception.clone(),
+        ..Default::default()
+    }
+    .validate()
 }
 
 struct RuntimePreparedStorage {
@@ -1507,6 +1516,19 @@ fn exec_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_interception_even_when_networking_is_off() {
+        let config = SandboxConfig {
+            allow_net: false,
+            https_interception: lsb_proxy::HttpsInterceptionConfig {
+                enabled: true,
+                request_headers: Vec::new(),
+            },
+            ..Default::default()
+        };
+        assert!(validate_sandbox_interception(&config).is_err());
+    }
 
     #[test]
     fn direct_smb_mount_without_allow_net_uses_mount_only_proxy() {

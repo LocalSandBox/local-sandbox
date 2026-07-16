@@ -54,9 +54,11 @@ pub(crate) fn prepare_vm(vm: &VmArgs, cfg: &LsbConfig, from: Option<&str>) -> Re
     let allow_net = vm.allow_net || cfg.allow_net.unwrap_or(false);
     let allow_host_writes = vm.allow_host_writes || cfg.allow_host_writes.unwrap_or(false);
     let verbose = vm.verbose;
+    // Validate stored interception rules even when networking is currently off.
+    let configured_proxy = cfg.to_proxy_config()?;
 
     let mut proxy_config = if allow_net {
-        let mut proxy = cfg.to_proxy_config()?;
+        let mut proxy = configured_proxy;
 
         // Merge --secret flags: NAME=VALUE@host1,host2
         for s in &vm.secret {
