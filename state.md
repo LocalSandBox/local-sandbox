@@ -7,19 +7,19 @@ Phases 0-3 shipping foundations are implemented; Phase 4 engine containment is u
 - Baseline branch: `feat/lsb-win-service`
 - Investigated commit: `c9e447cec349723f6e70ee3b78dd429af171e879`
 - LocalSandbox version: `0.4.6`
-- Last verified implementation commit: `eacc759` (`feat(service): add trusted engine containment foundation`)
+- Last verified implementation commit: `5359d31` (`feat(service): launch contained processes suspended`)
 - Phase 0 verification: schema test, Windows compile, isolated Clippy, and PowerShell parse pass
 - Phase 1 verification: release build passes; 10 protocol and 7 service tests pass; isolated Clippy passes
 - Phase 2 verification: release client/service build passes; 30 combined protocol/client/service tests pass; isolated Clippy passes
 - Phase 3 verification: 27 service tests pass and isolated warning-clean Clippy passes on Windows
-- Phase 4 foundation verification: 31 service tests pass and isolated warning-clean Clippy passes on Windows
+- Phase 4 foundation verification: 32 service tests pass and isolated warning-clean Clippy passes on Windows
 - Deferred verification: the current shell is not elevated and has no prepared runtime assets, so SCM LocalSystem/WHPX/SMB execution was not run; details are in `docs/windows-service-feasibility.md`
 - Phase 1 backlog: real SCM install/STOP/preshutdown timing and Event Log message compilation require an elevated machine with Windows SDK `mc.exe`/`rc.exe`; health pipe source and SDDL validation are complete
 - Phase 2 backlog: real two-user/two-logon SCM tests, Authenticode publisher enforcement, service-SID/config2 verification, active process-exit monitoring, handshake/rate limits wired into the accept loop, and queue/backpressure fault injection. The client verifies SCM PID/type/account/path before sending bytes, and the service derives/cross-checks OS token identity before Hello.
 - Phase 3 foundation: privileged mount roots are constructed only on a dedicated client-token filesystem thread; local fixed NTFS/ReFS, protected-root, reparse/EFS/cloud, hard-link, entry, and byte policy fails closed; RO and RW both select staged-sync; staging/export IO crosses the token boundary through held files; protected intent/commit records, exact staging identity cleanup, service ownership markers, and deterministic conflict detection are implemented.
 - Phase 3 backlog: wire the capability into `lsb-platform` SMB/VM lifecycle instead of its isolated legacy path API; add handle-relative traversal/`AccessCheck`, relocated ProfileList enumeration, active change monitoring and periodic propagation, caller-token RW writeback, handle-based DACL/post-share proof, exact external account/share/ACE reconciliation, and elevated adversarial fixtures. Pinned-ro remains disabled, so none of these gaps permit raw caller-tree sharing.
-- Phase 4 foundation: trusted engine paths are bundle-confined, sandbox lifecycle transitions cannot skip cleanup, Windows Jobs enforce kill-on-close/process/memory limits, outbound resolution rejects local/private rebinding, and host-port capability fails closed while WFP evidence is absent.
-- Phase 4 next: refactor the real SDK/VM engine behind the service configuration, launch QEMU suspended before Job assignment and resume, connect sandbox/process/watch resources to session quotas and cancellation, implement bounded stop ordering, and either prove/install logon-SID WFP filters or keep ports disabled. Immediate post-spawn Job assignment is not accepted as equivalent to suspended launch.
+- Phase 4 foundation: trusted engine paths are bundle-confined, sandbox lifecycle transitions cannot skip cleanup, Windows Jobs enforce kill-on-close/process/memory limits, and the service launcher uses explicit `CreateProcessW(CREATE_SUSPENDED)` -> Job assignment -> `ResumeThread` ordering with no PATH lookup or inherited environment. Outbound resolution rejects local/private rebinding, and host-port capability fails closed while WFP evidence is absent.
+- Phase 4 next: refactor the real SDK/VM engine behind the service configuration, connect sandbox/process/watch resources to session quotas and cancellation, journal process identity before launch, implement bounded stop ordering, and either prove/install logon-SID WFP filters or keep ports disabled.
 - Source of truth: `plan.md`; this file is the lightweight entry point and progress record
 
 ## Goal
