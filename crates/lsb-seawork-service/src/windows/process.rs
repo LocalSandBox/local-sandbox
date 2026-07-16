@@ -7,9 +7,9 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 use windows_sys::Win32::Foundation::{HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, GetExitCodeProcess, ResumeThread, TerminateProcess, WaitForSingleObject,
-    CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION,
-    STARTUPINFOW,
+    CreateProcessW, GetExitCodeProcess, GetProcessTimes, ResumeThread, TerminateProcess,
+    WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
+    PROCESS_INFORMATION, STARTUPINFOW,
 };
 
 use super::job::SandboxJob;
@@ -99,6 +99,22 @@ impl ContainedProcess {
             ),
             value => bail!("WaitForSingleObject returned unexpected status {value}"),
         }
+    }
+
+    pub fn creation_time(&self) -> Result<u64> {
+        let mut creation = unsafe { std::mem::zeroed() };
+        let mut exit = unsafe { std::mem::zeroed() };
+        let mut kernel = unsafe { std::mem::zeroed() };
+        let mut user = unsafe { std::mem::zeroed() };
+        if unsafe { GetProcessTimes(self.raw(), &mut creation, &mut exit, &mut kernel, &mut user) }
+            == 0
+        {
+            bail!(
+                "GetProcessTimes failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        Ok(((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64)
     }
 
     fn raw(&self) -> HANDLE {
