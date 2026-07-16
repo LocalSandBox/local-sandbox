@@ -20,9 +20,54 @@ pub struct ServiceEngineConfig {
     base_rootfs: PathBuf,
     resources_root: PathBuf,
     operation_timeout: Duration,
+    bundle_version: String,
 }
 
 impl ServiceEngineConfig {
+    pub fn discover(service_paths: &ServicePaths) -> Result<Self> {
+        let executable = std::env::current_exe().context("resolve service executable")?;
+        let bin = executable
+            .parent()
+            .context("service executable has no bin directory")?;
+        if bin.file_name().and_then(|name| name.to_str()) != Some("bin") {
+            bail!("service executable is not installed below the bundle bin directory");
+        }
+        let bundle_root = bin.parent().context("bundle bin directory has no parent")?;
+        let runtime = bundle_root.join("runtime");
+        let qemu_executable = bundle_root
+            .join("tools")
+            .join("qemu")
+            .join("qemu-system-x86_64.exe");
+        let kernel_image = runtime.join("Image");
+        let initrd_image = runtime.join("initramfs.cpio.gz");
+        let base_rootfs = runtime.join("rootfs.ext4");
+        for (label, path) in [
+            ("QEMU executable", &qemu_executable),
+            ("kernel image", &kernel_image),
+            ("initrd image", &initrd_image),
+            ("base rootfs", &base_rootfs),
+        ] {
+            if !path.is_file() {
+                bail!("installed {label} is missing");
+            }
+        }
+        let bundle_version = std::fs::read_to_string(runtime.join("VERSION"))
+            .context("read installed bundle VERSION")?;
+        let bundle_version = bundle_version.trim();
+        if bundle_version.is_empty() || bundle_version.len() > 128 {
+            bail!("installed bundle VERSION is invalid");
+        }
+        Self::from_bundle(
+            bundle_root.to_path_buf(),
+            qemu_executable,
+            kernel_image,
+            initrd_image,
+            base_rootfs,
+            service_paths,
+            bundle_version.to_string(),
+        )
+    }
+
     pub fn from_verified_bundle(
         bundle_root: PathBuf,
         qemu_executable: PathBuf,
@@ -30,6 +75,26 @@ impl ServiceEngineConfig {
         initrd_image: PathBuf,
         base_rootfs: PathBuf,
         service_paths: &ServicePaths,
+    ) -> Result<Self> {
+        Self::from_bundle(
+            bundle_root,
+            qemu_executable,
+            kernel_image,
+            initrd_image,
+            base_rootfs,
+            service_paths,
+            env!("CARGO_PKG_VERSION").to_string(),
+        )
+    }
+
+    fn from_bundle(
+        bundle_root: PathBuf,
+        qemu_executable: PathBuf,
+        kernel_image: PathBuf,
+        initrd_image: PathBuf,
+        base_rootfs: PathBuf,
+        service_paths: &ServicePaths,
+        bundle_version: String,
     ) -> Result<Self> {
         if !bundle_root.is_absolute()
             || !qemu_executable.is_absolute()
@@ -62,6 +127,7 @@ impl ServiceEngineConfig {
             base_rootfs,
             resources_root: service_paths.users.clone(),
             operation_timeout: Duration::from_secs(60),
+            bundle_version,
         })
     }
 
@@ -95,6 +161,10 @@ impl ServiceEngineConfig {
 
     pub fn operation_timeout(&self) -> Duration {
         self.operation_timeout
+    }
+
+    pub fn bundle_version(&self) -> &str {
+        &self.bundle_version
     }
 }
 

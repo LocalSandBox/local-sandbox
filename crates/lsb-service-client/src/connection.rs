@@ -190,7 +190,7 @@ impl ServiceClient {
             {
                 Err(ClientError::IncompatibleProtocol)
             }
-            Response::Err { error } => Err(ClientError::Protocol(error.message)),
+            Response::Err { error } => Err(ClientError::Service(error)),
         }
     }
 }
@@ -236,7 +236,7 @@ struct WireFrame {
 
 async fn read_frame(pipe: &mut NamedPipeClient) -> Result<WireFrame, ClientError> {
     let mut header = [0u8; HEADER_LEN];
-    tokio::time::timeout(Duration::from_secs(5), pipe.read_exact(&mut header))
+    tokio::time::timeout(Duration::from_secs(65), pipe.read_exact(&mut header))
         .await
         .map_err(|_| ClientError::Protocol("frame header timeout".to_string()))??;
     let header = FrameHeader::decode(header)?;

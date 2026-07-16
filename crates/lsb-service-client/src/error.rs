@@ -6,6 +6,7 @@ pub enum ClientError {
     ServiceUnavailable(String),
     ServerNotTrusted(String),
     IncompatibleProtocol,
+    Service(lsb_service_proto::ErrorEnvelope),
     Protocol(String),
     Io(std::io::Error),
 }
@@ -25,6 +26,7 @@ impl fmt::Display for ClientError {
             Self::IncompatibleProtocol => {
                 formatter.write_str("SeaWork and LocalSandbox protocol versions are incompatible")
             }
+            Self::Service(error) => formatter.write_str(&error.message),
             Self::Protocol(_) => formatter.write_str("LocalSandbox service protocol error"),
             Self::Io(error) => write!(formatter, "LocalSandbox service I/O error: {error}"),
         }

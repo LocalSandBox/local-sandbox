@@ -6,9 +6,9 @@ use anyhow::{bail, Context, Result};
 use lsb_service_proto::frame::HEADER_VERSION;
 use lsb_service_proto::limits::HEADER_LEN;
 use lsb_service_proto::{
-    negotiate, parse_control, CapabilityHealth, Correlation, FrameHeader, FrameKind, Health,
-    HealthState, Hello, HelloReply, HexU64, ProtocolRange, Request, RequestOp, Response,
-    ResponseValue, ServiceInfo, CURRENT, SUPPORTED,
+    negotiate, parse_control, CapabilityHealth, Correlation, ErrorCode, ErrorEnvelope, FrameHeader,
+    FrameKind, Health, HealthState, Hello, HelloReply, HexU64, ProtocolRange, Request, RequestOp,
+    Response, ResponseValue, ServiceInfo, CURRENT, SUPPORTED,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{NamedPipeServer, PipeMode, ServerOptions};
@@ -17,13 +17,15 @@ use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 
 use crate::security::descriptor::SecurityDescriptor;
 use crate::security::ClientIdentity;
-use crate::session::{QuotaLimits, SessionManager};
+use crate::session::{ClientIdentityKey, QuotaLimits, ResourceHandle, SessionManager};
+use crate::{engine::ServiceEngineConfig, rpc};
 use crate::{LEDGER_SCHEMA_VERSION, PIPE_NAME, PIPE_SDDL};
 
 #[derive(Clone)]
 pub struct HealthContext {
     pub admissions_open: bool,
     sessions: SessionManager,
+    engine: Option<ServiceEngineConfig>,
 }
 
 impl HealthContext {
@@ -31,14 +33,22 @@ impl HealthContext {
         Self {
             admissions_open,
             sessions: SessionManager::new(quota_limits),
+            engine: None,
         }
+    }
+
+    pub fn with_engine(mut self, engine: Option<ServiceEngineConfig>) -> Self {
+        self.engine = engine;
+        self
     }
 
     fn health(&self) -> Health {
         Health {
-            ready: true,
-            admissions_open: self.admissions_open,
-            stable_code: if self.admissions_open {
+            ready: self.admissions_open && self.engine.is_some(),
+            admissions_open: self.admissions_open && self.engine.is_some(),
+            stable_code: if self.engine.is_none() {
+                "BUNDLE_INVALID"
+            } else if self.admissions_open {
                 "READY"
             } else {
                 "HEALTH_ONLY_QUARANTINE"
@@ -47,7 +57,11 @@ impl HealthContext {
             whpx: HealthState::Unknown,
             smb: HealthState::Unknown,
             wfp: HealthState::Unavailable,
-            bundle: HealthState::Ready,
+            bundle: if self.engine.is_some() {
+                HealthState::Ready
+            } else {
+                HealthState::Unavailable
+            },
         }
     }
 
@@ -63,7 +77,11 @@ impl HealthContext {
     fn service_info(&self) -> ServiceInfo {
         ServiceInfo {
             service_version: env!("CARGO_PKG_VERSION").to_string(),
-            bundle_version: env!("CARGO_PKG_VERSION").to_string(),
+            bundle_version: self
+                .engine
+                .as_ref()
+                .map(|engine| engine.bundle_version().to_string())
+                .unwrap_or_else(|| "unavailable".to_string()),
             protocol: SUPPORTED,
             ledger_schema: ProtocolRange {
                 major: LEDGER_SCHEMA_VERSION as u16,
@@ -133,7 +151,7 @@ fn create_server(first: bool) -> Result<NamedPipeServer> {
 async fn handle_client(mut pipe: NamedPipeServer, context: HealthContext) -> Result<()> {
     let identity = ClientIdentity::from_named_pipe(pipe.as_raw_handle())?;
     let session_id = context.sessions.open(identity.key.clone())?;
-    let result = handle_authenticated_client(&mut pipe, &context).await;
+    let result = handle_authenticated_client(&mut pipe, &context, session_id, &identity.key).await;
     let _ = context.sessions.close(session_id, &identity.key);
     result
 }
@@ -141,6 +159,8 @@ async fn handle_client(mut pipe: NamedPipeServer, context: HealthContext) -> Res
 async fn handle_authenticated_client(
     pipe: &mut NamedPipeServer,
     context: &HealthContext,
+    session_id: ResourceHandle,
+    identity: &ClientIdentityKey,
 ) -> Result<()> {
     let hello_frame = read_frame(pipe).await?;
     if hello_frame.header.kind != FrameKind::Hello
@@ -191,6 +211,17 @@ async fn handle_authenticated_client(
             .checked_add(1)
             .context("health request sequence exhausted")?;
         let request: Request = parse_control(&frame.payload)?;
+        if request.validate().is_err() {
+            write_error(
+                pipe,
+                selected,
+                frame.header.correlation,
+                ErrorCode::InvalidRequest,
+            )
+            .await?;
+            continue;
+        }
+        let deadline_ms = request.deadline_ms;
         let result = match request.op {
             RequestOp::GetServiceInfo {} => ResponseValue::ServiceInfo {
                 info: context.service_info(),
@@ -198,6 +229,62 @@ async fn handle_authenticated_client(
             RequestOp::HealthCheck {} => ResponseValue::Health {
                 health: context.health(),
             },
+            RequestOp::StartSandbox {
+                cpus,
+                memory_mib,
+                disk_mib,
+                mounts,
+                ports,
+                network,
+            } => match rpc::sandbox::start(
+                context.admissions_open,
+                context.engine.clone(),
+                context.sessions.clone(),
+                session_id,
+                identity.clone(),
+                cpus,
+                memory_mib,
+                disk_mib,
+                mounts,
+                ports,
+                network,
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(code) => {
+                    write_error(pipe, selected, frame.header.correlation, code).await?;
+                    continue;
+                }
+            },
+            RequestOp::StopSandbox { sandbox_id } => match rpc::sandbox::stop(
+                context.sessions.clone(),
+                session_id,
+                identity.clone(),
+                sandbox_id,
+                deadline_ms,
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(code) => {
+                    write_error(pipe, selected, frame.header.correlation, code).await?;
+                    continue;
+                }
+            },
+            RequestOp::CloseSession {} => {
+                write_control(
+                    pipe,
+                    FrameKind::Response,
+                    selected,
+                    frame.header.correlation,
+                    &Response::Ok {
+                        result: ResponseValue::Empty {},
+                    },
+                )
+                .await?;
+                return Ok(());
+            }
         };
         write_control(
             pipe,
@@ -208,6 +295,27 @@ async fn handle_authenticated_client(
         )
         .await?;
     }
+}
+
+async fn write_error(
+    pipe: &mut NamedPipeServer,
+    protocol: lsb_service_proto::ProtocolVersion,
+    correlation: Correlation,
+    code: ErrorCode,
+) -> Result<()> {
+    write_control(
+        pipe,
+        FrameKind::Response,
+        protocol,
+        correlation,
+        &Response::Err {
+            error: ErrorEnvelope::safe(
+                code,
+                format!("{:016x}{:016x}", correlation.high, correlation.low),
+            ),
+        },
+    )
+    .await
 }
 
 struct WireFrame {
@@ -278,6 +386,8 @@ mod tests {
         assert!(!info.capabilities.ports);
         assert!(!info.capabilities.direct_mount);
         assert_eq!(context.health().wfp, HealthState::Unavailable);
+        assert_eq!(context.health().bundle, HealthState::Unavailable);
+        assert!(!context.health().ready);
     }
 
     #[test]

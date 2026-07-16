@@ -103,31 +103,45 @@ fn run(
 ) {
     let result = build_and_start(&engine, &spec);
     let Ok(sandbox) = result else {
+        let _ = cleanup_instance(&engine, &spec);
         let _ = ready.send(result.map(|_| ()));
         return;
     };
     if ready.send(Ok(())).is_err() {
         let _ = sandbox.stop();
+        let _ = cleanup_instance(&engine, &spec);
         return;
     }
     loop {
         if cancellation.is_cancelled() {
             let _ = sandbox.stop();
+            let _ = cleanup_instance(&engine, &spec);
             return;
         }
         match commands.recv_timeout(Duration::from_millis(100)) {
             Ok(Command::Stop(reply)) => {
-                let result = sandbox.stop();
+                let result = sandbox
+                    .stop()
+                    .and_then(|()| cleanup_instance(&engine, &spec));
                 let _ = reply.send(result);
                 return;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 let _ = sandbox.stop();
+                let _ = cleanup_instance(&engine, &spec);
                 return;
             }
         }
     }
+}
+
+fn cleanup_instance(engine: &ServiceEngineConfig, spec: &ManagedVmSpec) -> Result<()> {
+    engine.require_resource_path(&spec.instance_dir)?;
+    if spec.instance_dir.exists() {
+        std::fs::remove_dir_all(&spec.instance_dir).context("remove managed VM instance")?;
+    }
+    Ok(())
 }
 
 fn build_and_start(engine: &ServiceEngineConfig, spec: &ManagedVmSpec) -> Result<lsb_vm::Sandbox> {

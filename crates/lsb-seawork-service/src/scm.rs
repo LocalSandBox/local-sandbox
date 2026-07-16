@@ -9,6 +9,7 @@ use windows_service::service_control_handler::{self, ServiceControlHandlerResult
 use windows_service::service_dispatcher;
 
 use crate::config::ServiceConfig;
+use crate::engine::ServiceEngineConfig;
 use crate::ledger;
 use crate::logging::JsonLogger;
 use crate::paths::ServicePaths;
@@ -54,22 +55,32 @@ fn run() -> Result<()> {
     if !reconciliation.admissions_open {
         logger.write(3, "reconcile", "HEALTH_ONLY_QUARANTINE")?;
     }
+    let engine = match ServiceEngineConfig::discover(&paths) {
+        Ok(engine) => Some(engine),
+        Err(_) => {
+            logger.write(3, "bundle", "BUNDLE_INVALID")?;
+            None
+        }
+    };
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("create service async runtime")?;
     let pipe = runtime.block_on(async {
-        HealthPipe::bind(HealthContext::new(
-            reconciliation.admissions_open,
-            QuotaLimits {
-                connections_global: config.quotas.connections_global as usize,
-                connections_per_user: config.quotas.connections_per_user as usize,
-                sandboxes_global: config.quotas.sandboxes_global as usize,
-                sandboxes_per_user: config.quotas.sandboxes_per_user as usize,
-                sandboxes_per_connection: config.quotas.sandboxes_per_connection as usize,
-            },
-        ))
+        HealthPipe::bind(
+            HealthContext::new(
+                reconciliation.admissions_open,
+                QuotaLimits {
+                    connections_global: config.quotas.connections_global as usize,
+                    connections_per_user: config.quotas.connections_per_user as usize,
+                    sandboxes_global: config.quotas.sandboxes_global as usize,
+                    sandboxes_per_user: config.quotas.sandboxes_per_user as usize,
+                    sandboxes_per_connection: config.quotas.sandboxes_per_connection as usize,
+                },
+            )
+            .with_engine(engine),
+        )
     })?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let pipe_task = runtime.spawn(pipe.run(shutdown_rx));

@@ -50,6 +50,12 @@ pub struct Request {
 
 impl Request {
     pub fn validate(&self) -> Result<(), ProtocolError> {
+        if self
+            .deadline_ms
+            .is_some_and(|value| !(1..=60_000).contains(&value))
+        {
+            return Err(ProtocolError::InvalidJson);
+        }
         match &self.op {
             RequestOp::GetServiceInfo {}
             | RequestOp::HealthCheck {}
@@ -335,5 +341,10 @@ mod tests {
             },
         };
         assert_eq!(stop.validate(), Err(ProtocolError::InvalidJson));
+        let deadline = Request {
+            deadline_ms: Some(0),
+            op: RequestOp::HealthCheck {},
+        };
+        assert_eq!(deadline.validate(), Err(ProtocolError::InvalidJson));
     }
 }

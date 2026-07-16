@@ -10,6 +10,8 @@ mod pipe;
 #[cfg(windows)]
 pub mod resource;
 #[cfg(windows)]
+mod rpc;
+#[cfg(windows)]
 mod scm;
 #[cfg(windows)]
 pub mod security;

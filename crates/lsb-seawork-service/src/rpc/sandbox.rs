@@ -1,0 +1,173 @@
+use std::fs::OpenOptions;
+use std::path::Path;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use lsb_service_proto::{
+    ErrorCode, ResponseValue, ServiceMountSpec, ServiceNetworkSpec, ServicePortSpec,
+};
+
+use crate::engine::ServiceEngineConfig;
+use crate::resource::vm::ManagedVmSpec;
+use crate::session::{ClientIdentityKey, QuotaError, ResourceHandle, SessionManager};
+
+#[allow(clippy::too_many_arguments)]
+pub async fn start(
+    admissions_open: bool,
+    engine: Option<ServiceEngineConfig>,
+    sessions: SessionManager,
+    session_id: ResourceHandle,
+    identity: ClientIdentityKey,
+    cpus: u16,
+    memory_mib: u32,
+    disk_mib: u32,
+    mounts: Vec<ServiceMountSpec>,
+    ports: Vec<ServicePortSpec>,
+    network: Option<ServiceNetworkSpec>,
+) -> Result<ResponseValue, ErrorCode> {
+    if !admissions_open {
+        return Err(ErrorCode::ServiceUnavailable);
+    }
+    if !mounts.is_empty() {
+        return Err(ErrorCode::MountUnavailable);
+    }
+    if !ports.is_empty() {
+        return Err(ErrorCode::PortIsolationUnavailable);
+    }
+    if network.is_some_and(|policy| !policy.allowed_hosts.is_empty()) {
+        return Err(ErrorCode::NetworkPolicyDenied);
+    }
+    let engine = engine.ok_or(ErrorCode::BundleInvalid)?;
+    let requested_bytes = u64::from(disk_mib) * 1024 * 1024;
+    let base_bytes = std::fs::metadata(engine.base_rootfs())
+        .map_err(|_| ErrorCode::BundleInvalid)?
+        .len();
+    if requested_bytes < base_bytes {
+        return Err(ErrorCode::InvalidRequest);
+    }
+    tokio::task::spawn_blocking(move || {
+        let spec = prepare_instance(&engine, &identity, cpus, memory_mib, disk_mib)
+            .map_err(|_| ErrorCode::InternalError)?;
+        let instance_dir = spec.instance_dir.clone();
+        let started = sessions.start_managed_vm(session_id, &identity, &engine, spec);
+        match started {
+            Ok(handle) => Ok(ResponseValue::SandboxStarted {
+                sandbox_id: handle.to_string(),
+                mounts: Vec::new(),
+                host_ports: Vec::new(),
+            }),
+            Err(error) => {
+                let _ = remove_prepared_instance(&engine, &instance_dir);
+                if error.downcast_ref::<QuotaError>().is_some() {
+                    Err(ErrorCode::QuotaExceeded)
+                } else {
+                    Err(ErrorCode::ServiceUnavailable)
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|_| ErrorCode::InternalError)?
+}
+
+pub async fn stop(
+    sessions: SessionManager,
+    session_id: ResourceHandle,
+    identity: ClientIdentityKey,
+    sandbox_id: String,
+    deadline_ms: Option<u32>,
+) -> Result<ResponseValue, ErrorCode> {
+    let handle = ResourceHandle::parse(&sandbox_id).map_err(|_| ErrorCode::InvalidRequest)?;
+    let timeout =
+        Duration::from_millis(u64::from(deadline_ms.unwrap_or(30_000).clamp(100, 60_000)));
+    tokio::task::spawn_blocking(move || {
+        sessions
+            .stop_managed_vm(session_id, &identity, handle, timeout)
+            .map_err(|_| ErrorCode::ServiceUnavailable)
+            .and_then(|found| {
+                if found {
+                    Ok(ResponseValue::Empty {})
+                } else {
+                    Err(ErrorCode::ResourceNotFound)
+                }
+            })
+    })
+    .await
+    .map_err(|_| ErrorCode::InternalError)?
+}
+
+fn prepare_instance(
+    engine: &ServiceEngineConfig,
+    identity: &ClientIdentityKey,
+    cpus: u16,
+    memory_mib: u32,
+    disk_mib: u32,
+) -> Result<ManagedVmSpec> {
+    let identity_dir = engine.resources_root().join(identity_hash(identity));
+    let instances = identity_dir.join("instances");
+    engine.require_resource_path(&instances)?;
+    std::fs::create_dir_all(&instances).context("create protected identity instances root")?;
+    let instance_dir = instances.join(ResourceHandle::random()?.to_string());
+    engine.require_resource_path(&instance_dir)?;
+    std::fs::create_dir(&instance_dir).context("create protected VM instance")?;
+    let rootfs_image = instance_dir.join("rootfs.ext4");
+    let result = (|| {
+        std::fs::copy(engine.base_rootfs(), &rootfs_image).context("copy protected base rootfs")?;
+        let requested_bytes = u64::from(disk_mib) * 1024 * 1024;
+        let base_bytes = std::fs::metadata(&rootfs_image)?.len();
+        if requested_bytes < base_bytes {
+            anyhow::bail!("requested disk is smaller than the verified base rootfs");
+        }
+        OpenOptions::new()
+            .write(true)
+            .open(&rootfs_image)?
+            .set_len(requested_bytes)
+            .context("size managed rootfs")?;
+        Ok(ManagedVmSpec {
+            instance_dir: instance_dir.clone(),
+            rootfs_image,
+            cpus: usize::from(cpus),
+            memory_mib: u64::from(memory_mib),
+        })
+    })();
+    if result.is_err() {
+        let _ = remove_prepared_instance(engine, &instance_dir);
+    }
+    result
+}
+
+fn identity_hash(identity: &ClientIdentityKey) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for value in [
+        identity.user_sid.as_bytes(),
+        identity.logon_sid.as_bytes(),
+        &identity.authentication_luid.to_le_bytes(),
+        &identity.session_id.to_le_bytes(),
+    ] {
+        hasher.update(value);
+        hasher.update(&[0]);
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+fn remove_prepared_instance(engine: &ServiceEngineConfig, path: &Path) -> Result<()> {
+    engine.require_resource_path(path)?;
+    if path.exists() {
+        std::fs::remove_dir_all(path).context("remove prepared VM instance")?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_directory_is_stable_and_logon_bound() {
+        let first = ClientIdentityKey::for_test("S-1-5-21-1", "S-1-5-5-1-1", 1);
+        let second = ClientIdentityKey::for_test("S-1-5-21-1", "S-1-5-5-2-2", 2);
+        assert_eq!(identity_hash(&first), identity_hash(&first));
+        assert_ne!(identity_hash(&first), identity_hash(&second));
+        assert_eq!(identity_hash(&first).len(), 64);
+    }
+}
