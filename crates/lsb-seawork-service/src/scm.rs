@@ -13,6 +13,7 @@ use crate::ledger;
 use crate::logging::JsonLogger;
 use crate::paths::ServicePaths;
 use crate::pipe::{HealthContext, HealthPipe};
+use crate::session::QuotaLimits;
 use crate::status;
 use crate::SERVICE_NAME;
 
@@ -48,7 +49,7 @@ fn run() -> Result<()> {
     paths.prepare()?;
     let logger = JsonLogger::new(&paths.logs)?;
     logger.write(1, "startup", "START_PENDING")?;
-    let _config = ServiceConfig::load_or_default(&paths.config)?;
+    let config = ServiceConfig::load_or_default(&paths.config)?;
     let reconciliation = ledger::reconcile(&paths.ledger, &paths.quarantine)?;
     if !reconciliation.admissions_open {
         logger.write(3, "reconcile", "HEALTH_ONLY_QUARANTINE")?;
@@ -59,9 +60,16 @@ fn run() -> Result<()> {
         .build()
         .context("create service async runtime")?;
     let pipe = runtime.block_on(async {
-        HealthPipe::bind(HealthContext {
-            admissions_open: reconciliation.admissions_open,
-        })
+        HealthPipe::bind(HealthContext::new(
+            reconciliation.admissions_open,
+            QuotaLimits {
+                connections_global: config.quotas.connections_global as usize,
+                connections_per_user: config.quotas.connections_per_user as usize,
+                sandboxes_global: config.quotas.sandboxes_global as usize,
+                sandboxes_per_user: config.quotas.sandboxes_per_user as usize,
+                sandboxes_per_connection: config.quotas.sandboxes_per_connection as usize,
+            },
+        ))
     })?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let pipe_task = runtime.spawn(pipe.run(shutdown_rx));

@@ -1,6 +1,5 @@
 use std::ffi::c_void;
-use std::os::windows::ffi::OsStrExt;
-use std::ptr;
+use std::os::windows::io::AsRawHandle;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -14,20 +13,27 @@ use lsb_service_proto::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{NamedPipeServer, PipeMode, ServerOptions};
 use tokio::sync::oneshot;
-use windows_sys::Win32::Foundation::{LocalFree, HLOCAL};
-use windows_sys::Win32::Security::Authorization::{
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-};
-use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 
+use crate::security::descriptor::SecurityDescriptor;
+use crate::security::ClientIdentity;
+use crate::session::{QuotaLimits, SessionManager};
 use crate::{LEDGER_SCHEMA_VERSION, PIPE_NAME, PIPE_SDDL};
 
 #[derive(Clone)]
 pub struct HealthContext {
     pub admissions_open: bool,
+    sessions: SessionManager,
 }
 
 impl HealthContext {
+    pub fn new(admissions_open: bool, quota_limits: QuotaLimits) -> Self {
+        Self {
+            admissions_open,
+            sessions: SessionManager::new(quota_limits),
+        }
+    }
+
     fn health(&self) -> Health {
         Health {
             ready: true,
@@ -103,7 +109,7 @@ fn create_server(first: bool) -> Result<NamedPipeServer> {
     let descriptor = SecurityDescriptor::from_sddl(PIPE_SDDL)?;
     let mut attributes = SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: descriptor.raw,
+        lpSecurityDescriptor: descriptor.as_ptr(),
         bInheritHandle: 0,
     };
     let mut options = ServerOptions::new();
@@ -125,7 +131,18 @@ fn create_server(first: bool) -> Result<NamedPipeServer> {
 }
 
 async fn handle_client(mut pipe: NamedPipeServer, context: HealthContext) -> Result<()> {
-    let hello_frame = read_frame(&mut pipe).await?;
+    let identity = ClientIdentity::from_named_pipe(pipe.as_raw_handle())?;
+    let session_id = context.sessions.open(identity.key.clone())?;
+    let result = handle_authenticated_client(&mut pipe, &context).await;
+    let _ = context.sessions.close(session_id, &identity.key);
+    result
+}
+
+async fn handle_authenticated_client(
+    pipe: &mut NamedPipeServer,
+    context: &HealthContext,
+) -> Result<()> {
+    let hello_frame = read_frame(pipe).await?;
     if hello_frame.header.kind != FrameKind::Hello
         || hello_frame.header.correlation != Correlation::default()
         || hello_frame.header.protocol.major != CURRENT.major
@@ -146,7 +163,7 @@ async fn handle_client(mut pipe: NamedPipeServer, context: HealthContext) -> Res
         health: context.health(),
     };
     write_control(
-        &mut pipe,
+        pipe,
         FrameKind::Hello,
         selected,
         Correlation {
@@ -159,7 +176,7 @@ async fn handle_client(mut pipe: NamedPipeServer, context: HealthContext) -> Res
 
     let mut expected_sequence = 1u64;
     loop {
-        let frame = match read_frame(&mut pipe).await {
+        let frame = match read_frame(pipe).await {
             Ok(frame) => frame,
             Err(_) => return Ok(()),
         };
@@ -183,7 +200,7 @@ async fn handle_client(mut pipe: NamedPipeServer, context: HealthContext) -> Res
             },
         };
         write_control(
-            &mut pipe,
+            pipe,
             FrameKind::Response,
             selected,
             frame.header.correlation,
@@ -250,50 +267,13 @@ fn random_epoch() -> Result<u64> {
     Ok(epoch)
 }
 
-struct SecurityDescriptor {
-    raw: PSECURITY_DESCRIPTOR,
-}
-
-impl SecurityDescriptor {
-    fn from_sddl(sddl: &str) -> Result<Self> {
-        let wide = std::ffi::OsStr::new(sddl)
-            .encode_wide()
-            .chain(Some(0))
-            .collect::<Vec<_>>();
-        let mut raw = ptr::null_mut();
-        if unsafe {
-            ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                wide.as_ptr(),
-                SDDL_REVISION_1,
-                &mut raw,
-                ptr::null_mut(),
-            )
-        } == 0
-        {
-            bail!(
-                "convert pipe SDDL failed: {}",
-                std::io::Error::last_os_error()
-            );
-        }
-        Ok(Self { raw })
-    }
-}
-
-impl Drop for SecurityDescriptor {
-    fn drop(&mut self) {
-        unsafe { LocalFree(self.raw as HLOCAL) };
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn health_surface_is_fail_closed() {
-        let context = HealthContext {
-            admissions_open: true,
-        };
+        let context = HealthContext::new(true, QuotaLimits::default());
         let info = context.service_info();
         assert!(!info.capabilities.ports);
         assert!(!info.capabilities.direct_mount);

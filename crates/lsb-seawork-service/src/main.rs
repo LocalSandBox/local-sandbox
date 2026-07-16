@@ -6,6 +6,8 @@ mod paths;
 mod pipe;
 #[cfg(windows)]
 mod scm;
+#[cfg(windows)]
+pub mod security;
 pub mod session;
 #[cfg(windows)]
 mod status;
