@@ -15,6 +15,9 @@ use crate::windows::process::ContainedProcess;
 pub struct ServiceEngineConfig {
     bundle_root: PathBuf,
     qemu_executable: PathBuf,
+    kernel_image: PathBuf,
+    initrd_image: PathBuf,
+    base_rootfs: PathBuf,
     resources_root: PathBuf,
     operation_timeout: Duration,
 }
@@ -23,13 +26,28 @@ impl ServiceEngineConfig {
     pub fn from_verified_bundle(
         bundle_root: PathBuf,
         qemu_executable: PathBuf,
+        kernel_image: PathBuf,
+        initrd_image: PathBuf,
+        base_rootfs: PathBuf,
         service_paths: &ServicePaths,
     ) -> Result<Self> {
-        if !bundle_root.is_absolute() || !qemu_executable.is_absolute() {
+        if !bundle_root.is_absolute()
+            || !qemu_executable.is_absolute()
+            || !kernel_image.is_absolute()
+            || !initrd_image.is_absolute()
+            || !base_rootfs.is_absolute()
+        {
             bail!("trusted engine paths must be absolute");
         }
-        require_below(&qemu_executable, &bundle_root)
-            .context("QEMU executable escapes verified bundle")?;
+        for (label, path) in [
+            ("QEMU executable", &qemu_executable),
+            ("kernel image", &kernel_image),
+            ("initrd image", &initrd_image),
+            ("base rootfs", &base_rootfs),
+        ] {
+            require_below(path, &bundle_root)
+                .with_context(|| format!("{label} escapes verified bundle"))?;
+        }
         if qemu_executable.file_name().and_then(|name| name.to_str())
             != Some("qemu-system-x86_64.exe")
         {
@@ -39,6 +57,9 @@ impl ServiceEngineConfig {
         Ok(Self {
             bundle_root,
             qemu_executable,
+            kernel_image,
+            initrd_image,
+            base_rootfs,
             resources_root: service_paths.users.clone(),
             operation_timeout: Duration::from_secs(60),
         })
@@ -54,6 +75,22 @@ impl ServiceEngineConfig {
 
     pub fn resources_root(&self) -> &Path {
         &self.resources_root
+    }
+
+    pub fn kernel_image(&self) -> &Path {
+        &self.kernel_image
+    }
+
+    pub fn initrd_image(&self) -> &Path {
+        &self.initrd_image
+    }
+
+    pub fn base_rootfs(&self) -> &Path {
+        &self.base_rootfs
+    }
+
+    pub fn require_resource_path(&self, path: &Path) -> Result<()> {
+        require_below(path, &self.resources_root)
     }
 
     pub fn operation_timeout(&self) -> Duration {
@@ -181,8 +218,11 @@ mod tests {
         let paths = ServicePaths::for_test(program_data);
         let bundle = PathBuf::from(r"C:\Program Files\SeaWork\LocalSandbox\versions\1");
         assert!(ServiceEngineConfig::from_verified_bundle(
-            bundle,
+            bundle.clone(),
             PathBuf::from(r"C:\Users\caller\qemu-system-x86_64.exe"),
+            bundle.join("Image"),
+            bundle.join("initramfs.cpio.gz"),
+            bundle.join("rootfs.ext4"),
             &paths,
         )
         .is_err());
