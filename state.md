@@ -7,7 +7,7 @@ Phases 0-3 shipping foundations are implemented; Phase 4 engine containment is u
 - Baseline branch: `feat/lsb-win-service`
 - Investigated commit: `c9e447cec349723f6e70ee3b78dd429af171e879`
 - LocalSandbox version: `0.4.6`
-- Last verified implementation commit: `5359d31` (`feat(service): launch contained processes suspended`)
+- Last verified implementation commit: `7d20482` (`feat(service): journal contained QEMU launch`)
 - Phase 0 verification: schema test, Windows compile, isolated Clippy, and PowerShell parse pass
 - Phase 1 verification: release build passes; 10 protocol and 7 service tests pass; isolated Clippy passes
 - Phase 2 verification: release client/service build passes; 30 combined protocol/client/service tests pass; isolated Clippy passes
@@ -18,8 +18,8 @@ Phases 0-3 shipping foundations are implemented; Phase 4 engine containment is u
 - Phase 2 backlog: real two-user/two-logon SCM tests, Authenticode publisher enforcement, service-SID/config2 verification, active process-exit monitoring, handshake/rate limits wired into the accept loop, and queue/backpressure fault injection. The client verifies SCM PID/type/account/path before sending bytes, and the service derives/cross-checks OS token identity before Hello.
 - Phase 3 foundation: privileged mount roots are constructed only on a dedicated client-token filesystem thread; local fixed NTFS/ReFS, protected-root, reparse/EFS/cloud, hard-link, entry, and byte policy fails closed; RO and RW both select staged-sync; staging/export IO crosses the token boundary through held files; protected intent/commit records, exact staging identity cleanup, service ownership markers, and deterministic conflict detection are implemented.
 - Phase 3 backlog: wire the capability into `lsb-platform` SMB/VM lifecycle instead of its isolated legacy path API; add handle-relative traversal/`AccessCheck`, relocated ProfileList enumeration, active change monitoring and periodic propagation, caller-token RW writeback, handle-based DACL/post-share proof, exact external account/share/ACE reconciliation, and elevated adversarial fixtures. Pinned-ro remains disabled, so none of these gaps permit raw caller-tree sharing.
-- Phase 4 foundation: trusted engine paths are bundle-confined, sandbox lifecycle transitions cannot skip cleanup, Windows Jobs enforce kill-on-close/process/memory limits, and the service launcher uses explicit `CreateProcessW(CREATE_SUSPENDED)` -> Job assignment -> `ResumeThread` ordering with no PATH lookup or inherited environment. Outbound resolution rejects local/private rebinding, and host-port capability fails closed while WFP evidence is absent.
-- Phase 4 next: refactor the real SDK/VM engine behind the service configuration, connect sandbox/process/watch resources to session quotas and cancellation, journal process identity before launch, implement bounded stop ordering, and either prove/install logon-SID WFP filters or keep ports disabled.
+- Phase 4 foundation: trusted engine paths are bundle-confined, sandbox lifecycle transitions cannot skip cleanup, Windows Jobs enforce kill-on-close/process/memory limits, and the service launcher uses explicit `CreateProcessW(CREATE_SUSPENDED)` -> Job assignment -> `ResumeThread` ordering with no PATH lookup or inherited environment. Protected process intent is durable before launch and committed with PID/creation-time/Job identity afterward; failure drops the kill-on-close Job. Outbound resolution rejects local/private rebinding, and host-port capability fails closed while WFP evidence is absent.
+- Phase 4 next: refactor the real SDK/VM engine behind the service configuration, connect sandbox/process/watch resources to session quotas and cancellation, implement bounded stop ordering, and either prove/install logon-SID WFP filters or keep ports disabled.
 - Source of truth: `plan.md`; this file is the lightweight entry point and progress record
 
 ## Goal
