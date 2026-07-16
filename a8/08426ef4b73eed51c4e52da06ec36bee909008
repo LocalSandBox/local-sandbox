@@ -1,0 +1,25 @@
+crates/lsb-proxy/src/proxy.rs
+  s_1dffedf569865c::t_fae89dac508cc0 14,855,879,887,895-897,914
+  s_1dffedf569865c::t_2d21be0c3c5e9f 535,540,549,561,569,612,642
+crates/lsb-proxy/src/http1.rs
+  s_1dffedf569865c::t_fae89dac508cc0 788,835,956-1034
+  s_1dffedf569865c::t_2d21be0c3c5e9f 8,43,60-88,150,155-162,165,170,540-547,551,557-587
+  s_1dffedf569865c::t_0ed40241bb6711 588-589
+  s_1dffedf569865c::t_5f54ee07a1e64e 1035
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "a808426ef4b73eed51c4e52da06ec36bee909008",
+  "prompts": {},
+  "sessions": {
+    "s_1dffedf569865c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6960-fdf4-7a13-9422-901ab1094ac8",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
