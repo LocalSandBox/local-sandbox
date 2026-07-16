@@ -1,5 +1,6 @@
 # Build
 /target/
+/crates/lsb-service-spike/results/
 
 # macOS
 .DS_Store

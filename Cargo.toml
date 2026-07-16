@@ -6,6 +6,7 @@ members = [
     "crates/lsb-proto",
     "crates/lsb-proxy",
     "crates/lsb-sdk",
+    "crates/lsb-service-spike",
     "crates/lsb-vm",
     "crates/lsb-store",
     "crates/lsb-guest",

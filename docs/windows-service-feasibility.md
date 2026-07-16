@@ -1,0 +1,64 @@
+# Windows service feasibility evidence
+
+This document records the reproducible Phase 0 gate for the SeaWork Windows service. An ordinary elevated console run is not evidence: the harness must run through SCM as `LocalSystem` in Session 0.
+
+## Harness
+
+Prerequisites:
+
+- Disposable x86-64 Windows 11 machine with virtualization enabled and WHPX available.
+- Elevated PowerShell, Rust MSVC toolchain, LocalSandbox runtime assets, QEMU bundle, and running `BFE`/`LanmanServer` services.
+- At least 8 GiB free RAM and 20 GiB free disk.
+- For the full matrix, two standard users plus a second logon session of the owner, IPv4/IPv6 loopback, and a managed SeaWork machine with its normal proxy/VPN/EDR policy.
+
+Run the core Session 0 probe:
+
+```powershell
+.\scripts\windows-service-spike.ps1 `
+  -DataDir C:\path\to\prepared\localsandbox `
+  -TestMounts -TestWatches -TestNetwork
+```
+
+The script builds the ignored nonshipping service, registers `LocalSandboxSeaWorkSpike` as `LocalSystem`, waits for a typed JSON result under `%ProgramData%\LocalSandbox\SeaWorkSpike`, prints the checks, and deletes the SCM registration. Machine-specific configs, results, and binaries are not committed.
+
+Validate a retained result against the integration contract:
+
+```powershell
+$env:LSB_SESSION0_SPIKE_RESULT = 'C:\ProgramData\LocalSandbox\SeaWorkSpike\result-<run>.json'
+cargo test -p lsb-service-spike --features windows-session0-spike --test windows_session0 -- --ignored
+```
+
+## Result schema
+
+Schema version 1 records service/process identity, Session ID, token SID, explicit runtime path usage, SDK version, duration and status for each probe, plus the fail-closed host-port capability decision. Status is one of `passed`, `failed`, `blocked`, or `not_run`. Generate an example with:
+
+```powershell
+cargo run -p lsb-service-spike --features windows-session0-spike -- --schema
+```
+
+## Current evidence
+
+No real SCM run has been completed in this repository yet. The current Codex shell is a non-administrator Windows token, so it cannot register the service or create the disposable users required by the full matrix.
+
+The following decisions unblock implementation without claiming evidence that does not exist:
+
+- Host ports remain disabled for v1 because logon-SID WFP isolation is not implemented or proven.
+- The current QEMU Job is kill-on-close, but authoritative suspended-start/nested-Job evidence is deferred to Phase 4 because the SDK does not expose the process/job handles.
+- Managed proxy/VPN/Defender/EDR compatibility remains a downstream fleet validation item.
+- Direct RW in the spike exercises existing SMB behavior only. Production direct RW remains disallowed; Phase 3 must use staged-sync.
+
+## Sign-off matrix
+
+| Evidence | Status | Result/run | Owner notes |
+| --- | --- | --- | --- |
+| LocalSystem SID and Session 0 | Pending real-machine run | | |
+| WHPX/QEMU boot, exec, stop | Pending real-machine run | | |
+| Direct RO/RW SMB and watches | Pending real-machine run | | Spike-only existing behavior; production RW stays staged-sync |
+| Full user/share/right/ACE teardown | Pending real-machine inspection | | |
+| Crash/forced-stop/reboot cleanup | Pending Phase 3 ledger/reconciliation | | Existing caller-owned manifests are not production authority |
+| Nested kill-on-close QEMU Job | Deferred to Phase 4 | | Suspended spawn/assignment required |
+| IPv4/IPv6 WFP logon isolation | Disabled for v1 | | `PORT_ISOLATION_UNAVAILABLE` |
+| Proxy/VPN/certificate behavior | Pending managed-machine run | | |
+| Defender/EDR behavior | Pending managed-machine run | | |
+
+Phase 0 is not signed off until a Windows owner attaches a result and records the environment/build/policy identifiers above. Per the implementation guidelines, unavailable hardware/elevation checks are tracked here rather than preventing source progress.
