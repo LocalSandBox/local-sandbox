@@ -1,4 +1,5 @@
 mod config;
+pub mod ipc;
 pub mod ledger;
 mod logging;
 mod paths;

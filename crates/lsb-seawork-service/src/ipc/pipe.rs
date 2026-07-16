@@ -1,0 +1,8 @@
+pub const MAX_UNAUTHENTICATED_GLOBAL: usize = 8;
+pub const MAX_UNAUTHENTICATED_PER_PID: usize = 2;
+pub const MAX_DISPATCH_FRAMES: usize = 64;
+pub const MAX_REQUESTS_PER_CONNECTION: usize = 16;
+pub const MAX_REQUESTS_GLOBAL: usize = 64;
+pub const HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+pub const HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+pub const PAYLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
