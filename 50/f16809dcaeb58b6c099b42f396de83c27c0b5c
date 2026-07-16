@@ -1,0 +1,43 @@
+bindings/nodejs/README.md
+  s_1dffedf569865c::t_ce88be1c3ac03d 205-214,223-229
+  s_1dffedf569865c::t_dc5adabac2467f 230
+skills/lsb/references/config.md
+  s_1dffedf569865c::t_ce88be1c3ac03d 17,67-110
+  s_1dffedf569865c::t_e64c8f5e0d1384 111
+skills/lsb/references/networking.md
+  s_1dffedf569865c::t_ce88be1c3ac03d 11,62-68
+  s_1dffedf569865c::t_880fe87671ed11 69
+skills/lsb/SKILL.md
+  s_1dffedf569865c::t_ce88be1c3ac03d 180
+CHANGELOG.md
+  s_1dffedf569865c::t_ce88be1c3ac03d 7-16
+scripts/benchmark-windows-user-agent-injection.ps1
+  s_1dffedf569865c::t_0e801d8ebc968f 1-255,291-451
+  s_1dffedf569865c::t_69e23c64316eb1 256-290
+scripts/benchmark-macos-user-agent-injection.sh
+  s_1dffedf569865c::t_f266949538f2e6 1-24,27-29,34-36,40-54,58-145,147-170,172,182-204,213-270,275,277-295,299-344,353-360,362-390
+  s_1dffedf569865c::t_3bb75ad291f32b 25-26,271-274,276,361
+  s_1dffedf569865c::t_2a6e6002fc8c27 37-39,55-57,171,173-181,296-298,345-352
+  s_1dffedf569865c::t_0e801d8ebc968f 146
+  s_1dffedf569865c::t_dd26adc5adfe66 30-33,205-212
+README.md
+  s_1dffedf569865c::t_3bb75ad291f32b 407-408
+  s_1dffedf569865c::t_ce88be1c3ac03d 304-314,321-372,397-406,409-427
+  s_1dffedf569865c::t_9b5a142ce21dbc 428
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "50f16809dcaeb58b6c099b42f396de83c27c0b5c",
+  "prompts": {},
+  "sessions": {
+    "s_1dffedf569865c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6960-fdf4-7a13-9422-901ab1094ac8",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
