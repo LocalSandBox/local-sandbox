@@ -4,6 +4,16 @@
 
 ## Unreleased
 
+- Added opt-in HTTPS HTTP/1.1 request-header interception across `lsb.json`,
+  the Rust SDK, and the Node.js binding, including caller-supplied User-Agent
+  values and SNI-based allow/deny scopes. The feature remains off by default;
+  non-applicable destinations retain blind TLS tunnelling.
+- Replaced chunk-local secret substitution with a bounded framing-aware
+  HTTP/1.1 transformer. Split placeholders, keep-alive and pipelined requests,
+  fixed and chunked bodies, trailers, `100 Continue`, and accepted upgrades are
+  handled without stale request lengths or chunk sizes.
+- Added matched macOS and Windows User-Agent injection benchmark harnesses that
+  retain JSONL samples, per-run logs, and schema-compatible summary JSON.
 - Added optional per-invocation progress callbacks to the backward-compatible Node.js
   `initSandbox()` API, including initialization phases and throttled compressed-byte counters for
   runtime assets and Windows managed host tools.

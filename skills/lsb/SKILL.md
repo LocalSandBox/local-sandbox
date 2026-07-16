@@ -177,7 +177,7 @@ Place `lsb.json` in the project root to avoid repeating flags:
 }
 ```
 
-CLI flags override config values. When `secrets` are configured, the guest receives placeholder tokens and the proxy substitutes real values on HTTPS requests to allowed hosts. See [references/config.md](references/config.md) for all fields.
+CLI flags override config values. When `secrets` are configured, the guest receives placeholder tokens and the proxy substitutes real values on HTTPS requests to allowed hosts. `network.https_interception` can opt into HTTP/1.1 request-header injection, including a caller-supplied User-Agent, with SNI-based allow/deny scopes. See [references/config.md](references/config.md) for all fields and limitations.
 
 ## Important Constraints
 

@@ -14,7 +14,7 @@ Place `lsb.json` in the project root (or pass `--config <path>`). All fields are
 | `mounts` | string[] | [] | Directory mounts, `"HOST:GUEST"` format |
 | `command` | string[] | ["/bin/sh"] | Default command to run |
 | `secrets` | object | {} | Secrets to inject via proxy (see below) |
-| `network` | object | {} | Network access policy (see below) |
+| `network` | object | {} | Network access and HTTPS interception policy (see below) |
 
 ## Resolution Order
 
@@ -63,6 +63,51 @@ Restrict which domains the guest can reach:
 - Empty or absent `allow` list means all domains are allowed.
 - Supports wildcards: `*.example.com` matches `api.example.com` but not `example.com`.
 - DNS queries for blocked domains return REFUSED.
+
+## HTTPS Request Headers
+
+Set a caller-supplied `User-Agent` or another safe end-to-end header on
+interceptable HTTPS requests:
+
+```json
+{
+  "allow_net": true,
+  "network": {
+    "https_interception": {
+      "enabled": true,
+      "request_headers": [
+        {
+          "name": "User-Agent",
+          "value": "my-sandbox-agent/1.0",
+          "hosts": {
+            "allow": ["api.example.com", "*.internal.example.com"],
+            "deny": ["billing.internal.example.com"]
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+- `enabled` defaults to `false`; enabling it with no rules is invalid.
+- A rule without `hosts` is global. With `allow`, a match is required. With
+  `deny`, a match excludes the destination. Deny wins when both match.
+- Scopes use normalized TLS SNI, not the HTTP `Host` header. Exact and
+  `*.example.com` matches are case-insensitive and ignore a trailing dot.
+- Explicit empty allow or deny arrays are invalid.
+- Existing header instances are removed case-insensitively and one configured
+  value is inserted on every HTTP/1.1 request.
+- Values may be sensitive. Prefer allow lists instead of global credential
+  headers.
+- Routing/framing/hop-by-hop fields cannot be configured. Limits are 64 rules,
+  128 bytes per name, 8 KiB per value, and 64 KiB total.
+- The feature is limited to HTTP/1.1 over TCP port 443 with visible TLS SNI.
+  Pinned certificates, mutual TLS, private trust stores, HTTP/2, HTTP/3, and
+  QUIC are unsupported.
+- Secret replacement in a fixed-length body changes that request to chunked
+  HTTP/1.1 framing. Origins that reject chunked request bodies may be
+  incompatible with body substitution.
 
 ## Example
 

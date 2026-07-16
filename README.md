@@ -301,12 +301,74 @@ lsb loads `lsb.json` from the current directory (or `--config PATH`). All fields
     }
   },
   "network": {
-    "allow": ["api.openai.com", "registry.npmjs.org"]
+    "allow": ["api.openai.com", "registry.npmjs.org"],
+    "https_interception": {
+      "enabled": true,
+      "request_headers": [
+        {
+          "name": "User-Agent",
+          "value": "my-sandbox-agent/1.0",
+          "hosts": { "allow": ["api.openai.com"] }
+        }
+      ]
+    }
   }
 }
 ```
 
 The `network.allow` list restricts which hosts the guest can reach. Omit it to allow all hosts.
+
+### HTTPS request headers
+
+`network.https_interception` is an opt-in HTTP/1.1 interceptor for HTTPS on TCP
+port 443. It can set a caller-supplied `User-Agent` or other end-to-end request
+headers. Existing instances are removed case-insensitively and one configured
+value is inserted on every request, including keep-alive requests. Rules are
+global unless `hosts.allow` or `hosts.deny` is present; both exact names and
+`*.example.com` patterns are case-insensitive, trailing dots are ignored, and a
+deny match always wins.
+
+Global headers are sent to every intercepted destination and may disclose
+sensitive data. Use an allow list for credentials or other private values.
+Enabling interception installs an ephemeral proxy CA in the guest. It works
+only for TCP port 443 with visible TLS SNI and HTTP/1.1. HTTP/2, HTTP/3/QUIC,
+TLS without usable SNI, mutual TLS, pinned certificates, and private
+application trust stores are not supported. Connections with no applicable
+header or secret remain blind TLS tunnels.
+
+Header names and values are validated before boot. Routing, framing, proxy,
+and hop-by-hop fields such as `Host`, `Content-Length`, `Transfer-Encoding`,
+`Connection`, `Upgrade`, and `Expect` cannot be configured. The limits are 64
+rules, 128 bytes per name, 8 KiB per value, and 64 KiB across configured names
+and values. Interception is off by default, and enabling it without a rule is
+an error.
+
+Secret substitution now follows HTTP/1.1 framing. A fixed-length request body
+that must be scanned is streamed upstream with `Transfer-Encoding: chunked` so
+length-changing replacement stays valid; origins that reject chunked HTTP/1.1
+request bodies may therefore be incompatible with body-based substitution.
+
+The same model is available from the Rust SDK:
+
+```rust
+use lsb_sdk::{HostScope, HttpsInterceptionConfig, RequestHeaderRule, SandboxConfig};
+
+let config = SandboxConfig {
+    allow_net: true,
+    https_interception: HttpsInterceptionConfig {
+        enabled: true,
+        request_headers: vec![RequestHeaderRule {
+            name: "User-Agent".into(),
+            value: "my-sandbox-agent/1.0".into(),
+            hosts: HostScope {
+                allow: Some(vec!["api.example.com".into()]),
+                deny: None,
+            },
+        }],
+    },
+    ..Default::default()
+};
+```
 
 ## Node.js Binding
 
@@ -331,6 +393,38 @@ await sb.stop();
 ```
 
 See the [Node.js binding README](bindings/nodejs/README.md) for full API docs and runtime requirements.
+
+## User-Agent injection benchmarks
+
+Build the release CLI before benchmarking. Both harnesses generate matched
+disabled/enabled configurations, execute an explicitly HTTP/1.1 curl workload,
+alternate measured order, retain per-run logs, and emit `runs.jsonl` plus
+`summary.json` with schema version 1.
+
+```sh
+cargo build --release -p lsb-cli
+scripts/benchmark-macos-user-agent-injection.sh \
+  --kernel /path/to/Image --rootfs /path/to/rootfs.ext4 \
+  --initrd /path/to/initramfs.cpio.gz \
+  --warmup-iterations 1 --iterations 5 \
+  --results-root target/macos-user-agent-benchmark
+```
+
+```powershell
+.\scripts\benchmark-windows-user-agent-injection.ps1 `
+  -Binary .\target\release\lsb.exe `
+  -WarmupIterations 1 -Iterations 5 `
+  -ResultsRoot .\target\windows-user-agent-benchmark
+```
+
+Use `--url` / `-Url` and `--endpoint-kind` / `-EndpointKind` for a controlled
+endpoint when available. Compare enabled-minus-disabled deltas within each host
+before comparing platforms; virtualization backend, hardware, endpoint
+latency, Defender, and host load can dominate absolute values. The macOS
+harness reports private memory as `null` because RSS is the comparable
+available metric. Windows execution and result collection must be performed on
+a Windows 11 x64 host with WHPX/QEMU and initialized runtime assets; a macOS
+parser check does not constitute Windows benchmark execution.
 
 ## Agent Skill
 

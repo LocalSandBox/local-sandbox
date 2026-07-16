@@ -8,7 +8,7 @@ All guest network traffic goes through a userspace proxy on the host (no NAT, no
 
 - Resolves DNS on the host using the host system resolver and relays responses
 - Tunnels TCP connections (HTTP and HTTPS) to the real internet
-- Optionally performs MITM on HTTPS to inject secrets (only when `secrets` are configured)
+- Optionally performs MITM on applicable HTTPS connections to inject secrets or configured request headers
 - Enforces domain allowlists when `network.allow` is set
 
 ICMP (ping) is not supported — only TCP traffic is proxied.
@@ -58,6 +58,14 @@ DNS queries for blocked domains return REFUSED. Omit `network.allow` to allow al
 ## Secret Injection
 
 See [config.md](config.md#secrets) for details on injecting API keys via the proxy.
+
+## HTTPS Request Header Injection
+
+See [config.md](config.md#https-request-headers) for opt-in User-Agent and
+custom request-header configuration. HTTPS connections remain blind tunnels
+unless a secret or enabled header rule applies to their normalized TLS SNI.
+Interception is limited to HTTP/1.1 on TCP port 443 and requires the client to
+trust the ephemeral LocalSandbox proxy CA.
 
 ## Port Forwarding
 

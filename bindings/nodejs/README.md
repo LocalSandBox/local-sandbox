@@ -202,6 +202,16 @@ const sandbox = await Sandbox.start({
     secrets: {
       API_KEY: { value: 'sk-test', hosts: ['api.openai.com'] },
     },
+    httpsInterception: {
+      enabled: true,
+      requestHeaders: [
+        {
+          name: 'User-Agent',
+          value: 'my-sandbox-agent/1.0',
+          hosts: { allow: ['api.openai.com'], deny: ['private.api.openai.com'] },
+        },
+      ],
+    },
   },
 })
 
@@ -209,6 +219,14 @@ console.log(sandbox.instanceDir)
 
 await sandbox.stop()
 ```
+
+`httpsInterception` is off by default. Rules without `hosts` are global; an
+allow match is required when `allow` is present, and `deny` always wins. The
+scope follows TLS SNI rather than the HTTP `Host` header. Interception supports
+HTTP/1.1 over TCP port 443 with visible SNI and installs an ephemeral proxy CA
+in the guest. Certificate pinning, mutual TLS, private trust stores, HTTP/2,
+HTTP/3, QUIC, and TLS without usable SNI are unsupported. Connections without
+an applicable header or secret remain blind tunnels.
 
 ### Start options
 
