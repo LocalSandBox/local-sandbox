@@ -159,9 +159,29 @@ fn parse_request(block: &[u8]) -> io::Result<ParsedRequest> {
         .position(|bytes| bytes == b"\r\n")
         .ok_or_else(|| invalid_data("malformed HTTP request line"))?;
     let request_line = block[..first_end].to_vec();
+    let mut header_bytes = &block[first_end + 2..block.len() - 2];
     let mut headers = Vec::with_capacity(parsed.headers.len());
-    for header in parsed.headers.iter() {
-        headers.push((header.name.as_bytes().to_vec(), header.value.to_vec()));
+    while !header_bytes.is_empty() {
+        let line_end = header_bytes
+            .windows(2)
+            .position(|bytes| bytes == b"\r\n")
+            .ok_or_else(|| invalid_data("HTTP request headers require CRLF framing"))?;
+        let line = &header_bytes[..line_end];
+        header_bytes = &header_bytes[line_end + 2..];
+        if line
+            .first()
+            .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+        {
+            return Err(invalid_data("obsolete folded HTTP headers are rejected"));
+        }
+        let colon = line
+            .iter()
+            .position(|byte| *byte == b':')
+            .ok_or_else(|| invalid_data("malformed HTTP/1.1 request headers"))?;
+        headers.push((line[..colon].to_vec(), line[colon + 1..].to_vec()));
+    }
+    if headers.len() != parsed.headers.len() {
+        return Err(invalid_data("malformed HTTP/1.1 request headers"));
     }
 
     let content_lengths = header_values(&headers, b"content-length")
@@ -257,6 +277,15 @@ fn serialize_request(
         .ok_or_else(|| invalid_data("malformed HTTP request line"))?;
     let (target, count) = replace_complete(target, substitutions);
     replacements += count;
+    if target.is_empty()
+        || target
+            .iter()
+            .any(|byte| byte.is_ascii_control() || *byte == b' ')
+    {
+        return Err(invalid_data(
+            "secret substitution produced an invalid request target",
+        ));
+    }
 
     for rule in rules {
         request
@@ -281,6 +310,7 @@ fn serialize_request(
     for (name, value) in &request.headers {
         let (value, count) = replace_complete(value, substitutions);
         replacements += count;
+        validate_field_value(&value)?;
         output.extend_from_slice(name);
         output.extend_from_slice(b":");
         output.extend_from_slice(&value);
@@ -289,6 +319,7 @@ fn serialize_request(
     for rule in rules {
         let (value, count) = replace_complete(rule.value.as_bytes(), substitutions);
         replacements += count;
+        validate_field_value(&value)?;
         output.extend_from_slice(rule.name.as_bytes());
         output.extend_from_slice(b": ");
         output.extend_from_slice(&value);
@@ -460,6 +491,7 @@ where
         }
         let (value, count) = replace_complete(&content[colon + 1..], patterns);
         stats.replacements += count;
+        validate_field_value(&value)?;
         writer.write_all(name).await?;
         writer.write_all(b":").await?;
         writer.write_all(&value).await?;
@@ -628,6 +660,18 @@ fn is_token_byte(byte: u8) -> bool {
         )
 }
 
+fn validate_field_value(value: &[u8]) -> io::Result<()> {
+    if value
+        .iter()
+        .any(|byte| (*byte < 0x20 && *byte != b'\t') || *byte == 0x7f)
+    {
+        return Err(invalid_data(
+            "secret substitution produced an invalid HTTP field value",
+        ));
+    }
+    Ok(())
+}
+
 fn invalid_data(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -638,8 +682,13 @@ fn unexpected_eof(message: &str) -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
     use super::*;
     use crate::config::HostScope;
+    use tokio::io::ReadBuf;
 
     fn rule(name: &str, value: &str) -> RequestHeaderRule {
         RequestHeaderRule {
@@ -668,6 +717,52 @@ mod tests {
         Ok(output)
     }
 
+    struct FragmentedReader {
+        chunks: VecDeque<Vec<u8>>,
+    }
+
+    impl AsyncRead for FragmentedReader {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buffer: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            let Some(mut chunk) = self.chunks.pop_front() else {
+                return Poll::Ready(Ok(()));
+            };
+            let length = chunk.len().min(buffer.remaining());
+            buffer.put_slice(&chunk[..length]);
+            if length < chunk.len() {
+                chunk.drain(..length);
+                self.chunks.push_front(chunk);
+            }
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    async fn transform_fragmented(
+        chunks: Vec<Vec<u8>>,
+        rules: &[RequestHeaderRule],
+    ) -> io::Result<Vec<u8>> {
+        let mut reader = FragmentedReader {
+            chunks: chunks
+                .into_iter()
+                .filter(|chunk| !chunk.is_empty())
+                .collect(),
+        };
+        let mut output = Vec::new();
+        transform_requests(
+            &mut reader,
+            &mut output,
+            rules,
+            &[],
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await?;
+        Ok(output)
+    }
+
     #[tokio::test]
     async fn inserts_replaces_and_collapses_headers_on_every_request() {
         let input = b"GET /one HTTP/1.1\r\nHost: example.test\r\nuser-agent: old\r\nUser-Agent: duplicate\r\n\r\nGET /two HTTP/1.1\r\nHost: example.test\r\n\r\n";
@@ -683,6 +778,38 @@ mod tests {
         );
         assert!(!output.windows(3).any(|value| value == b"old"));
         assert!(!output.windows(9).any(|value| value == b"duplicate"));
+    }
+
+    #[tokio::test]
+    async fn transforms_headers_split_at_every_input_boundary() {
+        let input = b"GET /path HTTP/1.1\r\nHost: example.test\r\nUser-Agent: old\r\nX-Keep: exact bytes\r\n\r\n";
+        let rules = [rule("User-Agent", "new")];
+        let expected = transform_fragmented(vec![input.to_vec()], &rules)
+            .await
+            .unwrap();
+        for split in 0..=input.len() {
+            let actual = transform_fragmented(
+                vec![input[..split].to_vec(), input[split..].to_vec()],
+                &rules,
+            )
+            .await
+            .unwrap();
+            assert_eq!(actual, expected, "split {split}");
+        }
+    }
+
+    #[tokio::test]
+    async fn applies_multiple_rules_in_configuration_order() {
+        let input = b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n";
+        let output = transform(
+            input,
+            &[rule("X-First", "one"), rule("X-Second", "two")],
+            &[],
+        )
+        .await
+        .unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.find("X-First: one").unwrap() < text.find("X-Second: two").unwrap());
     }
 
     #[tokio::test]
@@ -720,6 +847,54 @@ mod tests {
             transform(both, &[], &[]).await.unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
+    }
+
+    #[tokio::test]
+    async fn rejects_malformed_and_oversized_headers() {
+        let malformed = b"GET / HTTP/1.1\r\nHost: example.test\r\nBroken\r\n\r\n";
+        assert_eq!(
+            transform(malformed, &[], &[]).await.unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+
+        let mut oversized = b"GET / HTTP/1.1\r\nHost: example.test\r\nX-Large: ".to_vec();
+        oversized.extend(vec![b'x'; MAX_HEADER_BYTES]);
+        oversized.extend_from_slice(b"\r\n\r\n");
+        assert_eq!(
+            transform(&oversized, &[], &[]).await.unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[tokio::test]
+    async fn substitutions_do_not_modify_method_version_or_header_names() {
+        let input = b"TOKEN /TOKEN HTTP/1.1\r\nTOKEN: TOKEN\r\nHost: example.test\r\n\r\n";
+        let output = transform(input, &[], &[("TOKEN".into(), "secret".into())])
+            .await
+            .unwrap();
+        assert_eq!(
+            output,
+            b"TOKEN /secret HTTP/1.1\r\nTOKEN: secret\r\nHost: example.test\r\n\r\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_secret_values_that_corrupt_http_syntax() {
+        let header = b"GET / HTTP/1.1\r\nHost: example.test\r\nX-Token: TOKEN\r\n\r\n";
+        let error = transform(
+            header,
+            &[],
+            &[("TOKEN".into(), "bad\r\nInjected: yes".into())],
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+
+        let target = b"GET /TOKEN HTTP/1.1\r\nHost: example.test\r\n\r\n";
+        let error = transform(target, &[], &[("TOKEN".into(), "bad target".into())])
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]

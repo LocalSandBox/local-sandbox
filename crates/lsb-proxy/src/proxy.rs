@@ -598,39 +598,6 @@ struct RelayStats {
     replacements: u64,
 }
 
-#[derive(Debug, Default)]
-struct HttpHeaderProgress {
-    buffer: Vec<u8>,
-    logged: bool,
-}
-
-impl HttpHeaderProgress {
-    fn observe_response(&mut self, domain: &str, data: &[u8], total_bytes: u64) {
-        self.observe(domain, data, total_bytes, "response");
-    }
-
-    fn observe(&mut self, domain: &str, data: &[u8], total_bytes: u64, kind: &str) {
-        if self.logged {
-            return;
-        }
-
-        const MAX_HEADER_SCAN_BYTES: usize = 64 * 1024;
-        let remaining = MAX_HEADER_SCAN_BYTES.saturating_sub(self.buffer.len());
-        self.buffer
-            .extend_from_slice(&data[..data.len().min(remaining)]);
-
-        if self.buffer.windows(4).any(|window| window == b"\r\n\r\n") {
-            debug!("MITM {domain}: HTTP {kind} headers observed after {total_bytes} byte(s)");
-            self.logged = true;
-            self.buffer.clear();
-        } else if self.buffer.len() >= MAX_HEADER_SCAN_BYTES {
-            trace!("MITM {domain}: HTTP {kind} headers not observed in first {MAX_HEADER_SCAN_BYTES} bytes");
-            self.logged = true;
-            self.buffer.clear();
-        }
-    }
-}
-
 async fn relay_upstream_response<R, W>(
     domain: &str,
     reader: &mut R,
@@ -643,7 +610,6 @@ where
     W: AsyncWrite + Unpin,
 {
     let mut stats = RelayStats::default();
-    let mut progress = HttpHeaderProgress::default();
     let mut upgrade_buffer = Vec::new();
     let mut buf = vec![0u8; 65536];
 
@@ -656,8 +622,6 @@ where
 
         stats.bytes += n as u64;
         stats.chunks += 1;
-        progress.observe_response(domain, &buf[..n], stats.bytes);
-
         if upgrade_pending.load(Ordering::Acquire) && !opaque_upgrade.load(Ordering::Acquire) {
             upgrade_buffer.extend_from_slice(&buf[..n]);
             while let Some(end) = upgrade_buffer
@@ -895,6 +859,52 @@ mod tests {
                 replacements: 0,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn response_relay_preserves_continue_and_accepts_upgrade() {
+        let response = b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\nopaque";
+        let mut reader = &response[..];
+        let mut writer = FlushCountingWriter::default();
+        let opaque = Arc::new(AtomicBool::new(false));
+        let pending = Arc::new(AtomicBool::new(true));
+
+        relay_upstream_response(
+            "api.example.test",
+            &mut reader,
+            &mut writer,
+            opaque.clone(),
+            pending.clone(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(writer.bytes, response);
+        assert!(opaque.load(Ordering::Acquire));
+        assert!(!pending.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn response_relay_resumes_http_after_rejected_upgrade() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK";
+        let mut reader = &response[..];
+        let mut writer = FlushCountingWriter::default();
+        let opaque = Arc::new(AtomicBool::new(false));
+        let pending = Arc::new(AtomicBool::new(true));
+
+        relay_upstream_response(
+            "api.example.test",
+            &mut reader,
+            &mut writer,
+            opaque.clone(),
+            pending.clone(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(writer.bytes, response);
+        assert!(!opaque.load(Ordering::Acquire));
+        assert!(!pending.load(Ordering::Acquire));
     }
 
     #[test]
