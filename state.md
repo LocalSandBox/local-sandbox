@@ -7,13 +7,13 @@ Phases 0-4 shipping foundations are implemented; the Phase 5 owner-bound sandbox
 - Baseline branch: `feat/lsb-win-service`
 - Investigated commit: `c9e447cec349723f6e70ee3b78dd429af171e879`
 - LocalSandbox version: `0.4.6`
-- Last verified implementation commit: `e7fb52b` (`feat(service): execute bounded guest commands`)
+- Last verified implementation commit: `9831671` (`feat(service): add unary guest file RPC`)
 - Phase 0 verification: schema test, Windows compile, isolated Clippy, and PowerShell parse pass
 - Phase 1 verification: release build passes; 10 protocol and 7 service tests pass; isolated Clippy passes
 - Phase 2 verification: release client/service build passes; 30 combined protocol/client/service tests pass; isolated Clippy passes
 - Phase 3 verification: 27 service tests pass and isolated warning-clean Clippy passes on Windows
 - Phase 4 verification: 171 platform tests, 36 VM tests, and 33 service tests pass on Windows; 13 hardware/elevation tests are ignored as documented; isolated service Clippy passes with `-D warnings`
-- Phase 5 RPC verification: 35 service, 2 Rust client, and 12 protocol tests pass; affected service/client/protocol Clippy passes with `--no-deps -D warnings`
+- Phase 5 RPC verification: 35 service, 2 Rust client, and 13 protocol tests pass; affected service/client/protocol Clippy passes with `--no-deps -D warnings`
 - Deferred verification: the current shell is not elevated and has no prepared runtime assets, so SCM LocalSystem/WHPX/SMB execution was not run; details are in `docs/windows-service-feasibility.md`
 - Phase 1 backlog: real SCM install/STOP/preshutdown timing and Event Log message compilation require an elevated machine with Windows SDK `mc.exe`/`rc.exe`; health pipe source and SDDL validation are complete
 - Phase 2 backlog: real two-user/two-logon SCM tests, Authenticode publisher enforcement, service-SID/config2 verification, active process-exit monitoring, handshake/rate limits wired into the accept loop, and queue/backpressure fault injection. The client verifies SCM PID/type/account/path before sending bytes, and the service derives/cross-checks OS token identity before Hello.
@@ -23,7 +23,8 @@ Phases 0-4 shipping foundations are implemented; the Phase 5 owner-bound sandbox
 - Phase 4 backlog: make the real platform QEMU supervisor consume the service-owned external Job so a VM-thread stop timeout can force-close it without detaching the thread; connect staged mounts after Phase 3 SMB capability wiring; exercise Session 0 boot/exec/stop and cancellation on prepared assets. Combined platform Clippy currently has existing unrelated warnings, so modified service code was verified with isolated `--no-deps -D warnings`.
 - Phase 5 lifecycle foundation: strict start/stop/close schemas exclude trusted runtime and identity fields; installed bundle discovery is fixed to the service-adjacent runtime/QEMU layout; missing assets degrade health and close admissions. Start prepares a bounded rootfs below a stable authenticated-identity hash, session ownership and quota are reserved before boot, unsupported mounts/ports/network policy fail closed, stop is owner-bound, disconnect cancels the VM, and exact instance cleanup runs after VM stop. The Rust client exposes typed lifecycle objects and preserves stable service error envelopes.
 - Phase 5 process foundation: owner-bound unary `Exec` accepts only bounded argv-or-shell commands, normalized guest cwd, and bounded environment data. It runs on the managed VM command thread with a bounded queue/deadline and a combined 8 MiB stdout/stderr ceiling; the Rust client returns a typed result. `Spawn`/kill remain disabled until process handles and credited output streams exist.
-- Phase 5 backlog: add owner-bound spawn/kill, guest file, watch, credited stream/event/cancel dispatch, admin update/uninstall RPCs, full bounded concurrent dispatcher/writer integration, and upstream Node binding/types. Unary guest file metadata/mutation operations can use the existing VM API next; `ReadFile`/`WriteFile` must use binary streams rather than base64 JSON. Real start/exec/stop remains unverified because this shell has no installed bundle assets or Session 0/WHPX fixture; no hardware-dependent test was forced.
+- Phase 5 file foundation: owner-bound `Mkdir`, `ReadDir`, `Stat`, `Remove`, `Rename`, `Copy`, `Chmod`, and `Exists` validate canonical guest-absolute paths and run through the bounded managed VM command queue. The Rust client exposes typed directory/stat results. File bytes are deliberately absent from JSON.
+- Phase 5 backlog: add owner-bound spawn/kill, binary `ReadFile`/`WriteFile`, watch, credited stream/event/cancel dispatch, admin update/uninstall RPCs, full bounded concurrent dispatcher/writer integration, and the existing upstream Node binding/types. `ReadFile`/`WriteFile` must use binary streams rather than base64 JSON. Real start/exec/file/stop remains unverified because this shell has no installed bundle assets or Session 0/WHPX fixture; no hardware-dependent test was forced.
 - Source of truth: `plan.md`; this file is the lightweight entry point and progress record
 
 ## Goal
