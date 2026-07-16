@@ -640,6 +640,16 @@ pub(crate) fn remove_proxy_ca(sandbox: &Sandbox) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn install_proxy_ca(sandbox: &Sandbox, ca_pem: &[u8]) -> Result<()> {
+    sandbox.write_file("/usr/local/share/ca-certificates/lsb-proxy.crt", ca_pem)?;
+    sandbox.exec(
+        &["update-ca-certificates", "--fresh"],
+        &mut std::io::sink(),
+        &mut std::io::sink(),
+    )?;
+    Ok(())
+}
+
 fn should_use_interactive_shell(stdin_is_terminal: bool) -> bool {
     cfg!(target_os = "macos") && stdin_is_terminal
 }

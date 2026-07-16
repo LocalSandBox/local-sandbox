@@ -17,6 +17,7 @@ const FORBIDDEN_REQUEST_HEADERS: &[&str] = &[
     "content-length",
     "transfer-encoding",
     "connection",
+    "keep-alive",
     "proxy-connection",
     "proxy-authorization",
     "te",
@@ -503,7 +504,14 @@ mod tests {
 
     #[test]
     fn validation_rejects_unsafe_or_ambiguous_header_rules() {
-        for name in ["", "Bad Header", "Host", "content-length", "Expect"] {
+        for name in [
+            "",
+            "Bad Header",
+            "Host",
+            "content-length",
+            "Expect",
+            "Keep-Alive",
+        ] {
             let config = ProxyConfig {
                 https_interception: HttpsInterceptionConfig {
                     enabled: true,

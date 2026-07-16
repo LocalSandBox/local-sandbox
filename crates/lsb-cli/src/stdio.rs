@@ -752,9 +752,11 @@ pub(crate) fn run_stdio(prepared: &PreparedVm) -> Result<i32> {
                     &sandbox,
                     prepared,
                     nbd_handle.as_ref(),
-                    proxy_handle
-                        .as_ref()
-                        .is_some_and(|handle| handle.requires_guest_ca),
+                    proxy_handle.as_ref().and_then(|handle| {
+                        handle
+                            .requires_guest_ca
+                            .then_some(handle.ca_cert_pem.as_slice())
+                    }),
                     req.id,
                     &params.name,
                     &out,
@@ -1020,64 +1022,67 @@ fn handle_checkpoint(
     sandbox: &Sandbox,
     prepared: &PreparedVm,
     nbd_handle: Option<&lsb_store::NbdHandle>,
-    remove_ephemeral_ca: bool,
+    proxy_ca_pem: Option<&[u8]>,
     id: serde_json::Value,
     name: &str,
     out: &SharedWriter,
 ) -> Result<()> {
-    if remove_ephemeral_ca {
-        if let Err(e) = vm::remove_proxy_ca(sandbox) {
-            return send_error_shared(
-                out,
-                id,
-                SERVER_ERROR,
-                format!("checkpoint proxy CA cleanup failed: {}", e),
-            );
+    let checkpoint_result = (|| -> Result<()> {
+        if proxy_ca_pem.is_some() {
+            vm::remove_proxy_ca(sandbox)
+                .map_err(|e| anyhow::anyhow!("checkpoint proxy CA cleanup failed: {e}"))?;
         }
-    }
-    let mut discard_out = Vec::new();
-    let mut discard_err = Vec::new();
-    if let Err(e) = sandbox.exec(&["sync"], &mut discard_out, &mut discard_err) {
-        return send_error_shared(
-            out,
-            id,
-            SERVER_ERROR,
-            format!("checkpoint sync failed: {}", e),
-        );
-    }
+        let mut discard_out = Vec::new();
+        let mut discard_err = Vec::new();
+        sandbox
+            .exec(&["sync"], &mut discard_out, &mut discard_err)
+            .map_err(|e| anyhow::anyhow!("checkpoint sync failed: {e}"))?;
 
-    if let Err(e) = std::fs::create_dir_all(&prepared.checkpoints_dir) {
-        return send_error_shared(
-            out,
-            id,
-            SERVER_ERROR,
-            format!("failed to create checkpoints dir: {}", e),
-        );
-    }
+        std::fs::create_dir_all(&prepared.checkpoints_dir)
+            .map_err(|e| anyhow::anyhow!("failed to create checkpoints dir: {e}"))?;
 
-    if let Some(handle) = nbd_handle {
-        let checkpoint_path = format!("{}/{}.idx", prepared.checkpoints_dir, name);
-        if let Err(e) = handle.save_checkpoint(&checkpoint_path) {
-            return send_error_shared(
-                out,
-                id,
-                SERVER_ERROR,
-                format!("checkpoint save failed: {}", e),
-            );
+        if let Some(handle) = nbd_handle {
+            let checkpoint_path = format!("{}/{}.idx", prepared.checkpoints_dir, name);
+            handle
+                .save_checkpoint(&checkpoint_path)
+                .map_err(|e| anyhow::anyhow!("checkpoint save failed: {e}"))?;
+        } else {
+            let checkpoint_path = format!("{}/{}.ext4", prepared.checkpoints_dir, name);
+            vm::clone_file(&prepared.work_rootfs, &checkpoint_path)
+                .map_err(|e| anyhow::anyhow!("checkpoint clone failed: {e}"))?;
         }
+
+        Ok(())
+    })();
+
+    let checkpoint_result = if let Some(ca_pem) = proxy_ca_pem {
+        restore_proxy_ca_after_checkpoint(checkpoint_result, || {
+            vm::install_proxy_ca(sandbox, ca_pem)
+        })
     } else {
-        let checkpoint_path = format!("{}/{}.ext4", prepared.checkpoints_dir, name);
-        if let Err(e) = vm::clone_file(&prepared.work_rootfs, &checkpoint_path) {
-            return send_error_shared(
-                out,
-                id,
-                SERVER_ERROR,
-                format!("checkpoint clone failed: {}", e),
-            );
-        }
-    }
+        checkpoint_result
+    };
 
-    send_result_shared(out, id, EmptyResult {})
+    match checkpoint_result {
+        Ok(()) => send_result_shared(out, id, EmptyResult {}),
+        Err(error) => send_error_shared(out, id, SERVER_ERROR, error.to_string()),
+    }
+}
+
+fn restore_proxy_ca_after_checkpoint<T>(
+    checkpoint_result: Result<T>,
+    restore: impl FnOnce() -> Result<()>,
+) -> Result<T> {
+    match (checkpoint_result, restore()) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(restore_error)) => Err(anyhow::anyhow!(
+            "failed to restore proxy CA after checkpoint: {restore_error}"
+        )),
+        (Err(checkpoint_error), Ok(())) => Err(checkpoint_error),
+        (Err(checkpoint_error), Err(restore_error)) => Err(anyhow::anyhow!(
+            "{checkpoint_error}; additionally failed to restore proxy CA after checkpoint: {restore_error}"
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -1106,5 +1111,44 @@ mod tests {
         assert!(writer.is_empty());
 
         drop(input_tx);
+    }
+
+    #[test]
+    fn proxy_ca_restoration_runs_after_checkpoint_success_and_failure() {
+        let success_restored = Arc::new(AtomicBool::new(false));
+        let success_marker = success_restored.clone();
+        let value = restore_proxy_ca_after_checkpoint(Ok(42), move || {
+            success_marker.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(value, 42);
+        assert!(success_restored.load(Ordering::SeqCst));
+
+        let failure_restored = Arc::new(AtomicBool::new(false));
+        let failure_marker = failure_restored.clone();
+        let error = restore_proxy_ca_after_checkpoint::<()>(
+            Err(anyhow::anyhow!("checkpoint failed")),
+            move || {
+                failure_marker.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "checkpoint failed");
+        assert!(failure_restored.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn checkpoint_error_remains_primary_when_proxy_ca_restoration_also_fails() {
+        let error = restore_proxy_ca_after_checkpoint::<()>(
+            Err(anyhow::anyhow!("checkpoint failed")),
+            || Err(anyhow::anyhow!("restore failed")),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "checkpoint failed; additionally failed to restore proxy CA after checkpoint: restore failed"
+        );
     }
 }
