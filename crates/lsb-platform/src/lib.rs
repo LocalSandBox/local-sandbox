@@ -291,6 +291,9 @@ impl PlatformNetworkAttachment {
 #[derive(Debug, Clone)]
 pub struct PlatformVmConfig {
     pub data_dir: Option<String>,
+    /// Verified service-owned QEMU executable. When set, Windows bypasses all
+    /// environment, managed-tool, and PATH discovery.
+    pub qemu_executable: Option<String>,
     pub kernel_path: String,
     pub rootfs_path: String,
     pub initrd_path: Option<String>,

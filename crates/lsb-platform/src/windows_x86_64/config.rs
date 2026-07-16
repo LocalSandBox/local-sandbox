@@ -3,6 +3,7 @@ use crate::{PlatformNetworkAttachment, PlatformVmConfig};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WindowsVmConfig {
     pub data_dir: Option<String>,
+    pub qemu_executable: Option<String>,
     pub kernel_path: String,
     pub rootfs_path: String,
     pub initrd_path: Option<String>,
@@ -20,6 +21,7 @@ impl WindowsVmConfig {
     pub(crate) fn from_platform_config(config: &PlatformVmConfig) -> Self {
         Self {
             data_dir: config.data_dir.clone(),
+            qemu_executable: config.qemu_executable.clone(),
             kernel_path: config.kernel_path.clone(),
             rootfs_path: config.rootfs_path.clone(),
             initrd_path: config.initrd_path.clone(),
@@ -48,6 +50,7 @@ mod tests {
     fn windows_config_records_requested_backend_options() {
         let config = PlatformVmConfig {
             data_dir: None,
+            qemu_executable: None,
             kernel_path: "Image".into(),
             rootfs_path: "rootfs.ext4".into(),
             initrd_path: None,

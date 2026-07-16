@@ -54,6 +54,7 @@ impl WindowsVm {
             self.config.cpus,
         );
         config.data_dir = self.config.data_dir.clone().map(PathBuf::from);
+        config.qemu_executable = self.config.qemu_executable.clone().map(PathBuf::from);
         config.root_disk_format = root_disk_format_for_path(&self.config.rootfs_path)?;
         config.data_disks = data_disks
             .iter()
@@ -326,6 +327,7 @@ mod tests {
     fn test_config() -> PlatformVmConfig {
         PlatformVmConfig {
             data_dir: None,
+            qemu_executable: None,
             kernel_path: "Image".into(),
             rootfs_path: "rootfs.ext4".into(),
             initrd_path: Some("initramfs.cpio.gz".into()),

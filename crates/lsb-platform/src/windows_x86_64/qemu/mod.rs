@@ -559,6 +559,25 @@ mod tests {
     }
 
     #[test]
+    fn trusted_service_qemu_bypasses_environment_and_path() {
+        let trusted_path = PathBuf::from("/trusted/qemu-system-x86_64.exe");
+        let hostile_env = PathBuf::from("/caller/qemu-system-x86_64.exe");
+        let host = FakeHost::windows()
+            .with_env(LSB_QEMU_ENV, hostile_env.as_os_str().to_owned())
+            .with_file(hostile_env)
+            .with_file(trusted_path.clone())
+            .with_path_entry("/untrusted/path");
+
+        let qemu = QemuDiscovery::new(&host)
+            .with_trusted_qemu(trusted_path.clone())
+            .discover()
+            .expect("trusted service path should bypass caller-controlled discovery");
+
+        assert_eq!(qemu.source, QemuPathSource::Config);
+        assert_eq!(qemu.path, trusted_path);
+    }
+
+    #[test]
     fn discovery_uses_config_before_path_when_env_absent() {
         let config_path = PathBuf::from("/config/qemu-system-x86_64.exe");
         let managed_path = PathBuf::from("/managed/qemu-system-x86_64.exe");

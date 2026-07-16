@@ -143,6 +143,7 @@ pub enum MountConfig {
 
 pub struct VmConfigBuilder {
     data_dir: Option<String>,
+    qemu_executable: Option<String>,
     kernel: Option<String>,
     rootfs: Option<String>,
     initrd: Option<String>,
@@ -160,6 +161,7 @@ impl VmConfigBuilder {
     pub(crate) fn new() -> Self {
         VmConfigBuilder {
             data_dir: None,
+            qemu_executable: None,
             kernel: None,
             rootfs: None,
             initrd: None,
@@ -196,6 +198,14 @@ impl VmConfigBuilder {
 
     pub fn data_dir(mut self, path: impl Into<String>) -> Self {
         self.data_dir = Some(path.into());
+        self
+    }
+
+    /// Select a previously verified service-owned QEMU executable. Direct SDK
+    /// callers should use normal managed discovery instead.
+    #[doc(hidden)]
+    pub fn service_qemu_executable(mut self, path: impl Into<String>) -> Self {
+        self.qemu_executable = Some(path.into());
         self
     }
 
@@ -305,6 +315,7 @@ impl VmConfigBuilder {
         mount_metrics.set_failure_context(FailedPhase::VmCreate, ErrorCategory::VmCreateFailed);
         let vm_result = lsb_platform::create_vm(PlatformVmConfig {
             data_dir: self.data_dir,
+            qemu_executable: self.qemu_executable,
             kernel_path,
             rootfs_path,
             initrd_path: self.initrd,

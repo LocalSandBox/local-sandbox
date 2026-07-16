@@ -44,6 +44,7 @@ const CONTROL_STATE_WAITING_FOR_READY: &str = "control_channel_open_waiting_for_
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WindowsQemuBootConfig {
     pub data_dir: Option<PathBuf>,
+    pub qemu_executable: Option<PathBuf>,
     pub kernel_image: PathBuf,
     pub initrd_image: PathBuf,
     pub rootfs_image: PathBuf,
@@ -70,6 +71,7 @@ impl WindowsQemuBootConfig {
     ) -> Self {
         Self {
             data_dir: None,
+            qemu_executable: None,
             kernel_image: kernel_image.into(),
             initrd_image: initrd_image.into(),
             rootfs_image: rootfs_image.into(),
@@ -634,7 +636,11 @@ pub(crate) fn launch_windows_qemu_boot(
         )
     })?;
 
-    let preflight = run_preflight(config.data_dir.as_deref()).map_err(|source| {
+    let preflight = run_preflight(
+        config.data_dir.as_deref(),
+        config.qemu_executable.as_deref(),
+    )
+    .map_err(|source| {
         let error = QemuBootError::Preflight {
             source,
             artifacts: artifacts.clone(),
@@ -900,13 +906,19 @@ pub(crate) fn launch_windows_qemu_boot(
     })
 }
 
-fn run_preflight(data_dir: Option<&Path>) -> Result<QemuPreflightReport, QemuPreflightError> {
+fn run_preflight(
+    data_dir: Option<&Path>,
+    qemu_executable: Option<&Path>,
+) -> Result<QemuPreflightReport, QemuPreflightError> {
     let host = StdQemuDiscoveryHost;
     let runner = StdQemuCommandRunner;
-    let discovery = match data_dir {
+    let mut discovery = match data_dir {
         Some(data_dir) => QemuDiscovery::new(&host).with_managed_data_dir(data_dir),
         None => QemuDiscovery::new(&host),
     };
+    if let Some(qemu_executable) = qemu_executable {
+        discovery = discovery.with_trusted_qemu(qemu_executable);
+    }
     QemuPreflight::new(discovery, &runner).run()
 }
 

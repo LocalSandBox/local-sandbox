@@ -84,6 +84,7 @@ where
     H: QemuDiscoveryHost,
 {
     host: &'host H,
+    trusted_qemu: Option<PathBuf>,
     configured_qemu: Option<PathBuf>,
     managed_data_dir: Option<PathBuf>,
 }
@@ -95,6 +96,7 @@ where
     pub(crate) fn new(host: &'host H) -> Self {
         Self {
             host,
+            trusted_qemu: None,
             configured_qemu: None,
             managed_data_dir: None,
         }
@@ -111,11 +113,19 @@ where
         self
     }
 
+    pub(crate) fn with_trusted_qemu(mut self, path: impl Into<PathBuf>) -> Self {
+        self.trusted_qemu = Some(path.into());
+        self
+    }
+
     pub(crate) fn host(&self) -> &'host H {
         self.host
     }
 
     pub(crate) fn discover(&self) -> Result<QemuPath, QemuPreflightError> {
+        if let Some(path) = &self.trusted_qemu {
+            return self.validate_config_path(path.clone());
+        }
         if let Some(path) = self.host.env_var(LSB_QEMU_ENV) {
             return self.validate_explicit_env_path(PathBuf::from(path));
         }
