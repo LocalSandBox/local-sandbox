@@ -1,0 +1,21 @@
+bindings/nodejs/README.md
+  s_8ef228c8c916a6::t_3f735fe6a29081 231-248,285-290
+CHANGELOG.md
+  s_8ef228c8c916a6::t_3f735fe6a29081 9-13,17-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "2c8dee3c48e4f0f5c303742714aeb5e2d465af76",
+  "prompts": {},
+  "sessions": {
+    "s_8ef228c8c916a6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f69e1-c030-7341-bdf7-3d014287db3a",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
