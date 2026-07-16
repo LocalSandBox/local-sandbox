@@ -1,0 +1,23 @@
+scripts/benchmark-macos-secret-substitution-vs-user-agent-injection.sh
+  s_3225d4ce5e76c8::t_45e089abf5d713 1-356,393-455,457-502,504-534
+  s_3225d4ce5e76c8::t_d237f80dcc0cd2 357-392,456,503
+scripts/benchmark-windows-secret-substitution-vs-user-agent-injection.ps1
+  s_3225d4ce5e76c8::t_f043b009467f1a 1-504,542-590,592-597
+  s_3225d4ce5e76c8::t_d237f80dcc0cd2 505-541,591
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "2ee6eb001737b5573083fedb941193c5977e2f24",
+  "prompts": {},
+  "sessions": {
+    "s_3225d4ce5e76c8": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6ad4-9cf7-7962-ade5-3f1ac0d2e7f3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}
