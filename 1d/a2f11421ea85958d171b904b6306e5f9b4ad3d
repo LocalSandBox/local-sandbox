@@ -1,0 +1,26 @@
+PLAN.md
+  s_ffe6eab0a05fd3::t_3bcbbb062b7132 453-455,473
+  s_ffe6eab0a05fd3::t_bfa230b3e480be 265-266,268-269,274-277,351,383-384,386-452,456-472,474-491,505,524-525
+  s_ffe6eab0a05fd3::t_54d2e1bfbbc11a 263,267,270-272
+  s_ffe6eab0a05fd3::t_e594ae0d4b5e98 352-382,385
+  s_ffe6eab0a05fd3::t_547f799b4a50d8 183,220
+  s_ffe6eab0a05fd3::t_2f19abe8ef559b 504,506,522-523,526
+  s_ffe6eab0a05fd3::t_675d4fff7e097f 273
+  s_ffe6eab0a05fd3::t_f6be3190440f4b 1-182,184-219,221-262,264,278-350,492-503,507-521
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "1da2f11421ea85958d171b904b6306e5f9b4ad3d",
+  "prompts": {},
+  "sessions": {
+    "s_ffe6eab0a05fd3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f693c-82d0-7261-b457-4342ab4e3b11",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
