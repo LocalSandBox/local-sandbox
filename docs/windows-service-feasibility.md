@@ -28,6 +28,12 @@ $env:LSB_SESSION0_SPIKE_RESULT = 'C:\ProgramData\LocalSandbox\SeaWorkSpike\resul
 cargo test -p lsb-service-spike --features windows-session0-spike --test windows_session0 -- --ignored
 ```
 
+The manual `Windows service self-hosted acceptance` workflow runs the same
+harness on an elevated disposable runner labeled `self-hosted`, `Windows`,
+`X64`, and `seawork-service`. Its required `data_dir` input must name prepared,
+protected runtime assets on that machine. The workflow uploads the typed result
+as evidence but does not convert a blocked managed-fleet check into a pass.
+
 ## Result schema
 
 Schema version 1 records service/process identity, Session ID, token SID, explicit runtime path usage, SDK version, duration and status for each probe, plus the fail-closed host-port capability decision. Status is one of `passed`, `failed`, `blocked`, or `not_run`. Generate an example with:

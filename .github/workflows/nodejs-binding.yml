@@ -13,6 +13,8 @@ on:
       - "crates/lsb-proxy/**"
       - "crates/lsb-platform/**"
       - "crates/lsb-store/**"
+      - "crates/lsb-service-client/**"
+      - "crates/lsb-service-proto/**"
   pull_request:
     paths:
       - ".github/workflows/nodejs-binding.yml"
@@ -24,6 +26,8 @@ on:
       - "crates/lsb-proxy/**"
       - "crates/lsb-platform/**"
       - "crates/lsb-store/**"
+      - "crates/lsb-service-client/**"
+      - "crates/lsb-service-proto/**"
 
 env:
   MACOSX_DEPLOYMENT_TARGET: "14.0"
@@ -78,6 +82,11 @@ jobs:
       - run: yarn install --immutable
       - run: yarn napi build --target ${{ matrix.target }} --platform --release --js index.js --dts index.d.ts
       - run: yarn patch-loader
+      - name: Validate Windows service API
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: |
+          yarn ava test/api-shape.spec.ts test/package-metadata.spec.ts test/startup.spec.ts
+          yarn tsc --noEmit --project test/tsconfig.json
       - uses: actions/upload-artifact@v6
         with:
           name: bindings-nodejs-${{ matrix.target }}

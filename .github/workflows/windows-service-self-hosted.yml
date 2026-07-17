@@ -1,0 +1,85 @@
+name: Windows service self-hosted acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      data_dir:
+        description: Absolute protected path containing prepared LocalSandbox runtime assets
+        required: true
+        type: string
+      test_mounts:
+        description: Exercise disposable direct SMB mounts
+        required: true
+        default: true
+        type: boolean
+      test_watches:
+        description: Exercise direct SMB watch propagation
+        required: true
+        default: true
+        type: boolean
+      test_network:
+        description: Exercise the managed-machine DNS/proxy/certificate probe
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  session0-spike:
+    name: Elevated LocalSystem Session 0 probe
+    runs-on: [self-hosted, Windows, X64, seawork-service]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      LSB_SPIKE_DATA_DIR: ${{ inputs.data_dir }}
+      LSB_SPIKE_OUTPUT: C:\ProgramData\LocalSandbox\SeaWorkSpike\actions-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Require elevated disposable runner
+        run: |
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+          if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'the self-hosted service runner must execute with an elevated administrator token'
+          }
+          if (-not [Environment]::Is64BitOperatingSystem) {
+            throw 'the self-hosted service runner must be x86-64 Windows'
+          }
+
+      - name: Run LocalSystem Session 0 harness
+        run: |
+          $parameters = @{
+            DataDir = $env:LSB_SPIKE_DATA_DIR
+            OutputDirectory = $env:LSB_SPIKE_OUTPUT
+          }
+          if ('${{ inputs.test_mounts }}' -eq 'true') { $parameters.TestMounts = $true }
+          if ('${{ inputs.test_watches }}' -eq 'true') { $parameters.TestWatches = $true }
+          if ('${{ inputs.test_network }}' -eq 'true') { $parameters.TestNetwork = $true }
+          .\scripts\windows-service-spike.ps1 @parameters
+          $result = Get-ChildItem -LiteralPath $env:LSB_SPIKE_OUTPUT -File -Filter 'result-*.json' |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+          if ($null -eq $result) { throw 'the Session 0 harness produced no result JSON' }
+          "LSB_SESSION0_SPIKE_RESULT=$($result.FullName)" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Validate result contract
+        run: cargo test -p lsb-service-spike --locked --features windows-session0-spike --test windows_session0 scm_local_system_result_satisfies_phase0_contract -- --ignored --exact
+
+      - name: Upload Session 0 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-service-session0-${{ github.run_id }}-${{ github.run_attempt }}
+          path: C:\ProgramData\LocalSandbox\SeaWorkSpike\actions-${{ github.run_id }}-${{ github.run_attempt }}\*.json
+          if-no-files-found: warn
+          retention-days: 30
