@@ -5,7 +5,7 @@ use lsb_service_proto::{ErrorCode, ResponseValue, ServiceCommand};
 
 use crate::resource::process::GuestProcessResource;
 use crate::resource::vm::ManagedExecSpec;
-use crate::session::{ClientIdentityKey, ResourceHandle, SessionManager};
+use crate::session::{CancellationToken, ClientIdentityKey, ResourceHandle, SessionManager};
 
 #[allow(clippy::too_many_arguments)]
 pub async fn exec(
@@ -17,13 +17,14 @@ pub async fn exec(
     cwd: Option<String>,
     env: std::collections::BTreeMap<String, String>,
     deadline_ms: Option<u32>,
+    cancellation: CancellationToken,
 ) -> Result<ResponseValue, ErrorCode> {
     let handle = ResourceHandle::parse(&sandbox_id).map_err(|_| ErrorCode::InvalidRequest)?;
     let spec = managed_spec(command, cwd, env);
     let timeout = Duration::from_millis(u64::from(deadline_ms.unwrap_or(30_000)));
     tokio::task::spawn_blocking(move || {
         sessions
-            .exec_managed_vm(session_id, &identity, handle, spec, timeout)
+            .exec_managed_vm(session_id, &identity, handle, spec, timeout, cancellation)
             .and_then(|result| result.ok_or_else(|| anyhow::anyhow!("resource not found")))
             .map(|result| ResponseValue::ExecCompleted {
                 stdout: String::from_utf8_lossy(&result.stdout).into_owned(),
@@ -31,7 +32,9 @@ pub async fn exec(
                 exit_code: result.exit_code,
             })
             .map_err(|error| {
-                if error.to_string().contains("output limit") {
+                if error.to_string().contains("cancelled") {
+                    ErrorCode::Cancelled
+                } else if error.to_string().contains("output limit") {
                     ErrorCode::OutputLimit
                 } else if error.to_string().contains("deadline") {
                     ErrorCode::DeadlineExceeded
@@ -56,13 +59,21 @@ pub async fn spawn(
     cwd: Option<String>,
     env: std::collections::BTreeMap<String, String>,
     deadline_ms: Option<u32>,
+    cancellation: CancellationToken,
 ) -> Result<GuestProcessResource, ErrorCode> {
     let sandbox_id = ResourceHandle::parse(&sandbox_id).map_err(|_| ErrorCode::InvalidRequest)?;
     let spec = managed_spec(command, cwd, env);
     let timeout = Duration::from_millis(u64::from(deadline_ms.unwrap_or(30_000)));
     tokio::task::spawn_blocking(move || {
         sessions
-            .spawn_managed_process(session_id, &identity, sandbox_id, spec, timeout)
+            .spawn_managed_process(
+                session_id,
+                &identity,
+                sandbox_id,
+                spec,
+                timeout,
+                cancellation,
+            )
             .and_then(|result| result.ok_or_else(|| anyhow::anyhow!("resource not found")))
             .map_err(map_process_error)
     })
@@ -112,7 +123,9 @@ fn managed_spec(
 
 fn map_process_error(error: anyhow::Error) -> ErrorCode {
     let message = error.to_string();
-    if message.contains("quota exceeded") {
+    if message.contains("cancelled") {
+        ErrorCode::Cancelled
+    } else if message.contains("quota exceeded") {
         ErrorCode::QuotaExceeded
     } else if message.contains("deadline") {
         ErrorCode::DeadlineExceeded

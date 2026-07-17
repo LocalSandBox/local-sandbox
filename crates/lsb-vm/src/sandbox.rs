@@ -2004,7 +2004,7 @@ impl Sandbox {
         #[cfg(target_os = "macos")]
         {
             let session = PlatformControlStream::from_tcp_stream(self.connect_vsock()?);
-            self.initialize_exec_session(session, argv, env, cwd)
+            self.initialize_exec_session(session, argv, env, cwd, None)
         }
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -2013,7 +2013,44 @@ impl Sandbox {
                 .vm
                 .open_control_session(PlatformControlSessionKind::Exec)
                 .context("opening Windows mux exec control session")?;
-            self.initialize_exec_session(session, argv, env, cwd)
+            self.initialize_exec_session(session, argv, env, cwd, None)
+        }
+    }
+
+    /// Internal unary exec entry point. The returned stream emits output and
+    /// exit frames, but the guest receives an already-closed stdin.
+    #[doc(hidden)]
+    pub fn open_exec_session_closed_stdin(
+        &self,
+        argv: &[impl AsRef<str>],
+        env: &HashMap<String, String>,
+        cwd: Option<&str>,
+    ) -> Result<PlatformControlStream> {
+        #[cfg(not(any(
+            target_os = "macos",
+            all(target_os = "windows", target_arch = "x86_64")
+        )))]
+        {
+            let _ = (argv, env, cwd);
+            return Err(unsupported_runtime(
+                "unary exec session",
+                "Unary exec sessions require a multiplexed guest control session.",
+            ));
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let session = PlatformControlStream::from_tcp_stream(self.connect_vsock()?);
+            self.initialize_exec_session(session, argv, env, cwd, Some(true))
+        }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            let session = self
+                .vm
+                .open_control_session(PlatformControlSessionKind::Exec)
+                .context("opening Windows mux unary exec control session")?;
+            self.initialize_exec_session(session, argv, env, cwd, Some(true))
         }
     }
 
@@ -2027,13 +2064,14 @@ impl Sandbox {
         argv: &[impl AsRef<str>],
         env: &HashMap<String, String>,
         cwd: Option<&str>,
+        stdin_closed: Option<bool>,
     ) -> Result<PlatformControlStream> {
         let mut writer = session.try_clone()?;
         let mut reader = session.try_clone()?;
 
         self.send_mount_requests(&mut writer, &mut reader)?;
 
-        let req = build_exec_request(argv, env, cwd, None, None);
+        let req = build_exec_request(argv, env, cwd, None, stdin_closed);
         send_exec_request(&mut writer, &req)?;
 
         Ok(session)

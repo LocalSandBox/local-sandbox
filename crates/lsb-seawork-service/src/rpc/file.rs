@@ -3,7 +3,7 @@ use std::time::Duration;
 use lsb_service_proto::{ErrorCode, ResponseValue, ServiceDirEntry, ServiceFileStat};
 
 use crate::resource::vm::{ManagedFileOp, ManagedFileResult};
-use crate::session::{ClientIdentityKey, ResourceHandle, SessionManager};
+use crate::session::{CancellationToken, ClientIdentityKey, ResourceHandle, SessionManager};
 
 pub async fn run(
     sessions: SessionManager,
@@ -12,13 +12,14 @@ pub async fn run(
     sandbox_id: String,
     op: ManagedFileOp,
     deadline_ms: Option<u32>,
+    cancellation: CancellationToken,
 ) -> Result<ResponseValue, ErrorCode> {
     let handle = ResourceHandle::parse(&sandbox_id).map_err(|_| ErrorCode::InvalidRequest)?;
     let timeout = Duration::from_millis(u64::from(deadline_ms.unwrap_or(30_000)));
     tokio::task::spawn_blocking(move || {
         sessions
-            .file_managed_vm(session_id, &identity, handle, op, timeout)
-            .map_err(|_| ErrorCode::InternalError)?
+            .file_managed_vm(session_id, &identity, handle, op, timeout, cancellation)
+            .map_err(map_file_error)?
             .ok_or(ErrorCode::ResourceNotFound)
             .map(to_response)
     })
@@ -33,6 +34,7 @@ pub async fn read(
     sandbox_id: String,
     path: String,
     deadline_ms: Option<u32>,
+    cancellation: CancellationToken,
 ) -> Result<Vec<u8>, ErrorCode> {
     let handle = ResourceHandle::parse(&sandbox_id).map_err(|_| ErrorCode::InvalidRequest)?;
     let timeout = Duration::from_millis(u64::from(deadline_ms.unwrap_or(30_000)));
@@ -44,9 +46,12 @@ pub async fn read(
                 handle,
                 ManagedFileOp::ReadFile { path },
                 timeout,
+                cancellation,
             )
             .map_err(|error| {
-                if error.to_string().contains("initial stream credit") {
+                if error.to_string().contains("cancelled") {
+                    ErrorCode::Cancelled
+                } else if error.to_string().contains("initial stream credit") {
                     ErrorCode::OutputLimit
                 } else {
                     ErrorCode::InternalError
@@ -60,6 +65,16 @@ pub async fn read(
     })
     .await
     .map_err(|_| ErrorCode::InternalError)?
+}
+
+fn map_file_error(error: anyhow::Error) -> ErrorCode {
+    if error.to_string().contains("cancelled") {
+        ErrorCode::Cancelled
+    } else if error.to_string().contains("deadline") {
+        ErrorCode::DeadlineExceeded
+    } else {
+        ErrorCode::InternalError
+    }
 }
 
 fn to_response(result: ManagedFileResult) -> ResponseValue {

@@ -3,7 +3,7 @@ use std::time::Duration;
 use lsb_service_proto::{ErrorCode, ResponseValue};
 
 use crate::resource::watch::WatchResource;
-use crate::session::{ClientIdentityKey, ResourceHandle, SessionManager};
+use crate::session::{CancellationToken, ClientIdentityKey, ResourceHandle, SessionManager};
 
 #[allow(clippy::too_many_arguments)]
 pub async fn start(
@@ -14,12 +14,21 @@ pub async fn start(
     path: String,
     recursive: bool,
     deadline_ms: Option<u32>,
+    cancellation: CancellationToken,
 ) -> Result<WatchResource, ErrorCode> {
     let sandbox_id = ResourceHandle::parse(&sandbox_id).map_err(|_| ErrorCode::InvalidRequest)?;
     let timeout = Duration::from_millis(u64::from(deadline_ms.unwrap_or(30_000)));
     tokio::task::spawn_blocking(move || {
         sessions
-            .start_managed_watch(session_id, &identity, sandbox_id, path, recursive, timeout)
+            .start_managed_watch(
+                session_id,
+                &identity,
+                sandbox_id,
+                path,
+                recursive,
+                timeout,
+                cancellation,
+            )
             .and_then(|result| result.ok_or_else(|| anyhow::anyhow!("resource not found")))
             .map_err(map_watch_error)
     })
@@ -51,7 +60,9 @@ pub async fn stop(
 
 fn map_watch_error(error: anyhow::Error) -> ErrorCode {
     let message = error.to_string();
-    if message.contains("quota exceeded") {
+    if message.contains("cancelled") {
+        ErrorCode::Cancelled
+    } else if message.contains("quota exceeded") {
         ErrorCode::QuotaExceeded
     } else if message.contains("deadline") {
         ErrorCode::DeadlineExceeded

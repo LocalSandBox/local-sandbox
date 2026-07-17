@@ -337,6 +337,7 @@ impl SessionManager {
         identity: &ClientIdentityKey,
         engine: &ServiceEngineConfig,
         spec: ManagedVmSpec,
+        startup_cancellation: CancellationToken,
     ) -> Result<ResourceHandle> {
         let (handle, cancellation) = {
             let mut state = self
@@ -361,7 +362,7 @@ impl SessionManager {
             (handle, cancellation)
         };
 
-        let started = ManagedVm::start(engine, spec, cancellation);
+        let started = ManagedVm::start(engine, spec, cancellation, startup_cancellation);
         let mut state = self
             .state
             .lock()
@@ -483,6 +484,7 @@ impl SessionManager {
         handle: ResourceHandle,
         spec: ManagedExecSpec,
         timeout: Duration,
+        cancellation: CancellationToken,
     ) -> Result<Option<ManagedExecResult>> {
         let controller = {
             let state = self
@@ -500,7 +502,7 @@ impl SessionManager {
                 _ => return Ok(None),
             }
         };
-        controller.exec(spec, timeout).map(Some)
+        controller.exec(spec, timeout, cancellation).map(Some)
     }
 
     #[cfg(windows)]
@@ -511,6 +513,7 @@ impl SessionManager {
         handle: ResourceHandle,
         op: ManagedFileOp,
         timeout: Duration,
+        cancellation: CancellationToken,
     ) -> Result<Option<ManagedFileResult>> {
         let controller = {
             let state = self
@@ -528,7 +531,7 @@ impl SessionManager {
                 _ => return Ok(None),
             }
         };
-        controller.file(op, timeout).map(Some)
+        controller.file(op, timeout, cancellation).map(Some)
     }
 
     #[cfg(windows)]
@@ -539,6 +542,7 @@ impl SessionManager {
         sandbox_id: ResourceHandle,
         spec: ManagedExecSpec,
         timeout: Duration,
+        cancellation: CancellationToken,
     ) -> Result<Option<GuestProcessResource>> {
         let (resource, controller) = {
             let mut state = self
@@ -569,7 +573,7 @@ impl SessionManager {
             (resource, controller)
         };
 
-        let started = controller.spawn(spec, timeout);
+        let started = controller.spawn(spec, timeout, cancellation);
         let mut state = self
             .state
             .lock()
@@ -761,6 +765,7 @@ impl SessionManager {
     }
 
     #[cfg(windows)]
+    #[allow(clippy::too_many_arguments)]
     pub fn start_managed_watch(
         &self,
         session_id: ResourceHandle,
@@ -769,6 +774,7 @@ impl SessionManager {
         path: String,
         recursive: bool,
         timeout: Duration,
+        cancellation: CancellationToken,
     ) -> Result<Option<WatchResource>> {
         let (resource, controller) = {
             let mut state = self
@@ -799,7 +805,7 @@ impl SessionManager {
             (resource, controller)
         };
 
-        let started = controller.watch(path, recursive, timeout);
+        let started = controller.watch(path, recursive, timeout, cancellation);
         let mut state = self
             .state
             .lock()

@@ -657,6 +657,7 @@ async fn run_request(
         session_id,
         identity,
         maintenance_authorized,
+        cancellation.clone(),
         events,
         streams,
     );
@@ -708,6 +709,7 @@ async fn dispatch_request(
     session_id: ResourceHandle,
     identity: ClientIdentityKey,
     maintenance_authorized: bool,
+    request_cancellation: CancellationToken,
     events: EventSequence,
     streams: StreamRegistry,
 ) -> Result<()> {
@@ -781,6 +783,7 @@ async fn dispatch_request(
             mounts,
             ports,
             network,
+            request_cancellation.clone(),
         )),
         RequestOp::StopSandbox { sandbox_id } => rpc_value!(rpc::sandbox::stop(
             context.sessions.clone(),
@@ -803,6 +806,7 @@ async fn dispatch_request(
             cwd,
             env,
             deadline_ms,
+            request_cancellation.clone(),
         )),
         RequestOp::Spawn {
             sandbox_id,
@@ -819,6 +823,7 @@ async fn dispatch_request(
                 cwd,
                 env,
                 deadline_ms,
+                request_cancellation.clone(),
             ));
             let stdout_credit = streams.register(process.stdout_stream.to_string())?;
             let stderr_credit = streams.register(process.stderr_stream.to_string())?;
@@ -869,6 +874,7 @@ async fn dispatch_request(
                 path,
                 recursive,
                 deadline_ms,
+                request_cancellation.clone(),
             ));
             write_control(
                 &writer,
@@ -910,6 +916,7 @@ async fn dispatch_request(
             sandbox_id,
             crate::resource::vm::ManagedFileOp::Mkdir { path, recursive },
             deadline_ms,
+            request_cancellation.clone(),
         )),
         RequestOp::ReadDir { sandbox_id, path } => rpc_value!(file_request(
             &context,
@@ -918,6 +925,7 @@ async fn dispatch_request(
             sandbox_id,
             crate::resource::vm::ManagedFileOp::ReadDir { path },
             deadline_ms,
+            request_cancellation.clone(),
         )),
         RequestOp::Stat { sandbox_id, path } => rpc_value!(file_request(
             &context,
@@ -926,6 +934,7 @@ async fn dispatch_request(
             sandbox_id,
             crate::resource::vm::ManagedFileOp::Stat { path },
             deadline_ms,
+            request_cancellation.clone(),
         )),
         RequestOp::Remove {
             sandbox_id,
@@ -938,6 +947,7 @@ async fn dispatch_request(
             sandbox_id,
             crate::resource::vm::ManagedFileOp::Remove { path, recursive },
             deadline_ms,
+            request_cancellation.clone(),
         )),
         RequestOp::Rename {
             sandbox_id,
@@ -950,6 +960,7 @@ async fn dispatch_request(
             sandbox_id,
             crate::resource::vm::ManagedFileOp::Rename { old_path, new_path },
             deadline_ms,
+            request_cancellation.clone(),
         )),
         RequestOp::Copy {
             sandbox_id,
@@ -967,6 +978,7 @@ async fn dispatch_request(
                 recursive,
             },
             deadline_ms,
+            request_cancellation.clone(),
         )),
         RequestOp::Chmod {
             sandbox_id,
@@ -979,6 +991,7 @@ async fn dispatch_request(
             sandbox_id,
             crate::resource::vm::ManagedFileOp::Chmod { path, mode },
             deadline_ms,
+            request_cancellation.clone(),
         )),
         RequestOp::Exists { sandbox_id, path } => rpc_value!(file_request(
             &context,
@@ -987,6 +1000,7 @@ async fn dispatch_request(
             sandbox_id,
             crate::resource::vm::ManagedFileOp::Exists { path },
             deadline_ms,
+            request_cancellation.clone(),
         )),
         RequestOp::ReadFile { sandbox_id, path } => {
             let bytes = rpc_value!(rpc::file::read(
@@ -996,6 +1010,7 @@ async fn dispatch_request(
                 sandbox_id,
                 path,
                 deadline_ms,
+                request_cancellation.clone(),
             ));
             let stream_id = ResourceHandle::random()?.to_string();
             write_control(
@@ -1026,6 +1041,7 @@ async fn dispatch_request(
                 bytes: write_bytes.context("WriteFile bytes were not collected")?,
             },
             deadline_ms,
+            request_cancellation.clone(),
         )),
         RequestOp::PrepareUpdate {
             target_bundle,
@@ -1349,6 +1365,7 @@ async fn file_request(
     sandbox_id: String,
     op: crate::resource::vm::ManagedFileOp,
     deadline_ms: Option<u32>,
+    cancellation: CancellationToken,
 ) -> std::result::Result<ResponseValue, ErrorCode> {
     rpc::file::run(
         context.sessions.clone(),
@@ -1357,6 +1374,7 @@ async fn file_request(
         sandbox_id,
         op,
         deadline_ms,
+        cancellation,
     )
     .await
 }

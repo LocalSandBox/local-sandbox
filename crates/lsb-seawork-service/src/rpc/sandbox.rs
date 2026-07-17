@@ -1,4 +1,5 @@
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::Path;
 use std::time::Duration;
 
@@ -9,7 +10,9 @@ use lsb_service_proto::{
 
 use crate::engine::ServiceEngineConfig;
 use crate::resource::vm::ManagedVmSpec;
-use crate::session::{ClientIdentityKey, QuotaError, ResourceHandle, SessionManager};
+use crate::session::{
+    CancellationToken, ClientIdentityKey, QuotaError, ResourceHandle, SessionManager,
+};
 
 #[allow(clippy::too_many_arguments)]
 pub async fn start(
@@ -24,6 +27,7 @@ pub async fn start(
     mounts: Vec<ServiceMountSpec>,
     ports: Vec<ServicePortSpec>,
     network: Option<ServiceNetworkSpec>,
+    cancellation: CancellationToken,
 ) -> Result<ResponseValue, ErrorCode> {
     if !admissions_open {
         return Err(ErrorCode::ServiceUnavailable);
@@ -46,10 +50,23 @@ pub async fn start(
         return Err(ErrorCode::InvalidRequest);
     }
     tokio::task::spawn_blocking(move || {
-        let spec = prepare_instance(&engine, &identity, cpus, memory_mib, disk_mib)
-            .map_err(|_| ErrorCode::InternalError)?;
+        let spec = prepare_instance(
+            &engine,
+            &identity,
+            cpus,
+            memory_mib,
+            disk_mib,
+            &cancellation,
+        )
+        .map_err(|error| {
+            if error.to_string().contains("cancelled") {
+                ErrorCode::Cancelled
+            } else {
+                ErrorCode::InternalError
+            }
+        })?;
         let instance_dir = spec.instance_dir.clone();
-        let started = sessions.start_managed_vm(session_id, &identity, &engine, spec);
+        let started = sessions.start_managed_vm(session_id, &identity, &engine, spec, cancellation);
         match started {
             Ok(handle) => Ok(ResponseValue::SandboxStarted {
                 sandbox_id: handle.to_string(),
@@ -102,7 +119,9 @@ fn prepare_instance(
     cpus: u16,
     memory_mib: u32,
     disk_mib: u32,
+    cancellation: &CancellationToken,
 ) -> Result<ManagedVmSpec> {
+    cancellation.check()?;
     let identity_dir = engine.resources_root().join(identity_hash(identity));
     let instances = identity_dir.join("instances");
     engine.require_resource_path(&instances)?;
@@ -112,7 +131,8 @@ fn prepare_instance(
     std::fs::create_dir(&instance_dir).context("create protected VM instance")?;
     let rootfs_image = instance_dir.join("rootfs.ext4");
     let result = (|| {
-        std::fs::copy(engine.base_rootfs(), &rootfs_image).context("copy protected base rootfs")?;
+        copy_with_cancellation(engine.base_rootfs(), &rootfs_image, cancellation)
+            .context("copy protected base rootfs")?;
         let requested_bytes = u64::from(disk_mib) * 1024 * 1024;
         let base_bytes = std::fs::metadata(&rootfs_image)?.len();
         if requested_bytes < base_bytes {
@@ -134,6 +154,25 @@ fn prepare_instance(
         let _ = remove_prepared_instance(engine, &instance_dir);
     }
     result
+}
+
+fn copy_with_cancellation(
+    source: &Path,
+    destination: &Path,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let mut source = File::open(source)?;
+    let mut destination = File::create(destination)?;
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        cancellation.check()?;
+        let read = source.read(&mut buffer)?;
+        if read == 0 {
+            destination.sync_all()?;
+            return Ok(());
+        }
+        destination.write_all(&buffer[..read])?;
+    }
 }
 
 fn identity_hash(identity: &ClientIdentityKey) -> String {
@@ -169,5 +208,20 @@ mod tests {
         assert_eq!(identity_hash(&first), identity_hash(&first));
         assert_ne!(identity_hash(&first), identity_hash(&second));
         assert_eq!(identity_hash(&first).len(), 64);
+    }
+
+    #[test]
+    fn cancelled_rootfs_copy_stops_before_committing_bytes() {
+        let root = std::env::temp_dir().join(format!("lsbsw-copy-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("source");
+        let destination = root.join("destination");
+        std::fs::write(&source, vec![1u8; 1024]).unwrap();
+        let cancellation = CancellationToken::default();
+        cancellation.cancel();
+        assert!(copy_with_cancellation(&source, &destination, &cancellation).is_err());
+        assert_eq!(std::fs::metadata(&destination).unwrap().len(), 0);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

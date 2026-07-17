@@ -1,13 +1,14 @@
 use std::collections::HashMap;
+#[cfg(test)]
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 
 use crate::engine::ServiceEngineConfig;
-use crate::resource::process::ManagedProcess;
+use crate::resource::process::{ManagedProcess, ManagedProcessOutput};
 use crate::resource::watch::ManagedWatch;
 use crate::session::CancellationToken;
 
@@ -21,14 +22,50 @@ pub struct ManagedVmSpec {
 
 enum Command {
     Stop(mpsc::SyncSender<Result<()>>),
-    Exec(ManagedExecSpec, mpsc::SyncSender<Result<ManagedExecResult>>),
-    Spawn(ManagedExecSpec, mpsc::SyncSender<Result<ManagedProcess>>),
+    Exec(
+        ManagedExecSpec,
+        OperationContext,
+        mpsc::SyncSender<Result<ManagedExecResult>>,
+    ),
+    Spawn(
+        ManagedExecSpec,
+        OperationContext,
+        mpsc::SyncSender<Result<ManagedProcess>>,
+    ),
     Watch {
         path: String,
         recursive: bool,
+        operation: OperationContext,
         reply: mpsc::SyncSender<Result<ManagedWatch>>,
     },
-    File(ManagedFileOp, mpsc::SyncSender<Result<ManagedFileResult>>),
+    File(
+        ManagedFileOp,
+        OperationContext,
+        mpsc::SyncSender<Result<ManagedFileResult>>,
+    ),
+}
+
+#[derive(Clone)]
+struct OperationContext {
+    cancellation: CancellationToken,
+    deadline: Instant,
+}
+
+impl OperationContext {
+    fn new(cancellation: CancellationToken, timeout: Duration) -> Self {
+        Self {
+            cancellation,
+            deadline: Instant::now() + timeout,
+        }
+    }
+
+    fn check(&self) -> Result<()> {
+        self.cancellation.check()?;
+        if Instant::now() >= self.deadline {
+            bail!("operation exceeded bounded deadline");
+        }
+        Ok(())
+    }
 }
 
 const MAX_EXEC_OUTPUT: usize = 8 * 1024 * 1024;
@@ -134,7 +171,8 @@ impl ManagedVm {
     pub fn start(
         engine: &ServiceEngineConfig,
         spec: ManagedVmSpec,
-        cancellation: CancellationToken,
+        session_cancellation: CancellationToken,
+        startup_cancellation: CancellationToken,
     ) -> Result<Self> {
         validate_spec(engine, &spec)?;
         let engine = engine.clone();
@@ -142,7 +180,16 @@ impl ManagedVm {
         let (ready, started) = mpsc::sync_channel(1);
         let thread = std::thread::Builder::new()
             .name("lsbsw-managed-vm".to_string())
-            .spawn(move || run(engine, spec, cancellation, receiver, ready))
+            .spawn(move || {
+                run(
+                    engine,
+                    spec,
+                    session_cancellation,
+                    startup_cancellation,
+                    receiver,
+                    ready,
+                )
+            })
             .context("spawn managed VM thread")?;
         match started
             .recv()
@@ -183,48 +230,84 @@ impl ManagedVm {
 }
 
 impl ManagedVmController {
-    pub fn exec(&self, spec: ManagedExecSpec, timeout: Duration) -> Result<ManagedExecResult> {
+    pub fn exec(
+        &self,
+        spec: ManagedExecSpec,
+        timeout: Duration,
+        cancellation: CancellationToken,
+    ) -> Result<ManagedExecResult> {
         let (reply, response) = mpsc::sync_channel(1);
+        let operation = OperationContext::new(cancellation, timeout);
         self.commands
-            .try_send(Command::Exec(spec, reply))
+            .try_send(Command::Exec(spec, operation.clone(), reply))
             .map_err(|_| anyhow::anyhow!("managed VM command queue is unavailable"))?;
-        response
-            .recv_timeout(timeout)
-            .map_err(|_| anyhow::anyhow!("managed VM exec exceeded bounded deadline"))?
+        wait_response(response, &operation, "exec")
     }
 
-    pub fn file(&self, op: ManagedFileOp, timeout: Duration) -> Result<ManagedFileResult> {
+    pub fn file(
+        &self,
+        op: ManagedFileOp,
+        timeout: Duration,
+        cancellation: CancellationToken,
+    ) -> Result<ManagedFileResult> {
         let (reply, response) = mpsc::sync_channel(1);
+        let operation = OperationContext::new(cancellation, timeout);
         self.commands
-            .try_send(Command::File(op, reply))
+            .try_send(Command::File(op, operation.clone(), reply))
             .map_err(|_| anyhow::anyhow!("managed VM command queue is unavailable"))?;
-        response
-            .recv_timeout(timeout)
-            .map_err(|_| anyhow::anyhow!("managed VM file operation exceeded bounded deadline"))?
+        wait_response(response, &operation, "file operation")
     }
 
-    pub fn spawn(&self, spec: ManagedExecSpec, timeout: Duration) -> Result<ManagedProcess> {
+    pub fn spawn(
+        &self,
+        spec: ManagedExecSpec,
+        timeout: Duration,
+        cancellation: CancellationToken,
+    ) -> Result<ManagedProcess> {
         let (reply, response) = mpsc::sync_channel(1);
+        let operation = OperationContext::new(cancellation, timeout);
         self.commands
-            .try_send(Command::Spawn(spec, reply))
+            .try_send(Command::Spawn(spec, operation.clone(), reply))
             .map_err(|_| anyhow::anyhow!("managed VM command queue is unavailable"))?;
-        response
-            .recv_timeout(timeout)
-            .map_err(|_| anyhow::anyhow!("managed VM spawn exceeded bounded deadline"))?
+        wait_response(response, &operation, "spawn")
     }
 
-    pub fn watch(&self, path: String, recursive: bool, timeout: Duration) -> Result<ManagedWatch> {
+    pub fn watch(
+        &self,
+        path: String,
+        recursive: bool,
+        timeout: Duration,
+        cancellation: CancellationToken,
+    ) -> Result<ManagedWatch> {
         let (reply, response) = mpsc::sync_channel(1);
+        let operation = OperationContext::new(cancellation, timeout);
         self.commands
             .try_send(Command::Watch {
                 path,
                 recursive,
+                operation: operation.clone(),
                 reply,
             })
             .map_err(|_| anyhow::anyhow!("managed VM command queue is unavailable"))?;
-        response
-            .recv_timeout(timeout)
-            .map_err(|_| anyhow::anyhow!("managed VM watch exceeded bounded deadline"))?
+        wait_response(response, &operation, "watch")
+    }
+}
+
+fn wait_response<T>(
+    response: mpsc::Receiver<Result<T>>,
+    operation: &OperationContext,
+    name: &str,
+) -> Result<T> {
+    loop {
+        operation.check()?;
+        let remaining = operation.deadline.saturating_duration_since(Instant::now());
+        match response.recv_timeout(remaining.min(Duration::from_millis(25))) {
+            Ok(result) => return result,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("managed VM {name} worker disconnected")
+            }
+        }
     }
 }
 
@@ -249,23 +332,35 @@ impl Drop for ManagedVm {
 fn run(
     engine: ServiceEngineConfig,
     spec: ManagedVmSpec,
-    cancellation: CancellationToken,
+    session_cancellation: CancellationToken,
+    startup_cancellation: CancellationToken,
     commands: mpsc::Receiver<Command>,
     ready: mpsc::SyncSender<Result<()>>,
 ) {
+    if session_cancellation.is_cancelled() || startup_cancellation.is_cancelled() {
+        let _ = cleanup_instance(&engine, &spec);
+        let _ = ready.send(Err(anyhow::anyhow!("operation cancelled")));
+        return;
+    }
     let result = build_and_start(&engine, &spec);
     let Ok(sandbox) = result else {
         let _ = cleanup_instance(&engine, &spec);
         let _ = ready.send(result.map(|_| ()));
         return;
     };
+    if session_cancellation.is_cancelled() || startup_cancellation.is_cancelled() {
+        let _ = sandbox.stop();
+        let _ = cleanup_instance(&engine, &spec);
+        let _ = ready.send(Err(anyhow::anyhow!("operation cancelled")));
+        return;
+    }
     if ready.send(Ok(())).is_err() {
         let _ = sandbox.stop();
         let _ = cleanup_instance(&engine, &spec);
         return;
     }
     loop {
-        if cancellation.is_cancelled() {
+        if session_cancellation.is_cancelled() {
             let _ = sandbox.stop();
             let _ = cleanup_instance(&engine, &spec);
             return;
@@ -278,21 +373,51 @@ fn run(
                 let _ = reply.send(result);
                 return;
             }
-            Ok(Command::Exec(spec, reply)) => {
-                let _ = reply.send(exec(&sandbox, spec));
+            Ok(Command::Exec(spec, operation, reply)) => {
+                let result = operation
+                    .check()
+                    .and_then(|()| exec(&sandbox, spec, &operation));
+                let _ = reply.send(result);
             }
-            Ok(Command::Spawn(spec, reply)) => {
-                let _ = reply.send(spawn(&sandbox, spec));
+            Ok(Command::Spawn(spec, operation, reply)) => {
+                let result = operation
+                    .check()
+                    .and_then(|()| spawn(&sandbox, spec))
+                    .and_then(|process| {
+                        if let Err(error) = operation.check() {
+                            let _ = process.controller().kill();
+                            Err(error)
+                        } else {
+                            Ok(process)
+                        }
+                    });
+                let _ = reply.send(result);
             }
             Ok(Command::Watch {
                 path,
                 recursive,
+                operation,
                 reply,
             }) => {
-                let _ = reply.send(watch(&sandbox, path, recursive));
+                let result = operation
+                    .check()
+                    .and_then(|()| watch(&sandbox, path, recursive))
+                    .and_then(|watch| {
+                        if let Err(error) = operation.check() {
+                            watch.controller().stop();
+                            Err(error)
+                        } else {
+                            Ok(watch)
+                        }
+                    });
+                let _ = reply.send(result);
             }
-            Ok(Command::File(op, reply)) => {
-                let _ = reply.send(file_op(&sandbox, op));
+            Ok(Command::File(op, operation, reply)) => {
+                let result = operation
+                    .check()
+                    .and_then(|()| file_op(&sandbox, op, &operation))
+                    .and_then(|result| operation.check().map(|()| result));
+                let _ = reply.send(result);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -305,7 +430,19 @@ fn run(
 }
 
 fn spawn(sandbox: &lsb_vm::Sandbox, spec: ManagedExecSpec) -> Result<ManagedProcess> {
-    let writer = sandbox.open_exec_session(&spec.argv, &spec.env, spec.cwd.as_deref())?;
+    start_process(sandbox, spec, false)
+}
+
+fn start_process(
+    sandbox: &lsb_vm::Sandbox,
+    spec: ManagedExecSpec,
+    stdin_closed: bool,
+) -> Result<ManagedProcess> {
+    let writer = if stdin_closed {
+        sandbox.open_exec_session_closed_stdin(&spec.argv, &spec.env, spec.cwd.as_deref())?
+    } else {
+        sandbox.open_exec_session(&spec.argv, &spec.env, spec.cwd.as_deref())?
+    };
     let reader = writer.try_clone()?;
     ManagedProcess::start(reader, writer)
 }
@@ -320,7 +457,11 @@ fn watch(sandbox: &lsb_vm::Sandbox, path: String, recursive: bool) -> Result<Man
     })
 }
 
-fn file_op(sandbox: &lsb_vm::Sandbox, op: ManagedFileOp) -> Result<ManagedFileResult> {
+fn file_op(
+    sandbox: &lsb_vm::Sandbox,
+    op: ManagedFileOp,
+    operation: &OperationContext,
+) -> Result<ManagedFileResult> {
     match op {
         ManagedFileOp::Mkdir { path, recursive } => {
             sandbox.mkdir(&path, recursive)?;
@@ -388,6 +529,10 @@ fn file_op(sandbox: &lsb_vm::Sandbox, op: ManagedFileOp) -> Result<ManagedFileRe
         ManagedFileOp::WriteFile { path, bytes } => {
             let temporary = temporary_guest_path(&path)?;
             sandbox.write_file(&temporary, &bytes)?;
+            if let Err(error) = operation.check() {
+                let _ = sandbox.remove(&temporary, false);
+                return Err(error);
+            }
             if let Err(error) = sandbox.rename(&temporary, &path) {
                 let _ = sandbox.remove(&temporary, false);
                 return Err(error);
@@ -414,28 +559,33 @@ fn temporary_guest_path(path: &str) -> Result<String> {
     Ok(temporary)
 }
 
-fn exec(sandbox: &lsb_vm::Sandbox, spec: ManagedExecSpec) -> Result<ManagedExecResult> {
-    let capture = Arc::new(Mutex::new(ExecCapture::default()));
-    let mut stdout = CaptureWriter::new(capture.clone(), false);
-    let mut stderr = CaptureWriter::new(capture.clone(), true);
-    let exit_code = sandbox.exec_with_env_and_cwd(
-        &spec.argv,
-        &spec.env,
-        spec.cwd.as_deref(),
-        &mut stdout,
-        &mut stderr,
-    )?;
-    drop(stdout);
-    drop(stderr);
-    let capture = Arc::try_unwrap(capture)
-        .map_err(|_| anyhow::anyhow!("exec output capture remained shared"))?
-        .into_inner()
-        .map_err(|_| anyhow::anyhow!("exec output capture was poisoned"))?;
-    Ok(ManagedExecResult {
-        stdout: capture.stdout,
-        stderr: capture.stderr,
-        exit_code,
-    })
+fn exec(
+    sandbox: &lsb_vm::Sandbox,
+    spec: ManagedExecSpec,
+    operation: &OperationContext,
+) -> Result<ManagedExecResult> {
+    let process = start_process(sandbox, spec, true)?;
+    let controller = process.controller();
+    let mut capture = ExecCapture::default();
+    loop {
+        if let Err(error) = operation.check() {
+            let _ = controller.kill();
+            return Err(error);
+        }
+        match controller.output(Duration::from_millis(25))? {
+            Some(ManagedProcessOutput::Stdout(bytes)) => capture.append(bytes, false)?,
+            Some(ManagedProcessOutput::Stderr(bytes)) => capture.append(bytes, true)?,
+            Some(ManagedProcessOutput::Exited(exit_code)) => {
+                return Ok(ManagedExecResult {
+                    stdout: capture.stdout,
+                    stderr: capture.stderr,
+                    exit_code,
+                });
+            }
+            None if controller.is_closed() => bail!("guest exec closed without exit status"),
+            None => {}
+        }
+    }
 }
 
 #[derive(Default)]
@@ -445,17 +595,39 @@ struct ExecCapture {
     total: usize,
 }
 
+impl ExecCapture {
+    fn append(&mut self, bytes: Vec<u8>, stderr: bool) -> Result<()> {
+        let total = self
+            .total
+            .checked_add(bytes.len())
+            .context("exec output limit exceeded")?;
+        if total > MAX_EXEC_OUTPUT {
+            bail!("exec output limit exceeded");
+        }
+        self.total = total;
+        if stderr {
+            self.stderr.extend(bytes);
+        } else {
+            self.stdout.extend(bytes);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 struct CaptureWriter {
     capture: Arc<Mutex<ExecCapture>>,
     stderr: bool,
 }
 
+#[cfg(test)]
 impl CaptureWriter {
     fn new(capture: Arc<Mutex<ExecCapture>>, stderr: bool) -> Self {
         Self { capture, stderr }
     }
 }
 
+#[cfg(test)]
 impl Write for CaptureWriter {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let mut capture = self
@@ -573,5 +745,17 @@ mod tests {
         let root = temporary_guest_path("/output.txt").unwrap();
         assert!(root.starts_with("/.lsbsw-"));
         assert!(temporary_guest_path("/").is_err());
+    }
+
+    #[test]
+    fn cancelled_operation_context_fails_before_waiting() {
+        let cancellation = CancellationToken::default();
+        cancellation.cancel();
+        let operation = OperationContext::new(cancellation, Duration::from_secs(1));
+        let (_reply, response) = mpsc::sync_channel::<Result<()>>(1);
+        assert!(wait_response(response, &operation, "test")
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled"));
     }
 }
