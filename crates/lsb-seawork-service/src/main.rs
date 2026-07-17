@@ -1,3 +1,4 @@
+mod bundle;
 mod config;
 #[cfg(windows)]
 pub mod engine;
@@ -54,6 +55,8 @@ struct VerifyOutput<'a> {
     protocol_major: u16,
     ledger_schema: u32,
     architecture: &'a str,
+    files_verified: usize,
+    error: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -76,18 +79,23 @@ fn main() -> Result<()> {
             Ok(())
         }
         [flag, json] if flag == "--verify-bundle" && json == "--json" => {
+            let verification = bundle::verify_adjacent_bundle();
             println!(
                 "{}",
                 serde_json::to_string(&VerifyOutput {
-                    valid: cfg!(all(windows, target_arch = "x86_64")),
-                    mode: "structural-development-check",
+                    valid: verification.is_ok(),
+                    mode: "structural-bundle-check",
                     service_version: env!("CARGO_PKG_VERSION"),
                     protocol_major: CURRENT.major,
                     ledger_schema: LEDGER_SCHEMA_VERSION,
                     architecture: std::env::consts::ARCH,
+                    files_verified: verification
+                        .as_ref()
+                        .map_or(0, |report| report.files_verified),
+                    error: verification.as_ref().err().map(ToString::to_string),
                 })?
             );
-            Ok(())
+            verification.map(|_| ())
         }
         [] => run_service(),
         [flag] if flag == "--service" => run_service(),

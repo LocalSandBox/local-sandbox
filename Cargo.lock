@@ -1045,6 +1045,7 @@ dependencies = [
  "lsb-vm",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "windows-service",
  "windows-sys 0.61.2",
