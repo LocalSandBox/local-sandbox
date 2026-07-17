@@ -386,10 +386,32 @@ fn file_op(sandbox: &lsb_vm::Sandbox, op: ManagedFileOp) -> Result<ManagedFileRe
             Ok(ManagedFileResult::Bytes(sandbox.read_file(&path)?))
         }
         ManagedFileOp::WriteFile { path, bytes } => {
-            sandbox.write_file(&path, &bytes)?;
+            let temporary = temporary_guest_path(&path)?;
+            sandbox.write_file(&temporary, &bytes)?;
+            if let Err(error) = sandbox.rename(&temporary, &path) {
+                let _ = sandbox.remove(&temporary, false);
+                return Err(error);
+            }
             Ok(ManagedFileResult::Empty)
         }
     }
+}
+
+fn temporary_guest_path(path: &str) -> Result<String> {
+    let (parent, _) = path
+        .rsplit_once('/')
+        .filter(|(_, name)| !name.is_empty())
+        .context("guest file path has no file name")?;
+    let id = crate::session::ResourceHandle::random()?;
+    let temporary = if parent.is_empty() {
+        format!("/.lsbsw-{id}.tmp")
+    } else {
+        format!("{parent}/.lsbsw-{id}.tmp")
+    };
+    if temporary.len() > lsb_service_proto::limits::MAX_STRING_LEN {
+        bail!("temporary guest file path exceeds protocol bound");
+    }
+    Ok(temporary)
 }
 
 fn exec(sandbox: &lsb_vm::Sandbox, spec: ManagedExecSpec) -> Result<ManagedExecResult> {
@@ -538,5 +560,18 @@ mod tests {
         }));
         let mut writer = CaptureWriter::new(capture, true);
         assert!(writer.write_all(&[1]).is_err());
+    }
+
+    #[test]
+    fn write_file_temporary_path_is_a_random_sibling() {
+        let first = temporary_guest_path("/workspace/output.txt").unwrap();
+        let second = temporary_guest_path("/workspace/output.txt").unwrap();
+        assert!(first.starts_with("/workspace/.lsbsw-"));
+        assert!(first.ends_with(".tmp"));
+        assert_ne!(first, second);
+
+        let root = temporary_guest_path("/output.txt").unwrap();
+        assert!(root.starts_with("/.lsbsw-"));
+        assert!(temporary_guest_path("/").is_err());
     }
 }
