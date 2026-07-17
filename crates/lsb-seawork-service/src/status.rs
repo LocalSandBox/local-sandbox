@@ -40,6 +40,18 @@ pub fn stopped() -> ServiceStatus {
     }
 }
 
+pub fn stopped_with_error(code: u32) -> ServiceStatus {
+    ServiceStatus {
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: ServiceState::Stopped,
+        controls_accepted: ServiceControlAccept::empty(),
+        exit_code: ServiceExitCode::ServiceSpecific(code.max(1)),
+        checkpoint: 0,
+        wait_hint: Duration::ZERO,
+        process_id: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,5 +69,9 @@ mod tests {
         assert!(running
             .controls_accepted
             .contains(ServiceControlAccept::PRESHUTDOWN));
+        assert_eq!(
+            stopped_with_error(0).exit_code,
+            ServiceExitCode::ServiceSpecific(1)
+        );
     }
 }

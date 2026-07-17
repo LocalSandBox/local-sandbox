@@ -44,6 +44,17 @@ fn run() -> Result<()> {
             ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
             _ => ServiceControlHandlerResult::NotImplemented,
         })?;
+    let result = run_registered(&status_handle, control_rx);
+    if result.is_err() {
+        let _ = status_handle.set_service_status(status::stopped_with_error(1));
+    }
+    result
+}
+
+fn run_registered(
+    status_handle: &service_control_handler::ServiceStatusHandle,
+    control_rx: mpsc::Receiver<ServiceControl>,
+) -> Result<()> {
     status_handle.set_service_status(status::pending(
         ServiceState::StartPending,
         1,
@@ -137,10 +148,24 @@ fn run() -> Result<()> {
     };
     status_handle.set_service_status(status::pending(ServiceState::StopPending, 1, wait_hint))?;
     logger.write(2, "shutdown", "STOP_PENDING")?;
-    let drained = context.begin_shutdown()?;
-    logger.write(2, "shutdown", &format!("DRAINED_SESSIONS={drained}"))?;
+    match context.begin_shutdown() {
+        Ok(drained) => {
+            let _ = logger.write(2, "shutdown", &format!("DRAINED_SESSIONS={drained}"));
+        }
+        Err(_) => {
+            let _ = logger.write(4, "shutdown", "SESSION_DRAIN_FAILED");
+        }
+    }
     let _ = shutdown_tx.send(());
-    runtime.block_on(pipe_task)??;
+    match runtime.block_on(pipe_task) {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => {
+            let _ = logger.write(4, "shutdown", "PIPE_DRAIN_FAILED");
+        }
+        Err(_) => {
+            let _ = logger.write(4, "shutdown", "PIPE_TASK_FAILED");
+        }
+    }
     status_handle.set_service_status(status::stopped())?;
     Ok(())
 }
