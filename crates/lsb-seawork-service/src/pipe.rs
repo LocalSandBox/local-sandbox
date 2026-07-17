@@ -332,6 +332,72 @@ impl HealthContext {
 pub struct HealthPipe {
     server: NamedPipeServer,
     context: HealthContext,
+    preauth: PreAuthGate,
+}
+
+#[derive(Clone)]
+struct PreAuthGate {
+    global: Arc<Semaphore>,
+    by_pid: Arc<Mutex<HashMap<u32, usize>>>,
+}
+
+struct PreAuthPidPermit {
+    by_pid: Arc<Mutex<HashMap<u32, usize>>>,
+    process_id: u32,
+}
+
+struct PreAuthAdmission {
+    _global: OwnedSemaphorePermit,
+    _pid: PreAuthPidPermit,
+}
+
+impl PreAuthGate {
+    fn new() -> Self {
+        Self {
+            global: Arc::new(Semaphore::new(crate::ipc::pipe::MAX_UNAUTHENTICATED_GLOBAL)),
+            by_pid: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn try_global(&self) -> Result<OwnedSemaphorePermit> {
+        self.global
+            .clone()
+            .try_acquire_owned()
+            .context("global unauthenticated connection quota exceeded")
+    }
+
+    fn admit_pid(&self, process_id: u32, global: OwnedSemaphorePermit) -> Result<PreAuthAdmission> {
+        let mut by_pid = self
+            .by_pid
+            .lock()
+            .map_err(|_| anyhow::anyhow!("pre-auth PID quota poisoned"))?;
+        let count = by_pid.entry(process_id).or_default();
+        if *count >= crate::ipc::pipe::MAX_UNAUTHENTICATED_PER_PID {
+            bail!("per-PID unauthenticated connection quota exceeded");
+        }
+        *count += 1;
+        drop(by_pid);
+        Ok(PreAuthAdmission {
+            _global: global,
+            _pid: PreAuthPidPermit {
+                by_pid: self.by_pid.clone(),
+                process_id,
+            },
+        })
+    }
+}
+
+impl Drop for PreAuthPidPermit {
+    fn drop(&mut self) {
+        if let Ok(mut by_pid) = self.by_pid.lock() {
+            if let Some(count) = by_pid.get_mut(&self.process_id) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    by_pid.remove(&self.process_id);
+                }
+            }
+        }
+    }
 }
 
 impl HealthPipe {
@@ -339,6 +405,7 @@ impl HealthPipe {
         Ok(Self {
             server: create_server(true)?,
             context,
+            preauth: PreAuthGate::new(),
         })
     }
 
@@ -350,9 +417,14 @@ impl HealthPipe {
             }
             let connected = self.server;
             self.server = create_server(false)?;
+            let global = match self.preauth.try_global() {
+                Ok(permit) => permit,
+                Err(_) => continue,
+            };
             let context = self.context.clone();
+            let preauth = self.preauth.clone();
             tokio::spawn(async move {
-                let _ = handle_client(connected, context).await;
+                let _ = handle_client(connected, context, preauth, global).await;
             });
         }
     }
@@ -383,8 +455,14 @@ fn create_server(first: bool) -> Result<NamedPipeServer> {
     Ok(server)
 }
 
-async fn handle_client(pipe: NamedPipeServer, context: HealthContext) -> Result<()> {
+async fn handle_client(
+    pipe: NamedPipeServer,
+    context: HealthContext,
+    preauth: PreAuthGate,
+    global: OwnedSemaphorePermit,
+) -> Result<()> {
     let identity = ClientIdentity::from_named_pipe(pipe.as_raw_handle())?;
+    let preauth = preauth.admit_pid(identity.process_id, global)?;
     let maintenance_authorized = context.maintenance_authorized(&identity);
     let session_id = context.sessions.open(identity.key.clone())?;
     let (mut reader, pipe_writer) = tokio::io::split(pipe);
@@ -396,6 +474,7 @@ async fn handle_client(pipe: NamedPipeServer, context: HealthContext) -> Result<
         session_id,
         &identity.key,
         maintenance_authorized,
+        Some(preauth),
     )
     .await;
     let _ = context.sessions.close(session_id, &identity.key);
@@ -416,11 +495,14 @@ async fn handle_authenticated_client<R>(
     session_id: ResourceHandle,
     identity: &ClientIdentityKey,
     maintenance_authorized: bool,
+    preauth: Option<PreAuthAdmission>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
 {
-    let hello_frame = read_frame(pipe).await?;
+    let hello_frame = tokio::time::timeout(crate::ipc::pipe::HELLO_TIMEOUT, read_frame(pipe))
+        .await
+        .context("Hello deadline exceeded")??;
     if hello_frame.header.kind != FrameKind::Hello
         || hello_frame.header.correlation != Correlation::default()
         || hello_frame.header.protocol.major != CURRENT.major
@@ -453,6 +535,7 @@ where
         &reply,
     )
     .await?;
+    drop(preauth);
 
     let connection = Arc::new(Mutex::new(ConnectionState::new(epoch)?));
     loop {
@@ -1525,6 +1608,34 @@ mod tests {
     }
 
     #[test]
+    fn preauth_gate_bounds_global_and_per_pid_and_releases() {
+        let gate = PreAuthGate::new();
+        let first = gate.admit_pid(7, gate.try_global().unwrap()).unwrap();
+        let second = gate.admit_pid(7, gate.try_global().unwrap()).unwrap();
+        assert!(gate.admit_pid(7, gate.try_global().unwrap()).is_err());
+
+        drop(first);
+        let replacement = gate.admit_pid(7, gate.try_global().unwrap()).unwrap();
+        let mut other = Vec::new();
+        for process_id in 10..16 {
+            other.push(
+                gate.admit_pid(process_id, gate.try_global().unwrap())
+                    .unwrap(),
+            );
+        }
+        assert!(gate.try_global().is_err());
+
+        drop(second);
+        drop(replacement);
+        drop(other);
+        assert!(gate.by_pid.lock().unwrap().is_empty());
+        assert_eq!(
+            gate.global.available_permits(),
+            crate::ipc::pipe::MAX_UNAUTHENTICATED_GLOBAL
+        );
+    }
+
+    #[test]
     fn pipe_security_descriptor_is_valid() {
         SecurityDescriptor::from_sddl(PIPE_SDDL).unwrap();
     }
@@ -1585,6 +1696,7 @@ mod tests {
                     session_id,
                     &identity,
                     false,
+                    None,
                 )
                 .await;
                 drop(writer);
