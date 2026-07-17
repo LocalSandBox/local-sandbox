@@ -122,6 +122,39 @@ Initial installation is one elevated transaction:
 5. Record the installed bundle/client compatibility in protected SeaWork state.
    Normal app startup then connects without UAC and has no helper fallback.
 
+The installer must atomically create
+`%ProgramData%\LocalSandbox\SeaWork\config\service.json` before the first
+service start. The directory and file use the protected state ACL from
+`service-contract.json`; standard users receive no write access. A minimal
+production configuration is:
+
+```json
+{
+  "schema_version": 1,
+  "config_revision": 1,
+  "quotas": {
+    "connections_global": 32,
+    "connections_per_user": 4,
+    "sandboxes_global": 8,
+    "sandboxes_per_user": 4,
+    "sandboxes_per_connection": 2,
+    "memory_mib_global": 24576
+  },
+  "publisher_thumbprints": ["<40-or-64-hex-signer-thumbprint>"],
+  "client_roots": ["C:\\Program Files\\SeaWork"],
+  "maintenance_roots": ["C:\\Program Files\\SeaWork"],
+  "ports_enabled": false
+}
+```
+
+`client_roots` must contain the protected installed app binary that opens
+normal sandbox sessions. `maintenance_roots` must contain only protected,
+elevated installer/repair entry points. Every accepted binary must have a valid
+Authenticode chain whose embedded signer matches `publisher_thumbprints`.
+Empty roots or publishers intentionally keep normal admissions closed; an
+empty maintenance root denies all maintenance calls. Host ports remain
+compiled fail-closed, so setting `ports_enabled` to `true` is rejected.
+
 NSIS must not implement the pipe protocol. It launches a narrow, protected,
 signed SeaWork maintenance entry under the installer token; that entry calls the
 upstream Node client, returns bounded JSON, and exits.
@@ -179,9 +212,9 @@ Publisher rotation is an overlap, not an in-place pin bypass:
   repeats verification after final copy.
 - Elevated install/update/rollback/repair/uninstall and unelevated standard-user
   use pass on a clean machine; the old helper is absent from production paths.
-- Session 0 WHPX/QEMU boot/exec/stop, SMB RO/staged-RW behavior and cleanup,
-  crash/reboot reconciliation, and enterprise Defender/EDR/GPO/proxy/VPN policy
-  evidence are signed off. Host ports remain disabled without WFP isolation proof.
+- Session 0 WHPX/QEMU boot/exec/stop, crash/reboot reconciliation, and enterprise
+  Defender/EDR/GPO/proxy/VPN policy evidence are signed off. Mounts and host
+  ports remain disabled; SMB and WFP evidence is required before enabling them.
 
 ## External release blockers
 
@@ -192,7 +225,8 @@ and `docs/windows-service-feasibility.md`:
 - Production-trusted organization signing identity, RFC 3161 timestamp, and
   clean-machine chain/thumbprint verification.
 - Real LocalSystem Session 0 WHPX/QEMU and prepared runtime/QEMU asset execution.
-- Elevated two-user/two-logon SCM, SMB, ACL, LSA, Job, crash/reboot, update,
-  rollback, repair, and uninstall acceptance.
+- Elevated two-user/two-logon SCM, Job, crash/reboot, update, rollback, repair,
+  and uninstall acceptance. SMB/ACL/LSA acceptance additionally gates enabling
+  the currently unavailable mount capability.
 - Managed-fleet Defender/EDR, enterprise GPO, proxy/VPN, and certificate-policy
   review. Release is blocked on an incompatibility; controls are not bypassed.
