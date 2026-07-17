@@ -966,6 +966,15 @@ async fn pump_watch_events(
             _ => break,
         }
     }
+    let _ = events
+        .write(
+            &writer,
+            protocol,
+            &Event::StreamClosed {
+                stream_id: watch.id.to_string(),
+            },
+        )
+        .await;
     let _ = sessions.retire_managed_watch(session_id, &identity, watch.id);
 }
 

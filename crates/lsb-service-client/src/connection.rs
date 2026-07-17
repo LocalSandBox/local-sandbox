@@ -35,6 +35,11 @@ enum PendingRequest {
     Unary(oneshot::Sender<Response>),
     ReadFile(oneshot::Sender<Result<Vec<u8>, ErrorEnvelope>>),
     Spawn(oneshot::Sender<Result<SpawnChannels, ErrorEnvelope>>),
+    Watch(oneshot::Sender<Result<WatchChannels, ErrorEnvelope>>),
+    StopWatch {
+        watch_id: String,
+        completion: oneshot::Sender<Response>,
+    },
 }
 
 struct SpawnChannels {
@@ -44,6 +49,11 @@ struct SpawnChannels {
     stdout: mpsc::Receiver<Vec<u8>>,
     stderr: mpsc::Receiver<Vec<u8>>,
     exited: watch::Receiver<Option<i32>>,
+}
+
+struct WatchChannels {
+    watch_id: String,
+    events: watch::Receiver<Option<RemoteWatchEvent>>,
 }
 
 enum IncomingStream {
@@ -420,6 +430,27 @@ impl ServiceClient {
         })
     }
 
+    pub async fn watch(
+        &mut self,
+        sandbox: &RemoteSandbox,
+        path: impl Into<String>,
+        recursive: bool,
+    ) -> Result<RemoteWatch, ClientError> {
+        let channels = self
+            .core
+            .watch(RequestOp::Watch {
+                sandbox_id: sandbox.sandbox_id.clone(),
+                path: path.into(),
+                recursive,
+            })
+            .await?;
+        Ok(RemoteWatch {
+            core: self.core.clone(),
+            watch_id: channels.watch_id,
+            events: Mutex::new(channels.events),
+        })
+    }
+
     async fn empty_file_request(&mut self, op: RequestOp) -> Result<(), ClientError> {
         match self.request(op).await? {
             ResponseValue::Empty {} => Ok(()),
@@ -481,6 +512,35 @@ impl ConnectionCore {
             Ok(channels) => Ok(channels),
             Err(error) => Err(map_service_error(error)),
         }
+    }
+
+    async fn watch(&self, op: RequestOp) -> Result<WatchChannels, ClientError> {
+        let (sender, receiver) = oneshot::channel();
+        self.send_request(op, PendingRequest::Watch(sender)).await?;
+        match receiver
+            .await
+            .map_err(|_| ClientError::Protocol("connection closed during Watch".to_string()))?
+        {
+            Ok(channels) => Ok(channels),
+            Err(error) => Err(map_service_error(error)),
+        }
+    }
+
+    async fn stop_watch(&self, watch_id: String) -> Result<Response, ClientError> {
+        let (completion, receiver) = oneshot::channel();
+        self.send_request(
+            RequestOp::StopWatch {
+                watch_id: watch_id.clone(),
+            },
+            PendingRequest::StopWatch {
+                watch_id,
+                completion,
+            },
+        )
+        .await?;
+        receiver
+            .await
+            .map_err(|_| ClientError::Protocol("connection closed during StopWatch".to_string()))
     }
 
     async fn write_file(&self, op: RequestOp, bytes: &[u8]) -> Result<(), ClientError> {
@@ -765,6 +825,43 @@ pub struct RemoteProcess {
     exited: watch::Receiver<Option<i32>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteWatchEvent {
+    pub path: String,
+    pub change: lsb_service_proto::WatchChange,
+}
+
+pub struct RemoteWatch {
+    core: Arc<ConnectionCore>,
+    watch_id: String,
+    events: Mutex<watch::Receiver<Option<RemoteWatchEvent>>>,
+}
+
+impl RemoteWatch {
+    pub fn id(&self) -> &str {
+        &self.watch_id
+    }
+
+    pub async fn next(&self) -> Result<Option<RemoteWatchEvent>, ClientError> {
+        let mut events = self.events.lock().await;
+        if events.changed().await.is_err() {
+            return Ok(None);
+        }
+        let event = events.borrow_and_update().clone();
+        Ok(event)
+    }
+
+    pub async fn stop(&self) -> Result<(), ClientError> {
+        match self.core.stop_watch(self.watch_id.clone()).await? {
+            Response::Ok {
+                result: ResponseValue::Empty {},
+            } => Ok(()),
+            Response::Ok { .. } => Err(mismatched("StopWatch")),
+            Response::Err { error } => Err(map_service_error(error)),
+        }
+    }
+}
+
 impl RemoteProcess {
     pub fn id(&self) -> &str {
         &self.process_id
@@ -850,6 +947,7 @@ where
 {
     let mut streams = HashMap::<(u64, u64), IncomingStream>::new();
     let mut processes = HashMap::<String, watch::Sender<Option<i32>>>::new();
+    let mut watches = HashMap::<String, watch::Sender<Option<RemoteWatchEvent>>>::new();
     let mut next_event_sequence = 1u64;
     loop {
         let frame = tokio::select! {
@@ -878,7 +976,13 @@ where
                         ClientError::Protocol("response request is not active".to_string())
                     })?;
                 let response: Response = parse_control(&frame.payload)?;
-                dispatch_response(pending, response, &mut streams, &mut processes)?;
+                dispatch_response(
+                    pending,
+                    response,
+                    &mut streams,
+                    &mut processes,
+                    &mut watches,
+                )?;
             }
             FrameKind::StreamData => {
                 dispatch_stream(frame, &mut streams)?;
@@ -906,8 +1010,18 @@ where
                     }
                     Event::StreamClosed { stream_id } => {
                         streams.remove(&correlation_key(stream_correlation(&stream_id)?));
+                        watches.remove(&stream_id);
                     }
-                    Event::WatchChanged { .. } => {}
+                    Event::WatchChanged {
+                        watch_id,
+                        path,
+                        change,
+                    } => {
+                        let events = watches.get(&watch_id).ok_or_else(|| {
+                            ClientError::Protocol("watch event handle is unknown".to_string())
+                        })?;
+                        let _ = events.send(Some(RemoteWatchEvent { path, change }));
+                    }
                 }
             }
             _ => {
@@ -924,6 +1038,7 @@ fn dispatch_response(
     response: Response,
     streams: &mut HashMap<(u64, u64), IncomingStream>,
     processes: &mut HashMap<String, watch::Sender<Option<i32>>>,
+    watches: &mut HashMap<String, watch::Sender<Option<RemoteWatchEvent>>>,
 ) -> Result<(), ClientError> {
     match pending {
         PendingRequest::Unary(sender) => {
@@ -1016,6 +1131,31 @@ fn dispatch_response(
             }
             Response::Ok { .. } => return Err(mismatched("Spawn")),
         },
+        PendingRequest::Watch(sender) => match response {
+            Response::Err { error } => {
+                let _ = sender.send(Err(error));
+            }
+            Response::Ok {
+                result: ResponseValue::WatchStarted { watch_id },
+            } => {
+                if watches.contains_key(&watch_id) {
+                    return Err(ClientError::Protocol("duplicate watch id".to_string()));
+                }
+                let (events_tx, events) = watch::channel(None);
+                watches.insert(watch_id.clone(), events_tx);
+                let _ = sender.send(Ok(WatchChannels { watch_id, events }));
+            }
+            Response::Ok { .. } => return Err(mismatched("Watch")),
+        },
+        PendingRequest::StopWatch {
+            watch_id,
+            completion,
+        } => {
+            if matches!(response, Response::Ok { .. }) {
+                watches.remove(&watch_id);
+            }
+            let _ = completion.send(response);
+        }
     }
     Ok(())
 }
@@ -1147,6 +1287,7 @@ mod tests {
         let (sender, mut receiver) = oneshot::channel();
         let mut streams = HashMap::new();
         let mut processes = HashMap::new();
+        let mut watches = HashMap::new();
         dispatch_response(
             PendingRequest::ReadFile(sender),
             Response::Ok {
@@ -1157,6 +1298,7 @@ mod tests {
             },
             &mut streams,
             &mut processes,
+            &mut watches,
         )
         .unwrap();
         assert_eq!(streams.len(), 1);
@@ -1185,6 +1327,7 @@ mod tests {
         let (sender, mut receiver) = oneshot::channel();
         let mut streams = HashMap::new();
         let mut processes = HashMap::new();
+        let mut watches = HashMap::new();
         dispatch_response(
             PendingRequest::Spawn(sender),
             Response::Ok {
@@ -1196,6 +1339,7 @@ mod tests {
             },
             &mut streams,
             &mut processes,
+            &mut watches,
         )
         .unwrap();
         assert_eq!(streams.len(), 2);
@@ -1218,5 +1362,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(channels.stdout.try_recv().unwrap(), b"out".to_vec());
+    }
+
+    #[test]
+    fn watch_route_is_installed_before_start_reply() {
+        let (sender, mut receiver) = oneshot::channel();
+        let mut streams = HashMap::new();
+        let mut processes = HashMap::new();
+        let mut watches = HashMap::new();
+        dispatch_response(
+            PendingRequest::Watch(sender),
+            Response::Ok {
+                result: ResponseValue::WatchStarted {
+                    watch_id: FIRST.to_string(),
+                },
+            },
+            &mut streams,
+            &mut processes,
+            &mut watches,
+        )
+        .unwrap();
+        assert!(watches.contains_key(FIRST));
+        let channels = receiver.try_recv().unwrap().unwrap();
+        assert_eq!(channels.watch_id, FIRST);
     }
 }
