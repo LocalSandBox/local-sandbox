@@ -240,6 +240,13 @@ impl Request {
                 }
             }
             RequestOp::KillProcess { process_id } => validate_resource_id(process_id)?,
+            RequestOp::Watch {
+                sandbox_id, path, ..
+            } => {
+                validate_resource_id(sandbox_id)?;
+                validate_guest_path(path)?;
+            }
+            RequestOp::StopWatch { watch_id } => validate_resource_id(watch_id)?,
             RequestOp::Mkdir {
                 sandbox_id, path, ..
             }
@@ -336,6 +343,14 @@ pub enum RequestOp {
     },
     KillProcess {
         process_id: String,
+    },
+    Watch {
+        sandbox_id: String,
+        path: String,
+        recursive: bool,
+    },
+    StopWatch {
+        watch_id: String,
     },
     Mkdir {
         sandbox_id: String,
@@ -459,6 +474,9 @@ pub enum ResponseValue {
         process_id: String,
         stdout_stream_id: String,
         stderr_stream_id: String,
+    },
+    WatchStarted {
+        watch_id: String,
     },
     Directory {
         entries: Vec<ServiceDirEntry>,
@@ -732,6 +750,37 @@ mod tests {
             },
         };
         assert_eq!(kill.validate(), Err(ProtocolError::InvalidJson));
+    }
+
+    #[test]
+    fn watch_contract_uses_canonical_paths_and_opaque_handles() {
+        let watch = Request {
+            deadline_ms: None,
+            op: RequestOp::Watch {
+                sandbox_id: "0123456789abcdef0123456789abcdef".to_string(),
+                path: "/workspace".to_string(),
+                recursive: true,
+            },
+        };
+        watch.validate().unwrap();
+
+        let invalid_path = Request {
+            deadline_ms: None,
+            op: RequestOp::Watch {
+                sandbox_id: "0123456789abcdef0123456789abcdef".to_string(),
+                path: "/workspace/../etc".to_string(),
+                recursive: false,
+            },
+        };
+        assert_eq!(invalid_path.validate(), Err(ProtocolError::InvalidJson));
+
+        let stop = Request {
+            deadline_ms: None,
+            op: RequestOp::StopWatch {
+                watch_id: "not-a-handle".to_string(),
+            },
+        };
+        assert_eq!(stop.validate(), Err(ProtocolError::InvalidJson));
     }
 
     #[test]
