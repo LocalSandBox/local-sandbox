@@ -8,6 +8,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::engine::ServiceEngineConfig;
 use crate::resource::process::ManagedProcess;
+use crate::resource::watch::ManagedWatch;
 use crate::session::CancellationToken;
 
 #[derive(Debug, Clone)]
@@ -22,6 +23,11 @@ enum Command {
     Stop(mpsc::SyncSender<Result<()>>),
     Exec(ManagedExecSpec, mpsc::SyncSender<Result<ManagedExecResult>>),
     Spawn(ManagedExecSpec, mpsc::SyncSender<Result<ManagedProcess>>),
+    Watch {
+        path: String,
+        recursive: bool,
+        reply: mpsc::SyncSender<Result<ManagedWatch>>,
+    },
     File(ManagedFileOp, mpsc::SyncSender<Result<ManagedFileResult>>),
 }
 
@@ -206,6 +212,20 @@ impl ManagedVmController {
             .recv_timeout(timeout)
             .map_err(|_| anyhow::anyhow!("managed VM spawn exceeded bounded deadline"))?
     }
+
+    pub fn watch(&self, path: String, recursive: bool, timeout: Duration) -> Result<ManagedWatch> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.commands
+            .try_send(Command::Watch {
+                path,
+                recursive,
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("managed VM command queue is unavailable"))?;
+        response
+            .recv_timeout(timeout)
+            .map_err(|_| anyhow::anyhow!("managed VM watch exceeded bounded deadline"))?
+    }
 }
 
 impl Drop for ManagedVm {
@@ -264,6 +284,13 @@ fn run(
             Ok(Command::Spawn(spec, reply)) => {
                 let _ = reply.send(spawn(&sandbox, spec));
             }
+            Ok(Command::Watch {
+                path,
+                recursive,
+                reply,
+            }) => {
+                let _ = reply.send(watch(&sandbox, path, recursive));
+            }
             Ok(Command::File(op, reply)) => {
                 let _ = reply.send(file_op(&sandbox, op));
             }
@@ -281,6 +308,16 @@ fn spawn(sandbox: &lsb_vm::Sandbox, spec: ManagedExecSpec) -> Result<ManagedProc
     let writer = sandbox.open_exec_session(&spec.argv, &spec.env, spec.cwd.as_deref())?;
     let reader = writer.try_clone()?;
     ManagedProcess::start(reader, writer)
+}
+
+fn watch(sandbox: &lsb_vm::Sandbox, path: String, recursive: bool) -> Result<ManagedWatch> {
+    let reader = sandbox.open_watch_session(&path, recursive)?;
+    let cancel = Arc::new(Mutex::new(reader.try_clone()?));
+    ManagedWatch::start(reader, path, move || {
+        if let Ok(mut stream) = cancel.lock() {
+            let _ = stream.close();
+        }
+    })
 }
 
 fn file_op(sandbox: &lsb_vm::Sandbox, op: ManagedFileOp) -> Result<ManagedFileResult> {

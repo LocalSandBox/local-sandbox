@@ -16,6 +16,10 @@ use crate::resource::process::{
 use crate::resource::vm::{
     ManagedExecResult, ManagedExecSpec, ManagedFileOp, ManagedFileResult, ManagedVm, ManagedVmSpec,
 };
+#[cfg(windows)]
+use crate::resource::watch::{
+    ManagedWatch, ManagedWatchController, ManagedWatchEvent, WatchResource,
+};
 
 const MAX_RETIRED_HANDLES: usize = 4_096;
 const RETIRED_HANDLE_TTL: Duration = Duration::from_secs(10 * 60);
@@ -49,6 +53,8 @@ struct Session {
     sandboxes: HashMap<ResourceHandle, SandboxSlot>,
     #[cfg(windows)]
     processes: HashMap<ResourceHandle, ProcessSlot>,
+    #[cfg(windows)]
+    watches: HashMap<ResourceHandle, WatchSlot>,
     retired: VecDeque<(Instant, ResourceHandle)>,
 }
 
@@ -67,6 +73,32 @@ enum ProcessSlot {
         resource: GuestProcessResource,
         process: ManagedProcess,
     },
+}
+
+#[cfg(windows)]
+#[derive(Debug)]
+enum WatchSlot {
+    Preparing(WatchResource),
+    Running {
+        resource: WatchResource,
+        watch: ManagedWatch,
+    },
+}
+
+#[cfg(windows)]
+impl WatchSlot {
+    fn resource(&self) -> &WatchResource {
+        match self {
+            Self::Preparing(resource) | Self::Running { resource, .. } => resource,
+        }
+    }
+
+    fn controller(&self) -> Option<ManagedWatchController> {
+        match self {
+            Self::Preparing(_) => None,
+            Self::Running { watch, .. } => Some(watch.controller()),
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -123,6 +155,8 @@ impl SessionManager {
                 sandboxes: HashMap::new(),
                 #[cfg(windows)]
                 processes: HashMap::new(),
+                #[cfg(windows)]
+                watches: HashMap::new(),
                 retired: VecDeque::new(),
             },
         );
@@ -159,6 +193,15 @@ impl SessionManager {
                 .release_process(process.resource().sandbox_id, identity);
             if let Some(controller) = process.controller() {
                 let _ = controller.kill();
+            }
+        }
+        #[cfg(windows)]
+        for watch in session.watches.values() {
+            state
+                .quotas
+                .release_watch(watch.resource().sandbox_id, identity);
+            if let Some(controller) = watch.controller() {
+                controller.stop();
             }
         }
         state.quotas.release_connection(identity);
@@ -328,47 +371,71 @@ impl SessionManager {
         handle: ResourceHandle,
         timeout: std::time::Duration,
     ) -> Result<bool> {
-        let (vm, processes) = {
+        let (vm, processes, watches) = {
             let mut state = self
                 .state
                 .lock()
                 .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
-            let session = state
-                .sessions
-                .get_mut(&session_id)
-                .context("resource not found")?;
-            if &session.identity != identity {
-                return Ok(false);
-            }
-            let vm = match session.sandboxes.remove(&handle) {
-                Some(SandboxSlot::Running(vm)) => vm,
-                Some(slot @ SandboxSlot::Preparing) => {
-                    session.sandboxes.insert(handle, slot);
-                    bail!("sandbox is still preparing");
+            let (vm, processes, watches) = {
+                let session = state
+                    .sessions
+                    .get_mut(&session_id)
+                    .context("resource not found")?;
+                if &session.identity != identity {
+                    return Ok(false);
                 }
-                None => return Ok(false),
+                let vm = match session.sandboxes.remove(&handle) {
+                    Some(SandboxSlot::Running(vm)) => vm,
+                    Some(slot @ SandboxSlot::Preparing) => {
+                        session.sandboxes.insert(handle, slot);
+                        bail!("sandbox is still preparing");
+                    }
+                    None => return Ok(false),
+                };
+                let process_ids = session
+                    .processes
+                    .iter()
+                    .filter_map(|(id, process)| {
+                        (process.resource().sandbox_id == handle).then_some(*id)
+                    })
+                    .collect::<Vec<_>>();
+                let processes = process_ids
+                    .into_iter()
+                    .filter_map(|id| session.processes.remove(&id))
+                    .collect::<Vec<_>>();
+                let watch_ids = session
+                    .watches
+                    .iter()
+                    .filter_map(|(id, watch)| {
+                        (watch.resource().sandbox_id == handle).then_some(*id)
+                    })
+                    .collect::<Vec<_>>();
+                let watches = watch_ids
+                    .into_iter()
+                    .filter_map(|id| session.watches.remove(&id))
+                    .collect::<Vec<_>>();
+                (vm, processes, watches)
             };
-            let process_ids = session
-                .processes
-                .iter()
-                .filter_map(|(id, process)| {
-                    (process.resource().sandbox_id == handle).then_some(*id)
-                })
-                .collect::<Vec<_>>();
-            let processes = process_ids
-                .into_iter()
-                .filter_map(|id| session.processes.remove(&id))
-                .collect::<Vec<_>>();
             for process in &processes {
                 state
                     .quotas
                     .release_process(process.resource().sandbox_id, identity);
             }
-            (vm, processes)
+            for watch in &watches {
+                state
+                    .quotas
+                    .release_watch(watch.resource().sandbox_id, identity);
+            }
+            (vm, processes, watches)
         };
         for process in processes {
             if let Some(controller) = process.controller() {
                 let _ = controller.kill();
+            }
+        }
+        for watch in watches {
+            if let Some(controller) = watch.controller() {
+                controller.stop();
             }
         }
         let result = vm.stop(timeout);
@@ -640,6 +707,203 @@ impl SessionManager {
         self.state.lock().is_ok_and(|state| {
             state.sessions.get(&session_id).is_some_and(|session| {
                 &session.identity == identity && session.processes.contains_key(&process_id)
+            })
+        })
+    }
+
+    #[cfg(windows)]
+    pub fn start_managed_watch(
+        &self,
+        session_id: ResourceHandle,
+        identity: &ClientIdentityKey,
+        sandbox_id: ResourceHandle,
+        path: String,
+        recursive: bool,
+        timeout: Duration,
+    ) -> Result<Option<WatchResource>> {
+        let (resource, controller) = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
+            let controller = {
+                let Some(session) = state.sessions.get(&session_id) else {
+                    return Ok(None);
+                };
+                if &session.identity != identity {
+                    return Ok(None);
+                }
+                match session.sandboxes.get(&sandbox_id) {
+                    Some(SandboxSlot::Running(vm)) => vm.controller(),
+                    _ => return Ok(None),
+                }
+            };
+            let resource = WatchResource::new(sandbox_id, path.clone())?;
+            state.quotas.reserve_watch(sandbox_id, identity)?;
+            let session = state
+                .sessions
+                .get_mut(&session_id)
+                .context("session disappeared")?;
+            session
+                .watches
+                .insert(resource.id, WatchSlot::Preparing(resource.clone()));
+            (resource, controller)
+        };
+
+        let started = controller.watch(path, recursive, timeout);
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
+        let valid = state.sessions.get(&session_id).is_some_and(|session| {
+            &session.identity == identity
+                && session.watches.contains_key(&resource.id)
+                && matches!(
+                    session.sandboxes.get(&sandbox_id),
+                    Some(SandboxSlot::Running(_))
+                )
+        });
+        if !valid {
+            if let Ok(watch) = started {
+                watch.controller().stop();
+            }
+            return Ok(None);
+        }
+        match started {
+            Ok(watch) => {
+                let session = state
+                    .sessions
+                    .get_mut(&session_id)
+                    .context("session disappeared")?;
+                session.watches.insert(
+                    resource.id,
+                    WatchSlot::Running {
+                        resource: resource.clone(),
+                        watch,
+                    },
+                );
+                Ok(Some(resource))
+            }
+            Err(error) => {
+                let session = state
+                    .sessions
+                    .get_mut(&session_id)
+                    .context("session disappeared")?;
+                session.watches.remove(&resource.id);
+                state.quotas.release_watch(sandbox_id, identity);
+                Err(error)
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn stop_managed_watch(
+        &self,
+        session_id: ResourceHandle,
+        identity: &ClientIdentityKey,
+        watch_id: ResourceHandle,
+    ) -> Result<bool> {
+        let watch = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
+            let session = state
+                .sessions
+                .get_mut(&session_id)
+                .context("resource not found")?;
+            if &session.identity != identity {
+                return Ok(false);
+            }
+            prune_retired(&mut session.retired);
+            if session
+                .retired
+                .iter()
+                .any(|(_, retired)| *retired == watch_id)
+            {
+                return Ok(true);
+            }
+            if matches!(
+                session.watches.get(&watch_id),
+                Some(WatchSlot::Preparing(_))
+            ) {
+                bail!("watch is still preparing");
+            }
+            let Some(watch) = session.watches.remove(&watch_id) else {
+                return Ok(false);
+            };
+            session.retired.push_back((Instant::now(), watch_id));
+            if session.retired.len() > MAX_RETIRED_HANDLES {
+                session.retired.pop_front();
+            }
+            state
+                .quotas
+                .release_watch(watch.resource().sandbox_id, identity);
+            watch
+        };
+        if let Some(controller) = watch.controller() {
+            controller.stop();
+        }
+        Ok(true)
+    }
+
+    #[cfg(windows)]
+    pub fn retire_managed_watch(
+        &self,
+        session_id: ResourceHandle,
+        identity: &ClientIdentityKey,
+        watch_id: ResourceHandle,
+    ) -> Result<bool> {
+        self.stop_managed_watch(session_id, identity, watch_id)
+    }
+
+    #[cfg(windows)]
+    pub fn managed_watch_event(
+        &self,
+        session_id: ResourceHandle,
+        identity: &ClientIdentityKey,
+        watch_id: ResourceHandle,
+        timeout: Duration,
+    ) -> Result<Option<ManagedWatchEvent>> {
+        let controller = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
+            let Some(session) = state.sessions.get(&session_id) else {
+                return Ok(None);
+            };
+            if &session.identity != identity {
+                return Ok(None);
+            }
+            session
+                .watches
+                .get(&watch_id)
+                .and_then(WatchSlot::controller)
+        };
+        match controller {
+            Some(controller) => controller.next(timeout),
+            None => Ok(None),
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn managed_watch_closed(
+        &self,
+        session_id: ResourceHandle,
+        identity: &ClientIdentityKey,
+        watch_id: ResourceHandle,
+    ) -> bool {
+        self.state.lock().map_or(true, |state| {
+            state.sessions.get(&session_id).is_none_or(|session| {
+                if &session.identity != identity {
+                    return true;
+                }
+                session
+                    .watches
+                    .get(&watch_id)
+                    .and_then(WatchSlot::controller)
+                    .is_none_or(|controller| controller.is_closed())
             })
         })
     }

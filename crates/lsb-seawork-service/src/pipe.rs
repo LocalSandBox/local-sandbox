@@ -19,6 +19,7 @@ use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 
 use crate::resource::process::{GuestProcessResource, ManagedProcessOutput};
+use crate::resource::watch::WatchResource;
 use crate::security::descriptor::SecurityDescriptor;
 use crate::security::ClientIdentity;
 use crate::session::{ClientIdentityKey, QuotaLimits, ResourceHandle, SessionManager};
@@ -243,7 +244,7 @@ impl HealthContext {
         CapabilityHealth {
             direct_mount: false,
             direct_mount_backends: Vec::new(),
-            watch: false,
+            watch: self.engine.is_some(),
             ports: false,
         }
     }
@@ -574,6 +575,65 @@ where
                     continue;
                 }
             },
+            RequestOp::Watch {
+                sandbox_id,
+                path,
+                recursive,
+            } => {
+                let watch = match rpc::watch::start(
+                    context.sessions.clone(),
+                    session_id,
+                    identity.clone(),
+                    sandbox_id,
+                    path,
+                    recursive,
+                    deadline_ms,
+                )
+                .await
+                {
+                    Ok(watch) => watch,
+                    Err(code) => {
+                        write_error(writer, selected, frame.header.correlation, code).await?;
+                        continue;
+                    }
+                };
+                write_control(
+                    writer,
+                    FrameKind::Response,
+                    selected,
+                    frame.header.correlation,
+                    &Response::Ok {
+                        result: ResponseValue::WatchStarted {
+                            watch_id: watch.id.to_string(),
+                        },
+                    },
+                )
+                .await?;
+                tokio::spawn(pump_watch_events(
+                    context.sessions.clone(),
+                    session_id,
+                    identity.clone(),
+                    watch,
+                    selected,
+                    writer.clone(),
+                    events.clone(),
+                ));
+                continue;
+            }
+            RequestOp::StopWatch { watch_id } => match rpc::watch::stop(
+                context.sessions.clone(),
+                session_id,
+                identity.clone(),
+                watch_id,
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(code) => {
+                    write_error(writer, selected, frame.header.correlation, code).await?;
+                    continue;
+                }
+            },
             RequestOp::Mkdir {
                 sandbox_id,
                 path,
@@ -859,6 +919,54 @@ async fn pump_process_output(
     streams.remove(&process.stdout_stream.to_string());
     streams.remove(&process.stderr_stream.to_string());
     let _ = sessions.retire_managed_process(session_id, &identity, process.id);
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn pump_watch_events(
+    sessions: SessionManager,
+    session_id: ResourceHandle,
+    identity: ClientIdentityKey,
+    watch: WatchResource,
+    protocol: lsb_service_proto::ProtocolVersion,
+    writer: OutboundWriter,
+    events: EventSequence,
+) {
+    loop {
+        let output = tokio::task::spawn_blocking({
+            let sessions = sessions.clone();
+            let identity = identity.clone();
+            move || {
+                sessions.managed_watch_event(
+                    session_id,
+                    &identity,
+                    watch.id,
+                    Duration::from_secs(1),
+                )
+            }
+        })
+        .await;
+        match output {
+            Ok(Ok(Some(event))) => {
+                let event = Event::WatchChanged {
+                    watch_id: watch.id.to_string(),
+                    path: event.path,
+                    change: event.change,
+                };
+                if event.validate().is_err()
+                    || events.write(&writer, protocol, &event).await.is_err()
+                {
+                    break;
+                }
+            }
+            Ok(Ok(None)) => {
+                if sessions.managed_watch_closed(session_id, &identity, watch.id) {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+    let _ = sessions.retire_managed_watch(session_id, &identity, watch.id);
 }
 
 async fn write_stream_frame(
