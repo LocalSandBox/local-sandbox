@@ -2,31 +2,39 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::os::windows::io::AsRawHandle;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use lsb_service_proto::frame::HEADER_VERSION;
 use lsb_service_proto::limits::{HEADER_LEN, MAX_STREAM_PAYLOAD, STREAM_SEQUENCE_LEN};
 use lsb_service_proto::{
-    encode_stream_payload, negotiate, parse_control, CapabilityHealth, Correlation, ErrorCode,
-    ErrorEnvelope, Event, FrameHeader, FrameKind, Health, HealthState, Hello, HelloReply, HexU64,
-    ProtocolRange, Request, RequestOp, Response, ResponseValue, ServiceInfo, WindowUpdate, CURRENT,
-    SUPPORTED,
+    encode_stream_payload, negotiate, parse_control, Cancel, CapabilityHealth, Correlation,
+    ErrorCode, ErrorEnvelope, Event, FrameHeader, FrameKind, Health, HealthState, Hello,
+    HelloReply, HexU64, ProtocolRange, Request, RequestOp, Response, ResponseValue, ServiceInfo,
+    WindowUpdate, CURRENT, SUPPORTED,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{NamedPipeServer, PipeMode, ServerOptions};
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 
+use crate::ipc::connection::{
+    ConnectionState, RequestDeadline, DEFAULT_BOOT_DEADLINE, DEFAULT_TRANSFER_DEADLINE,
+    DEFAULT_UNARY_DEADLINE,
+};
 use crate::resource::process::{GuestProcessResource, ManagedProcessOutput};
 use crate::resource::watch::WatchResource;
 use crate::security::descriptor::SecurityDescriptor;
 use crate::security::ClientIdentity;
-use crate::session::{ClientIdentityKey, QuotaLimits, ResourceHandle, SessionManager};
+use crate::session::{
+    CancellationToken, ClientIdentityKey, QuotaLimits, ResourceHandle, SessionManager,
+};
 use crate::{engine::ServiceEngineConfig, rpc};
 use crate::{LEDGER_SCHEMA_VERSION, PIPE_NAME, PIPE_SDDL};
 
 const OUTPUT_BACKPRESSURE_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(test)]
+static TEST_HEALTH_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 struct OutboundFrame {
     bytes: Vec<u8>,
@@ -201,6 +209,7 @@ pub struct HealthContext {
     pub admissions_open: bool,
     sessions: SessionManager,
     engine: Option<ServiceEngineConfig>,
+    requests: Arc<Semaphore>,
 }
 
 impl HealthContext {
@@ -209,6 +218,7 @@ impl HealthContext {
             admissions_open,
             sessions: SessionManager::new(quota_limits),
             engine: None,
+            requests: Arc::new(Semaphore::new(crate::ipc::pipe::MAX_REQUESTS_GLOBAL)),
         }
     }
 
@@ -386,29 +396,64 @@ where
     )
     .await?;
 
-    let mut expected_sequence = 1u64;
+    let connection = Arc::new(Mutex::new(ConnectionState::new(epoch)?));
     loop {
         let frame = match read_frame(pipe).await {
             Ok(frame) => frame,
-            Err(_) => return Ok(()),
+            Err(_) => {
+                if let Ok(state) = connection.lock() {
+                    state.cancel_all();
+                }
+                return Ok(());
+            }
         };
         if frame.header.protocol != selected
-            || frame.header.correlation.high != epoch
-            || frame.header.correlation.low != expected_sequence
             || !matches!(
                 frame.header.kind,
-                FrameKind::Request | FrameKind::WindowUpdate
+                FrameKind::Request | FrameKind::WindowUpdate | FrameKind::Cancel
             )
         {
             bail!("invalid health request direction, version, or sequence");
         }
-        expected_sequence = expected_sequence
-            .checked_add(1)
-            .context("health request sequence exhausted")?;
+        connection
+            .lock()
+            .map_err(|_| anyhow::anyhow!("connection state poisoned"))?
+            .accept_sequence(frame.header.correlation.high, frame.header.correlation.low)?;
         if frame.header.kind == FrameKind::WindowUpdate {
             let update: WindowUpdate = parse_control(&frame.payload)?;
             update.validate()?;
             streams.grant(&update)?;
+            continue;
+        }
+        if frame.header.kind == FrameKind::Cancel {
+            let cancel: Cancel = parse_control(&frame.payload)?;
+            cancel.validate()?;
+            let target = stream_correlation(&cancel.request_id)?;
+            let found = target.high == epoch
+                && connection
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("connection state poisoned"))?
+                    .cancel(target.low);
+            if found {
+                write_control(
+                    writer,
+                    FrameKind::Response,
+                    selected,
+                    frame.header.correlation,
+                    &Response::Ok {
+                        result: ResponseValue::Empty {},
+                    },
+                )
+                .await?;
+            } else {
+                write_error(
+                    writer,
+                    selected,
+                    frame.header.correlation,
+                    ErrorCode::RequestNotActive,
+                )
+                .await?;
+            }
             continue;
         }
         let request: Request = parse_control(&frame.payload)?;
@@ -422,392 +467,481 @@ where
             .await?;
             continue;
         }
-        let deadline_ms = request.deadline_ms;
-        macro_rules! file_result {
-            ($future:expr) => {
-                match $future.await {
-                    Ok(result) => result,
-                    Err(code) => {
-                        write_error(writer, selected, frame.header.correlation, code).await?;
-                        continue;
-                    }
-                }
-            };
+        if matches!(request.op, RequestOp::CloseSession {}) {
+            connection
+                .lock()
+                .map_err(|_| anyhow::anyhow!("connection state poisoned"))?
+                .cancel_all();
+            write_control(
+                writer,
+                FrameKind::Response,
+                selected,
+                frame.header.correlation,
+                &Response::Ok {
+                    result: ResponseValue::Empty {},
+                },
+            )
+            .await?;
+            return Ok(());
         }
-        let result = match request.op {
-            RequestOp::GetServiceInfo {} => ResponseValue::ServiceInfo {
-                info: context.service_info(),
-            },
-            RequestOp::HealthCheck {} => ResponseValue::Health {
-                health: context.health(),
-            },
-            RequestOp::StartSandbox {
-                cpus,
-                memory_mib,
-                disk_mib,
-                mounts,
-                ports,
-                network,
-            } => match rpc::sandbox::start(
-                context.admissions_open,
-                context.engine.clone(),
-                context.sessions.clone(),
-                session_id,
-                identity.clone(),
-                cpus,
-                memory_mib,
-                disk_mib,
-                mounts,
-                ports,
-                network,
-            )
-            .await
-            {
-                Ok(result) => result,
-                Err(code) => {
-                    write_error(writer, selected, frame.header.correlation, code).await?;
-                    continue;
-                }
-            },
-            RequestOp::StopSandbox { sandbox_id } => match rpc::sandbox::stop(
-                context.sessions.clone(),
-                session_id,
-                identity.clone(),
-                sandbox_id,
-                deadline_ms,
-            )
-            .await
-            {
-                Ok(result) => result,
-                Err(code) => {
-                    write_error(writer, selected, frame.header.correlation, code).await?;
-                    continue;
-                }
-            },
-            RequestOp::Exec {
-                sandbox_id,
-                command,
-                cwd,
-                env,
-            } => match rpc::process::exec(
-                context.sessions.clone(),
-                session_id,
-                identity.clone(),
-                sandbox_id,
-                command,
-                cwd,
-                env,
-                deadline_ms,
-            )
-            .await
-            {
-                Ok(result) => result,
-                Err(code) => {
-                    write_error(writer, selected, frame.header.correlation, code).await?;
-                    continue;
-                }
-            },
-            RequestOp::Spawn {
-                sandbox_id,
-                command,
-                cwd,
-                env,
-            } => {
-                let process = match rpc::process::spawn(
-                    context.sessions.clone(),
-                    session_id,
-                    identity.clone(),
-                    sandbox_id,
-                    command,
-                    cwd,
-                    env,
-                    deadline_ms,
-                )
-                .await
-                {
-                    Ok(process) => process,
-                    Err(code) => {
-                        write_error(writer, selected, frame.header.correlation, code).await?;
-                        continue;
-                    }
-                };
-                let stdout_credit = streams.register(process.stdout_stream.to_string())?;
-                let stderr_credit = streams.register(process.stderr_stream.to_string())?;
-                write_control(
+        let maximum = request_maximum(&request.op);
+        let deadline = RequestDeadline::from_client(Instant::now(), request.deadline_ms, maximum);
+        let request_permit = match context.requests.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                write_error(
                     writer,
-                    FrameKind::Response,
                     selected,
                     frame.header.correlation,
-                    &Response::Ok {
-                        result: ResponseValue::ProcessStarted {
-                            process_id: process.id.to_string(),
-                            stdout_stream_id: process.stdout_stream.to_string(),
-                            stderr_stream_id: process.stderr_stream.to_string(),
-                        },
-                    },
+                    ErrorCode::QuotaExceeded,
                 )
                 .await?;
-                tokio::spawn(pump_process_output(
-                    context.sessions.clone(),
-                    session_id,
-                    identity.clone(),
-                    process,
-                    selected,
-                    writer.clone(),
-                    events.clone(),
-                    streams.clone(),
-                    stdout_credit,
-                    stderr_credit,
-                ));
                 continue;
             }
-            RequestOp::KillProcess { process_id } => match rpc::process::kill(
-                context.sessions.clone(),
-                session_id,
-                identity.clone(),
-                process_id,
-            )
-            .await
-            {
-                Ok(result) => result,
-                Err(code) => {
-                    write_error(writer, selected, frame.header.correlation, code).await?;
-                    continue;
-                }
-            },
-            RequestOp::Watch {
-                sandbox_id,
-                path,
-                recursive,
-            } => {
-                let watch = match rpc::watch::start(
-                    context.sessions.clone(),
-                    session_id,
-                    identity.clone(),
-                    sandbox_id,
-                    path,
-                    recursive,
-                    deadline_ms,
-                )
-                .await
-                {
-                    Ok(watch) => watch,
-                    Err(code) => {
-                        write_error(writer, selected, frame.header.correlation, code).await?;
-                        continue;
-                    }
-                };
-                write_control(
+        };
+        let admission = {
+            let mut state = connection
+                .lock()
+                .map_err(|_| anyhow::anyhow!("connection state poisoned"))?;
+            state.begin_request(frame.header.correlation.low, deadline)
+        };
+        let cancellation = match admission {
+            Ok(cancellation) => cancellation,
+            Err(_) => {
+                write_error(
                     writer,
-                    FrameKind::Response,
                     selected,
                     frame.header.correlation,
-                    &Response::Ok {
-                        result: ResponseValue::WatchStarted {
-                            watch_id: watch.id.to_string(),
-                        },
-                    },
+                    ErrorCode::QuotaExceeded,
                 )
                 .await?;
-                tokio::spawn(pump_watch_events(
-                    context.sessions.clone(),
-                    session_id,
-                    identity.clone(),
-                    watch,
-                    selected,
-                    writer.clone(),
-                    events.clone(),
-                ));
                 continue;
             }
-            RequestOp::StopWatch { watch_id } => match rpc::watch::stop(
+        };
+        let write_bytes = if let RequestOp::WriteFile {
+            stream_id, length, ..
+        } = &request.op
+        {
+            match read_stream(pipe, selected, stream_id, *length).await {
+                Ok(bytes) => Some(bytes),
+                Err(_) => {
+                    connection
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("connection state poisoned"))?
+                        .finish(frame.header.correlation.low);
+                    write_error(
+                        writer,
+                        selected,
+                        frame.header.correlation,
+                        ErrorCode::ProtocolError,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            }
+        } else {
+            None
+        };
+        tokio::spawn(run_request(
+            request,
+            write_bytes,
+            frame.header.correlation,
+            selected,
+            writer.clone(),
+            context.clone(),
+            session_id,
+            identity.clone(),
+            events.clone(),
+            streams.clone(),
+            connection.clone(),
+            cancellation,
+            deadline,
+            request_permit,
+        ));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_request(
+    request: Request,
+    write_bytes: Option<Vec<u8>>,
+    correlation: Correlation,
+    protocol: lsb_service_proto::ProtocolVersion,
+    writer: OutboundWriter,
+    context: HealthContext,
+    session_id: ResourceHandle,
+    identity: ClientIdentityKey,
+    events: EventSequence,
+    streams: StreamRegistry,
+    connection: Arc<Mutex<ConnectionState>>,
+    cancellation: CancellationToken,
+    deadline: RequestDeadline,
+    _request_permit: OwnedSemaphorePermit,
+) {
+    let operation = dispatch_request(
+        request,
+        write_bytes,
+        correlation,
+        protocol,
+        writer.clone(),
+        context,
+        session_id,
+        identity,
+        events,
+        streams,
+    );
+    tokio::pin!(operation);
+    tokio::select! {
+        biased;
+        result = &mut operation => {
+            if result.is_err() {
+                let _ = write_error(&writer, protocol, correlation, ErrorCode::InternalError).await;
+            }
+        }
+        _ = wait_cancelled(cancellation.clone()) => {
+            let _ = write_error(&writer, protocol, correlation, ErrorCode::Cancelled).await;
+        }
+        _ = tokio::time::sleep(deadline.remaining(Instant::now())) => {
+            cancellation.cancel();
+            let _ = write_error(&writer, protocol, correlation, ErrorCode::DeadlineExceeded).await;
+        }
+    }
+    if let Ok(mut state) = connection.lock() {
+        state.finish(correlation.low);
+    }
+}
+
+async fn wait_cancelled(cancellation: CancellationToken) {
+    while !cancellation.is_cancelled() {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+fn request_maximum(op: &RequestOp) -> Duration {
+    match op {
+        RequestOp::StartSandbox { .. } => DEFAULT_BOOT_DEADLINE,
+        RequestOp::ReadFile { .. } | RequestOp::WriteFile { .. } | RequestOp::Copy { .. } => {
+            DEFAULT_TRANSFER_DEADLINE
+        }
+        _ => DEFAULT_UNARY_DEADLINE,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_request(
+    request: Request,
+    write_bytes: Option<Vec<u8>>,
+    correlation: Correlation,
+    protocol: lsb_service_proto::ProtocolVersion,
+    writer: OutboundWriter,
+    context: HealthContext,
+    session_id: ResourceHandle,
+    identity: ClientIdentityKey,
+    events: EventSequence,
+    streams: StreamRegistry,
+) -> Result<()> {
+    #[cfg(test)]
+    if matches!(request.op, RequestOp::HealthCheck {}) {
+        let delay = TEST_HEALTH_DELAY_MS.load(std::sync::atomic::Ordering::Acquire);
+        if delay != 0 {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+        }
+    }
+    let deadline_ms = request.deadline_ms;
+    macro_rules! rpc_value {
+        ($future:expr) => {
+            match $future.await {
+                Ok(result) => result,
+                Err(code) => {
+                    write_error(&writer, protocol, correlation, code).await?;
+                    return Ok(());
+                }
+            }
+        };
+    }
+
+    let result = match request.op {
+        RequestOp::GetServiceInfo {} => ResponseValue::ServiceInfo {
+            info: context.service_info(),
+        },
+        RequestOp::HealthCheck {} => ResponseValue::Health {
+            health: context.health(),
+        },
+        RequestOp::StartSandbox {
+            cpus,
+            memory_mib,
+            disk_mib,
+            mounts,
+            ports,
+            network,
+        } => rpc_value!(rpc::sandbox::start(
+            context.admissions_open,
+            context.engine.clone(),
+            context.sessions.clone(),
+            session_id,
+            identity.clone(),
+            cpus,
+            memory_mib,
+            disk_mib,
+            mounts,
+            ports,
+            network,
+        )),
+        RequestOp::StopSandbox { sandbox_id } => rpc_value!(rpc::sandbox::stop(
+            context.sessions.clone(),
+            session_id,
+            identity.clone(),
+            sandbox_id,
+            deadline_ms,
+        )),
+        RequestOp::Exec {
+            sandbox_id,
+            command,
+            cwd,
+            env,
+        } => rpc_value!(rpc::process::exec(
+            context.sessions.clone(),
+            session_id,
+            identity.clone(),
+            sandbox_id,
+            command,
+            cwd,
+            env,
+            deadline_ms,
+        )),
+        RequestOp::Spawn {
+            sandbox_id,
+            command,
+            cwd,
+            env,
+        } => {
+            let process = rpc_value!(rpc::process::spawn(
                 context.sessions.clone(),
                 session_id,
                 identity.clone(),
-                watch_id,
+                sandbox_id,
+                command,
+                cwd,
+                env,
+                deadline_ms,
+            ));
+            let stdout_credit = streams.register(process.stdout_stream.to_string())?;
+            let stderr_credit = streams.register(process.stderr_stream.to_string())?;
+            write_control(
+                &writer,
+                FrameKind::Response,
+                protocol,
+                correlation,
+                &Response::Ok {
+                    result: ResponseValue::ProcessStarted {
+                        process_id: process.id.to_string(),
+                        stdout_stream_id: process.stdout_stream.to_string(),
+                        stderr_stream_id: process.stderr_stream.to_string(),
+                    },
+                },
             )
-            .await
-            {
-                Ok(result) => result,
-                Err(code) => {
-                    write_error(writer, selected, frame.header.correlation, code).await?;
-                    continue;
-                }
-            },
-            RequestOp::Mkdir {
+            .await?;
+            tokio::spawn(pump_process_output(
+                context.sessions.clone(),
+                session_id,
+                identity,
+                process,
+                protocol,
+                writer,
+                events,
+                streams,
+                stdout_credit,
+                stderr_credit,
+            ));
+            return Ok(());
+        }
+        RequestOp::KillProcess { process_id } => rpc_value!(rpc::process::kill(
+            context.sessions.clone(),
+            session_id,
+            identity.clone(),
+            process_id,
+        )),
+        RequestOp::Watch {
+            sandbox_id,
+            path,
+            recursive,
+        } => {
+            let watch = rpc_value!(rpc::watch::start(
+                context.sessions.clone(),
+                session_id,
+                identity.clone(),
                 sandbox_id,
                 path,
                 recursive,
-            } => file_result!(file_request(
-                context,
+                deadline_ms,
+            ));
+            write_control(
+                &writer,
+                FrameKind::Response,
+                protocol,
+                correlation,
+                &Response::Ok {
+                    result: ResponseValue::WatchStarted {
+                        watch_id: watch.id.to_string(),
+                    },
+                },
+            )
+            .await?;
+            tokio::spawn(pump_watch_events(
+                context.sessions.clone(),
                 session_id,
                 identity,
-                sandbox_id,
-                crate::resource::vm::ManagedFileOp::Mkdir { path, recursive },
-                deadline_ms,
-            )),
-            RequestOp::ReadDir { sandbox_id, path } => file_result!(file_request(
-                context,
-                session_id,
-                identity,
-                sandbox_id,
-                crate::resource::vm::ManagedFileOp::ReadDir { path },
-                deadline_ms,
-            )),
-            RequestOp::Stat { sandbox_id, path } => file_result!(file_request(
-                context,
-                session_id,
-                identity,
-                sandbox_id,
-                crate::resource::vm::ManagedFileOp::Stat { path },
-                deadline_ms,
-            )),
-            RequestOp::Remove {
-                sandbox_id,
-                path,
-                recursive,
-            } => file_result!(file_request(
-                context,
-                session_id,
-                identity,
-                sandbox_id,
-                crate::resource::vm::ManagedFileOp::Remove { path, recursive },
-                deadline_ms,
-            )),
-            RequestOp::Rename {
-                sandbox_id,
-                old_path,
-                new_path,
-            } => file_result!(file_request(
-                context,
-                session_id,
-                identity,
-                sandbox_id,
-                crate::resource::vm::ManagedFileOp::Rename { old_path, new_path },
-                deadline_ms,
-            )),
-            RequestOp::Copy {
-                sandbox_id,
+                watch,
+                protocol,
+                writer,
+                events,
+            ));
+            return Ok(());
+        }
+        RequestOp::StopWatch { watch_id } => rpc_value!(rpc::watch::stop(
+            context.sessions.clone(),
+            session_id,
+            identity.clone(),
+            watch_id,
+        )),
+        RequestOp::Mkdir {
+            sandbox_id,
+            path,
+            recursive,
+        } => rpc_value!(file_request(
+            &context,
+            session_id,
+            &identity,
+            sandbox_id,
+            crate::resource::vm::ManagedFileOp::Mkdir { path, recursive },
+            deadline_ms,
+        )),
+        RequestOp::ReadDir { sandbox_id, path } => rpc_value!(file_request(
+            &context,
+            session_id,
+            &identity,
+            sandbox_id,
+            crate::resource::vm::ManagedFileOp::ReadDir { path },
+            deadline_ms,
+        )),
+        RequestOp::Stat { sandbox_id, path } => rpc_value!(file_request(
+            &context,
+            session_id,
+            &identity,
+            sandbox_id,
+            crate::resource::vm::ManagedFileOp::Stat { path },
+            deadline_ms,
+        )),
+        RequestOp::Remove {
+            sandbox_id,
+            path,
+            recursive,
+        } => rpc_value!(file_request(
+            &context,
+            session_id,
+            &identity,
+            sandbox_id,
+            crate::resource::vm::ManagedFileOp::Remove { path, recursive },
+            deadline_ms,
+        )),
+        RequestOp::Rename {
+            sandbox_id,
+            old_path,
+            new_path,
+        } => rpc_value!(file_request(
+            &context,
+            session_id,
+            &identity,
+            sandbox_id,
+            crate::resource::vm::ManagedFileOp::Rename { old_path, new_path },
+            deadline_ms,
+        )),
+        RequestOp::Copy {
+            sandbox_id,
+            src,
+            dst,
+            recursive,
+        } => rpc_value!(file_request(
+            &context,
+            session_id,
+            &identity,
+            sandbox_id,
+            crate::resource::vm::ManagedFileOp::Copy {
                 src,
                 dst,
                 recursive,
-            } => file_result!(file_request(
-                context,
+            },
+            deadline_ms,
+        )),
+        RequestOp::Chmod {
+            sandbox_id,
+            path,
+            mode,
+        } => rpc_value!(file_request(
+            &context,
+            session_id,
+            &identity,
+            sandbox_id,
+            crate::resource::vm::ManagedFileOp::Chmod { path, mode },
+            deadline_ms,
+        )),
+        RequestOp::Exists { sandbox_id, path } => rpc_value!(file_request(
+            &context,
+            session_id,
+            &identity,
+            sandbox_id,
+            crate::resource::vm::ManagedFileOp::Exists { path },
+            deadline_ms,
+        )),
+        RequestOp::ReadFile { sandbox_id, path } => {
+            let bytes = rpc_value!(rpc::file::read(
+                context.sessions.clone(),
                 session_id,
                 identity,
                 sandbox_id,
-                crate::resource::vm::ManagedFileOp::Copy {
-                    src,
-                    dst,
-                    recursive,
+                path,
+                deadline_ms,
+            ));
+            let stream_id = ResourceHandle::random()?.to_string();
+            write_control(
+                &writer,
+                FrameKind::Response,
+                protocol,
+                correlation,
+                &Response::Ok {
+                    result: ResponseValue::FileRead {
+                        stream_id: stream_id.clone(),
+                        length: bytes.len().try_into().context("file length overflow")?,
+                    },
                 },
-                deadline_ms,
-            )),
-            RequestOp::Chmod {
-                sandbox_id,
+            )
+            .await?;
+            write_stream(&writer, protocol, &stream_id, &bytes).await?;
+            return Ok(());
+        }
+        RequestOp::WriteFile {
+            sandbox_id, path, ..
+        } => rpc_value!(file_request(
+            &context,
+            session_id,
+            &identity,
+            sandbox_id,
+            crate::resource::vm::ManagedFileOp::WriteFile {
                 path,
-                mode,
-            } => file_result!(file_request(
-                context,
-                session_id,
-                identity,
-                sandbox_id,
-                crate::resource::vm::ManagedFileOp::Chmod { path, mode },
-                deadline_ms,
-            )),
-            RequestOp::Exists { sandbox_id, path } => file_result!(file_request(
-                context,
-                session_id,
-                identity,
-                sandbox_id,
-                crate::resource::vm::ManagedFileOp::Exists { path },
-                deadline_ms,
-            )),
-            RequestOp::ReadFile { sandbox_id, path } => {
-                let bytes = match rpc::file::read(
-                    context.sessions.clone(),
-                    session_id,
-                    identity.clone(),
-                    sandbox_id,
-                    path,
-                    deadline_ms,
-                )
-                .await
-                {
-                    Ok(bytes) => bytes,
-                    Err(code) => {
-                        write_error(writer, selected, frame.header.correlation, code).await?;
-                        continue;
-                    }
-                };
-                let stream_id = ResourceHandle::random()?.to_string();
-                write_control(
-                    writer,
-                    FrameKind::Response,
-                    selected,
-                    frame.header.correlation,
-                    &Response::Ok {
-                        result: ResponseValue::FileRead {
-                            stream_id: stream_id.clone(),
-                            length: bytes.len().try_into().context("file length overflow")?,
-                        },
-                    },
-                )
-                .await?;
-                write_stream(writer, selected, &stream_id, &bytes).await?;
-                continue;
-            }
-            RequestOp::WriteFile {
-                sandbox_id,
-                path,
-                stream_id,
-                length,
-            } => {
-                let bytes = match read_stream(pipe, selected, &stream_id, length).await {
-                    Ok(bytes) => bytes,
-                    Err(_) => {
-                        write_error(
-                            writer,
-                            selected,
-                            frame.header.correlation,
-                            ErrorCode::ProtocolError,
-                        )
-                        .await?;
-                        return Ok(());
-                    }
-                };
-                file_result!(file_request(
-                    context,
-                    session_id,
-                    identity,
-                    sandbox_id,
-                    crate::resource::vm::ManagedFileOp::WriteFile { path, bytes },
-                    deadline_ms,
-                ))
-            }
-            RequestOp::CloseSession {} => {
-                write_control(
-                    writer,
-                    FrameKind::Response,
-                    selected,
-                    frame.header.correlation,
-                    &Response::Ok {
-                        result: ResponseValue::Empty {},
-                    },
-                )
-                .await?;
-                return Ok(());
-            }
-        };
-        write_control(
-            writer,
-            FrameKind::Response,
-            selected,
-            frame.header.correlation,
-            &Response::Ok { result },
-        )
-        .await?;
-    }
+                bytes: write_bytes.context("WriteFile bytes were not collected")?,
+            },
+            deadline_ms,
+        )),
+        RequestOp::CloseSession {} => return Ok(()),
+    };
+    write_control(
+        &writer,
+        FrameKind::Response,
+        protocol,
+        correlation,
+        &Response::Ok { result },
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1205,5 +1339,164 @@ mod tests {
         credit.consume(64 * 1024).await.unwrap();
         assert_eq!(credit.credit.available_permits(), 0);
         assert!(credit.grant(4 * 1024 * 1024 + 1).is_err());
+    }
+
+    #[tokio::test]
+    async fn requests_complete_out_of_order_and_cancel_by_correlation() {
+        async fn send_control<W: AsyncWrite + Unpin>(
+            writer: &mut W,
+            kind: FrameKind,
+            protocol: lsb_service_proto::ProtocolVersion,
+            correlation: Correlation,
+            value: &impl serde::Serialize,
+        ) {
+            let payload = serde_json::to_vec(value).unwrap();
+            let header = FrameHeader {
+                kind,
+                flags: 0,
+                protocol,
+                payload_len: payload.len() as u32,
+                correlation,
+            }
+            .encode()
+            .unwrap();
+            writer.write_all(&header).await.unwrap();
+            writer.write_all(&payload).await.unwrap();
+            writer.flush().await.unwrap();
+        }
+
+        TEST_HEALTH_DELAY_MS.store(10_000, std::sync::atomic::Ordering::Release);
+        let (mut client, server) = tokio::io::duplex(1024 * 1024);
+        let context = HealthContext::new(true, QuotaLimits::default());
+        let identity = ClientIdentityKey::for_test("user", "logon", 1);
+        let session_id = context.sessions.open(identity.clone()).unwrap();
+        let server_task = tokio::spawn({
+            let context = context.clone();
+            let identity = identity.clone();
+            async move {
+                let (mut reader, pipe_writer) = tokio::io::split(server);
+                let (writer, writer_task) = OutboundWriter::start(pipe_writer);
+                let result = handle_authenticated_client(
+                    &mut reader,
+                    &writer,
+                    &context,
+                    session_id,
+                    &identity,
+                )
+                .await;
+                drop(writer);
+                writer_task.await.unwrap().unwrap();
+                result
+            }
+        });
+
+        send_control(
+            &mut client,
+            FrameKind::Hello,
+            CURRENT,
+            Correlation::default(),
+            &Hello {
+                min_minor: SUPPORTED.min_minor,
+                max_minor: SUPPORTED.max_minor,
+                client_version: "test".to_string(),
+                feature_bits_hex: HexU64(0),
+            },
+        )
+        .await;
+        let hello = read_frame(&mut client).await.unwrap();
+        let epoch = hello.header.correlation.high;
+        let protocol = hello.header.protocol;
+
+        send_control(
+            &mut client,
+            FrameKind::Request,
+            protocol,
+            Correlation {
+                high: epoch,
+                low: 1,
+            },
+            &Request {
+                deadline_ms: None,
+                op: RequestOp::HealthCheck {},
+            },
+        )
+        .await;
+        send_control(
+            &mut client,
+            FrameKind::Request,
+            protocol,
+            Correlation {
+                high: epoch,
+                low: 2,
+            },
+            &Request {
+                deadline_ms: None,
+                op: RequestOp::GetServiceInfo {},
+            },
+        )
+        .await;
+
+        let second = read_frame(&mut client).await.unwrap();
+        assert_eq!(second.header.correlation.low, 2);
+        assert!(matches!(
+            parse_control::<Response>(&second.payload).unwrap(),
+            Response::Ok {
+                result: ResponseValue::ServiceInfo { .. }
+            }
+        ));
+
+        send_control(
+            &mut client,
+            FrameKind::Cancel,
+            protocol,
+            Correlation {
+                high: epoch,
+                low: 3,
+            },
+            &Cancel {
+                request_id: format!("{epoch:016x}{:016x}", 1),
+            },
+        )
+        .await;
+        let first_terminal = read_frame(&mut client).await.unwrap();
+        let second_terminal = read_frame(&mut client).await.unwrap();
+        let mut terminal = [first_terminal, second_terminal];
+        terminal.sort_by_key(|frame| frame.header.correlation.low);
+        assert_eq!(terminal[0].header.correlation.low, 1);
+        assert!(matches!(
+            parse_control::<Response>(&terminal[0].payload).unwrap(),
+            Response::Err {
+                error: ErrorEnvelope {
+                    code: ErrorCode::Cancelled,
+                    ..
+                }
+            }
+        ));
+        assert_eq!(terminal[1].header.correlation.low, 3);
+        assert!(matches!(
+            parse_control::<Response>(&terminal[1].payload).unwrap(),
+            Response::Ok {
+                result: ResponseValue::Empty {}
+            }
+        ));
+
+        send_control(
+            &mut client,
+            FrameKind::Request,
+            protocol,
+            Correlation {
+                high: epoch,
+                low: 4,
+            },
+            &Request {
+                deadline_ms: None,
+                op: RequestOp::CloseSession {},
+            },
+        )
+        .await;
+        let close = read_frame(&mut client).await.unwrap();
+        assert_eq!(close.header.correlation.low, 4);
+        server_task.await.unwrap().unwrap();
+        TEST_HEALTH_DELAY_MS.store(0, std::sync::atomic::Ordering::Release);
     }
 }

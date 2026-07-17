@@ -28,6 +28,10 @@ impl RequestDeadline {
     pub fn expired(self, now: Instant) -> bool {
         now >= self.0
     }
+
+    pub fn remaining(self, now: Instant) -> Duration {
+        self.0.saturating_duration_since(now)
+    }
 }
 
 #[derive(Debug)]
@@ -114,6 +118,12 @@ impl ConnectionState {
             }
         }
         count
+    }
+
+    pub fn cancel_all(&self) {
+        for request in self.active.values() {
+            request.cancellation.cancel();
+        }
     }
 
     pub fn active_len(&self) -> usize {
