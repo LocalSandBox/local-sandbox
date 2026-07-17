@@ -2255,6 +2255,8 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "crc32fast",
+ "flate2",
  "lsb-platform",
  "lsb-service-proto",
  "serde",

@@ -68,7 +68,7 @@ pub fn package_release(args: &[String]) -> Result<()> {
         "cli" => package_cli(platform, version, &root, &output_dir),
         "os-image" => package_os_image(platform, version, &output_dir),
         "seawork-service" => {
-            crate::seawork_release::stage_bundle(args, platform, version, &root, &output_dir)
+            crate::seawork_release::package_bundle(args, platform, version, &root, &output_dir)
         }
         other => bail!("unsupported --artifact value: {other}"),
     }

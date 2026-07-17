@@ -1,12 +1,15 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{BufReader, Read};
+use std::io::{BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
+use crc32fast::Hasher as Crc32;
+use flate2::write::DeflateEncoder;
+use flate2::Compression;
 use lsb_platform::PlatformSpec;
 use lsb_service_proto::{CURRENT, SUPPORTED};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::args::{flag_value, required_flag_value};
@@ -19,7 +22,8 @@ const LEDGER_SCHEMA_VERSION: u32 = 1;
 const MAX_BUNDLE_FILES: usize = 10_000;
 const MAX_BUNDLE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct BundleManifest {
     schema_version: u32,
     local_sandbox_version: String,
@@ -27,8 +31,8 @@ struct BundleManifest {
     client_version: String,
     protocol: ProtocolContract,
     ledger: LedgerContract,
-    architecture: &'static str,
-    target: &'static str,
+    architecture: String,
+    target: String,
     guest_asset_version: String,
     qemu: QemuContract,
     service_configuration_revision: u32,
@@ -36,7 +40,8 @@ struct BundleManifest {
     files: Vec<BundleFile>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct ProtocolContract {
     major: u16,
     current_minor: u16,
@@ -44,28 +49,32 @@ struct ProtocolContract {
     supported_max_minor: u16,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct LedgerContract {
     reader_min_schema: u32,
     reader_max_schema: u32,
     writer_schema: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct QemuContract {
-    package_version: &'static str,
-    qemu_version: &'static str,
-    package_revision: &'static str,
-    artifact_sha256: &'static str,
+    package_version: String,
+    qemu_version: String,
+    package_revision: String,
+    artifact_sha256: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct PublisherContract {
     subject: String,
     sha256_thumbprint: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 struct BundleFile {
     path: String,
     size_bytes: u64,
@@ -124,6 +133,20 @@ struct FilesystemConfiguration {
 struct HealthConfiguration {
     required_checks: Vec<&'static str>,
     ports_available_only_with_wfp_evidence: bool,
+}
+
+pub fn package_bundle(
+    args: &[String],
+    platform: &PlatformSpec,
+    version: &str,
+    workspace_root: &Path,
+    output_dir: &Path,
+) -> Result<()> {
+    match flag_value(args, "--mode").unwrap_or("stage") {
+        "stage" => stage_bundle(args, platform, version, workspace_root, output_dir),
+        "archive" => archive_bundle(args, platform, version, workspace_root, output_dir),
+        mode => bail!("unsupported SeaWork service packaging mode: {mode}"),
+    }
 }
 
 pub fn stage_bundle(
@@ -213,14 +236,14 @@ pub fn stage_bundle(
             reader_max_schema: LEDGER_SCHEMA_VERSION,
             writer_schema: LEDGER_SCHEMA_VERSION,
         },
-        architecture: "x86_64",
-        target: "x86_64-pc-windows-msvc",
+        architecture: "x86_64".to_string(),
+        target: "x86_64-pc-windows-msvc".to_string(),
         guest_asset_version: version,
         qemu: QemuContract {
-            package_version: qemu.package_version,
-            qemu_version: qemu.qemu_version,
-            package_revision: qemu.package_revision,
-            artifact_sha256: qemu.artifact_sha256,
+            package_version: qemu.package_version.to_string(),
+            qemu_version: qemu.qemu_version.to_string(),
+            package_revision: qemu.package_revision.to_string(),
+            artifact_sha256: qemu.artifact_sha256.to_string(),
         },
         service_configuration_revision: SERVICE_CONFIGURATION_REVISION,
         publisher: PublisherContract {
@@ -231,6 +254,348 @@ pub fn stage_bundle(
     };
     write_json(&bundle_root.join("manifests/bundle.json"), &manifest)?;
     println!("staged SeaWork service bundle at {}", stage_dir.display());
+    Ok(())
+}
+
+fn archive_bundle(
+    args: &[String],
+    platform: &PlatformSpec,
+    raw_version: &str,
+    workspace_root: &Path,
+    output_dir: &Path,
+) -> Result<()> {
+    if platform.id != "windows-x86_64" {
+        bail!("the SeaWork service artifact supports only windows-x86_64");
+    }
+    let version = normalize_version(raw_version)?;
+    let stage_dir = input_directory(args, "--stage-dir", workspace_root)?;
+    let catalog = input_file(args, "--catalog", workspace_root)?;
+    let pdb = input_file(args, "--pdb", workspace_root)?;
+    let source_map = input_file(args, "--source-map", workspace_root)?;
+    if fs::metadata(&source_map)?.len() > 1024 * 1024 {
+        bail!("source map exceeds the 1 MiB limit");
+    }
+    let bundle_root = require_closed_stage(&stage_dir)?;
+    install_catalog(
+        &catalog,
+        &bundle_root.join("manifests/LocalSandboxSeaWork.cat"),
+    )?;
+    verify_staged_bundle(&bundle_root, &version)?;
+    serde_json::from_slice::<serde_json::Value>(&fs::read(&source_map)?)
+        .context("source map must be valid JSON")?;
+
+    let archive_name = format!("lsb-seawork-service-v{version}-windows-x86_64.zip");
+    let symbols_name = format!("lsb-seawork-service-v{version}-windows-x86_64-symbols.zip");
+    let archive = output_dir.join(&archive_name);
+    let symbols = output_dir.join(&symbols_name);
+    let payload_entries = zip_entries(&stage_dir)?;
+    write_deterministic_zip(&archive, payload_entries)?;
+    write_deterministic_zip(
+        &symbols,
+        vec![
+            ZipInput {
+                name: "LocalSandbox/bin/localsandbox-seawork-service.pdb".to_string(),
+                source: pdb,
+            },
+            ZipInput {
+                name: "LocalSandbox/manifests/source-map.json".to_string(),
+                source: source_map,
+            },
+        ],
+    )?;
+    let sums = format!(
+        "{}  {}\n{}  {}\n",
+        sha256_file(&archive)?,
+        archive_name,
+        sha256_file(&symbols)?,
+        symbols_name
+    );
+    let sums_path = output_dir.join("SHA256SUMS");
+    if sums_path.exists() {
+        bail!("refusing to overwrite {}", sums_path.display());
+    }
+    fs::write(&sums_path, sums)?;
+    println!("created {}", archive.display());
+    println!("created {}", symbols.display());
+    println!("created {}", sums_path.display());
+    Ok(())
+}
+
+fn require_closed_stage(stage_dir: &Path) -> Result<PathBuf> {
+    let mut entries = fs::read_dir(stage_dir)?.collect::<std::io::Result<Vec<_>>>()?;
+    if entries.len() != 1 || entries[0].file_name() != "LocalSandbox" {
+        bail!("stage must contain exactly the LocalSandbox directory");
+    }
+    let bundle_root = entries.remove(0).path();
+    require_directory(&bundle_root)?;
+    Ok(bundle_root)
+}
+
+fn install_catalog(source: &Path, destination: &Path) -> Result<()> {
+    let size = fs::metadata(source)?.len();
+    if size == 0 || size > 16 * 1024 * 1024 {
+        bail!("catalog size is outside the supported range");
+    }
+    if destination.exists() {
+        require_regular_file(destination)?;
+        if sha256_file(source)? != sha256_file(destination)? {
+            bail!("stage already contains a different catalog");
+        }
+        return Ok(());
+    }
+    copy_file(source, destination)
+}
+
+fn verify_staged_bundle(bundle_root: &Path, expected_version: &str) -> Result<()> {
+    let manifest_path = bundle_root.join("manifests/bundle.json");
+    let bytes = fs::read(&manifest_path)?;
+    if bytes.is_empty() || bytes.len() > 1024 * 1024 {
+        bail!("bundle manifest size is outside the supported range");
+    }
+    let manifest: BundleManifest = serde_json::from_slice(&bytes)?;
+    if manifest.schema_version != BUNDLE_SCHEMA_VERSION
+        || manifest.local_sandbox_version != expected_version
+        || manifest.service_version != expected_version
+        || manifest.client_version != expected_version
+        || manifest.architecture != "x86_64"
+        || manifest.target != "x86_64-pc-windows-msvc"
+        || manifest.guest_asset_version != expected_version
+        || manifest.service_configuration_revision != SERVICE_CONFIGURATION_REVISION
+        || manifest.protocol.major != CURRENT.major
+        || manifest.protocol.current_minor != CURRENT.minor
+        || manifest.protocol.supported_min_minor != SUPPORTED.min_minor
+        || manifest.protocol.supported_max_minor != SUPPORTED.max_minor
+        || manifest.ledger.reader_min_schema != LEDGER_SCHEMA_VERSION
+        || manifest.ledger.reader_max_schema != LEDGER_SCHEMA_VERSION
+        || manifest.ledger.writer_schema != LEDGER_SCHEMA_VERSION
+    {
+        bail!("bundle manifest metadata does not match this release");
+    }
+    let qemu = lsb_platform::windows_x86_64::host_tools::managed_qemu_package_metadata();
+    if manifest.qemu.package_version != qemu.package_version
+        || manifest.qemu.qemu_version != qemu.qemu_version
+        || manifest.qemu.package_revision != qemu.package_revision
+        || !manifest
+            .qemu
+            .artifact_sha256
+            .eq_ignore_ascii_case(qemu.artifact_sha256)
+    {
+        bail!("bundle managed QEMU metadata does not match this release");
+    }
+    normalize_sha256_thumbprint(&manifest.publisher.sha256_thumbprint)?;
+    if manifest.publisher.subject.trim().is_empty() {
+        bail!("bundle publisher subject is empty");
+    }
+    let actual_files = inventory_bundle(bundle_root)?;
+    if actual_files != manifest.files {
+        bail!("bundle payload differs from its closed manifest inventory");
+    }
+    let contract: serde_json::Value = serde_json::from_slice(&fs::read(
+        bundle_root.join("manifests/service-contract.json"),
+    )?)?;
+    if contract != serde_json::to_value(service_contract())? {
+        bail!("service contract differs from the packager contract");
+    }
+    let runtime_version = fs::read_to_string(bundle_root.join("runtime/VERSION"))?;
+    if runtime_version.trim() != expected_version {
+        bail!("runtime VERSION does not match the bundle version");
+    }
+    require_amd64_pe(&bundle_root.join("bin/localsandbox-seawork-service.exe"))?;
+    require_regular_file(&bundle_root.join("manifests/LocalSandboxSeaWork.cat"))?;
+    Ok(())
+}
+
+fn require_amd64_pe(path: &Path) -> Result<()> {
+    let mut file = File::open(path)?;
+    let size = file.metadata()?.len();
+    if size < 0x40 {
+        bail!("service executable is not a PE image");
+    }
+    let mut dos = [0u8; 0x40];
+    file.read_exact(&mut dos)?;
+    if &dos[..2] != b"MZ" {
+        bail!("service executable has no DOS header");
+    }
+    let offset = u32::from_le_bytes(dos[0x3c..0x40].try_into()?) as u64;
+    if offset.checked_add(6).is_none_or(|end| end > size) {
+        bail!("service executable PE header is out of bounds");
+    }
+    file.seek(std::io::SeekFrom::Start(offset))?;
+    let mut header = [0u8; 6];
+    file.read_exact(&mut header)?;
+    if &header[..4] != b"PE\0\0" || u16::from_le_bytes([header[4], header[5]]) != 0x8664 {
+        bail!("service executable is not an AMD64 PE image");
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct ZipInput {
+    name: String,
+    source: PathBuf,
+}
+
+#[derive(Debug)]
+struct ZipCentralEntry {
+    name: String,
+    crc32: u32,
+    compressed_size: u32,
+    uncompressed_size: u32,
+    local_header_offset: u32,
+}
+
+fn zip_entries(root: &Path) -> Result<Vec<ZipInput>> {
+    let mut paths = Vec::new();
+    collect_files(root, root, &mut paths)?;
+    let mut entries = Vec::new();
+    let mut folded = BTreeMap::new();
+    for source in paths {
+        let name = archive_path(source.strip_prefix(root)?)?;
+        if let Some(existing) = folded.insert(name.to_ascii_lowercase(), name.clone()) {
+            bail!("case-insensitive ZIP path collision: {existing} and {name}");
+        }
+        entries.push(ZipInput { name, source });
+    }
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(entries)
+}
+
+fn write_deterministic_zip(path: &Path, mut entries: Vec<ZipInput>) -> Result<()> {
+    if path.exists() {
+        bail!("refusing to overwrite {}", path.display());
+    }
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    if entries.is_empty() || entries.len() > u16::MAX as usize {
+        bail!("ZIP entry count is outside the supported range");
+    }
+    let temp = path.with_extension("zip.tmp");
+    if temp.exists() {
+        bail!("refusing to overwrite temporary archive {}", temp.display());
+    }
+    let result = write_zip_file(&temp, &entries);
+    if let Err(error) = result {
+        let _ = fs::remove_file(&temp);
+        return Err(error);
+    }
+    fs::rename(&temp, path)?;
+    Ok(())
+}
+
+fn write_zip_file(path: &Path, entries: &[ZipInput]) -> Result<()> {
+    let file = File::create(path)?;
+    let mut writer = BufWriter::new(file);
+    let mut central = Vec::with_capacity(entries.len());
+    for entry in entries {
+        archive_path(Path::new(&entry.name))?;
+        require_regular_file(&entry.source)?;
+        let name = entry.name.as_bytes();
+        let name_len = u16::try_from(name.len()).context("ZIP entry name is too long")?;
+        let local_header_offset =
+            u32::try_from(writer.stream_position()?).context("ZIP64 archives are not supported")?;
+        write_u32(&mut writer, 0x0403_4b50)?;
+        write_u16(&mut writer, 20)?;
+        write_u16(&mut writer, 0x0808)?;
+        write_u16(&mut writer, 8)?;
+        write_u16(&mut writer, 0)?;
+        write_u16(&mut writer, 33)?;
+        write_u32(&mut writer, 0)?;
+        write_u32(&mut writer, 0)?;
+        write_u32(&mut writer, 0)?;
+        write_u16(&mut writer, name_len)?;
+        write_u16(&mut writer, 0)?;
+        writer.write_all(name)?;
+        let compressed_start = writer.stream_position()?;
+        let mut input = BufReader::new(File::open(&entry.source)?);
+        let mut crc = Crc32::new();
+        let mut uncompressed_size = 0u64;
+        {
+            let mut encoder = DeflateEncoder::new(&mut writer, Compression::best());
+            let mut buffer = vec![0u8; 64 * 1024];
+            loop {
+                let count = input.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                crc.update(&buffer[..count]);
+                uncompressed_size = uncompressed_size
+                    .checked_add(count as u64)
+                    .context("ZIP entry size overflow")?;
+                encoder.write_all(&buffer[..count])?;
+            }
+            encoder.finish()?;
+        }
+        let compressed_size = writer
+            .stream_position()?
+            .checked_sub(compressed_start)
+            .context("ZIP compressed size underflow")?;
+        let compressed_size =
+            u32::try_from(compressed_size).context("ZIP64 archives are not supported")?;
+        let uncompressed_size =
+            u32::try_from(uncompressed_size).context("ZIP64 entries are not supported")?;
+        let crc32 = crc.finalize();
+        write_u32(&mut writer, 0x0807_4b50)?;
+        write_u32(&mut writer, crc32)?;
+        write_u32(&mut writer, compressed_size)?;
+        write_u32(&mut writer, uncompressed_size)?;
+        central.push(ZipCentralEntry {
+            name: entry.name.clone(),
+            crc32,
+            compressed_size,
+            uncompressed_size,
+            local_header_offset,
+        });
+    }
+    let central_offset =
+        u32::try_from(writer.stream_position()?).context("ZIP64 archives are not supported")?;
+    for entry in &central {
+        let name = entry.name.as_bytes();
+        write_u32(&mut writer, 0x0201_4b50)?;
+        write_u16(&mut writer, 20)?;
+        write_u16(&mut writer, 20)?;
+        write_u16(&mut writer, 0x0808)?;
+        write_u16(&mut writer, 8)?;
+        write_u16(&mut writer, 0)?;
+        write_u16(&mut writer, 33)?;
+        write_u32(&mut writer, entry.crc32)?;
+        write_u32(&mut writer, entry.compressed_size)?;
+        write_u32(&mut writer, entry.uncompressed_size)?;
+        write_u16(&mut writer, u16::try_from(name.len())?)?;
+        write_u16(&mut writer, 0)?;
+        write_u16(&mut writer, 0)?;
+        write_u16(&mut writer, 0)?;
+        write_u16(&mut writer, 0)?;
+        write_u32(&mut writer, 0)?;
+        write_u32(&mut writer, entry.local_header_offset)?;
+        writer.write_all(name)?;
+    }
+    let central_size = u32::try_from(
+        writer
+            .stream_position()?
+            .checked_sub(central_offset as u64)
+            .context("ZIP central directory size underflow")?,
+    )
+    .context("ZIP64 archives are not supported")?;
+    let count = u16::try_from(central.len())?;
+    write_u32(&mut writer, 0x0605_4b50)?;
+    write_u16(&mut writer, 0)?;
+    write_u16(&mut writer, 0)?;
+    write_u16(&mut writer, count)?;
+    write_u16(&mut writer, count)?;
+    write_u32(&mut writer, central_size)?;
+    write_u32(&mut writer, central_offset)?;
+    write_u16(&mut writer, 0)?;
+    writer.flush()?;
+    writer.get_ref().sync_all()?;
+    Ok(())
+}
+
+fn write_u16(writer: &mut impl Write, value: u16) -> Result<()> {
+    writer.write_all(&value.to_le_bytes())?;
+    Ok(())
+}
+
+fn write_u32(writer: &mut impl Write, value: u32) -> Result<()> {
+    writer.write_all(&value.to_le_bytes())?;
     Ok(())
 }
 
@@ -503,7 +868,7 @@ fn sha256_file(path: &Path) -> Result<String> {
     let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let mut reader = BufReader::new(file);
     let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 1024 * 1024];
+    let mut buffer = vec![0u8; 64 * 1024];
     loop {
         let count = reader.read(&mut buffer)?;
         if count == 0 {
@@ -557,7 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn staging_is_closed_deterministic_and_refuses_overwrite() {
+    fn staging_and_archives_are_closed_deterministic_and_tamper_evident() {
         let root = test_root();
         let inputs = root.join("inputs");
         let runtime = inputs.join("runtime");
@@ -573,14 +938,15 @@ mod tests {
             (qemu.join("qemu-system-x86_64.exe"), b"qemu".as_slice()),
             (qemu.join("qemu-img.exe"), b"qemu-img".as_slice()),
             (licenses.join("LICENSE"), b"license".as_slice()),
-            (
-                inputs.join("localsandbox-seawork-service.exe"),
-                b"service".as_slice(),
-            ),
             (inputs.join("sbom.spdx.json"), b"{}\n".as_slice()),
         ] {
             fs::write(path, bytes).unwrap();
         }
+        fs::write(
+            inputs.join("localsandbox-seawork-service.exe"),
+            fake_amd64_pe(),
+        )
+        .unwrap();
         let output = root.join("output");
         fs::create_dir_all(&output).unwrap();
         let args = vec![
@@ -614,7 +980,52 @@ mod tests {
             .iter()
             .any(|file| file["path"] == "manifests/bundle.json"));
         assert!(stage_bundle(&args, platform, "0.4.6", &root, &output).is_err());
+
+        fs::write(inputs.join("LocalSandboxSeaWork.cat"), b"signed catalog").unwrap();
+        fs::write(inputs.join("localsandbox-seawork-service.pdb"), b"pdb").unwrap();
+        fs::write(inputs.join("source-map.json"), b"{}\n").unwrap();
+        let archive_args = vec![
+            "--stage-dir".into(),
+            stage.display().to_string(),
+            "--catalog".into(),
+            inputs.join("LocalSandboxSeaWork.cat").display().to_string(),
+            "--pdb".into(),
+            inputs
+                .join("localsandbox-seawork-service.pdb")
+                .display()
+                .to_string(),
+            "--source-map".into(),
+            inputs.join("source-map.json").display().to_string(),
+        ];
+        archive_bundle(&archive_args, platform, "0.4.6", &root, &output).unwrap();
+        let archive = output.join("lsb-seawork-service-v0.4.6-windows-x86_64.zip");
+        let symbols = output.join("lsb-seawork-service-v0.4.6-windows-x86_64-symbols.zip");
+        let first_archive = fs::read(&archive).unwrap();
+        let first_symbols = fs::read(&symbols).unwrap();
+        assert!(first_archive.starts_with(b"PK\x03\x04"));
+        assert!(first_symbols.starts_with(b"PK\x03\x04"));
+        assert!(fs::read_to_string(output.join("SHA256SUMS"))
+            .unwrap()
+            .contains("lsb-seawork-service-v0.4.6-windows-x86_64.zip"));
+        fs::remove_file(&archive).unwrap();
+        fs::remove_file(&symbols).unwrap();
+        fs::remove_file(output.join("SHA256SUMS")).unwrap();
+        archive_bundle(&archive_args, platform, "0.4.6", &root, &output).unwrap();
+        assert_eq!(fs::read(&archive).unwrap(), first_archive);
+        assert_eq!(fs::read(&symbols).unwrap(), first_symbols);
+
+        fs::write(stage.join("LocalSandbox/runtime/Image"), b"tampered").unwrap();
+        assert!(verify_staged_bundle(&stage.join("LocalSandbox"), "0.4.6").is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    fn fake_amd64_pe() -> Vec<u8> {
+        let mut bytes = vec![0u8; 0x80];
+        bytes[..2].copy_from_slice(b"MZ");
+        bytes[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+        bytes[0x40..0x44].copy_from_slice(b"PE\0\0");
+        bytes[0x44..0x46].copy_from_slice(&0x8664u16.to_le_bytes());
+        bytes
     }
 
     fn test_root() -> PathBuf {
