@@ -64,6 +64,11 @@ source on Windows is more involved; developers should normally download the
 released runtime assets instead of running the rootfs preparation pipeline
 locally.
 
+The machine-wide SeaWork Windows service is a separately signed, versioned
+artifact rather than part of the CLI installer. Its release, verification, and
+SeaWork installer contract is documented in
+[docs/seawork-service-release.md](docs/seawork-service-release.md).
+
 Developers who need matching local guest assets can use Podman without Docker
 or host Linux filesystem tools. Use an empty data directory because `xtask`
 preserves assets that already exist:
