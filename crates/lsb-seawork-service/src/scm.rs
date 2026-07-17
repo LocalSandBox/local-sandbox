@@ -22,6 +22,7 @@ use crate::SERVICE_NAME;
 define_windows_service!(ffi_service_main, service_main);
 
 const STARTUP_WAIT_HINT: Duration = Duration::from_secs(120);
+const SHUTDOWN_HEARTBEAT: Duration = Duration::from_secs(2);
 
 pub fn dispatch() -> Result<()> {
     service_dispatcher::start(SERVICE_NAME, ffi_service_main)
@@ -142,7 +143,8 @@ fn run_registered(
         RuntimeExit::Control(None) => {
             drain_sessions(&context, &logger);
             let _ = shutdown_tx.send(());
-            let _ = runtime.block_on(pipe_task);
+            pipe_task.abort();
+            let _ = runtime.block_on(&mut pipe_task);
             anyhow::bail!("SCM control channel disconnected");
         }
         RuntimeExit::Pipe(result) => {
@@ -164,13 +166,25 @@ fn run_registered(
     logger.write(2, "shutdown", "STOP_PENDING")?;
     drain_sessions(&context, &logger);
     let _ = shutdown_tx.send(());
-    match runtime.block_on(pipe_task) {
-        Ok(Ok(())) => {}
-        Ok(Err(_)) => {
+    let pipe_drain = runtime.block_on(wait_for_pipe_drain(
+        &mut pipe_task,
+        wait_hint,
+        SHUTDOWN_HEARTBEAT,
+        |checkpoint| {
+            status_handle.set_service_status(status::pending(
+                ServiceState::StopPending,
+                checkpoint,
+                wait_hint,
+            ))
+        },
+    ))?;
+    match pipe_drain {
+        PipeDrainOutcome::Clean => {}
+        PipeDrainOutcome::Failed => {
             let _ = logger.write(4, "shutdown", "PIPE_DRAIN_FAILED");
         }
-        Err(_) => {
-            let _ = logger.write(4, "shutdown", "PIPE_TASK_FAILED");
+        PipeDrainOutcome::TimedOut => {
+            let _ = logger.write(4, "shutdown", "PIPE_DRAIN_TIMEOUT");
         }
     }
     status_handle.set_service_status(status::stopped())?;
@@ -182,6 +196,13 @@ enum RuntimeExit {
     Pipe(std::result::Result<Result<()>, tokio::task::JoinError>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipeDrainOutcome {
+    Clean,
+    Failed,
+    TimedOut,
+}
+
 async fn wait_for_runtime_exit(
     control_rx: &mut tokio::sync::mpsc::UnboundedReceiver<ServiceControl>,
     pipe_task: &mut tokio::task::JoinHandle<Result<()>>,
@@ -190,6 +211,43 @@ async fn wait_for_runtime_exit(
         biased;
         result = pipe_task => RuntimeExit::Pipe(result),
         control = control_rx.recv() => RuntimeExit::Control(control),
+    }
+}
+
+async fn wait_for_pipe_drain<F>(
+    pipe_task: &mut tokio::task::JoinHandle<Result<()>>,
+    deadline: Duration,
+    heartbeat: Duration,
+    mut report_checkpoint: F,
+) -> Result<PipeDrainOutcome>
+where
+    F: FnMut(u32) -> windows_service::Result<()>,
+{
+    let started = tokio::time::Instant::now();
+    let mut checkpoint = 1u32;
+    loop {
+        let remaining = deadline.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            pipe_task.abort();
+            let _ = pipe_task.await;
+            return Ok(PipeDrainOutcome::TimedOut);
+        }
+        let slice = remaining.min(heartbeat);
+        match tokio::time::timeout(slice, &mut *pipe_task).await {
+            Ok(Ok(Ok(()))) => return Ok(PipeDrainOutcome::Clean),
+            Ok(Ok(Err(_))) | Ok(Err(_)) => return Ok(PipeDrainOutcome::Failed),
+            Err(_) if started.elapsed() >= deadline => {
+                pipe_task.abort();
+                let _ = pipe_task.await;
+                return Ok(PipeDrainOutcome::TimedOut);
+            }
+            Err(_) => {
+                checkpoint = checkpoint
+                    .checked_add(1)
+                    .context("shutdown checkpoint exhausted")?;
+                report_checkpoint(checkpoint)?;
+            }
+        }
     }
 }
 
@@ -230,7 +288,10 @@ fn cap_memory_limit(configured_mib: u32, physical_mib: u64) -> Result<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{cap_memory_limit, wait_for_runtime_exit, RuntimeExit};
+    use super::{
+        cap_memory_limit, wait_for_pipe_drain, wait_for_runtime_exit, PipeDrainOutcome, RuntimeExit,
+    };
+    use std::time::Duration;
     use windows_service::service::ServiceControl;
 
     #[test]
@@ -262,5 +323,58 @@ mod tests {
             RuntimeExit::Control(Some(ServiceControl::Stop))
         ));
         pipe_task.abort();
+    }
+
+    #[tokio::test]
+    async fn pipe_drain_reports_clean_and_failed_completion() {
+        let mut clean = tokio::spawn(async { Ok(()) });
+        assert_eq!(
+            wait_for_pipe_drain(
+                &mut clean,
+                Duration::from_secs(1),
+                Duration::from_millis(10),
+                |_| Ok(()),
+            )
+            .await
+            .unwrap(),
+            PipeDrainOutcome::Clean
+        );
+
+        let mut failed = tokio::spawn(async { anyhow::bail!("pipe failed") });
+        assert_eq!(
+            wait_for_pipe_drain(
+                &mut failed,
+                Duration::from_secs(1),
+                Duration::from_millis(10),
+                |_| Ok(()),
+            )
+            .await
+            .unwrap(),
+            PipeDrainOutcome::Failed
+        );
+    }
+
+    #[tokio::test]
+    async fn pipe_drain_heartbeats_and_aborts_at_deadline() {
+        let mut pipe_task = tokio::spawn(std::future::pending());
+        let mut checkpoints = Vec::new();
+        let outcome = wait_for_pipe_drain(
+            &mut pipe_task,
+            Duration::from_millis(35),
+            Duration::from_millis(10),
+            |checkpoint| {
+                checkpoints.push(checkpoint);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, PipeDrainOutcome::TimedOut);
+        assert_eq!(checkpoints.first(), Some(&2));
+        assert!(checkpoints
+            .windows(2)
+            .all(|pair| pair[1] == pair[0].saturating_add(1)));
+        assert!(pipe_task.is_finished());
     }
 }
