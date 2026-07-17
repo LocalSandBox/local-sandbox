@@ -5,6 +5,7 @@ mod guest;
 mod kernel;
 mod release;
 mod rootfs;
+mod seawork_release;
 
 use std::env;
 
@@ -41,5 +42,5 @@ fn print_usage() {
     eprintln!("  cargo run -p xtask -- build-guest [--platform <id>]");
     eprintln!("  cargo run -p xtask -- build-kernel [--platform <id>]");
     eprintln!("  cargo run -p xtask -- prepare-rootfs [--platform <id>]");
-    eprintln!("  cargo run -p xtask -- package-release --artifact <cli|os-image> --version <v> [--platform <id>] [--output-dir <dir>]");
+    eprintln!("  cargo run -p xtask -- package-release --artifact <cli|os-image|seawork-service> --version <v> [--platform <id>] [--output-dir <dir>]");
 }

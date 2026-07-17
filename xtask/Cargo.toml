@@ -6,5 +6,8 @@ publish = false
 
 [dependencies]
 anyhow = "1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 lsb-platform = { path = "../crates/lsb-platform" }
+lsb-service-proto = { path = "../crates/lsb-service-proto" }
