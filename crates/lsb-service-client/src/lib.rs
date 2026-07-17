@@ -13,6 +13,7 @@ pub use stream::CreditWindow;
 pub use connection::{
     ExecOptions, RemoteCommand, RemoteExecOperation, RemoteExecResult, RemoteProcess,
     RemoteSandbox, RemoteWatch, RemoteWatchEvent, ServiceClient, StartSandboxOptions,
+    UninstallPreparation,
 };
 
 pub const SERVICE_NAME: &str = "LocalSandboxSeaWork";

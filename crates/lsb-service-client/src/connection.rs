@@ -167,6 +167,60 @@ impl ServiceClient {
         }
     }
 
+    pub async fn prepare_update(
+        &mut self,
+        target_bundle: impl Into<String>,
+        target_protocol_range: lsb_service_proto::ProtocolRange,
+    ) -> Result<String, ClientError> {
+        match self
+            .request(RequestOp::PrepareUpdate {
+                target_bundle: target_bundle.into(),
+                target_protocol_range,
+            })
+            .await?
+        {
+            ResponseValue::UpdatePrepared { update_id } => Ok(update_id),
+            _ => Err(mismatched("PrepareUpdate")),
+        }
+    }
+
+    pub async fn commit_update(&mut self, update_id: impl Into<String>) -> Result<(), ClientError> {
+        match self
+            .request(RequestOp::CommitUpdate {
+                update_id: update_id.into(),
+            })
+            .await?
+        {
+            ResponseValue::Empty {} => Ok(()),
+            _ => Err(mismatched("CommitUpdate")),
+        }
+    }
+
+    pub async fn abort_update(&mut self, update_id: impl Into<String>) -> Result<(), ClientError> {
+        match self
+            .request(RequestOp::AbortUpdate {
+                update_id: update_id.into(),
+            })
+            .await?
+        {
+            ResponseValue::Empty {} => Ok(()),
+            _ => Err(mismatched("AbortUpdate")),
+        }
+    }
+
+    pub async fn prepare_uninstall(&mut self) -> Result<UninstallPreparation, ClientError> {
+        match self.request(RequestOp::PrepareUninstall {}).await? {
+            ResponseValue::UninstallPrepared {
+                clean,
+                quarantine_ids,
+            } => Ok(UninstallPreparation {
+                clean,
+                quarantine_ids,
+            }),
+            _ => Err(mismatched("PrepareUninstall")),
+        }
+    }
+
     pub async fn start_sandbox(
         &mut self,
         options: StartSandboxOptions,
@@ -478,6 +532,12 @@ impl ServiceClient {
             Response::Err { error } => Err(map_service_error(error)),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UninstallPreparation {
+    pub clean: bool,
+    pub quarantine_ids: Vec<String>,
 }
 
 impl ConnectionCore {

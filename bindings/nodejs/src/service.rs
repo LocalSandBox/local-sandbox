@@ -39,6 +39,21 @@ pub struct SeaWorkHealth {
   pub bundleReady: bool,
 }
 
+#[allow(non_snake_case)]
+#[napi(object)]
+pub struct SeaWorkProtocolRange {
+  pub major: u32,
+  pub minMinor: u32,
+  pub maxMinor: u32,
+}
+
+#[allow(non_snake_case)]
+#[napi(object)]
+pub struct SeaWorkUninstallPreparation {
+  pub clean: bool,
+  pub quarantineIds: Vec<String>,
+}
+
 #[napi]
 pub struct SeaWorkService {
   #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -78,6 +93,92 @@ impl SeaWorkService {
         admissionsOpen: health.admissions_open,
         stableCode: health.stable_code,
         bundleReady: matches!(health.bundle, lsb_service_proto::HealthState::Ready),
+      });
+    }
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    Err(unsupported_platform_error())
+  }
+
+  #[napi]
+  pub async fn prepare_update(
+    &self,
+    target_bundle: String,
+    target_protocol_range: SeaWorkProtocolRange,
+  ) -> Result<String> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+      let range = lsb_service_proto::ProtocolRange {
+        major: u16::try_from(target_protocol_range.major)
+          .map_err(|_| napi::Error::from_reason("protocol major is out of range"))?,
+        min_minor: u16::try_from(target_protocol_range.minMinor)
+          .map_err(|_| napi::Error::from_reason("protocol minimum is out of range"))?,
+        max_minor: u16::try_from(target_protocol_range.maxMinor)
+          .map_err(|_| napi::Error::from_reason("protocol maximum is out of range"))?,
+      };
+      return self
+        .client
+        .lock()
+        .await
+        .prepare_update(target_bundle, range)
+        .await
+        .map_err(service_error);
+    }
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    {
+      let _ = target_bundle;
+      let _ = target_protocol_range;
+      Err(unsupported_platform_error())
+    }
+  }
+
+  #[napi]
+  pub async fn commit_update(&self, update_id: String) -> Result<()> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return self
+      .client
+      .lock()
+      .await
+      .commit_update(update_id)
+      .await
+      .map_err(service_error);
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    {
+      let _ = update_id;
+      Err(unsupported_platform_error())
+    }
+  }
+
+  #[napi]
+  pub async fn abort_update(&self, update_id: String) -> Result<()> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return self
+      .client
+      .lock()
+      .await
+      .abort_update(update_id)
+      .await
+      .map_err(service_error);
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    {
+      let _ = update_id;
+      Err(unsupported_platform_error())
+    }
+  }
+
+  #[napi]
+  pub async fn prepare_uninstall(&self) -> Result<SeaWorkUninstallPreparation> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+      let preparation = self
+        .client
+        .lock()
+        .await
+        .prepare_uninstall()
+        .await
+        .map_err(service_error)?;
+      return Ok(SeaWorkUninstallPreparation {
+        clean: preparation.clean,
+        quarantineIds: preparation.quarantine_ids,
       });
     }
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]

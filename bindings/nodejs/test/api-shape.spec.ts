@@ -66,6 +66,13 @@ test('TypeScript declarations do not expose platform-specific packaging details'
 test('SeaWork service declarations expose only remote sandbox inputs', (t) => {
   t.regex(declarations, /export declare class SeaWorkService/)
   t.regex(declarations, /static connect\(\): Promise<SeaWorkService>/)
+  t.regex(
+    declarations,
+    /prepareUpdate\(targetBundle: string, targetProtocolRange: SeaWorkProtocolRange\): Promise<string>/,
+  )
+  t.regex(declarations, /commitUpdate\(updateId: string\): Promise<void>/)
+  t.regex(declarations, /abortUpdate\(updateId: string\): Promise<void>/)
+  t.regex(declarations, /prepareUninstall\(\): Promise<SeaWorkUninstallPreparation>/)
   t.regex(declarations, /start\(opts\?: SeaWorkStartOptions[^)]*\): Promise<SeaWorkSandbox>/)
   t.regex(declarations, /export declare class SeaWorkSandbox/)
   t.regex(declarations, /readFile\(path: string\): Promise<Buffer>/)

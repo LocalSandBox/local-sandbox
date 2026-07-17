@@ -166,6 +166,10 @@ export declare class SeaWorkSandbox {
 export declare class SeaWorkService {
   static connect(): Promise<SeaWorkService>
   health(): Promise<SeaWorkHealth>
+  prepareUpdate(targetBundle: string, targetProtocolRange: SeaWorkProtocolRange): Promise<string>
+  commitUpdate(updateId: string): Promise<void>
+  abortUpdate(updateId: string): Promise<void>
+  prepareUninstall(): Promise<SeaWorkUninstallPreparation>
   start(opts?: SeaWorkStartOptions | undefined | null): Promise<SeaWorkSandbox>
   close(): Promise<void>
 }
@@ -440,10 +444,21 @@ export interface SeaWorkHealth {
   bundleReady: boolean
 }
 
+export interface SeaWorkProtocolRange {
+  major: number
+  minMinor: number
+  maxMinor: number
+}
+
 export interface SeaWorkStartOptions {
   cpus?: number
   memoryMb?: number
   diskSizeMb?: number
+}
+
+export interface SeaWorkUninstallPreparation {
+  clean: boolean
+  quarantineIds: Array<string>
 }
 
 /** Secret value that is only exposed to requests for the listed hosts. */

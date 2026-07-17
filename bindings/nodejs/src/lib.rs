@@ -28,7 +28,7 @@ pub use process::SpawnedProcess;
 pub use sandbox::Sandbox;
 pub use service::{
   SeaWorkExecOperation, SeaWorkExecOptions, SeaWorkHealth, SeaWorkSandbox, SeaWorkService,
-  SeaWorkStartOptions, SeaWorkWatch,
+  SeaWorkProtocolRange, SeaWorkStartOptions, SeaWorkUninstallPreparation, SeaWorkWatch,
 };
 pub use streams::{ByteStream, WatchStream};
 pub use types::{
