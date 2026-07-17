@@ -186,6 +186,12 @@ impl Request {
                 command,
                 cwd,
                 env,
+            }
+            | RequestOp::Spawn {
+                sandbox_id,
+                command,
+                cwd,
+                env,
             } => {
                 validate_resource_id(sandbox_id)?;
                 match command {
@@ -233,6 +239,7 @@ impl Request {
                     return Err(ProtocolError::MessageTooLarge);
                 }
             }
+            RequestOp::KillProcess { process_id } => validate_resource_id(process_id)?,
             RequestOp::Mkdir {
                 sandbox_id, path, ..
             }
@@ -318,6 +325,17 @@ pub enum RequestOp {
         cwd: Option<String>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         env: BTreeMap<String, String>,
+    },
+    Spawn {
+        sandbox_id: String,
+        command: ServiceCommand,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        env: BTreeMap<String, String>,
+    },
+    KillProcess {
+        process_id: String,
     },
     Mkdir {
         sandbox_id: String,
@@ -436,6 +454,11 @@ pub enum ResponseValue {
         stdout: String,
         stderr: String,
         exit_code: i32,
+    },
+    ProcessStarted {
+        process_id: String,
+        stdout_stream_id: String,
+        stderr_stream_id: String,
     },
     Directory {
         entries: Vec<ServiceDirEntry>,
@@ -686,6 +709,29 @@ mod tests {
             *cwd = Some(r"C:\\caller".to_string());
         }
         assert_eq!(invalid.validate(), Err(ProtocolError::InvalidJson));
+    }
+
+    #[test]
+    fn spawn_and_kill_use_strict_owner_bound_handles() {
+        let spawn = Request {
+            deadline_ms: Some(30_000),
+            op: RequestOp::Spawn {
+                sandbox_id: "0123456789abcdef0123456789abcdef".to_string(),
+                command: ServiceCommand::Shell(ShellCommand {
+                    shell: "sleep 10".to_string(),
+                }),
+                cwd: Some("/workspace".to_string()),
+                env: BTreeMap::new(),
+            },
+        };
+        spawn.validate().unwrap();
+        let kill = Request {
+            deadline_ms: None,
+            op: RequestOp::KillProcess {
+                process_id: "not-a-handle".to_string(),
+            },
+        };
+        assert_eq!(kill.validate(), Err(ProtocolError::InvalidJson));
     }
 
     #[test]

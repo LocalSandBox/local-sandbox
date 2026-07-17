@@ -306,6 +306,16 @@ async fn handle_authenticated_client(
                     continue;
                 }
             },
+            RequestOp::Spawn { .. } | RequestOp::KillProcess { .. } => {
+                write_error(
+                    pipe,
+                    selected,
+                    frame.header.correlation,
+                    ErrorCode::ServiceUnavailable,
+                )
+                .await?;
+                continue;
+            }
             RequestOp::Mkdir {
                 sandbox_id,
                 path,
