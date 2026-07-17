@@ -28,6 +28,11 @@ use anyhow::{bail, Result};
 use lsb_service_proto::{CURRENT, SUPPORTED};
 use serde::Serialize;
 
+#[cfg(windows)]
+use windows_sys::Win32::System::LibraryLoader::{
+    SetDefaultDllDirectories, LOAD_LIBRARY_SEARCH_SYSTEM32, LOAD_LIBRARY_SEARCH_USER_DIRS,
+};
+
 pub const SERVICE_NAME: &str = "LocalSandboxSeaWork";
 pub const DISPLAY_NAME: &str = "LocalSandbox for SeaWork";
 pub const PIPE_NAME: &str = r"\\.\pipe\LocalSandbox.SeaWork.v1";
@@ -59,10 +64,18 @@ struct VerifyOutput<'a> {
     error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Service,
+    VersionJson,
+    VerifyBundleJson,
+}
+
 fn main() -> Result<()> {
+    harden_dll_search()?;
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    match args.as_slice() {
-        [flag, json] if flag == "--version" && json == "--json" => {
+    match parse_mode(&args)? {
+        Mode::VersionJson => {
             println!(
                 "{}",
                 serde_json::to_string(&VersionOutput {
@@ -78,7 +91,7 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
-        [flag, json] if flag == "--verify-bundle" && json == "--json" => {
+        Mode::VerifyBundleJson => {
             let verification = bundle::verify_adjacent_bundle();
             println!(
                 "{}",
@@ -97,10 +110,34 @@ fn main() -> Result<()> {
             );
             verification.map(|_| ())
         }
-        [] => run_service(),
-        [flag] if flag == "--service" => run_service(),
+        Mode::Service => run_service(),
+    }
+}
+
+fn parse_mode(args: &[String]) -> Result<Mode> {
+    match args {
+        [flag] if flag == "--service" => Ok(Mode::Service),
+        [flag, json] if flag == "--version" && json == "--json" => Ok(Mode::VersionJson),
+        [flag, json] if flag == "--verify-bundle" && json == "--json" => Ok(Mode::VerifyBundleJson),
         _ => bail!("supported modes: --service, --version --json, --verify-bundle --json"),
     }
+}
+
+#[cfg(windows)]
+fn harden_dll_search() -> Result<()> {
+    let flags = LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS;
+    if unsafe { SetDefaultDllDirectories(flags) } == 0 {
+        bail!(
+            "SetDefaultDllDirectories failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn harden_dll_search() -> Result<()> {
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -111,4 +148,28 @@ fn run_service() -> Result<()> {
 #[cfg(not(windows))]
 fn run_service() -> Result<()> {
     bail!("LocalSandboxSeaWork is supported only on x86-64 Windows")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_mode, Mode};
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn service_mode_is_explicit_and_tool_modes_are_exact() {
+        assert_eq!(parse_mode(&args(&["--service"])).unwrap(), Mode::Service);
+        assert_eq!(
+            parse_mode(&args(&["--version", "--json"])).unwrap(),
+            Mode::VersionJson
+        );
+        assert_eq!(
+            parse_mode(&args(&["--verify-bundle", "--json"])).unwrap(),
+            Mode::VerifyBundleJson
+        );
+        assert!(parse_mode(&[]).is_err());
+        assert!(parse_mode(&args(&["--service", "unexpected"])).is_err());
+    }
 }
