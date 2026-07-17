@@ -22,6 +22,8 @@ use crate::SERVICE_NAME;
 
 define_windows_service!(ffi_service_main, service_main);
 
+const STARTUP_WAIT_HINT: Duration = Duration::from_secs(120);
+
 pub fn dispatch() -> Result<()> {
     service_dispatcher::start(SERVICE_NAME, ffi_service_main)
         .context("connect LocalSandboxSeaWork to the SCM dispatcher")
@@ -45,18 +47,28 @@ fn run() -> Result<()> {
     status_handle.set_service_status(status::pending(
         ServiceState::StartPending,
         1,
-        Duration::from_secs(30),
+        STARTUP_WAIT_HINT,
     ))?;
 
     let paths = ServicePaths::discover()?;
     paths.prepare()?;
     let logger = JsonLogger::new(&paths.logs)?;
     logger.write(1, "startup", "START_PENDING")?;
+    status_handle.set_service_status(status::pending(
+        ServiceState::StartPending,
+        2,
+        STARTUP_WAIT_HINT,
+    ))?;
     let config = ServiceConfig::load_or_default(&paths.config)?;
     let reconciliation = ledger::reconcile(&paths.ledger, &paths.quarantine)?;
     if !reconciliation.admissions_open {
         logger.write(3, "reconcile", "HEALTH_ONLY_QUARANTINE")?;
     }
+    status_handle.set_service_status(status::pending(
+        ServiceState::StartPending,
+        3,
+        STARTUP_WAIT_HINT,
+    ))?;
     let engine = match ServiceEngineConfig::discover(&paths) {
         Ok(engine) => Some(engine),
         Err(_) => {
@@ -64,6 +76,11 @@ fn run() -> Result<()> {
             None
         }
     };
+    status_handle.set_service_status(status::pending(
+        ServiceState::StartPending,
+        4,
+        STARTUP_WAIT_HINT,
+    ))?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -93,9 +110,20 @@ fn run() -> Result<()> {
         config.maintenance_roots.clone(),
         config.publisher_thumbprints.clone(),
     );
+    status_handle.set_service_status(status::pending(
+        ServiceState::StartPending,
+        5,
+        Duration::from_secs(30),
+    ))?;
     let pipe = runtime.block_on(async { HealthPipe::bind(context.clone()) })?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let pipe_task = runtime.spawn(pipe.run(shutdown_rx));
+
+    status_handle.set_service_status(status::pending(
+        ServiceState::StartPending,
+        6,
+        Duration::from_secs(30),
+    ))?;
 
     status_handle.set_service_status(status::running())?;
     logger.write(1, "runtime", "RUNNING")?;
