@@ -84,8 +84,9 @@ fn run() -> Result<()> {
         },
     )
     .with_engine(engine)
-    .with_maintenance(
+    .with_client_policy(
         maintenance,
+        config.client_roots.clone(),
         config.maintenance_roots.clone(),
         config.publisher_thumbprints.clone(),
     );

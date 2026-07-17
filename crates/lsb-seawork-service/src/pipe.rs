@@ -225,6 +225,7 @@ pub struct HealthContext {
     engine: Option<ServiceEngineConfig>,
     requests: Arc<Semaphore>,
     maintenance: Option<MaintenanceManager>,
+    client_roots: Vec<String>,
     maintenance_roots: Vec<String>,
     publisher_thumbprints: Vec<String>,
 }
@@ -237,6 +238,7 @@ impl HealthContext {
             engine: None,
             requests: Arc::new(Semaphore::new(crate::ipc::pipe::MAX_REQUESTS_GLOBAL)),
             maintenance: None,
+            client_roots: Vec::new(),
             maintenance_roots: Vec::new(),
             publisher_thumbprints: Vec::new(),
         }
@@ -247,21 +249,26 @@ impl HealthContext {
         self
     }
 
-    pub fn with_maintenance(
+    pub fn with_client_policy(
         mut self,
         maintenance: MaintenanceManager,
+        client_roots: Vec<String>,
         maintenance_roots: Vec<String>,
         publisher_thumbprints: Vec<String>,
     ) -> Self {
         self.admissions_open = maintenance.admissions();
         self.maintenance = Some(maintenance);
+        self.client_roots = client_roots;
         self.maintenance_roots = maintenance_roots;
         self.publisher_thumbprints = publisher_thumbprints;
         self
     }
 
     fn admissions_open(&self) -> bool {
-        self.admissions_open.load(Ordering::Acquire) && self.engine.is_some()
+        self.admissions_open.load(Ordering::Acquire)
+            && self.engine.is_some()
+            && !self.client_roots.is_empty()
+            && !self.publisher_thumbprints.is_empty()
     }
 
     pub fn begin_shutdown(&self) -> Result<usize> {
@@ -280,11 +287,22 @@ impl HealthContext {
             .is_ok()
     }
 
+    fn client_authorized(&self, identity: &ClientIdentity) -> bool {
+        authorize_maintenance_image(
+            &identity.process_image,
+            &self.client_roots,
+            &self.publisher_thumbprints,
+        )
+        .is_ok()
+    }
+
     fn health(&self) -> Health {
         Health {
             ready: self.admissions_open(),
             admissions_open: self.admissions_open(),
-            stable_code: if self.engine.is_none() {
+            stable_code: if self.client_roots.is_empty() || self.publisher_thumbprints.is_empty() {
+                "CLIENT_POLICY_INVALID"
+            } else if self.engine.is_none() {
                 "BUNDLE_INVALID"
             } else if self.admissions_open() {
                 "READY"
@@ -354,6 +372,12 @@ struct PreAuthPidPermit {
 struct PreAuthAdmission {
     _global: OwnedSemaphorePermit,
     _pid: PreAuthPidPermit,
+}
+
+#[derive(Clone, Copy)]
+struct ConnectionAuthorization {
+    client: bool,
+    maintenance: bool,
 }
 
 impl PreAuthGate {
@@ -468,7 +492,13 @@ async fn handle_client(
 ) -> Result<()> {
     let identity = ClientIdentity::from_named_pipe(pipe.as_raw_handle())?;
     let preauth = preauth.admit_pid(identity.process_id, global)?;
-    let maintenance_authorized = context.maintenance_authorized(&identity);
+    let authorization = ConnectionAuthorization {
+        client: context.client_authorized(&identity),
+        maintenance: context.maintenance_authorized(&identity),
+    };
+    if !authorization.client && !authorization.maintenance {
+        bail!("client image is not authorized by a protected publisher policy");
+    }
     let session_id = context.sessions.open(identity.key.clone())?;
     let (mut reader, pipe_writer) = tokio::io::split(pipe);
     let (writer, writer_task) = OutboundWriter::start(pipe_writer);
@@ -478,7 +508,7 @@ async fn handle_client(
         &context,
         session_id,
         &identity.key,
-        maintenance_authorized,
+        authorization,
         Some(preauth),
     )
     .await;
@@ -499,7 +529,7 @@ async fn handle_authenticated_client<R>(
     context: &HealthContext,
     session_id: ResourceHandle,
     identity: &ClientIdentityKey,
-    maintenance_authorized: bool,
+    authorization: ConnectionAuthorization,
     preauth: Option<PreAuthAdmission>,
 ) -> Result<()>
 where
@@ -630,22 +660,22 @@ where
             .await?;
             return Ok(());
         }
-        if !context.admissions_open()
-            && !matches!(
-                request.op,
-                RequestOp::GetServiceInfo {}
-                    | RequestOp::HealthCheck {}
-                    | RequestOp::PrepareUpdate { .. }
-                    | RequestOp::CommitUpdate { .. }
-                    | RequestOp::AbortUpdate { .. }
-                    | RequestOp::PrepareUninstall {}
-            )
-        {
+        if !context.admissions_open() && !is_health_or_maintenance(&request.op) {
             write_error(
                 writer,
                 selected,
                 frame.header.correlation,
                 ErrorCode::ServiceDraining,
+            )
+            .await?;
+            continue;
+        }
+        if !authorization.client && !is_health_or_maintenance(&request.op) {
+            write_error(
+                writer,
+                selected,
+                frame.header.correlation,
+                ErrorCode::AccessDenied,
             )
             .await?;
             continue;
@@ -717,7 +747,7 @@ where
             context.clone(),
             session_id,
             identity.clone(),
-            maintenance_authorized,
+            authorization.maintenance,
             events.clone(),
             streams.clone(),
             connection.clone(),
@@ -726,6 +756,18 @@ where
             request_permit,
         ));
     }
+}
+
+fn is_health_or_maintenance(op: &RequestOp) -> bool {
+    matches!(
+        op,
+        RequestOp::GetServiceInfo {}
+            | RequestOp::HealthCheck {}
+            | RequestOp::PrepareUpdate { .. }
+            | RequestOp::CommitUpdate { .. }
+            | RequestOp::AbortUpdate { .. }
+            | RequestOp::PrepareUninstall {}
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1652,6 +1694,20 @@ mod tests {
     }
 
     #[test]
+    fn maintenance_only_clients_cannot_start_sandboxes() {
+        assert!(is_health_or_maintenance(&RequestOp::HealthCheck {}));
+        assert!(is_health_or_maintenance(&RequestOp::PrepareUninstall {}));
+        assert!(!is_health_or_maintenance(&RequestOp::StartSandbox {
+            cpus: 1,
+            memory_mib: 512,
+            disk_mib: 1024,
+            mounts: Vec::new(),
+            ports: Vec::new(),
+            network: None,
+        }));
+    }
+
+    #[test]
     fn pipe_security_descriptor_is_valid() {
         SecurityDescriptor::from_sddl(PIPE_SDDL).unwrap();
     }
@@ -1711,7 +1767,10 @@ mod tests {
                     &context,
                     session_id,
                     &identity,
-                    false,
+                    ConnectionAuthorization {
+                        client: true,
+                        maintenance: false,
+                    },
                     None,
                 )
                 .await;
