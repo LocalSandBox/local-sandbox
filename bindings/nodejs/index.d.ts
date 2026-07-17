@@ -10,8 +10,8 @@
  *
  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Iteration_protocols#the_async_iterator_and_async_iterable_protocols
  */
-export declare class ByteStream {
-
+export declare class ByteStream implements AsyncIterable<Uint8Array> {
+  [Symbol.asyncIterator](): AsyncIterator<Uint8Array>
 }
 
 /**
@@ -228,8 +228,8 @@ export declare class SpawnedProcess {
  *
  * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Iteration_protocols#the_async_iterator_and_async_iterable_protocols
  */
-export declare class WatchStream {
-
+export declare class WatchStream implements AsyncIterable<FileChangeEvent> {
+  [Symbol.asyncIterator](): AsyncIterator<FileChangeEvent>
 }
 
 /** Options for copying files or directories. */

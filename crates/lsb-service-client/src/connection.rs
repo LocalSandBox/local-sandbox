@@ -11,7 +11,7 @@ use lsb_service_proto::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::windows::named_pipe::NamedPipeClient;
-use tokio::sync::{mpsc, oneshot, watch, Mutex};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, Semaphore};
 
 use crate::pipe::open_verified;
 use crate::{ClientError, ConnectOptions};
@@ -27,6 +27,7 @@ struct ConnectionCore {
     epoch: u64,
     next_sequence: AtomicU64,
     pending: Mutex<HashMap<u64, PendingRequest>>,
+    outbound_streams: Mutex<HashMap<(u64, u64), Arc<Semaphore>>>,
     closed: AtomicBool,
     _shutdown: watch::Sender<()>,
 }
@@ -121,6 +122,7 @@ impl ServiceClient {
             epoch,
             next_sequence: AtomicU64::new(1),
             pending: Mutex::new(HashMap::new()),
+            outbound_streams: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
             _shutdown: shutdown,
         });
@@ -437,9 +439,9 @@ impl ServiceClient {
         path: impl Into<String>,
         bytes: &[u8],
     ) -> Result<(), ClientError> {
-        if bytes.len() > lsb_service_proto::limits::INITIAL_STREAM_CREDIT {
+        if bytes.len() > lsb_service_proto::limits::MAX_FILE_TRANSFER_BYTES {
             return Err(ClientError::Protocol(
-                "WriteFile exceeds initial stream credit".to_string(),
+                "WriteFile exceeds compiled transfer limit".to_string(),
             ));
         }
         self.core
@@ -626,6 +628,20 @@ impl ConnectionCore {
             pending.insert(correlation.low, PendingRequest::Unary(sender));
             correlation
         };
+        let stream_key = correlation_key(stream_id);
+        let credit = Arc::new(Semaphore::new(
+            lsb_service_proto::limits::INITIAL_STREAM_CREDIT,
+        ));
+        if self
+            .outbound_streams
+            .lock()
+            .await
+            .insert(stream_key, credit.clone())
+            .is_some()
+        {
+            self.pending.lock().await.remove(&correlation.low);
+            return Err(ClientError::Protocol("duplicate stream id".to_string()));
+        }
         let request = Request {
             deadline_ms: None,
             op,
@@ -639,10 +655,11 @@ impl ConnectionCore {
                 &request,
             )
             .await?;
-            write_stream(&mut *writer, self.protocol, stream_id, bytes).await
+            write_stream(&mut *writer, self.protocol, stream_id, bytes, &credit).await
         }
         .await;
         drop(writer);
+        self.outbound_streams.lock().await.remove(&stream_key);
         if let Err(error) = written {
             self.closed.store(true, Ordering::Release);
             self.pending.lock().await.remove(&correlation.low);
@@ -768,6 +785,23 @@ impl ConnectionCore {
         result
     }
 
+    async fn grant_outbound(&self, update: WindowUpdate) -> Result<(), ClientError> {
+        update.validate()?;
+        let key = correlation_key(stream_correlation(&update.stream_id)?);
+        let streams = self.outbound_streams.lock().await;
+        let Some(credit) = streams.get(&key) else {
+            return Ok(());
+        };
+        let bytes = update.credit_bytes as usize;
+        if credit.available_permits().saturating_add(bytes) > 4 * 1024 * 1024 {
+            return Err(ClientError::Protocol(
+                "outbound stream credit exceeds maximum window".to_string(),
+            ));
+        }
+        credit.add_permits(bytes);
+        Ok(())
+    }
+
     fn next_correlation(&self) -> Result<Correlation, ClientError> {
         let sequence = self.next_sequence.fetch_add(1, Ordering::Relaxed);
         if sequence == 0 || sequence == u64::MAX {
@@ -844,6 +878,7 @@ async fn write_stream<W>(
     protocol: ProtocolVersion,
     correlation: Correlation,
     bytes: &[u8],
+    credit: &Arc<Semaphore>,
 ) -> Result<(), ClientError>
 where
     W: AsyncWrite + Unpin,
@@ -851,6 +886,16 @@ where
     let chunk_size = lsb_service_proto::limits::MAX_STREAM_PAYLOAD
         - lsb_service_proto::limits::STREAM_SEQUENCE_LEN;
     for (sequence, chunk) in bytes.chunks(chunk_size).enumerate() {
+        let permits = u32::try_from(chunk.len())
+            .map_err(|_| ClientError::Protocol("stream chunk length overflow".to_string()))?;
+        let permit = tokio::time::timeout(
+            Duration::from_secs(60),
+            credit.clone().acquire_many_owned(permits),
+        )
+        .await
+        .map_err(|_| ClientError::Protocol("stream credit timeout".to_string()))?
+        .map_err(|_| ClientError::Protocol("stream credit closed".to_string()))?;
+        permit.forget();
         let payload = lsb_service_proto::encode_stream_payload(
             sequence
                 .try_into()
@@ -1082,6 +1127,7 @@ async fn read_loop(
     if let Some(core) = core.upgrade() {
         core.closed.store(true, Ordering::Release);
         core.pending.lock().await.clear();
+        core.outbound_streams.lock().await.clear();
     }
 }
 
@@ -1096,7 +1142,7 @@ where
     let mut streams = HashMap::<(u64, u64), IncomingStream>::new();
     let mut processes = HashMap::<String, watch::Sender<Option<i32>>>::new();
     let mut watches = HashMap::<String, watch::Sender<Option<RemoteWatchEvent>>>::new();
-    let mut next_event_sequence = 1u64;
+    let mut next_server_sequence = 1u64;
     loop {
         let frame = tokio::select! {
             frame = read_frame(reader) => frame?,
@@ -1109,6 +1155,21 @@ where
             return Err(ClientError::Protocol(
                 "incoming frame protocol mismatch".to_string(),
             ));
+        }
+        if matches!(
+            frame.header.kind,
+            FrameKind::Event | FrameKind::WindowUpdate
+        ) {
+            if frame.header.correlation.high != core.epoch
+                || frame.header.correlation.low != next_server_sequence
+            {
+                return Err(ClientError::Protocol(
+                    "server control sequence mismatch".to_string(),
+                ));
+            }
+            next_server_sequence = next_server_sequence.checked_add(1).ok_or_else(|| {
+                ClientError::Protocol("server control sequence exhausted".to_string())
+            })?;
         }
         match frame.header.kind {
             FrameKind::Response => {
@@ -1133,17 +1194,15 @@ where
                 )?;
             }
             FrameKind::StreamData => {
-                dispatch_stream(frame, &mut streams)?;
+                if let Some((stream_id, consumed)) = dispatch_stream(frame, &mut streams)? {
+                    core.window_update(&stream_id, consumed).await?;
+                }
+            }
+            FrameKind::WindowUpdate => {
+                let update: WindowUpdate = parse_control(&frame.payload)?;
+                core.grant_outbound(update).await?;
             }
             FrameKind::Event => {
-                if frame.header.correlation.high != core.epoch
-                    || frame.header.correlation.low != next_event_sequence
-                {
-                    return Err(ClientError::Protocol("event sequence mismatch".to_string()));
-                }
-                next_event_sequence = next_event_sequence
-                    .checked_add(1)
-                    .ok_or_else(|| ClientError::Protocol("event sequence exhausted".to_string()))?;
                 let event: Event = parse_control(&frame.payload)?;
                 event.validate()?;
                 match event {
@@ -1200,9 +1259,9 @@ fn dispatch_response(
                 result: ResponseValue::FileRead { stream_id, length },
             } => {
                 let length = length as usize;
-                if length > lsb_service_proto::limits::INITIAL_STREAM_CREDIT {
+                if length > lsb_service_proto::limits::MAX_FILE_TRANSFER_BYTES {
                     return Err(ClientError::Protocol(
-                        "ReadFile exceeded initial stream credit".to_string(),
+                        "ReadFile exceeded compiled transfer limit".to_string(),
                     ));
                 }
                 if length == 0 {
@@ -1311,10 +1370,12 @@ fn dispatch_response(
 fn dispatch_stream(
     frame: WireFrame,
     streams: &mut HashMap<(u64, u64), IncomingStream>,
-) -> Result<(), ClientError> {
+) -> Result<Option<(String, usize)>, ClientError> {
     let key = correlation_key(frame.header.correlation);
+    let stream_id = correlation_id(frame.header.correlation);
     let (received_sequence, chunk) = decode_stream_payload(&frame.payload)?;
     let mut completed_file = None;
+    let mut replenish = None;
     match streams
         .get_mut(&key)
         .ok_or_else(|| ClientError::Protocol("stream id is unknown".to_string()))?
@@ -1325,7 +1386,10 @@ fn dispatch_stream(
             bytes,
             completion,
         } => {
-            if received_sequence != *sequence || bytes.len().saturating_add(chunk.len()) > *length {
+            if received_sequence != *sequence
+                || chunk.is_empty()
+                || bytes.len().saturating_add(chunk.len()) > *length
+            {
                 return Err(ClientError::Protocol(
                     "file stream sequence/length mismatch".to_string(),
                 ));
@@ -1341,6 +1405,8 @@ fn dispatch_stream(
                     })?,
                     std::mem::take(bytes),
                 ));
+            } else {
+                replenish = Some((stream_id, chunk.len()));
             }
         }
         IncomingStream::Process { sequence, chunks } => {
@@ -1366,7 +1432,7 @@ fn dispatch_stream(
         streams.remove(&key);
         let _ = completion.send(Ok(bytes));
     }
-    Ok(())
+    Ok(replenish)
 }
 
 fn correlation_key(correlation: Correlation) -> (u64, u64) {
@@ -1456,7 +1522,7 @@ mod tests {
         assert_eq!(streams.len(), 1);
 
         let payload = lsb_service_proto::encode_stream_payload(0, b"abc").unwrap();
-        dispatch_stream(
+        let replenished = dispatch_stream(
             WireFrame {
                 header: FrameHeader {
                     kind: FrameKind::StreamData,
@@ -1470,8 +1536,49 @@ mod tests {
             &mut streams,
         )
         .unwrap();
+        assert!(replenished.is_none());
         assert_eq!(receiver.try_recv().unwrap().unwrap(), b"abc".to_vec());
         assert!(streams.is_empty());
+    }
+
+    #[test]
+    fn read_file_replenishes_credit_before_the_final_chunk() {
+        let (sender, mut receiver) = oneshot::channel();
+        let mut streams = HashMap::new();
+        let mut processes = HashMap::new();
+        let mut watches = HashMap::new();
+        dispatch_response(
+            PendingRequest::ReadFile(sender),
+            Response::Ok {
+                result: ResponseValue::FileRead {
+                    stream_id: FIRST.to_string(),
+                    length: 4,
+                },
+            },
+            &mut streams,
+            &mut processes,
+            &mut watches,
+        )
+        .unwrap();
+
+        let payload = lsb_service_proto::encode_stream_payload(0, b"abc").unwrap();
+        let replenished = dispatch_stream(
+            WireFrame {
+                header: FrameHeader {
+                    kind: FrameKind::StreamData,
+                    flags: 0,
+                    protocol: CURRENT,
+                    payload_len: payload.len() as u32,
+                    correlation: stream_correlation(FIRST).unwrap(),
+                },
+                payload,
+            },
+            &mut streams,
+        )
+        .unwrap();
+        assert_eq!(replenished, Some((FIRST.to_string(), 3)));
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(streams.len(), 1);
     }
 
     #[test]
@@ -1499,7 +1606,7 @@ mod tests {
         let mut channels = receiver.try_recv().unwrap().unwrap();
 
         let payload = lsb_service_proto::encode_stream_payload(0, b"out").unwrap();
-        dispatch_stream(
+        let replenished = dispatch_stream(
             WireFrame {
                 header: FrameHeader {
                     kind: FrameKind::StreamData,
@@ -1513,6 +1620,7 @@ mod tests {
             &mut streams,
         )
         .unwrap();
+        assert!(replenished.is_none());
         assert_eq!(channels.stdout.try_recv().unwrap(), b"out".to_vec());
     }
 

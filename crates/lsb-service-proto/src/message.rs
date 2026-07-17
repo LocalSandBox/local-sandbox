@@ -283,7 +283,7 @@ impl Request {
                 validate_resource_id(sandbox_id)?;
                 validate_guest_path(path)?;
                 validate_resource_id(stream_id)?;
-                if *length as usize > crate::limits::INITIAL_STREAM_CREDIT {
+                if *length as usize > crate::limits::MAX_FILE_TRANSFER_BYTES {
                     return Err(ProtocolError::MessageTooLarge);
                 }
             }
@@ -839,14 +839,14 @@ mod tests {
     }
 
     #[test]
-    fn write_file_is_bounded_by_initial_stream_credit() {
+    fn write_file_is_bounded_by_compiled_transfer_limit() {
         let request = Request {
             deadline_ms: None,
             op: RequestOp::WriteFile {
                 sandbox_id: "0123456789abcdef0123456789abcdef".to_string(),
                 path: "/workspace/output".to_string(),
                 stream_id: "fedcba9876543210fedcba9876543210".to_string(),
-                length: (crate::limits::INITIAL_STREAM_CREDIT + 1) as u32,
+                length: (crate::limits::MAX_FILE_TRANSFER_BYTES + 1) as u32,
             },
         };
         assert_eq!(request.validate(), Err(ProtocolError::MessageTooLarge));

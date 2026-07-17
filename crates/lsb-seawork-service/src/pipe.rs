@@ -112,19 +112,30 @@ impl EventSequence {
         protocol: lsb_service_proto::ProtocolVersion,
         event: &Event,
     ) -> Result<()> {
+        self.write_value(writer, FrameKind::Event, protocol, event)
+            .await
+    }
+
+    async fn write_value(
+        &self,
+        writer: &OutboundWriter,
+        kind: FrameKind,
+        protocol: lsb_service_proto::ProtocolVersion,
+        value: &impl serde::Serialize,
+    ) -> Result<()> {
         let mut sequence = self.next.lock().await;
         if *sequence == 0 || *sequence == u64::MAX {
             bail!("server event sequence exhausted");
         }
         write_control(
             writer,
-            FrameKind::Event,
+            kind,
             protocol,
             Correlation {
                 high: self.epoch,
                 low: *sequence,
             },
-            event,
+            value,
         )
         .await?;
         *sequence = sequence
@@ -589,7 +600,7 @@ where
             stream_id, length, ..
         } = &request.op
         {
-            match read_stream(pipe, selected, stream_id, *length).await {
+            match read_stream(pipe, writer, &events, selected, stream_id, *length).await {
                 Ok(bytes) => Some(bytes),
                 Err(_) => {
                     connection
@@ -1013,20 +1024,26 @@ async fn dispatch_request(
                 request_cancellation.clone(),
             ));
             let stream_id = ResourceHandle::random()?.to_string();
-            write_control(
-                &writer,
-                FrameKind::Response,
-                protocol,
-                correlation,
-                &Response::Ok {
-                    result: ResponseValue::FileRead {
-                        stream_id: stream_id.clone(),
-                        length: bytes.len().try_into().context("file length overflow")?,
+            let credit = streams.register(stream_id.clone())?;
+            let transfer = async {
+                write_control(
+                    &writer,
+                    FrameKind::Response,
+                    protocol,
+                    correlation,
+                    &Response::Ok {
+                        result: ResponseValue::FileRead {
+                            stream_id: stream_id.clone(),
+                            length: bytes.len().try_into().context("file length overflow")?,
+                        },
                     },
-                },
-            )
-            .await?;
-            write_stream(&writer, protocol, &stream_id, &bytes).await?;
+                )
+                .await?;
+                write_stream(&writer, protocol, &stream_id, &bytes, &credit).await
+            }
+            .await;
+            streams.remove(&stream_id);
+            transfer?;
             return Ok(());
         }
         RequestOp::WriteFile {
@@ -1296,10 +1313,12 @@ async fn write_stream(
     protocol: lsb_service_proto::ProtocolVersion,
     stream_id: &str,
     bytes: &[u8],
+    credit: &StreamCredit,
 ) -> Result<()> {
     let correlation = stream_correlation(stream_id)?;
     let chunk_size = MAX_STREAM_PAYLOAD - STREAM_SEQUENCE_LEN;
     for (sequence, chunk) in bytes.chunks(chunk_size).enumerate() {
+        credit.consume(chunk.len()).await?;
         let payload = encode_stream_payload(sequence.try_into()?, chunk)?;
         let header = FrameHeader {
             kind: FrameKind::StreamData,
@@ -1316,6 +1335,8 @@ async fn write_stream(
 
 async fn read_stream<R>(
     pipe: &mut R,
+    writer: &OutboundWriter,
+    events: &EventSequence,
     protocol: lsb_service_proto::ProtocolVersion,
     stream_id: &str,
     length: u32,
@@ -1326,6 +1347,7 @@ where
     let correlation = stream_correlation(stream_id)?;
     let mut bytes = Vec::with_capacity(length as usize);
     let mut expected_sequence = 0u64;
+    let mut remaining_credit = lsb_service_proto::limits::INITIAL_STREAM_CREDIT;
     while bytes.len() < length as usize {
         let frame = read_frame(pipe).await?;
         if frame.header.kind != FrameKind::StreamData
@@ -1336,7 +1358,9 @@ where
         }
         let (sequence, chunk) = lsb_service_proto::decode_stream_payload(&frame.payload)?;
         if sequence != expected_sequence
+            || chunk.is_empty()
             || bytes.len().saturating_add(chunk.len()) > length as usize
+            || chunk.len() > remaining_credit
         {
             bail!("write stream sequence/length mismatch");
         }
@@ -1344,6 +1368,24 @@ where
             .checked_add(1)
             .context("write stream sequence exhausted")?;
         bytes.extend_from_slice(chunk);
+        remaining_credit -= chunk.len();
+        if bytes.len() < length as usize {
+            let credit_bytes = u32::try_from(chunk.len())?;
+            events
+                .write_value(
+                    writer,
+                    FrameKind::WindowUpdate,
+                    protocol,
+                    &WindowUpdate {
+                        stream_id: stream_id.to_string(),
+                        credit_bytes,
+                    },
+                )
+                .await?;
+            remaining_credit = remaining_credit
+                .checked_add(chunk.len())
+                .context("write stream credit overflow")?;
+        }
     }
     Ok(bytes)
 }

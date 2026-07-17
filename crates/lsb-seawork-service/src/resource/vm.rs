@@ -521,8 +521,8 @@ fn file_op(
         },
         ManagedFileOp::ReadFile { path } => {
             let stat = sandbox.stat(&path)?;
-            if stat.size > lsb_service_proto::limits::INITIAL_STREAM_CREDIT as u64 {
-                bail!("file exceeds initial stream credit");
+            if stat.size > lsb_service_proto::limits::MAX_FILE_TRANSFER_BYTES as u64 {
+                bail!("file exceeds compiled transfer limit");
             }
             Ok(ManagedFileResult::Bytes(sandbox.read_file(&path)?))
         }

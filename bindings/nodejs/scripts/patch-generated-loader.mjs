@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const loaderPath = join(scriptDir, '..', 'index.js')
+const declarationsPath = join(scriptDir, '..', 'index.d.ts')
 
 let source = readFileSync(loaderPath, 'utf8')
 
@@ -74,3 +75,20 @@ if (!source.includes('missingNativeBindingMessage(),')) {
 }
 
 writeFileSync(loaderPath, source)
+
+let declarations = readFileSync(declarationsPath, 'utf8')
+
+function patchAsyncIterator(className, yieldType) {
+  const generated = `export declare class ${className} {\n\n}`
+  const patched = `export declare class ${className} implements AsyncIterable<${yieldType}> {\n  [Symbol.asyncIterator](): AsyncIterator<${yieldType}>\n}`
+
+  if (declarations.includes(generated)) {
+    declarations = declarations.replace(generated, patched)
+  } else if (!declarations.includes(patched)) {
+    throw new Error(`could not patch ${className} async iterator declaration`)
+  }
+}
+
+patchAsyncIterator('ByteStream', 'Uint8Array')
+patchAsyncIterator('WatchStream', 'FileChangeEvent')
+writeFileSync(declarationsPath, declarations)
