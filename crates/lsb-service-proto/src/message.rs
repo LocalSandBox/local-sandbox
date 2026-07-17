@@ -145,7 +145,21 @@ impl Request {
         match &self.op {
             RequestOp::GetServiceInfo {}
             | RequestOp::HealthCheck {}
-            | RequestOp::CloseSession {} => {}
+            | RequestOp::CloseSession {}
+            | RequestOp::PrepareUninstall {} => {}
+            RequestOp::PrepareUpdate {
+                target_bundle,
+                target_protocol_range,
+            } => {
+                validate_string(target_bundle)?;
+                if target_bundle.is_empty() || target_bundle.len() > 128 {
+                    return Err(ProtocolError::InvalidJson);
+                }
+                target_protocol_range.validate()?;
+            }
+            RequestOp::CommitUpdate { update_id } | RequestOp::AbortUpdate { update_id } => {
+                validate_resource_id(update_id)?;
+            }
             RequestOp::StartSandbox {
                 cpus,
                 memory_mib,
@@ -400,6 +414,17 @@ pub enum RequestOp {
         stream_id: String,
         length: u32,
     },
+    PrepareUpdate {
+        target_bundle: String,
+        target_protocol_range: ProtocolRange,
+    },
+    CommitUpdate {
+        update_id: String,
+    },
+    AbortUpdate {
+        update_id: String,
+    },
+    PrepareUninstall {},
     CloseSession {},
 }
 
@@ -490,6 +515,13 @@ pub enum ResponseValue {
     FileRead {
         stream_id: String,
         length: u32,
+    },
+    UpdatePrepared {
+        update_id: String,
+    },
+    UninstallPrepared {
+        clean: bool,
+        quarantine_ids: Vec<String>,
     },
     Empty {},
 }
@@ -634,6 +666,7 @@ fn validate_json_depth(json: &str) -> Result<(), ProtocolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SUPPORTED;
 
     #[test]
     fn hello_is_strict_and_bounded() {
@@ -840,5 +873,29 @@ mod tests {
             parse_control::<Close>(br#"{"code":"unknown"}"#),
             Err(ProtocolError::InvalidJson)
         );
+    }
+
+    #[test]
+    fn administrator_contracts_are_bounded_and_path_free() {
+        let prepare = Request {
+            deadline_ms: None,
+            op: RequestOp::PrepareUpdate {
+                target_bundle: "0.4.7-windows-x86_64".to_string(),
+                target_protocol_range: SUPPORTED,
+            },
+        };
+        prepare.validate().unwrap();
+        let commit = Request {
+            deadline_ms: None,
+            op: RequestOp::CommitUpdate {
+                update_id: "0123456789abcdef0123456789abcdef".to_string(),
+            },
+        };
+        commit.validate().unwrap();
+        let invalid: ProtocolError = parse_control::<Request>(
+            br#"{"op":{"type":"prepare_update","target_bundle":"next","target_protocol_range":{"major":1,"min_minor":2,"max_minor":1},"image_path":"C:\\caller.exe"}}"#,
+        )
+        .unwrap_err();
+        assert_eq!(invalid, ProtocolError::InvalidJson);
     }
 }
