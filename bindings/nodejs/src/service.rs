@@ -5,7 +5,10 @@ use napi_derive::napi;
 
 #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 use crate::error::unsupported_platform_error;
-use crate::types::{CopyOptions, DirEntry, ExecResult, MkdirOptions, RemoveOptions, StatResult};
+use crate::types::{
+  CopyOptions, DirEntry, ExecResult, FileChangeEvent, MkdirOptions, RemoveOptions, StatResult,
+  WatchOptions,
+};
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use std::sync::Arc;
@@ -238,6 +241,33 @@ impl SeaWorkSandbox {
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     {
       let _ = command;
+      let _ = opts;
+      Err(unsupported_platform_error())
+    }
+  }
+
+  #[napi]
+  pub async fn watch(&self, path: String, opts: Option<WatchOptions>) -> Result<SeaWorkWatch> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+      let watch = self
+        .client
+        .lock()
+        .await
+        .watch(
+          &self.sandbox,
+          path,
+          opts.and_then(|value| value.recursive).unwrap_or(true),
+        )
+        .await
+        .map_err(service_error)?;
+      return Ok(SeaWorkWatch {
+        watch: Arc::new(watch),
+      });
+    }
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    {
+      let _ = path;
       let _ = opts;
       Err(unsupported_platform_error())
     }
@@ -477,6 +507,56 @@ impl SeaWorkSandbox {
 pub struct SeaWorkProcess {
   #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
   process: Arc<lsb_service_client::RemoteProcess>,
+}
+
+#[napi]
+pub struct SeaWorkWatch {
+  #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+  watch: Arc<lsb_service_client::RemoteWatch>,
+}
+
+#[napi]
+impl SeaWorkWatch {
+  #[napi(getter)]
+  pub fn id(&self) -> Result<String> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return Ok(self.watch.id().to_string());
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    Err(unsupported_platform_error())
+  }
+
+  #[napi]
+  pub async fn next(&self) -> Result<Option<FileChangeEvent>> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return self
+      .watch
+      .next()
+      .await
+      .map(|event| {
+        event.map(|event| FileChangeEvent {
+          path: event.path,
+          event: match event.change {
+            lsb_service_proto::WatchChange::Created => "create",
+            lsb_service_proto::WatchChange::Modified => "modify",
+            lsb_service_proto::WatchChange::Removed => "delete",
+            lsb_service_proto::WatchChange::Renamed => "rename",
+            lsb_service_proto::WatchChange::Overflow => "overflow",
+          }
+          .to_string(),
+        })
+      })
+      .map_err(service_error);
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    Err(unsupported_platform_error())
+  }
+
+  #[napi]
+  pub async fn stop(&self) -> Result<()> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return self.watch.stop().await.map_err(service_error);
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    Err(unsupported_platform_error())
+  }
 }
 
 #[napi]

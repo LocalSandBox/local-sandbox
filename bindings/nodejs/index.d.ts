@@ -142,6 +142,7 @@ export declare class SeaWorkSandbox {
   get id(): string
   exec(command: string | Array<string>, opts?: SeaWorkExecOptions | undefined | null): Promise<ExecResult>
   spawn(command: string | Array<string>, opts?: SeaWorkExecOptions | undefined | null): Promise<SeaWorkProcess>
+  watch(path: string, opts?: WatchOptions | undefined | null): Promise<SeaWorkWatch>
   mkdir(path: string, opts?: MkdirOptions | undefined | null): Promise<void>
   readDir(path: string): Promise<Array<DirEntry>>
   stat(path: string): Promise<StatResult>
@@ -160,6 +161,12 @@ export declare class SeaWorkService {
   health(): Promise<SeaWorkHealth>
   start(opts?: SeaWorkStartOptions | undefined | null): Promise<SeaWorkSandbox>
   close(): Promise<void>
+}
+
+export declare class SeaWorkWatch {
+  get id(): string
+  next(): Promise<FileChangeEvent | null>
+  stop(): Promise<void>
 }
 
 /**
