@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+getrandom = "0.3"
 lsb-service-proto = { path = "../lsb-service-proto" }
 serde = "1"
 serde_json = "1"

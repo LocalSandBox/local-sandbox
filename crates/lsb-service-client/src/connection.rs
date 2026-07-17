@@ -370,6 +370,51 @@ impl ServiceClient {
         Ok(bytes)
     }
 
+    pub async fn write_file(
+        &mut self,
+        sandbox: &RemoteSandbox,
+        path: impl Into<String>,
+        bytes: &[u8],
+    ) -> Result<(), ClientError> {
+        if bytes.len() > lsb_service_proto::limits::INITIAL_STREAM_CREDIT {
+            return Err(ClientError::Protocol(
+                "WriteFile exceeds initial stream credit".to_string(),
+            ));
+        }
+        let stream_id = random_id()?;
+        let stream = stream_correlation(&stream_id)?;
+        let correlation = self.next_correlation()?;
+        write_control(
+            &mut self.pipe,
+            FrameKind::Request,
+            self.protocol,
+            correlation,
+            &Request {
+                deadline_ms: None,
+                op: RequestOp::WriteFile {
+                    sandbox_id: sandbox.sandbox_id.clone(),
+                    path: path.into(),
+                    stream_id,
+                    length: bytes
+                        .len()
+                        .try_into()
+                        .map_err(|_| ClientError::Protocol("file length overflow".to_string()))?,
+                },
+            },
+        )
+        .await?;
+        write_stream(&mut self.pipe, self.protocol, stream, bytes).await?;
+        let frame = read_frame(&mut self.pipe).await?;
+        self.validate_response(&frame, correlation)?;
+        match parse_control::<Response>(&frame.payload)? {
+            Response::Ok {
+                result: ResponseValue::Empty {},
+            } => Ok(()),
+            Response::Ok { .. } => Err(mismatched("WriteFile")),
+            Response::Err { error } => Err(map_service_error(error)),
+        }
+    }
+
     async fn empty_file_request(&mut self, op: RequestOp) -> Result<(), ClientError> {
         match self.request(op).await? {
             ResponseValue::Empty {} => Ok(()),
@@ -463,6 +508,51 @@ fn stream_correlation(stream_id: &str) -> Result<Correlation, ClientError> {
         low: u64::from_str_radix(&stream_id[16..], 16)
             .map_err(|_| ClientError::Protocol("invalid stream id".to_string()))?,
     })
+}
+
+fn random_id() -> Result<String, ClientError> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| ClientError::Protocol(format!("generate stream id: {error}")))?;
+    if bytes == [0; 16] {
+        return Err(ClientError::Protocol(
+            "generated zero stream id".to_string(),
+        ));
+    }
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+async fn write_stream(
+    pipe: &mut NamedPipeClient,
+    protocol: ProtocolVersion,
+    correlation: Correlation,
+    bytes: &[u8],
+) -> Result<(), ClientError> {
+    let chunk_size = lsb_service_proto::limits::MAX_STREAM_PAYLOAD
+        - lsb_service_proto::limits::STREAM_SEQUENCE_LEN;
+    for (sequence, chunk) in bytes.chunks(chunk_size).enumerate() {
+        let payload = lsb_service_proto::encode_stream_payload(
+            sequence
+                .try_into()
+                .map_err(|_| ClientError::Protocol("stream sequence overflow".to_string()))?,
+            chunk,
+        )?;
+        let header = FrameHeader {
+            kind: FrameKind::StreamData,
+            flags: 0,
+            protocol,
+            payload_len: payload
+                .len()
+                .try_into()
+                .map_err(|_| ClientError::Protocol("payload length overflow".to_string()))?,
+            correlation,
+        }
+        .encode()?;
+        pipe.write_all(&header).await?;
+        pipe.write_all(&payload).await?;
+    }
+    pipe.flush().await?;
+    Ok(())
 }
 
 #[derive(Debug, Clone)]

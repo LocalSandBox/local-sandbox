@@ -142,6 +142,7 @@ export declare class SeaWorkSandbox {
   chmod(path: string, mode: number): Promise<void>
   exists(path: string): Promise<boolean>
   readFile(path: string): Promise<Buffer>
+  writeFile(path: string, content: string | Uint8Array): Promise<void>
   stop(): Promise<void>
 }
 

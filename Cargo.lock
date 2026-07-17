@@ -1053,6 +1053,7 @@ dependencies = [
 name = "lsb-service-client"
 version = "0.4.6"
 dependencies = [
+ "getrandom 0.3.4",
  "lsb-service-proto",
  "serde",
  "serde_json",

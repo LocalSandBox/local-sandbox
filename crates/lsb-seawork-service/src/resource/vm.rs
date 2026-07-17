@@ -74,6 +74,10 @@ pub enum ManagedFileOp {
     ReadFile {
         path: String,
     },
+    WriteFile {
+        path: String,
+        bytes: Vec<u8>,
+    },
 }
 
 #[derive(Debug)]
@@ -322,6 +326,10 @@ fn file_op(sandbox: &lsb_vm::Sandbox, op: ManagedFileOp) -> Result<ManagedFileRe
                 bail!("file exceeds initial stream credit");
             }
             Ok(ManagedFileResult::Bytes(sandbox.read_file(&path)?))
+        }
+        ManagedFileOp::WriteFile { path, bytes } => {
+            sandbox.write_file(&path, &bytes)?;
+            Ok(ManagedFileResult::Empty)
         }
     }
 }

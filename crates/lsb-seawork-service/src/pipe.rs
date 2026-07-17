@@ -429,6 +429,34 @@ async fn handle_authenticated_client(
                 write_stream(pipe, selected, &stream_id, &bytes).await?;
                 continue;
             }
+            RequestOp::WriteFile {
+                sandbox_id,
+                path,
+                stream_id,
+                length,
+            } => {
+                let bytes = match read_stream(pipe, selected, &stream_id, length).await {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        write_error(
+                            pipe,
+                            selected,
+                            frame.header.correlation,
+                            ErrorCode::ProtocolError,
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                };
+                file_result!(file_request(
+                    context,
+                    session_id,
+                    identity,
+                    sandbox_id,
+                    crate::resource::vm::ManagedFileOp::WriteFile { path, bytes },
+                    deadline_ms,
+                ))
+            }
             RequestOp::CloseSession {} => {
                 write_control(
                     pipe,
@@ -477,6 +505,37 @@ async fn write_stream(
     }
     pipe.flush().await?;
     Ok(())
+}
+
+async fn read_stream(
+    pipe: &mut NamedPipeServer,
+    protocol: lsb_service_proto::ProtocolVersion,
+    stream_id: &str,
+    length: u32,
+) -> Result<Vec<u8>> {
+    let correlation = stream_correlation(stream_id)?;
+    let mut bytes = Vec::with_capacity(length as usize);
+    let mut expected_sequence = 0u64;
+    while bytes.len() < length as usize {
+        let frame = read_frame(pipe).await?;
+        if frame.header.kind != FrameKind::StreamData
+            || frame.header.protocol != protocol
+            || frame.header.correlation != correlation
+        {
+            bail!("write stream correlation/version mismatch");
+        }
+        let (sequence, chunk) = lsb_service_proto::decode_stream_payload(&frame.payload)?;
+        if sequence != expected_sequence
+            || bytes.len().saturating_add(chunk.len()) > length as usize
+        {
+            bail!("write stream sequence/length mismatch");
+        }
+        expected_sequence = expected_sequence
+            .checked_add(1)
+            .context("write stream sequence exhausted")?;
+        bytes.extend_from_slice(chunk);
+    }
+    Ok(bytes)
 }
 
 fn stream_correlation(stream_id: &str) -> Result<Correlation> {

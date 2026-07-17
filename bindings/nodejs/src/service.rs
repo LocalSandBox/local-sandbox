@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use napi::bindgen_prelude::{Buffer, Either, Result};
+use napi::bindgen_prelude::{Buffer, Either, Result, Uint8Array};
 use napi_derive::napi;
 
 #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
@@ -384,6 +384,30 @@ impl SeaWorkSandbox {
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     {
       let _ = path;
+      Err(unsupported_platform_error())
+    }
+  }
+
+  #[napi]
+  pub async fn write_file(&self, path: String, content: Either<String, Uint8Array>) -> Result<()> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+      let bytes = match content {
+        Either::A(text) => text.into_bytes(),
+        Either::B(bytes) => bytes.to_vec(),
+      };
+      return self
+        .client
+        .lock()
+        .await
+        .write_file(&self.sandbox, path, &bytes)
+        .await
+        .map_err(service_error);
+    }
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    {
+      let _ = path;
+      let _ = content;
       Err(unsupported_platform_error())
     }
   }

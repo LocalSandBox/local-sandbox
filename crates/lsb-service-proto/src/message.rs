@@ -246,6 +246,19 @@ impl Request {
                 validate_resource_id(sandbox_id)?;
                 validate_guest_path(path)?;
             }
+            RequestOp::WriteFile {
+                sandbox_id,
+                path,
+                stream_id,
+                length,
+            } => {
+                validate_resource_id(sandbox_id)?;
+                validate_guest_path(path)?;
+                validate_resource_id(stream_id)?;
+                if *length as usize > crate::limits::INITIAL_STREAM_CREDIT {
+                    return Err(ProtocolError::MessageTooLarge);
+                }
+            }
             RequestOp::Rename {
                 sandbox_id,
                 old_path,
@@ -347,6 +360,12 @@ pub enum RequestOp {
     ReadFile {
         sandbox_id: String,
         path: String,
+    },
+    WriteFile {
+        sandbox_id: String,
+        path: String,
+        stream_id: String,
+        length: u32,
     },
     CloseSession {},
 }
@@ -689,6 +708,20 @@ mod tests {
             },
         };
         assert_eq!(invalid.validate(), Err(ProtocolError::InvalidJson));
+    }
+
+    #[test]
+    fn write_file_is_bounded_by_initial_stream_credit() {
+        let request = Request {
+            deadline_ms: None,
+            op: RequestOp::WriteFile {
+                sandbox_id: "0123456789abcdef0123456789abcdef".to_string(),
+                path: "/workspace/output".to_string(),
+                stream_id: "fedcba9876543210fedcba9876543210".to_string(),
+                length: (crate::limits::INITIAL_STREAM_CREDIT + 1) as u32,
+            },
+        };
+        assert_eq!(request.validate(), Err(ProtocolError::MessageTooLarge));
     }
 
     #[test]
