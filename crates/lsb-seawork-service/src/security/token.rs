@@ -5,14 +5,17 @@ use std::ptr;
 use anyhow::{bail, Context, Result};
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Security::{
-    DuplicateTokenEx, GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation,
-    SecurityImpersonation, TokenElevation, TokenGroups, TokenImpersonation, TokenIntegrityLevel,
-    TokenIsAppContainer, TokenSessionId, TokenStatistics, TokenUser, TOKEN_DUPLICATE,
-    TOKEN_ELEVATION, TOKEN_GROUPS, TOKEN_IMPERSONATE, TOKEN_INFORMATION_CLASS,
-    TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_USER,
+    AllocateAndInitializeSid, CheckTokenMembership, DuplicateTokenEx, FreeSid,
+    GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, SecurityImpersonation,
+    TokenElevation, TokenGroups, TokenImpersonation, TokenIntegrityLevel, TokenIsAppContainer,
+    TokenSessionId, TokenStatistics, TokenUser, PSID, SECURITY_NT_AUTHORITY,
+    SID_IDENTIFIER_AUTHORITY, TOKEN_DUPLICATE, TOKEN_ELEVATION, TOKEN_GROUPS, TOKEN_IMPERSONATE,
+    TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_USER,
 };
 use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
-use windows_sys::Win32::System::SystemServices::SE_GROUP_LOGON_ID;
+use windows_sys::Win32::System::SystemServices::{
+    DOMAIN_ALIAS_RID_ADMINS, SECURITY_BUILTIN_DOMAIN_RID, SE_GROUP_LOGON_ID,
+};
 use windows_sys::Win32::System::Threading::{
     GetCurrentThread, OpenProcess, OpenProcessToken, OpenThreadToken,
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
@@ -33,6 +36,7 @@ pub struct TokenSnapshot {
     pub integrity_rid: u32,
     pub is_app_container: bool,
     pub elevated: bool,
+    pub administrator: bool,
 }
 
 pub struct ClientIdentity {
@@ -40,6 +44,7 @@ pub struct ClientIdentity {
     pub integrity_rid: u32,
     pub process_id: u32,
     pub elevated: bool,
+    pub administrator: bool,
     pub process_image: std::path::PathBuf,
     _process: OwnedHandle,
     _impersonation_token: OwnedHandle,
@@ -82,6 +87,7 @@ impl ClientIdentity {
             || pipe_snapshot.logon_sid != process_snapshot.logon_sid
             || pipe_snapshot.authentication_luid != process_snapshot.authentication_luid
             || pipe_snapshot.session_id != process_snapshot.session_id
+            || pipe_snapshot.administrator != process_snapshot.administrator
         {
             bail!("pipe and process token identities do not match");
         }
@@ -98,6 +104,7 @@ impl ClientIdentity {
             integrity_rid: pipe_snapshot.integrity_rid,
             process_id,
             elevated: pipe_snapshot.elevated,
+            administrator: pipe_snapshot.administrator,
             process_image,
             _process: process,
             _impersonation_token: duplicated_token,
@@ -190,6 +197,7 @@ fn snapshot(token: &OwnedHandle) -> Result<TokenSnapshot> {
     })??;
     let is_app_container = token_value::<u32>(token, TokenIsAppContainer)? != 0;
     let elevated = token_value::<TOKEN_ELEVATION>(token, TokenElevation)?.TokenIsElevated != 0;
+    let administrator = is_administrator(token)?;
     Ok(TokenSnapshot {
         user_sid,
         logon_sid,
@@ -198,7 +206,45 @@ fn snapshot(token: &OwnedHandle) -> Result<TokenSnapshot> {
         integrity_rid,
         is_app_container,
         elevated,
+        administrator,
     })
+}
+
+fn is_administrator(token: HANDLE) -> Result<bool> {
+    let authority = SECURITY_NT_AUTHORITY;
+    let mut administrators: PSID = ptr::null_mut();
+    if unsafe {
+        AllocateAndInitializeSid(
+            &authority as *const SID_IDENTIFIER_AUTHORITY,
+            2,
+            SECURITY_BUILTIN_DOMAIN_RID as u32,
+            DOMAIN_ALIAS_RID_ADMINS as u32,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            &mut administrators,
+        )
+    } == 0
+    {
+        bail!(
+            "AllocateAndInitializeSid failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+
+    let mut member = 0;
+    let checked = unsafe { CheckTokenMembership(token, administrators, &mut member) };
+    unsafe { FreeSid(administrators) };
+    if checked == 0 {
+        bail!(
+            "CheckTokenMembership failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(member != 0)
 }
 
 fn token_value<T: Copy>(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> Result<T> {

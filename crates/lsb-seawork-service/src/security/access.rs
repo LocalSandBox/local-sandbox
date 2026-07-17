@@ -29,6 +29,7 @@ mod tests {
             integrity_rid: SECURITY_MANDATORY_MEDIUM_RID as u32,
             is_app_container: false,
             elevated: false,
+            administrator: false,
         }
     }
 
