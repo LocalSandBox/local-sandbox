@@ -155,7 +155,7 @@ impl ServiceClient {
         self.core.protocol
     }
 
-    pub async fn get_service_info(&mut self) -> Result<ServiceInfo, ClientError> {
+    pub async fn get_service_info(&self) -> Result<ServiceInfo, ClientError> {
         match self.request(RequestOp::GetServiceInfo {}).await? {
             ResponseValue::ServiceInfo { info } => Ok(info),
             _ => Err(ClientError::Protocol(
@@ -164,7 +164,7 @@ impl ServiceClient {
         }
     }
 
-    pub async fn health_check(&mut self) -> Result<Health, ClientError> {
+    pub async fn health_check(&self) -> Result<Health, ClientError> {
         match self.request(RequestOp::HealthCheck {}).await? {
             ResponseValue::Health { health } => Ok(health),
             _ => Err(ClientError::Protocol(
@@ -174,7 +174,7 @@ impl ServiceClient {
     }
 
     pub async fn prepare_update(
-        &mut self,
+        &self,
         target_bundle: impl Into<String>,
         target_protocol_range: lsb_service_proto::ProtocolRange,
     ) -> Result<String, ClientError> {
@@ -190,7 +190,7 @@ impl ServiceClient {
         }
     }
 
-    pub async fn commit_update(&mut self, update_id: impl Into<String>) -> Result<(), ClientError> {
+    pub async fn commit_update(&self, update_id: impl Into<String>) -> Result<(), ClientError> {
         match self
             .request(RequestOp::CommitUpdate {
                 update_id: update_id.into(),
@@ -202,7 +202,7 @@ impl ServiceClient {
         }
     }
 
-    pub async fn abort_update(&mut self, update_id: impl Into<String>) -> Result<(), ClientError> {
+    pub async fn abort_update(&self, update_id: impl Into<String>) -> Result<(), ClientError> {
         match self
             .request(RequestOp::AbortUpdate {
                 update_id: update_id.into(),
@@ -214,7 +214,7 @@ impl ServiceClient {
         }
     }
 
-    pub async fn prepare_uninstall(&mut self) -> Result<UninstallPreparation, ClientError> {
+    pub async fn prepare_uninstall(&self) -> Result<UninstallPreparation, ClientError> {
         match self.request(RequestOp::PrepareUninstall {}).await? {
             ResponseValue::UninstallPrepared {
                 clean,
@@ -228,7 +228,7 @@ impl ServiceClient {
     }
 
     pub async fn start_sandbox(
-        &mut self,
+        &self,
         options: StartSandboxOptions,
     ) -> Result<RemoteSandbox, ClientError> {
         match self
@@ -249,7 +249,7 @@ impl ServiceClient {
         }
     }
 
-    pub async fn stop_sandbox(&mut self, sandbox: &RemoteSandbox) -> Result<(), ClientError> {
+    pub async fn stop_sandbox(&self, sandbox: &RemoteSandbox) -> Result<(), ClientError> {
         match self
             .request(RequestOp::StopSandbox {
                 sandbox_id: sandbox.sandbox_id.clone(),
@@ -264,7 +264,7 @@ impl ServiceClient {
     }
 
     pub async fn exec(
-        &mut self,
+        &self,
         sandbox: &RemoteSandbox,
         command: RemoteCommand,
         options: ExecOptions,
@@ -302,7 +302,7 @@ impl ServiceClient {
     }
 
     pub async fn mkdir(
-        &mut self,
+        &self,
         sandbox: &RemoteSandbox,
         path: impl Into<String>,
         recursive: bool,
@@ -316,7 +316,7 @@ impl ServiceClient {
     }
 
     pub async fn read_dir(
-        &mut self,
+        &self,
         sandbox: &RemoteSandbox,
         path: impl Into<String>,
     ) -> Result<Vec<lsb_service_proto::ServiceDirEntry>, ClientError> {
@@ -333,7 +333,7 @@ impl ServiceClient {
     }
 
     pub async fn stat(
-        &mut self,
+        &self,
         sandbox: &RemoteSandbox,
         path: impl Into<String>,
     ) -> Result<lsb_service_proto::ServiceFileStat, ClientError> {
@@ -350,7 +350,7 @@ impl ServiceClient {
     }
 
     pub async fn remove(
-        &mut self,
+        &self,
         sandbox: &RemoteSandbox,
         path: impl Into<String>,
         recursive: bool,
@@ -364,7 +364,7 @@ impl ServiceClient {
     }
 
     pub async fn rename(
-        &mut self,
+        &self,
         sandbox: &RemoteSandbox,
         old_path: impl Into<String>,
         new_path: impl Into<String>,
@@ -378,7 +378,7 @@ impl ServiceClient {
     }
 
     pub async fn copy(
-        &mut self,
+        &self,
         sandbox: &RemoteSandbox,
         src: impl Into<String>,
         dst: impl Into<String>,
@@ -394,7 +394,7 @@ impl ServiceClient {
     }
 
     pub async fn chmod(
-        &mut self,
+        &self,
         sandbox: &RemoteSandbox,
         path: impl Into<String>,
         mode: u32,
@@ -408,7 +408,7 @@ impl ServiceClient {
     }
 
     pub async fn exists(
-        &mut self,
+        &self,
         sandbox: &RemoteSandbox,
         path: impl Into<String>,
     ) -> Result<bool, ClientError> {
@@ -425,7 +425,7 @@ impl ServiceClient {
     }
 
     pub async fn read_file(
-        &mut self,
+        &self,
         sandbox: &RemoteSandbox,
         path: impl Into<String>,
     ) -> Result<Vec<u8>, ClientError> {
@@ -438,7 +438,7 @@ impl ServiceClient {
     }
 
     pub async fn write_file(
-        &mut self,
+        &self,
         sandbox: &RemoteSandbox,
         path: impl Into<String>,
         bytes: &[u8],
@@ -465,7 +465,7 @@ impl ServiceClient {
     }
 
     pub async fn spawn(
-        &mut self,
+        &self,
         sandbox: &RemoteSandbox,
         command: RemoteCommand,
         options: ExecOptions,
@@ -491,7 +491,7 @@ impl ServiceClient {
     }
 
     pub async fn watch(
-        &mut self,
+        &self,
         sandbox: &RemoteSandbox,
         path: impl Into<String>,
         recursive: bool,
@@ -511,14 +511,14 @@ impl ServiceClient {
         })
     }
 
-    async fn empty_file_request(&mut self, op: RequestOp) -> Result<(), ClientError> {
+    async fn empty_file_request(&self, op: RequestOp) -> Result<(), ClientError> {
         match self.request(op).await? {
             ResponseValue::Empty {} => Ok(()),
             _ => Err(mismatched("guest file operation")),
         }
     }
 
-    pub async fn close_session(&mut self) -> Result<(), ClientError> {
+    pub async fn close_session(&self) -> Result<(), ClientError> {
         match self.request(RequestOp::CloseSession {}).await? {
             ResponseValue::Empty {} => Ok(()),
             _ => Err(ClientError::Protocol(
@@ -527,7 +527,7 @@ impl ServiceClient {
         }
     }
 
-    async fn request(&mut self, op: RequestOp) -> Result<ResponseValue, ClientError> {
+    async fn request(&self, op: RequestOp) -> Result<ResponseValue, ClientError> {
         match self.core.unary(op).await? {
             Response::Ok { result } => Ok(result),
             Response::Err { error }
@@ -1503,6 +1503,13 @@ mod tests {
     const FIRST: &str = "0123456789abcdef0123456789abcdef";
     const SECOND: &str = "fedcba9876543210fedcba9876543210";
     const THIRD: &str = "00112233445566778899aabbccddeeff";
+
+    #[test]
+    fn service_client_is_shareable_across_concurrent_callers() {
+        fn assert_send_sync<T: Send + Sync>() {}
+
+        assert_send_sync::<ServiceClient>();
+    }
 
     #[test]
     fn read_file_route_exists_before_stream_data_arrives() {

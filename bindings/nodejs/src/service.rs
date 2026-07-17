@@ -12,9 +12,6 @@ use crate::types::{
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use std::sync::Arc;
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-use tokio::sync::Mutex;
-
 #[allow(non_snake_case)]
 #[napi(object)]
 pub struct SeaWorkServiceConnectOptions {
@@ -97,7 +94,7 @@ pub struct SeaWorkUninstallPreparation {
 #[napi]
 pub struct SeaWorkService {
   #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-  client: Arc<Mutex<lsb_service_client::ServiceClient>>,
+  client: Arc<lsb_service_client::ServiceClient>,
 }
 
 #[napi]
@@ -119,7 +116,7 @@ impl SeaWorkService {
       .await
       .map_err(service_error)?;
       Ok(Self {
-        client: Arc::new(Mutex::new(client)),
+        client: Arc::new(client),
       })
     }
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
@@ -138,7 +135,7 @@ impl SeaWorkService {
   pub async fn get_service_info(&self) -> Result<SeaWorkServiceInfo> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
-      let mut client = self.client.lock().await;
+      let client = &self.client;
       let info = client.get_service_info().await.map_err(service_error)?;
       let protocol = client.negotiated_protocol();
       Ok(map_service_info(info, protocol))
@@ -151,7 +148,7 @@ impl SeaWorkService {
   pub async fn health_check(&self) -> Result<SeaWorkServiceHealth> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
-      let mut client = self.client.lock().await;
+      let client = &self.client;
       let health = client.health_check().await.map_err(service_error)?;
       let info = client.get_service_info().await.map_err(service_error)?;
       let protocol = client.negotiated_protocol();
@@ -170,13 +167,7 @@ impl SeaWorkService {
   pub async fn health(&self) -> Result<SeaWorkHealth> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
-      let health = self
-        .client
-        .lock()
-        .await
-        .health_check()
-        .await
-        .map_err(service_error)?;
+      let health = self.client.health_check().await.map_err(service_error)?;
       return Ok(SeaWorkHealth {
         ready: health.ready,
         admissionsOpen: health.admissions_open,
@@ -206,8 +197,6 @@ impl SeaWorkService {
       };
       return self
         .client
-        .lock()
-        .await
         .prepare_update(target_bundle, range)
         .await
         .map_err(service_error);
@@ -225,8 +214,6 @@ impl SeaWorkService {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     return self
       .client
-      .lock()
-      .await
       .commit_update(update_id)
       .await
       .map_err(service_error);
@@ -242,8 +229,6 @@ impl SeaWorkService {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     return self
       .client
-      .lock()
-      .await
       .abort_update(update_id)
       .await
       .map_err(service_error);
@@ -260,8 +245,6 @@ impl SeaWorkService {
     {
       let preparation = self
         .client
-        .lock()
-        .await
         .prepare_uninstall()
         .await
         .map_err(service_error)?;
@@ -292,8 +275,6 @@ impl SeaWorkService {
       };
       let sandbox = self
         .client
-        .lock()
-        .await
         .start_sandbox(start)
         .await
         .map_err(service_error)?;
@@ -317,13 +298,7 @@ impl SeaWorkService {
   #[napi]
   pub async fn close(&self) -> Result<()> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    return self
-      .client
-      .lock()
-      .await
-      .close_session()
-      .await
-      .map_err(service_error);
+    return self.client.close_session().await.map_err(service_error);
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     Err(unsupported_platform_error())
   }
@@ -361,7 +336,7 @@ fn map_service_info(
 #[napi]
 pub struct SeaWorkSandbox {
   #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-  client: Arc<Mutex<lsb_service_client::ServiceClient>>,
+  client: Arc<lsb_service_client::ServiceClient>,
   #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
   sandbox: Arc<lsb_service_client::RemoteSandbox>,
 }
@@ -394,8 +369,6 @@ impl SeaWorkSandbox {
       };
       let result = self
         .client
-        .lock()
-        .await
         .exec(
           &self.sandbox,
           command,
@@ -442,8 +415,6 @@ impl SeaWorkSandbox {
       };
       let operation = self
         .client
-        .lock()
-        .await
         .begin_exec(
           &self.sandbox,
           command,
@@ -488,8 +459,6 @@ impl SeaWorkSandbox {
       };
       let process = self
         .client
-        .lock()
-        .await
         .spawn(
           &self.sandbox,
           command,
@@ -522,8 +491,6 @@ impl SeaWorkSandbox {
     {
       let watch = self
         .client
-        .lock()
-        .await
         .watch(
           &self.sandbox,
           path,
@@ -548,8 +515,6 @@ impl SeaWorkSandbox {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     return self
       .client
-      .lock()
-      .await
       .mkdir(
         &self.sandbox,
         path,
@@ -570,8 +535,6 @@ impl SeaWorkSandbox {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     return self
       .client
-      .lock()
-      .await
       .read_dir(&self.sandbox, path)
       .await
       .map_err(service_error)
@@ -597,8 +560,6 @@ impl SeaWorkSandbox {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     return self
       .client
-      .lock()
-      .await
       .stat(&self.sandbox, path)
       .await
       .map_err(service_error)
@@ -622,8 +583,6 @@ impl SeaWorkSandbox {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     return self
       .client
-      .lock()
-      .await
       .remove(
         &self.sandbox,
         path,
@@ -644,8 +603,6 @@ impl SeaWorkSandbox {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     return self
       .client
-      .lock()
-      .await
       .rename(&self.sandbox, old_path, new_path)
       .await
       .map_err(service_error);
@@ -662,8 +619,6 @@ impl SeaWorkSandbox {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     return self
       .client
-      .lock()
-      .await
       .copy(
         &self.sandbox,
         src,
@@ -686,8 +641,6 @@ impl SeaWorkSandbox {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     return self
       .client
-      .lock()
-      .await
       .chmod(&self.sandbox, path, mode)
       .await
       .map_err(service_error);
@@ -704,8 +657,6 @@ impl SeaWorkSandbox {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     return self
       .client
-      .lock()
-      .await
       .exists(&self.sandbox, path)
       .await
       .map_err(service_error);
@@ -721,8 +672,6 @@ impl SeaWorkSandbox {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     return self
       .client
-      .lock()
-      .await
       .read_file(&self.sandbox, path)
       .await
       .map(Buffer::from)
@@ -744,8 +693,6 @@ impl SeaWorkSandbox {
       };
       return self
         .client
-        .lock()
-        .await
         .write_file(&self.sandbox, path, &bytes)
         .await
         .map_err(service_error);
@@ -763,8 +710,6 @@ impl SeaWorkSandbox {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     return self
       .client
-      .lock()
-      .await
       .stop_sandbox(&self.sandbox)
       .await
       .map_err(service_error);
