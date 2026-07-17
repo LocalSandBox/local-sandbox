@@ -650,19 +650,19 @@ impl ConnectionCore {
             deadline_ms: None,
             op,
         };
-        let written = async {
-            write_control(
-                &mut *writer,
-                FrameKind::Request,
-                self.protocol,
-                correlation,
-                &request,
-            )
-            .await?;
-            write_stream(&mut *writer, self.protocol, stream_id, bytes, &credit).await
-        }
+        let request_written = write_control(
+            &mut *writer,
+            FrameKind::Request,
+            self.protocol,
+            correlation,
+            &request,
+        )
         .await;
         drop(writer);
+        let written = match request_written {
+            Ok(()) => write_stream(&self.writer, self.protocol, stream_id, bytes, &credit).await,
+            Err(error) => Err(error),
+        };
         self.outbound_streams.lock().await.remove(&stream_key);
         if let Err(error) = written {
             self.closed.store(true, Ordering::Release);
@@ -878,7 +878,7 @@ fn random_id() -> Result<String, ClientError> {
 }
 
 async fn write_stream<W>(
-    pipe: &mut W,
+    writer: &Mutex<W>,
     protocol: ProtocolVersion,
     correlation: Correlation,
     bytes: &[u8],
@@ -917,10 +917,11 @@ where
             correlation,
         }
         .encode()?;
+        let mut pipe = writer.lock().await;
         pipe.write_all(&header).await?;
         pipe.write_all(&payload).await?;
+        pipe.flush().await?;
     }
-    pipe.flush().await?;
     Ok(())
 }
 
@@ -1509,6 +1510,25 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
 
         assert_send_sync::<ServiceClient>();
+    }
+
+    #[tokio::test]
+    async fn upload_credit_wait_does_not_hold_the_transport_writer() {
+        let (pipe, _peer) = tokio::io::duplex(1024);
+        let writer = Arc::new(Mutex::new(pipe));
+        let credit = Arc::new(Semaphore::new(0));
+        let upload = tokio::spawn({
+            let writer = writer.clone();
+            let credit = credit.clone();
+            async move { write_stream(&writer, CURRENT, Correlation::default(), b"x", &credit).await }
+        });
+
+        tokio::task::yield_now().await;
+        let guard = tokio::time::timeout(Duration::from_millis(100), writer.lock())
+            .await
+            .expect("credit wait must not retain the transport writer");
+        drop(guard);
+        upload.abort();
     }
 
     #[test]
