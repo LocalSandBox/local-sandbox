@@ -15,6 +15,8 @@ pub struct ServiceConfig {
     #[serde(default)]
     pub publisher_thumbprints: Vec<String>,
     #[serde(default)]
+    pub maintenance_roots: Vec<String>,
+    #[serde(default)]
     pub ports_enabled: bool,
 }
 
@@ -49,6 +51,7 @@ impl Default for ServiceConfig {
             config_revision: 1,
             quotas: Quotas::default(),
             publisher_thumbprints: Vec::new(),
+            maintenance_roots: Vec::new(),
             ports_enabled: false,
         }
     }
@@ -111,6 +114,21 @@ impl ServiceConfig {
         {
             bail!("publisher thumbprint allowlist is invalid");
         }
+        if self.maintenance_roots.len() > 8
+            || self.maintenance_roots.iter().any(|value| {
+                value.len() > 1024
+                    || value.contains('\0')
+                    || !Path::new(value).is_absolute()
+                    || Path::new(value).components().any(|component| {
+                        matches!(
+                            component,
+                            std::path::Component::ParentDir | std::path::Component::CurDir
+                        )
+                    })
+            })
+        {
+            bail!("maintenance image root allowlist is invalid");
+        }
         if self.ports_enabled {
             bail!("host ports are compiled fail-closed until WFP isolation is proven");
         }
@@ -133,6 +151,16 @@ mod tests {
         assert!(config.validate().is_err());
         config.quotas.sandboxes_global = 8;
         config.ports_enabled = true;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn maintenance_policy_is_bounded_and_normalized() {
+        let mut config = ServiceConfig::default();
+        config.publisher_thumbprints = vec!["a".repeat(40)];
+        config.maintenance_roots = vec![r"C:\Program Files\LocalSandbox".to_string()];
+        assert!(config.validate().is_ok());
+        config.maintenance_roots = vec![r"C:\Program Files\..\Windows".to_string()];
         assert!(config.validate().is_err());
     }
 }
