@@ -527,7 +527,7 @@ impl SessionManager {
         identity: &ClientIdentityKey,
         process_id: ResourceHandle,
     ) -> Result<bool> {
-        let process = {
+        let controller = {
             let mut state = self
                 .state
                 .lock()
@@ -547,25 +547,56 @@ impl SessionManager {
             {
                 return Ok(true);
             }
-            let Some(process) = session.processes.remove(&process_id) else {
+            let Some(process) = session.processes.get(&process_id) else {
                 return Ok(false);
             };
             if matches!(process, ProcessSlot::Preparing(_)) {
-                session.processes.insert(process_id, process);
                 bail!("process is still preparing");
             }
-            session.retired.push_back((Instant::now(), process_id));
-            if session.retired.len() > MAX_RETIRED_HANDLES {
-                session.retired.pop_front();
-            }
-            state
-                .quotas
-                .release_process(process.resource().sandbox_id, identity);
-            process
+            process.controller()
         };
-        if let Some(controller) = process.controller() {
+        if let Some(controller) = controller {
             controller.kill()?;
         }
+        Ok(true)
+    }
+
+    #[cfg(windows)]
+    pub fn retire_managed_process(
+        &self,
+        session_id: ResourceHandle,
+        identity: &ClientIdentityKey,
+        process_id: ResourceHandle,
+    ) -> Result<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
+        let session = state
+            .sessions
+            .get_mut(&session_id)
+            .context("resource not found")?;
+        if &session.identity != identity {
+            return Ok(false);
+        }
+        prune_retired(&mut session.retired);
+        if session
+            .retired
+            .iter()
+            .any(|(_, retired)| *retired == process_id)
+        {
+            return Ok(true);
+        }
+        let Some(process) = session.processes.remove(&process_id) else {
+            return Ok(false);
+        };
+        session.retired.push_back((Instant::now(), process_id));
+        if session.retired.len() > MAX_RETIRED_HANDLES {
+            session.retired.pop_front();
+        }
+        state
+            .quotas
+            .release_process(process.resource().sandbox_id, identity);
         Ok(true)
     }
 
@@ -597,6 +628,20 @@ impl SessionManager {
             Some(controller) => controller.output(timeout),
             None => Ok(None),
         }
+    }
+
+    #[cfg(windows)]
+    pub fn owns_managed_process(
+        &self,
+        session_id: ResourceHandle,
+        identity: &ClientIdentityKey,
+        process_id: ResourceHandle,
+    ) -> bool {
+        self.state.lock().is_ok_and(|state| {
+            state.sessions.get(&session_id).is_some_and(|session| {
+                &session.identity == identity && session.processes.contains_key(&process_id)
+            })
+        })
     }
 }
 

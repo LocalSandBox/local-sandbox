@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::os::windows::io::AsRawHandle;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -7,19 +9,191 @@ use lsb_service_proto::frame::HEADER_VERSION;
 use lsb_service_proto::limits::{HEADER_LEN, MAX_STREAM_PAYLOAD, STREAM_SEQUENCE_LEN};
 use lsb_service_proto::{
     encode_stream_payload, negotiate, parse_control, CapabilityHealth, Correlation, ErrorCode,
-    ErrorEnvelope, FrameHeader, FrameKind, Health, HealthState, Hello, HelloReply, HexU64,
-    ProtocolRange, Request, RequestOp, Response, ResponseValue, ServiceInfo, CURRENT, SUPPORTED,
+    ErrorEnvelope, Event, FrameHeader, FrameKind, Health, HealthState, Hello, HelloReply, HexU64,
+    ProtocolRange, Request, RequestOp, Response, ResponseValue, ServiceInfo, WindowUpdate, CURRENT,
+    SUPPORTED,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{NamedPipeServer, PipeMode, ServerOptions};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 
+use crate::resource::process::{GuestProcessResource, ManagedProcessOutput};
 use crate::security::descriptor::SecurityDescriptor;
 use crate::security::ClientIdentity;
 use crate::session::{ClientIdentityKey, QuotaLimits, ResourceHandle, SessionManager};
 use crate::{engine::ServiceEngineConfig, rpc};
 use crate::{LEDGER_SCHEMA_VERSION, PIPE_NAME, PIPE_SDDL};
+
+const OUTPUT_BACKPRESSURE_TIMEOUT: Duration = Duration::from_secs(30);
+
+struct OutboundFrame {
+    bytes: Vec<u8>,
+    _permit: OwnedSemaphorePermit,
+}
+
+#[derive(Clone)]
+struct OutboundWriter {
+    frames: mpsc::Sender<OutboundFrame>,
+    bytes: Arc<Semaphore>,
+}
+
+impl OutboundWriter {
+    fn start<W>(mut pipe: W) -> (Self, tokio::task::JoinHandle<Result<()>>)
+    where
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        let (frames, mut receiver) = mpsc::channel(crate::ipc::writer::MAX_WRITER_FRAMES);
+        let writer = Self {
+            frames,
+            bytes: Arc::new(Semaphore::new(crate::ipc::writer::MAX_WRITER_BYTES)),
+        };
+        let task = tokio::spawn(async move {
+            while let Some(frame) = receiver.recv().await {
+                pipe.write_all(&frame.bytes).await?;
+                pipe.flush().await?;
+            }
+            Ok(())
+        });
+        (writer, task)
+    }
+
+    async fn send(&self, bytes: Vec<u8>) -> Result<()> {
+        let length = u32::try_from(bytes.len()).context("outbound frame length overflow")?;
+        let permit = tokio::time::timeout(
+            Duration::from_secs(5),
+            self.bytes.clone().acquire_many_owned(length),
+        )
+        .await
+        .context("outbound writer byte quota deadline exceeded")?
+        .context("outbound writer closed")?;
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            self.frames.send(OutboundFrame {
+                bytes,
+                _permit: permit,
+            }),
+        )
+        .await
+        .context("outbound writer frame quota deadline exceeded")?
+        .map_err(|_| anyhow::anyhow!("outbound writer closed"))
+    }
+}
+
+#[derive(Clone)]
+struct EventSequence {
+    epoch: u64,
+    next: Arc<tokio::sync::Mutex<u64>>,
+}
+
+impl EventSequence {
+    fn new(epoch: u64) -> Self {
+        Self {
+            epoch,
+            next: Arc::new(tokio::sync::Mutex::new(1)),
+        }
+    }
+
+    async fn write(
+        &self,
+        writer: &OutboundWriter,
+        protocol: lsb_service_proto::ProtocolVersion,
+        event: &Event,
+    ) -> Result<()> {
+        let mut sequence = self.next.lock().await;
+        if *sequence == 0 || *sequence == u64::MAX {
+            bail!("server event sequence exhausted");
+        }
+        write_control(
+            writer,
+            FrameKind::Event,
+            protocol,
+            Correlation {
+                high: self.epoch,
+                low: *sequence,
+            },
+            event,
+        )
+        .await?;
+        *sequence = sequence
+            .checked_add(1)
+            .context("server event sequence exhausted")?;
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct StreamCredit {
+    credit: Arc<Semaphore>,
+}
+
+impl StreamCredit {
+    fn initial() -> Self {
+        Self {
+            credit: Arc::new(Semaphore::new(
+                lsb_service_proto::limits::INITIAL_STREAM_CREDIT,
+            )),
+        }
+    }
+
+    fn grant(&self, bytes: u32) -> Result<()> {
+        let bytes = bytes as usize;
+        if self.credit.available_permits().saturating_add(bytes) > 4 * 1024 * 1024 {
+            bail!("stream credit exceeds maximum window");
+        }
+        self.credit.add_permits(bytes);
+        Ok(())
+    }
+
+    async fn consume(&self, bytes: usize) -> Result<()> {
+        let bytes = u32::try_from(bytes).context("stream chunk length overflow")?;
+        let permit = tokio::time::timeout(
+            OUTPUT_BACKPRESSURE_TIMEOUT,
+            self.credit.clone().acquire_many_owned(bytes),
+        )
+        .await
+        .context("stream output backpressure timeout")?
+        .context("stream credit closed")?;
+        permit.forget();
+        Ok(())
+    }
+}
+
+#[derive(Clone, Default)]
+struct StreamRegistry {
+    streams: Arc<Mutex<HashMap<String, StreamCredit>>>,
+}
+
+impl StreamRegistry {
+    fn register(&self, stream_id: String) -> Result<StreamCredit> {
+        let credit = StreamCredit::initial();
+        let mut streams = self
+            .streams
+            .lock()
+            .map_err(|_| anyhow::anyhow!("stream registry poisoned"))?;
+        if streams.insert(stream_id, credit.clone()).is_some() {
+            bail!("duplicate stream id");
+        }
+        Ok(credit)
+    }
+
+    fn grant(&self, update: &WindowUpdate) -> Result<()> {
+        let streams = self
+            .streams
+            .lock()
+            .map_err(|_| anyhow::anyhow!("stream registry poisoned"))?;
+        streams
+            .get(&update.stream_id)
+            .context("stream not found")?
+            .grant(update.credit_bytes)
+    }
+
+    fn remove(&self, stream_id: &str) {
+        if let Ok(mut streams) = self.streams.lock() {
+            streams.remove(stream_id);
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct HealthContext {
@@ -148,20 +322,35 @@ fn create_server(first: bool) -> Result<NamedPipeServer> {
     Ok(server)
 }
 
-async fn handle_client(mut pipe: NamedPipeServer, context: HealthContext) -> Result<()> {
+async fn handle_client(pipe: NamedPipeServer, context: HealthContext) -> Result<()> {
     let identity = ClientIdentity::from_named_pipe(pipe.as_raw_handle())?;
     let session_id = context.sessions.open(identity.key.clone())?;
-    let result = handle_authenticated_client(&mut pipe, &context, session_id, &identity.key).await;
+    let (mut reader, pipe_writer) = tokio::io::split(pipe);
+    let (writer, writer_task) = OutboundWriter::start(pipe_writer);
+    let result =
+        handle_authenticated_client(&mut reader, &writer, &context, session_id, &identity.key)
+            .await;
     let _ = context.sessions.close(session_id, &identity.key);
-    result
+    drop(writer);
+    let writer_result = tokio::time::timeout(Duration::from_secs(5), writer_task).await;
+    result?;
+    match writer_result {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => Err(anyhow::anyhow!("outbound writer task failed: {error}")),
+        Err(_) => Err(anyhow::anyhow!("outbound writer drain deadline exceeded")),
+    }
 }
 
-async fn handle_authenticated_client(
-    pipe: &mut NamedPipeServer,
+async fn handle_authenticated_client<R>(
+    pipe: &mut R,
+    writer: &OutboundWriter,
     context: &HealthContext,
     session_id: ResourceHandle,
     identity: &ClientIdentityKey,
-) -> Result<()> {
+) -> Result<()>
+where
+    R: AsyncRead + Unpin,
+{
     let hello_frame = read_frame(pipe).await?;
     if hello_frame.header.kind != FrameKind::Hello
         || hello_frame.header.correlation != Correlation::default()
@@ -173,6 +362,8 @@ async fn handle_authenticated_client(
     hello.validate()?;
     let selected = negotiate(SUPPORTED, hello.range(hello_frame.header.protocol.major))?;
     let epoch = random_epoch()?;
+    let events = EventSequence::new(epoch);
+    let streams = StreamRegistry::default();
     let reply = HelloReply {
         selected_minor: selected.minor,
         connection_epoch_hex: HexU64(epoch),
@@ -183,7 +374,7 @@ async fn handle_authenticated_client(
         health: context.health(),
     };
     write_control(
-        pipe,
+        writer,
         FrameKind::Hello,
         selected,
         Correlation {
@@ -200,20 +391,29 @@ async fn handle_authenticated_client(
             Ok(frame) => frame,
             Err(_) => return Ok(()),
         };
-        if frame.header.kind != FrameKind::Request
-            || frame.header.protocol != selected
+        if frame.header.protocol != selected
             || frame.header.correlation.high != epoch
             || frame.header.correlation.low != expected_sequence
+            || !matches!(
+                frame.header.kind,
+                FrameKind::Request | FrameKind::WindowUpdate
+            )
         {
             bail!("invalid health request direction, version, or sequence");
         }
         expected_sequence = expected_sequence
             .checked_add(1)
             .context("health request sequence exhausted")?;
+        if frame.header.kind == FrameKind::WindowUpdate {
+            let update: WindowUpdate = parse_control(&frame.payload)?;
+            update.validate()?;
+            streams.grant(&update)?;
+            continue;
+        }
         let request: Request = parse_control(&frame.payload)?;
         if request.validate().is_err() {
             write_error(
-                pipe,
+                writer,
                 selected,
                 frame.header.correlation,
                 ErrorCode::InvalidRequest,
@@ -227,7 +427,7 @@ async fn handle_authenticated_client(
                 match $future.await {
                     Ok(result) => result,
                     Err(code) => {
-                        write_error(pipe, selected, frame.header.correlation, code).await?;
+                        write_error(writer, selected, frame.header.correlation, code).await?;
                         continue;
                     }
                 }
@@ -264,7 +464,7 @@ async fn handle_authenticated_client(
             {
                 Ok(result) => result,
                 Err(code) => {
-                    write_error(pipe, selected, frame.header.correlation, code).await?;
+                    write_error(writer, selected, frame.header.correlation, code).await?;
                     continue;
                 }
             },
@@ -279,7 +479,7 @@ async fn handle_authenticated_client(
             {
                 Ok(result) => result,
                 Err(code) => {
-                    write_error(pipe, selected, frame.header.correlation, code).await?;
+                    write_error(writer, selected, frame.header.correlation, code).await?;
                     continue;
                 }
             },
@@ -302,20 +502,78 @@ async fn handle_authenticated_client(
             {
                 Ok(result) => result,
                 Err(code) => {
-                    write_error(pipe, selected, frame.header.correlation, code).await?;
+                    write_error(writer, selected, frame.header.correlation, code).await?;
                     continue;
                 }
             },
-            RequestOp::Spawn { .. } | RequestOp::KillProcess { .. } => {
-                write_error(
-                    pipe,
+            RequestOp::Spawn {
+                sandbox_id,
+                command,
+                cwd,
+                env,
+            } => {
+                let process = match rpc::process::spawn(
+                    context.sessions.clone(),
+                    session_id,
+                    identity.clone(),
+                    sandbox_id,
+                    command,
+                    cwd,
+                    env,
+                    deadline_ms,
+                )
+                .await
+                {
+                    Ok(process) => process,
+                    Err(code) => {
+                        write_error(writer, selected, frame.header.correlation, code).await?;
+                        continue;
+                    }
+                };
+                let stdout_credit = streams.register(process.stdout_stream.to_string())?;
+                let stderr_credit = streams.register(process.stderr_stream.to_string())?;
+                write_control(
+                    writer,
+                    FrameKind::Response,
                     selected,
                     frame.header.correlation,
-                    ErrorCode::ServiceUnavailable,
+                    &Response::Ok {
+                        result: ResponseValue::ProcessStarted {
+                            process_id: process.id.to_string(),
+                            stdout_stream_id: process.stdout_stream.to_string(),
+                            stderr_stream_id: process.stderr_stream.to_string(),
+                        },
+                    },
                 )
                 .await?;
+                tokio::spawn(pump_process_output(
+                    context.sessions.clone(),
+                    session_id,
+                    identity.clone(),
+                    process,
+                    selected,
+                    writer.clone(),
+                    events.clone(),
+                    streams.clone(),
+                    stdout_credit,
+                    stderr_credit,
+                ));
                 continue;
             }
+            RequestOp::KillProcess { process_id } => match rpc::process::kill(
+                context.sessions.clone(),
+                session_id,
+                identity.clone(),
+                process_id,
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(code) => {
+                    write_error(writer, selected, frame.header.correlation, code).await?;
+                    continue;
+                }
+            },
             RequestOp::Mkdir {
                 sandbox_id,
                 path,
@@ -418,13 +676,13 @@ async fn handle_authenticated_client(
                 {
                     Ok(bytes) => bytes,
                     Err(code) => {
-                        write_error(pipe, selected, frame.header.correlation, code).await?;
+                        write_error(writer, selected, frame.header.correlation, code).await?;
                         continue;
                     }
                 };
                 let stream_id = ResourceHandle::random()?.to_string();
                 write_control(
-                    pipe,
+                    writer,
                     FrameKind::Response,
                     selected,
                     frame.header.correlation,
@@ -436,7 +694,7 @@ async fn handle_authenticated_client(
                     },
                 )
                 .await?;
-                write_stream(pipe, selected, &stream_id, &bytes).await?;
+                write_stream(writer, selected, &stream_id, &bytes).await?;
                 continue;
             }
             RequestOp::WriteFile {
@@ -449,7 +707,7 @@ async fn handle_authenticated_client(
                     Ok(bytes) => bytes,
                     Err(_) => {
                         write_error(
-                            pipe,
+                            writer,
                             selected,
                             frame.header.correlation,
                             ErrorCode::ProtocolError,
@@ -469,7 +727,7 @@ async fn handle_authenticated_client(
             }
             RequestOp::CloseSession {} => {
                 write_control(
-                    pipe,
+                    writer,
                     FrameKind::Response,
                     selected,
                     frame.header.correlation,
@@ -482,7 +740,7 @@ async fn handle_authenticated_client(
             }
         };
         write_control(
-            pipe,
+            writer,
             FrameKind::Response,
             selected,
             frame.header.correlation,
@@ -492,8 +750,140 @@ async fn handle_authenticated_client(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn pump_process_output(
+    sessions: SessionManager,
+    session_id: ResourceHandle,
+    identity: ClientIdentityKey,
+    process: GuestProcessResource,
+    protocol: lsb_service_proto::ProtocolVersion,
+    writer: OutboundWriter,
+    events: EventSequence,
+    streams: StreamRegistry,
+    stdout_credit: StreamCredit,
+    stderr_credit: StreamCredit,
+) {
+    let mut stdout_sequence = 0u64;
+    let mut stderr_sequence = 0u64;
+    let exit_code = loop {
+        let output = tokio::task::spawn_blocking({
+            let sessions = sessions.clone();
+            let identity = identity.clone();
+            move || {
+                sessions.managed_process_output(
+                    session_id,
+                    &identity,
+                    process.id,
+                    Duration::from_secs(1),
+                )
+            }
+        })
+        .await;
+        match output {
+            Ok(Ok(Some(ManagedProcessOutput::Stdout(bytes)))) => {
+                if stdout_credit.consume(bytes.len()).await.is_err()
+                    || write_stream_frame(
+                        &writer,
+                        protocol,
+                        process.stdout_stream,
+                        stdout_sequence,
+                        &bytes,
+                    )
+                    .await
+                    .is_err()
+                {
+                    break 1;
+                }
+                let Some(next) = stdout_sequence.checked_add(1) else {
+                    break 1;
+                };
+                stdout_sequence = next;
+            }
+            Ok(Ok(Some(ManagedProcessOutput::Stderr(bytes)))) => {
+                if stderr_credit.consume(bytes.len()).await.is_err()
+                    || write_stream_frame(
+                        &writer,
+                        protocol,
+                        process.stderr_stream,
+                        stderr_sequence,
+                        &bytes,
+                    )
+                    .await
+                    .is_err()
+                {
+                    break 1;
+                }
+                let Some(next) = stderr_sequence.checked_add(1) else {
+                    break 1;
+                };
+                stderr_sequence = next;
+            }
+            Ok(Ok(Some(ManagedProcessOutput::Exited(code)))) => break code,
+            Ok(Ok(None)) => {
+                if !sessions.owns_managed_process(session_id, &identity, process.id) {
+                    streams.remove(&process.stdout_stream.to_string());
+                    streams.remove(&process.stderr_stream.to_string());
+                    return;
+                }
+            }
+            _ => break 1,
+        }
+    };
+
+    let _ = events
+        .write(
+            &writer,
+            protocol,
+            &Event::StreamClosed {
+                stream_id: process.stdout_stream.to_string(),
+            },
+        )
+        .await;
+    let _ = events
+        .write(
+            &writer,
+            protocol,
+            &Event::StreamClosed {
+                stream_id: process.stderr_stream.to_string(),
+            },
+        )
+        .await;
+    let _ = events
+        .write(
+            &writer,
+            protocol,
+            &Event::ProcessExited {
+                process_id: process.id.to_string(),
+                exit_code,
+            },
+        )
+        .await;
+    streams.remove(&process.stdout_stream.to_string());
+    streams.remove(&process.stderr_stream.to_string());
+    let _ = sessions.retire_managed_process(session_id, &identity, process.id);
+}
+
+async fn write_stream_frame(
+    writer: &OutboundWriter,
+    protocol: lsb_service_proto::ProtocolVersion,
+    stream_id: ResourceHandle,
+    sequence: u64,
+    bytes: &[u8],
+) -> Result<()> {
+    let payload = encode_stream_payload(sequence, bytes)?;
+    let header = FrameHeader {
+        kind: FrameKind::StreamData,
+        flags: 0,
+        protocol,
+        payload_len: payload.len().try_into()?,
+        correlation: stream_correlation(&stream_id.to_string())?,
+    }
+    .encode()?;
+    writer.send(encode_frame(header, &payload)?).await
+}
+
 async fn write_stream(
-    pipe: &mut NamedPipeServer,
+    writer: &OutboundWriter,
     protocol: lsb_service_proto::ProtocolVersion,
     stream_id: &str,
     bytes: &[u8],
@@ -510,19 +900,20 @@ async fn write_stream(
             correlation,
         }
         .encode()?;
-        pipe.write_all(&header).await?;
-        pipe.write_all(&payload).await?;
+        writer.send(encode_frame(header, &payload)?).await?;
     }
-    pipe.flush().await?;
     Ok(())
 }
 
-async fn read_stream(
-    pipe: &mut NamedPipeServer,
+async fn read_stream<R>(
+    pipe: &mut R,
     protocol: lsb_service_proto::ProtocolVersion,
     stream_id: &str,
     length: u32,
-) -> Result<Vec<u8>> {
+) -> Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
     let correlation = stream_correlation(stream_id)?;
     let mut bytes = Vec::with_capacity(length as usize);
     let mut expected_sequence = 0u64;
@@ -578,13 +969,13 @@ async fn file_request(
 }
 
 async fn write_error(
-    pipe: &mut NamedPipeServer,
+    writer: &OutboundWriter,
     protocol: lsb_service_proto::ProtocolVersion,
     correlation: Correlation,
     code: ErrorCode,
 ) -> Result<()> {
     write_control(
-        pipe,
+        writer,
         FrameKind::Response,
         protocol,
         correlation,
@@ -603,7 +994,10 @@ struct WireFrame {
     payload: Vec<u8>,
 }
 
-async fn read_frame(pipe: &mut NamedPipeServer) -> Result<WireFrame> {
+async fn read_frame<R>(pipe: &mut R) -> Result<WireFrame>
+where
+    R: AsyncRead + Unpin,
+{
     let mut bytes = [0u8; HEADER_LEN];
     tokio::time::timeout(Duration::from_secs(5), pipe.read_exact(&mut bytes))
         .await
@@ -620,7 +1014,7 @@ async fn read_frame(pipe: &mut NamedPipeServer) -> Result<WireFrame> {
 }
 
 async fn write_control(
-    pipe: &mut NamedPipeServer,
+    writer: &OutboundWriter,
     kind: FrameKind,
     protocol: lsb_service_proto::ProtocolVersion,
     correlation: Correlation,
@@ -638,10 +1032,17 @@ async fn write_control(
         correlation,
     }
     .encode()?;
-    pipe.write_all(&header).await?;
-    pipe.write_all(&payload).await?;
-    pipe.flush().await?;
-    Ok(())
+    writer.send(encode_frame(header, &payload)?).await
+}
+
+fn encode_frame(header: [u8; HEADER_LEN], payload: &[u8]) -> Result<Vec<u8>> {
+    let capacity = HEADER_LEN
+        .checked_add(payload.len())
+        .context("wire frame length overflow")?;
+    let mut frame = Vec::with_capacity(capacity);
+    frame.extend_from_slice(&header);
+    frame.extend_from_slice(payload);
+    Ok(frame)
 }
 
 fn random_epoch() -> Result<u64> {
@@ -673,5 +1074,19 @@ mod tests {
     #[test]
     fn pipe_security_descriptor_is_valid() {
         SecurityDescriptor::from_sddl(PIPE_SDDL).unwrap();
+    }
+
+    #[tokio::test]
+    async fn stream_credit_is_consumed_and_replenished_with_a_hard_cap() {
+        let credit = StreamCredit::initial();
+        credit
+            .consume(lsb_service_proto::limits::INITIAL_STREAM_CREDIT)
+            .await
+            .unwrap();
+        assert_eq!(credit.credit.available_permits(), 0);
+        credit.grant(64 * 1024).unwrap();
+        credit.consume(64 * 1024).await.unwrap();
+        assert_eq!(credit.credit.available_permits(), 0);
+        assert!(credit.grant(4 * 1024 * 1024 + 1).is_err());
     }
 }
