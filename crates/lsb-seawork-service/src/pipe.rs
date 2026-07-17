@@ -264,6 +264,11 @@ impl HealthContext {
         self.admissions_open.load(Ordering::Acquire) && self.engine.is_some()
     }
 
+    pub fn begin_shutdown(&self) -> Result<usize> {
+        self.admissions_open.store(false, Ordering::Release);
+        self.sessions.drain_all()
+    }
+
     fn maintenance_authorized(&self, identity: &ClientIdentity) -> bool {
         identity.elevated
             && identity.administrator
@@ -1633,6 +1638,17 @@ mod tests {
             gate.global.available_permits(),
             crate::ipc::pipe::MAX_UNAUTHENTICATED_GLOBAL
         );
+    }
+
+    #[test]
+    fn shutdown_closes_admissions_and_drains_sessions() {
+        let context = HealthContext::new(true, QuotaLimits::default());
+        let identity = ClientIdentityKey::for_test("user", "logon", 1);
+        context.sessions.open(identity).unwrap();
+
+        assert_eq!(context.begin_shutdown().unwrap(), 1);
+        assert!(context.sessions.is_empty());
+        assert!(!context.admissions_open.load(Ordering::Acquire));
     }
 
     #[test]

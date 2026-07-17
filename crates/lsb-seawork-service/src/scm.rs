@@ -72,27 +72,24 @@ fn run() -> Result<()> {
         paths.pending_update.clone(),
         reconciliation.admissions_open && engine.is_some(),
     );
-    let pipe = runtime.block_on(async {
-        HealthPipe::bind(
-            HealthContext::new(
-                reconciliation.admissions_open,
-                QuotaLimits {
-                    connections_global: config.quotas.connections_global as usize,
-                    connections_per_user: config.quotas.connections_per_user as usize,
-                    sandboxes_global: config.quotas.sandboxes_global as usize,
-                    sandboxes_per_user: config.quotas.sandboxes_per_user as usize,
-                    sandboxes_per_connection: config.quotas.sandboxes_per_connection as usize,
-                    ..QuotaLimits::default()
-                },
-            )
-            .with_engine(engine)
-            .with_maintenance(
-                maintenance,
-                config.maintenance_roots.clone(),
-                config.publisher_thumbprints.clone(),
-            ),
-        )
-    })?;
+    let context = HealthContext::new(
+        reconciliation.admissions_open,
+        QuotaLimits {
+            connections_global: config.quotas.connections_global as usize,
+            connections_per_user: config.quotas.connections_per_user as usize,
+            sandboxes_global: config.quotas.sandboxes_global as usize,
+            sandboxes_per_user: config.quotas.sandboxes_per_user as usize,
+            sandboxes_per_connection: config.quotas.sandboxes_per_connection as usize,
+            ..QuotaLimits::default()
+        },
+    )
+    .with_engine(engine)
+    .with_maintenance(
+        maintenance,
+        config.maintenance_roots.clone(),
+        config.publisher_thumbprints.clone(),
+    );
+    let pipe = runtime.block_on(async { HealthPipe::bind(context.clone()) })?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let pipe_task = runtime.spawn(pipe.run(shutdown_rx));
 
@@ -108,6 +105,8 @@ fn run() -> Result<()> {
     };
     status_handle.set_service_status(status::pending(ServiceState::StopPending, 1, wait_hint))?;
     logger.write(2, "shutdown", "STOP_PENDING")?;
+    let drained = context.begin_shutdown()?;
+    logger.write(2, "shutdown", &format!("DRAINED_SESSIONS={drained}"))?;
     let _ = shutdown_tx.send(());
     runtime.block_on(pipe_task)??;
     status_handle.set_service_status(status::stopped())?;
