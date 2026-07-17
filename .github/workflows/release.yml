@@ -189,6 +189,8 @@ jobs:
           }
 
       - name: Build service and symbols
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
         run: cargo build -p lsb-seawork-service --locked --release --target x86_64-pc-windows-msvc
 
       - uses: actions/download-artifact@v4
@@ -247,6 +249,9 @@ jobs:
 
       - name: Generate SBOM and license inventory
         run: |
+          .\scripts\inspect-seawork-service-dependencies.ps1 `
+            -ServiceBinary '.\target\x86_64-pc-windows-msvc\release\localsandbox-seawork-service.exe' `
+            -OutputPath (Join-Path $env:LSB_SEAWORK_INPUT 'runtime-dependencies.json')
           $metadataPath = Join-Path $env:LSB_SEAWORK_INPUT 'cargo-metadata.json'
           $process = Start-Process cargo.exe `
             -ArgumentList @('metadata', '--locked', '--format-version', '1') `
@@ -273,6 +278,7 @@ jobs:
             --runtime-dir $env:LSB_SEAWORK_INPUT\runtime `
             --qemu-dir $env:LSB_SEAWORK_QEMU `
             --sbom $env:LSB_SEAWORK_INPUT\metadata\sbom.spdx.json `
+            --dependency-report $env:LSB_SEAWORK_INPUT\runtime-dependencies.json `
             --licenses $env:LSB_SEAWORK_INPUT\metadata\licenses `
             --publisher-subject $env:SEAWORK_PUBLISHER_SUBJECT `
             --publisher-thumbprint $env:SEAWORK_PUBLISHER_SHA256

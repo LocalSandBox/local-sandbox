@@ -169,6 +169,7 @@ pub fn stage_bundle(
     let runtime_dir = input_directory(args, "--runtime-dir", workspace_root)?;
     let qemu_dir = input_directory(args, "--qemu-dir", workspace_root)?;
     let sbom = input_file(args, "--sbom", workspace_root)?;
+    let dependency_report = input_file(args, "--dependency-report", workspace_root)?;
     let licenses = input_directory(args, "--licenses", workspace_root)?;
     let publisher_subject = required_flag_value(args, "--publisher-subject")?.trim();
     if publisher_subject.is_empty() || publisher_subject.len() > 512 {
@@ -216,6 +217,11 @@ pub fn stage_bundle(
     fs::write(bundle_root.join("runtime/VERSION"), format!("{version}\n"))?;
     copy_tree(&qemu_dir, &bundle_root.join("tools/qemu"))?;
     copy_file(&sbom, &bundle_root.join("manifests/sbom.spdx.json"))?;
+    validate_json_file(&dependency_report, "runtime dependency report")?;
+    copy_file(
+        &dependency_report,
+        &bundle_root.join("manifests/runtime-dependencies.json"),
+    )?;
     copy_tree(&licenses, &bundle_root.join("licenses"))?;
 
     let contract = service_contract();
@@ -402,6 +408,20 @@ fn verify_staged_bundle(bundle_root: &Path, expected_version: &str) -> Result<()
     }
     require_amd64_pe(&bundle_root.join("bin/localsandbox-seawork-service.exe"))?;
     require_regular_file(&bundle_root.join("manifests/LocalSandboxSeaWork.cat"))?;
+    validate_json_file(
+        &bundle_root.join("manifests/runtime-dependencies.json"),
+        "runtime dependency report",
+    )?;
+    Ok(())
+}
+
+fn validate_json_file(path: &Path, label: &str) -> Result<()> {
+    let metadata = fs::metadata(path)?;
+    if metadata.len() == 0 || metadata.len() > 1024 * 1024 {
+        bail!("{label} size is outside the supported range");
+    }
+    serde_json::from_reader::<_, serde_json::Value>(File::open(path)?)
+        .with_context(|| format!("{label} must be valid JSON"))?;
     Ok(())
 }
 
@@ -939,6 +959,10 @@ mod tests {
             (qemu.join("qemu-img.exe"), b"qemu-img".as_slice()),
             (licenses.join("LICENSE"), b"license".as_slice()),
             (inputs.join("sbom.spdx.json"), b"{}\n".as_slice()),
+            (
+                inputs.join("runtime-dependencies.json"),
+                b"{\"schema_version\":1}\n".as_slice(),
+            ),
         ] {
             fs::write(path, bytes).unwrap();
         }
@@ -961,6 +985,11 @@ mod tests {
             qemu.display().to_string(),
             "--sbom".into(),
             inputs.join("sbom.spdx.json").display().to_string(),
+            "--dependency-report".into(),
+            inputs
+                .join("runtime-dependencies.json")
+                .display()
+                .to_string(),
             "--licenses".into(),
             licenses.display().to_string(),
             "--publisher-subject".into(),

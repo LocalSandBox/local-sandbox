@@ -163,6 +163,10 @@ fn verify_bundle_root(root: &Path) -> Result<VerificationReport> {
     }
 
     verify_service_contract(root)?;
+    verify_json_manifest(
+        &root.join("manifests/runtime-dependencies.json"),
+        "runtime dependency report",
+    )?;
     let catalog = root.join("manifests/LocalSandboxSeaWork.cat");
     require_regular_file(&catalog)?;
     let catalog_size = fs::metadata(catalog)?.len();
@@ -229,6 +233,7 @@ fn require_mandatory_paths(paths: &BTreeSet<String>) -> Result<()> {
         "tools/qemu/qemu-img.exe",
         "manifests/service-contract.json",
         "manifests/sbom.spdx.json",
+        "manifests/runtime-dependencies.json",
     ] {
         if !paths.contains(required) {
             bail!("bundle is missing mandatory payload {required}");
@@ -274,6 +279,16 @@ fn verify_service_contract(root: &Path) -> Result<()> {
     {
         bail!("service contract schema or security policy is incompatible");
     }
+    Ok(())
+}
+
+fn verify_json_manifest(path: &Path, label: &str) -> Result<()> {
+    let metadata = fs::metadata(path)?;
+    if metadata.len() == 0 || metadata.len() > MAX_MANIFEST_BYTES {
+        bail!("{label} size is outside the supported range");
+    }
+    serde_json::from_reader::<_, serde_json::Value>(BufReader::new(File::open(path)?))
+        .with_context(|| format!("{label} must be valid JSON"))?;
     Ok(())
 }
 
@@ -431,7 +446,7 @@ mod tests {
         let root = test_root();
         write_fixture(&root);
         let report = verify_bundle_root(&root).unwrap();
-        assert_eq!(report.files_verified, 10);
+        assert_eq!(report.files_verified, 11);
 
         let image = root.join("runtime/Image");
         fs::write(&image, b"tampered").unwrap();
@@ -465,6 +480,10 @@ mod tests {
             ("tools/qemu/qemu-system-x86_64.exe", b"qemu".to_vec()),
             ("tools/qemu/qemu-img.exe", b"qemu-img".to_vec()),
             ("manifests/sbom.spdx.json", b"{}\n".to_vec()),
+            (
+                "manifests/runtime-dependencies.json",
+                b"{\"schema_version\":1}\n".to_vec(),
+            ),
             ("licenses/LICENSE", b"license".to_vec()),
         ] {
             let path = bundle_path(root, relative);

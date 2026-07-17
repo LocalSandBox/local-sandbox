@@ -59,7 +59,8 @@ jobs:
           $failed = $false
           foreach ($path in @(
             '.\scripts\sign-seawork-service.ps1',
-            '.\scripts\prepare-seawork-release-metadata.ps1'
+            '.\scripts\prepare-seawork-release-metadata.ps1',
+            '.\scripts\inspect-seawork-service-dependencies.ps1'
           )) {
             $errors = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile(
