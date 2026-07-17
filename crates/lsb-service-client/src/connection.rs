@@ -23,6 +23,7 @@ pub struct ServiceClient {
 
 struct ConnectionCore {
     writer: Mutex<tokio::io::WriteHalf<NamedPipeClient>>,
+    upload: Mutex<()>,
     protocol: ProtocolVersion,
     epoch: u64,
     next_sequence: AtomicU64,
@@ -118,6 +119,7 @@ impl ServiceClient {
         let (shutdown, shutdown_rx) = watch::channel(());
         let core = Arc::new(ConnectionCore {
             writer: Mutex::new(writer),
+            upload: Mutex::new(()),
             protocol,
             epoch,
             next_sequence: AtomicU64::new(1),
@@ -610,6 +612,7 @@ impl ConnectionCore {
     }
 
     async fn write_file(&self, op: RequestOp, bytes: &[u8]) -> Result<(), ClientError> {
+        let _upload = self.upload.lock().await;
         self.ensure_open()?;
         let stream_id = match &op {
             RequestOp::WriteFile { stream_id, .. } => stream_correlation(stream_id)?,

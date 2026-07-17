@@ -23,7 +23,7 @@ use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
 use crate::ipc::connection::{
     ConnectionState, RateLimiter, RequestDeadline, DEFAULT_BOOT_DEADLINE,
-    DEFAULT_TRANSFER_DEADLINE, DEFAULT_UNARY_DEADLINE,
+    DEFAULT_TRANSFER_DEADLINE, DEFAULT_UNARY_DEADLINE, MAX_REQUEST_DEADLINE,
 };
 use crate::maintenance::MaintenanceManager;
 use crate::resource::process::{GuestProcessResource, ManagedProcessOutput};
@@ -218,6 +218,113 @@ impl StreamRegistry {
             streams.remove(stream_id);
         }
     }
+}
+
+struct FrameReader {
+    frames: mpsc::Receiver<Result<WireFrame>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl FrameReader {
+    fn start<R>(mut pipe: R) -> Self
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+    {
+        let (sender, frames) = mpsc::channel(crate::ipc::pipe::MAX_DISPATCH_FRAMES);
+        let task = tokio::spawn(async move {
+            loop {
+                let frame = read_frame(&mut pipe).await;
+                let failed = frame.is_err();
+                if sender.send(frame).await.is_err() || failed {
+                    break;
+                }
+            }
+        });
+        Self { frames, task }
+    }
+
+    async fn recv(&mut self) -> Result<WireFrame> {
+        self.frames
+            .recv()
+            .await
+            .context("authenticated pipe reader stopped")?
+    }
+}
+
+impl Drop for FrameReader {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+struct UploadBuffer {
+    correlation: Correlation,
+    length: usize,
+    bytes: Vec<u8>,
+    expected_sequence: u64,
+    remaining_credit: usize,
+}
+
+impl UploadBuffer {
+    fn new(stream_id: &str, length: u32) -> Result<Self> {
+        Ok(Self {
+            correlation: stream_correlation(stream_id)?,
+            length: length as usize,
+            bytes: Vec::new(),
+            expected_sequence: 0,
+            remaining_credit: lsb_service_proto::limits::INITIAL_STREAM_CREDIT,
+        })
+    }
+
+    fn push(
+        &mut self,
+        frame: WireFrame,
+        protocol: lsb_service_proto::ProtocolVersion,
+    ) -> Result<()> {
+        if frame.header.kind != FrameKind::StreamData
+            || frame.header.protocol != protocol
+            || frame.header.correlation != self.correlation
+        {
+            bail!("write stream correlation/version mismatch");
+        }
+        let (sequence, chunk) = lsb_service_proto::decode_stream_payload(&frame.payload)?;
+        if sequence != self.expected_sequence
+            || chunk.is_empty()
+            || self.bytes.len().saturating_add(chunk.len()) > self.length
+            || chunk.len() > self.remaining_credit
+        {
+            bail!("write stream sequence/length mismatch");
+        }
+        self.expected_sequence = self
+            .expected_sequence
+            .checked_add(1)
+            .context("write stream sequence exhausted")?;
+        self.bytes.extend_from_slice(chunk);
+        self.remaining_credit -= chunk.len();
+        Ok(())
+    }
+
+    fn is_complete(&self) -> bool {
+        self.bytes.len() == self.length
+    }
+
+    fn replenish(&mut self, bytes: usize) -> Result<()> {
+        self.remaining_credit = self
+            .remaining_credit
+            .checked_add(bytes)
+            .context("write stream credit overflow")?;
+        Ok(())
+    }
+}
+
+struct PendingUpload {
+    request: Request,
+    request_correlation: Correlation,
+    cancellation: CancellationToken,
+    deadline: RequestDeadline,
+    request_permit: OwnedSemaphorePermit,
+    stream_id: String,
+    buffer: UploadBuffer,
 }
 
 #[derive(Clone)]
@@ -524,10 +631,10 @@ async fn handle_client(
     }
     let process = identity.duplicate_process_handle()?;
     let session_id = context.sessions.open(identity.key.clone())?;
-    let (mut reader, pipe_writer) = tokio::io::split(pipe);
+    let (reader, pipe_writer) = tokio::io::split(pipe);
     let (writer, writer_task) = OutboundWriter::start(pipe_writer);
     let result = handle_authenticated_client(
-        &mut reader,
+        reader,
         &writer,
         &context,
         session_id,
@@ -550,7 +657,7 @@ async fn handle_client(
 
 #[allow(clippy::too_many_arguments)]
 async fn handle_authenticated_client<R>(
-    pipe: &mut R,
+    mut pipe: R,
     writer: &OutboundWriter,
     context: &HealthContext,
     session_id: ResourceHandle,
@@ -560,7 +667,7 @@ async fn handle_authenticated_client<R>(
     process: Option<OwnedHandle>,
 ) -> Result<()>
 where
-    R: AsyncRead + Unpin,
+    R: AsyncRead + Unpin + Send + 'static,
 {
     let process_exit = wait_for_process_exit(process);
     tokio::pin!(process_exit);
@@ -569,7 +676,7 @@ where
             exited?;
             return Ok(());
         }
-        frame = tokio::time::timeout(crate::ipc::pipe::HELLO_TIMEOUT, read_frame(pipe)) => {
+        frame = tokio::time::timeout(crate::ipc::pipe::HELLO_TIMEOUT, read_frame(&mut pipe)) => {
             frame.context("Hello deadline exceeded")??
         }
     };
@@ -608,8 +715,15 @@ where
     drop(preauth);
 
     let connection = Arc::new(Mutex::new(ConnectionState::new(epoch)?));
+    let mut reader = FrameReader::start(pipe);
+    let mut pending_upload: Option<PendingUpload> = None;
     loop {
+        let upload_timeout = pending_upload
+            .as_ref()
+            .map(|upload| upload.deadline.remaining(Instant::now()))
+            .unwrap_or(MAX_REQUEST_DEADLINE);
         let frame = match tokio::select! {
+            biased;
             exited = &mut process_exit => {
                 exited?;
                 if let Ok(state) = connection.lock() {
@@ -617,7 +731,23 @@ where
                 }
                 return Ok(());
             }
-            frame = read_frame(pipe) => frame,
+            _ = tokio::time::sleep(upload_timeout), if pending_upload.is_some() => {
+                let upload = pending_upload.take().context("pending upload disappeared")?;
+                upload.cancellation.cancel();
+                connection
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("connection state poisoned"))?
+                    .finish(upload.request_correlation.low);
+                write_error(
+                    writer,
+                    selected,
+                    upload.request_correlation,
+                    ErrorCode::DeadlineExceeded,
+                )
+                .await?;
+                continue;
+            }
+            frame = reader.recv() => frame,
         } {
             Ok(frame) => frame,
             Err(_) => {
@@ -630,10 +760,74 @@ where
         if frame.header.protocol != selected
             || !matches!(
                 frame.header.kind,
-                FrameKind::Request | FrameKind::WindowUpdate | FrameKind::Cancel
+                FrameKind::Request
+                    | FrameKind::StreamData
+                    | FrameKind::WindowUpdate
+                    | FrameKind::Cancel
             )
         {
             bail!("invalid health request direction, version, or sequence");
+        }
+        if frame.header.kind == FrameKind::StreamData {
+            let upload = pending_upload
+                .as_mut()
+                .context("stream data has no pending upload")?;
+            let previous_length = upload.buffer.bytes.len();
+            if upload.buffer.push(frame, selected).is_err() {
+                let upload = pending_upload
+                    .take()
+                    .context("pending upload disappeared")?;
+                connection
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("connection state poisoned"))?
+                    .finish(upload.request_correlation.low);
+                write_error(
+                    writer,
+                    selected,
+                    upload.request_correlation,
+                    ErrorCode::ProtocolError,
+                )
+                .await?;
+                return Ok(());
+            }
+            let consumed = upload.buffer.bytes.len() - previous_length;
+            if !upload.buffer.is_complete() {
+                let credit_bytes = u32::try_from(consumed)?;
+                events
+                    .write_value(
+                        writer,
+                        FrameKind::WindowUpdate,
+                        selected,
+                        &WindowUpdate {
+                            stream_id: upload.stream_id.clone(),
+                            credit_bytes,
+                        },
+                    )
+                    .await?;
+                upload.buffer.replenish(consumed)?;
+                continue;
+            }
+            let upload = pending_upload
+                .take()
+                .context("pending upload disappeared")?;
+            tokio::spawn(run_request(
+                upload.request,
+                Some(upload.buffer.bytes),
+                upload.request_correlation,
+                selected,
+                writer.clone(),
+                context.clone(),
+                session_id,
+                identity.clone(),
+                authorization.maintenance,
+                events.clone(),
+                streams.clone(),
+                connection.clone(),
+                upload.cancellation,
+                upload.deadline,
+                upload.request_permit,
+            ));
+            continue;
         }
         connection
             .lock()
@@ -655,6 +849,20 @@ where
                     .map_err(|_| anyhow::anyhow!("connection state poisoned"))?
                     .cancel(target.low);
             if found {
+                if pending_upload
+                    .as_ref()
+                    .is_some_and(|upload| upload.request_correlation == target)
+                {
+                    let upload = pending_upload
+                        .take()
+                        .context("pending upload disappeared")?;
+                    connection
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("connection state poisoned"))?
+                        .finish(target.low);
+                    write_error(writer, selected, target, ErrorCode::Cancelled).await?;
+                    drop(upload);
+                }
                 write_control(
                     writer,
                     FrameKind::Response,
@@ -739,6 +947,16 @@ where
             .await?;
             continue;
         }
+        if matches!(request.op, RequestOp::WriteFile { .. }) && pending_upload.is_some() {
+            write_error(
+                writer,
+                selected,
+                frame.header.correlation,
+                ErrorCode::QuotaExceeded,
+            )
+            .await?;
+            continue;
+        }
         let maximum = request_maximum(&request.op);
         let deadline = RequestDeadline::from_client(Instant::now(), request.deadline_ms, maximum);
         let request_permit = match context.requests.clone().try_acquire_owned() {
@@ -773,27 +991,27 @@ where
                 continue;
             }
         };
-        let write_bytes = if let RequestOp::WriteFile {
-            stream_id, length, ..
-        } = &request.op
-        {
-            match read_stream(pipe, writer, &events, selected, stream_id, *length).await {
-                Ok(bytes) => Some(bytes),
-                Err(_) => {
-                    connection
-                        .lock()
-                        .map_err(|_| anyhow::anyhow!("connection state poisoned"))?
-                        .finish(frame.header.correlation.low);
-                    write_error(
-                        writer,
-                        selected,
-                        frame.header.correlation,
-                        ErrorCode::ProtocolError,
-                    )
-                    .await?;
-                    return Ok(());
-                }
+        let upload = match &request.op {
+            RequestOp::WriteFile {
+                stream_id, length, ..
+            } => Some((stream_id.clone(), *length)),
+            _ => None,
+        };
+        let write_bytes = if let Some((stream_id, length)) = upload {
+            let buffer = UploadBuffer::new(&stream_id, length)?;
+            if !buffer.is_complete() {
+                pending_upload = Some(PendingUpload {
+                    request,
+                    request_correlation: frame.header.correlation,
+                    cancellation,
+                    deadline,
+                    request_permit,
+                    stream_id,
+                    buffer,
+                });
+                continue;
             }
+            Some(Vec::new())
         } else {
             None
         };
@@ -1541,63 +1759,6 @@ async fn write_stream(
     Ok(())
 }
 
-async fn read_stream<R>(
-    pipe: &mut R,
-    writer: &OutboundWriter,
-    events: &EventSequence,
-    protocol: lsb_service_proto::ProtocolVersion,
-    stream_id: &str,
-    length: u32,
-) -> Result<Vec<u8>>
-where
-    R: AsyncRead + Unpin,
-{
-    let correlation = stream_correlation(stream_id)?;
-    let mut bytes = Vec::with_capacity(length as usize);
-    let mut expected_sequence = 0u64;
-    let mut remaining_credit = lsb_service_proto::limits::INITIAL_STREAM_CREDIT;
-    while bytes.len() < length as usize {
-        let frame = read_frame(pipe).await?;
-        if frame.header.kind != FrameKind::StreamData
-            || frame.header.protocol != protocol
-            || frame.header.correlation != correlation
-        {
-            bail!("write stream correlation/version mismatch");
-        }
-        let (sequence, chunk) = lsb_service_proto::decode_stream_payload(&frame.payload)?;
-        if sequence != expected_sequence
-            || chunk.is_empty()
-            || bytes.len().saturating_add(chunk.len()) > length as usize
-            || chunk.len() > remaining_credit
-        {
-            bail!("write stream sequence/length mismatch");
-        }
-        expected_sequence = expected_sequence
-            .checked_add(1)
-            .context("write stream sequence exhausted")?;
-        bytes.extend_from_slice(chunk);
-        remaining_credit -= chunk.len();
-        if bytes.len() < length as usize {
-            let credit_bytes = u32::try_from(chunk.len())?;
-            events
-                .write_value(
-                    writer,
-                    FrameKind::WindowUpdate,
-                    protocol,
-                    &WindowUpdate {
-                        stream_id: stream_id.to_string(),
-                        credit_bytes,
-                    },
-                )
-                .await?;
-            remaining_credit = remaining_credit
-                .checked_add(chunk.len())
-                .context("write stream credit overflow")?;
-        }
-    }
-    Ok(bytes)
-}
-
 fn stream_correlation(stream_id: &str) -> Result<Correlation> {
     if stream_id.len() != 32 {
         bail!("invalid stream id");
@@ -1659,18 +1820,35 @@ async fn read_frame<R>(pipe: &mut R) -> Result<WireFrame>
 where
     R: AsyncRead + Unpin,
 {
+    read_frame_with_timeouts(
+        pipe,
+        crate::ipc::pipe::HEADER_TIMEOUT,
+        crate::ipc::pipe::PAYLOAD_TIMEOUT,
+    )
+    .await
+}
+
+async fn read_frame_with_timeouts<R>(
+    pipe: &mut R,
+    header_timeout: Duration,
+    payload_timeout: Duration,
+) -> Result<WireFrame>
+where
+    R: AsyncRead + Unpin,
+{
     let mut bytes = [0u8; HEADER_LEN];
-    tokio::time::timeout(Duration::from_secs(5), pipe.read_exact(&mut bytes))
+    pipe.read_exact(&mut bytes[..1]).await?;
+    tokio::time::timeout(header_timeout, pipe.read_exact(&mut bytes[1..]))
         .await
-        .context("health frame header deadline exceeded")??;
+        .context("frame header deadline exceeded after first byte")??;
     if bytes[4] != HEADER_VERSION {
         bail!("unsupported frame header version");
     }
     let header = FrameHeader::decode(bytes)?;
     let mut payload = vec![0u8; header.payload_len as usize];
-    tokio::time::timeout(Duration::from_secs(10), pipe.read_exact(&mut payload))
+    tokio::time::timeout(payload_timeout, pipe.read_exact(&mut payload))
         .await
-        .context("health frame payload deadline exceeded")??;
+        .context("frame payload deadline exceeded")??;
     Ok(WireFrame { header, payload })
 }
 
@@ -1720,6 +1898,58 @@ fn random_epoch() -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn send_test_control<W: AsyncWrite + Unpin>(
+        writer: &mut W,
+        kind: FrameKind,
+        protocol: lsb_service_proto::ProtocolVersion,
+        correlation: Correlation,
+        value: &impl serde::Serialize,
+    ) {
+        let payload = serde_json::to_vec(value).unwrap();
+        let header = FrameHeader {
+            kind,
+            flags: 0,
+            protocol,
+            payload_len: payload.len() as u32,
+            correlation,
+        }
+        .encode()
+        .unwrap();
+        writer.write_all(&header).await.unwrap();
+        writer.write_all(&payload).await.unwrap();
+        writer.flush().await.unwrap();
+    }
+
+    fn start_test_server(
+        server: tokio::io::DuplexStream,
+        context: HealthContext,
+    ) -> tokio::task::JoinHandle<Result<()>> {
+        tokio::spawn(async move {
+            let identity = ClientIdentityKey::for_test("user", "logon", 1);
+            let session_id = context.sessions.open(identity.clone()).unwrap();
+            let (reader, pipe_writer) = tokio::io::split(server);
+            let (writer, writer_task) = OutboundWriter::start(pipe_writer);
+            let result = handle_authenticated_client(
+                reader,
+                &writer,
+                &context,
+                session_id,
+                &identity,
+                ConnectionAuthorization {
+                    client: true,
+                    maintenance: false,
+                },
+                None,
+                None,
+            )
+            .await;
+            drop(writer);
+            let writer_result = writer_task.await.context("join test pipe writer")?;
+            result?;
+            writer_result
+        })
+    }
 
     #[test]
     fn health_surface_is_fail_closed() {
@@ -1805,61 +2035,194 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn requests_complete_out_of_order_and_cancel_by_correlation() {
-        async fn send_control<W: AsyncWrite + Unpin>(
-            writer: &mut W,
-            kind: FrameKind,
-            protocol: lsb_service_proto::ProtocolVersion,
-            correlation: Correlation,
-            value: &impl serde::Serialize,
-        ) {
-            let payload = serde_json::to_vec(value).unwrap();
-            let header = FrameHeader {
-                kind,
-                flags: 0,
-                protocol,
-                payload_len: payload.len() as u32,
-                correlation,
-            }
-            .encode()
-            .unwrap();
-            writer.write_all(&header).await.unwrap();
-            writer.write_all(&payload).await.unwrap();
-            writer.flush().await.unwrap();
-        }
+    async fn reader_task_uses_the_bounded_dispatch_queue() {
+        let (_client, server) = tokio::io::duplex(1024);
+        let reader = FrameReader::start(server);
 
+        assert_eq!(
+            reader.frames.capacity(),
+            crate::ipc::pipe::MAX_DISPATCH_FRAMES
+        );
+    }
+
+    #[tokio::test]
+    async fn authenticated_frame_timeout_starts_after_the_first_byte() {
+        let (mut client, mut server) = tokio::io::duplex(1024);
+        let read = tokio::spawn(async move {
+            read_frame_with_timeouts(
+                &mut server,
+                Duration::from_millis(10),
+                Duration::from_millis(10),
+            )
+            .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let header = FrameHeader {
+            kind: FrameKind::Request,
+            flags: 0,
+            protocol: CURRENT,
+            payload_len: 0,
+            correlation: Correlation::default(),
+        }
+        .encode()
+        .unwrap();
+        client.write_all(&header).await.unwrap();
+
+        assert_eq!(read.await.unwrap().unwrap().header.kind, FrameKind::Request);
+    }
+
+    #[tokio::test]
+    async fn incomplete_upload_does_not_block_requests_or_cancel() {
+        let bundle = std::path::PathBuf::from(
+            r"C:\Program Files\SeaWork\LocalSandbox\versions\dispatch-test",
+        );
+        let paths = crate::paths::ServicePaths::for_test(
+            std::env::temp_dir().join("lsbsw-pipe-dispatch-test"),
+        );
+        let engine = ServiceEngineConfig::from_verified_bundle(
+            bundle.clone(),
+            bundle.join("tools/qemu/qemu-system-x86_64.exe"),
+            bundle.join("runtime/Image"),
+            bundle.join("runtime/initramfs.cpio.gz"),
+            bundle.join("runtime/rootfs.ext4"),
+            &paths,
+        )
+        .unwrap();
+        let mut context =
+            HealthContext::new(true, QuotaLimits::default()).with_engine(Some(engine));
+        context
+            .client_roots
+            .push(r"C:\Program Files\SeaWork".to_string());
+        context.publisher_thumbprints.push("test".to_string());
+
+        let (mut client, server) = tokio::io::duplex(1024 * 1024);
+        let server_task = start_test_server(server, context);
+        send_test_control(
+            &mut client,
+            FrameKind::Hello,
+            CURRENT,
+            Correlation::default(),
+            &Hello {
+                min_minor: SUPPORTED.min_minor,
+                max_minor: SUPPORTED.max_minor,
+                client_version: "test".to_string(),
+                feature_bits_hex: HexU64(0),
+            },
+        )
+        .await;
+        let hello = read_frame(&mut client).await.unwrap();
+        let epoch = hello.header.correlation.high;
+        let protocol = hello.header.protocol;
+        let sandbox_id = "0123456789abcdef0123456789abcdef";
+        let stream_id = "fedcba9876543210fedcba9876543210";
+
+        send_test_control(
+            &mut client,
+            FrameKind::Request,
+            protocol,
+            Correlation {
+                high: epoch,
+                low: 1,
+            },
+            &Request {
+                deadline_ms: None,
+                op: RequestOp::WriteFile {
+                    sandbox_id: sandbox_id.to_string(),
+                    path: "/workspace/output".to_string(),
+                    stream_id: stream_id.to_string(),
+                    length: 2,
+                },
+            },
+        )
+        .await;
+        send_test_control(
+            &mut client,
+            FrameKind::Request,
+            protocol,
+            Correlation {
+                high: epoch,
+                low: 2,
+            },
+            &Request {
+                deadline_ms: None,
+                op: RequestOp::GetServiceInfo {},
+            },
+        )
+        .await;
+
+        let service_info = read_frame(&mut client).await.unwrap();
+        assert_eq!(service_info.header.correlation.low, 2);
+        assert!(matches!(
+            parse_control::<Response>(&service_info.payload).unwrap(),
+            Response::Ok {
+                result: ResponseValue::ServiceInfo { .. }
+            }
+        ));
+
+        send_test_control(
+            &mut client,
+            FrameKind::Cancel,
+            protocol,
+            Correlation {
+                high: epoch,
+                low: 3,
+            },
+            &Cancel {
+                request_id: format!("{epoch:016x}{:016x}", 1),
+            },
+        )
+        .await;
+        let upload_terminal = read_frame(&mut client).await.unwrap();
+        let cancel_terminal = read_frame(&mut client).await.unwrap();
+        let mut terminal = [upload_terminal, cancel_terminal];
+        terminal.sort_by_key(|frame| frame.header.correlation.low);
+        assert_eq!(terminal[0].header.correlation.low, 1);
+        assert!(matches!(
+            parse_control::<Response>(&terminal[0].payload).unwrap(),
+            Response::Err {
+                error: ErrorEnvelope {
+                    code: ErrorCode::Cancelled,
+                    ..
+                }
+            }
+        ));
+        assert_eq!(terminal[1].header.correlation.low, 3);
+
+        send_test_control(
+            &mut client,
+            FrameKind::Request,
+            protocol,
+            Correlation {
+                high: epoch,
+                low: 4,
+            },
+            &Request {
+                deadline_ms: None,
+                op: RequestOp::CloseSession {},
+            },
+        )
+        .await;
+        assert_eq!(
+            read_frame(&mut client)
+                .await
+                .unwrap()
+                .header
+                .correlation
+                .low,
+            4
+        );
+        server_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn requests_complete_out_of_order_and_cancel_by_correlation() {
         TEST_HEALTH_DELAY_MS.store(10_000, std::sync::atomic::Ordering::Release);
         let (mut client, server) = tokio::io::duplex(1024 * 1024);
         let context = HealthContext::new(true, QuotaLimits::default());
-        let identity = ClientIdentityKey::for_test("user", "logon", 1);
-        let session_id = context.sessions.open(identity.clone()).unwrap();
-        let server_task = tokio::spawn({
-            let context = context.clone();
-            let identity = identity.clone();
-            async move {
-                let (mut reader, pipe_writer) = tokio::io::split(server);
-                let (writer, writer_task) = OutboundWriter::start(pipe_writer);
-                let result = handle_authenticated_client(
-                    &mut reader,
-                    &writer,
-                    &context,
-                    session_id,
-                    &identity,
-                    ConnectionAuthorization {
-                        client: true,
-                        maintenance: false,
-                    },
-                    None,
-                    None,
-                )
-                .await;
-                drop(writer);
-                writer_task.await.unwrap().unwrap();
-                result
-            }
-        });
+        let server_task = start_test_server(server, context);
 
-        send_control(
+        send_test_control(
             &mut client,
             FrameKind::Hello,
             CURRENT,
@@ -1876,7 +2239,7 @@ mod tests {
         let epoch = hello.header.correlation.high;
         let protocol = hello.header.protocol;
 
-        send_control(
+        send_test_control(
             &mut client,
             FrameKind::Request,
             protocol,
@@ -1890,7 +2253,7 @@ mod tests {
             },
         )
         .await;
-        send_control(
+        send_test_control(
             &mut client,
             FrameKind::Request,
             protocol,
@@ -1914,7 +2277,7 @@ mod tests {
             }
         ));
 
-        send_control(
+        send_test_control(
             &mut client,
             FrameKind::Cancel,
             protocol,
@@ -1949,7 +2312,7 @@ mod tests {
             }
         ));
 
-        send_control(
+        send_test_control(
             &mut client,
             FrameKind::Request,
             protocol,
