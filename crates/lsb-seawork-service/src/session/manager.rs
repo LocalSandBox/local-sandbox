@@ -712,6 +712,27 @@ impl SessionManager {
     }
 
     #[cfg(windows)]
+    pub fn managed_process_closed(
+        &self,
+        session_id: ResourceHandle,
+        identity: &ClientIdentityKey,
+        process_id: ResourceHandle,
+    ) -> bool {
+        self.state.lock().map_or(true, |state| {
+            state.sessions.get(&session_id).is_none_or(|session| {
+                if &session.identity != identity {
+                    return true;
+                }
+                session
+                    .processes
+                    .get(&process_id)
+                    .and_then(ProcessSlot::controller)
+                    .is_none_or(|controller| controller.is_closed())
+            })
+        })
+    }
+
+    #[cfg(windows)]
     pub fn start_managed_watch(
         &self,
         session_id: ResourceHandle,

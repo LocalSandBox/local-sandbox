@@ -49,6 +49,7 @@ enum ProcessCommand {
 pub struct ManagedProcessController {
     commands: Sender<ProcessCommand>,
     output: Arc<Mutex<Receiver<ManagedProcessOutput>>>,
+    closed: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for ManagedProcessController {
@@ -113,6 +114,7 @@ impl ManagedProcess {
             controller: ManagedProcessController {
                 commands,
                 output: Arc::new(Mutex::new(output)),
+                closed,
             },
             thread: Some(thread),
         })
@@ -141,6 +143,10 @@ impl ManagedProcessController {
             Err(RecvTimeoutError::Timeout) => Ok(None),
             Err(RecvTimeoutError::Disconnected) => Ok(None),
         }
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
     }
 }
 
@@ -261,5 +267,10 @@ mod tests {
             output.output(Duration::from_secs(1)).unwrap(),
             Some(ManagedProcessOutput::Exited(9))
         );
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !output.is_closed() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(output.is_closed());
     }
 }

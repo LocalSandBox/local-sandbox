@@ -880,7 +880,9 @@ async fn pump_process_output(
             }
             Ok(Ok(Some(ManagedProcessOutput::Exited(code)))) => break code,
             Ok(Ok(None)) => {
-                if !sessions.owns_managed_process(session_id, &identity, process.id) {
+                if !sessions.owns_managed_process(session_id, &identity, process.id)
+                    || sessions.managed_process_closed(session_id, &identity, process.id)
+                {
                     break 1;
                 }
             }
