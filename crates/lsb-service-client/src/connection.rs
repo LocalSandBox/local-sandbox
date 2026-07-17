@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -15,6 +16,9 @@ use tokio::sync::{mpsc, oneshot, watch, Mutex, Semaphore};
 
 use crate::pipe::open_verified;
 use crate::{ClientError, ConnectOptions};
+
+const INITIAL_CONNECT_BACKOFF: Duration = Duration::from_millis(25);
+const MAX_CONNECT_BACKOFF: Duration = Duration::from_millis(250);
 
 pub struct ServiceClient {
     core: Arc<ConnectionCore>,
@@ -73,9 +77,13 @@ enum IncomingStream {
 
 impl ServiceClient {
     pub async fn connect(options: ConnectOptions) -> Result<Self, ClientError> {
-        tokio::time::timeout(options.timeout, Self::connect_inner())
-            .await
-            .map_err(|_| ClientError::ServiceUnavailable("connect timeout".to_string()))?
+        retry_transient_connection(
+            options.timeout,
+            INITIAL_CONNECT_BACKOFF,
+            MAX_CONNECT_BACKOFF,
+            Self::connect_inner,
+        )
+        .await
     }
 
     async fn connect_inner() -> Result<Self, ClientError> {
@@ -538,6 +546,48 @@ impl ServiceClient {
                 Err(ClientError::IncompatibleProtocol)
             }
             Response::Err { error } => Err(map_service_error(error)),
+        }
+    }
+}
+
+async fn retry_transient_connection<T, F, Fut>(
+    timeout: Duration,
+    initial_backoff: Duration,
+    maximum_backoff: Duration,
+    mut connect: F,
+) -> Result<T, ClientError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, ClientError>>,
+{
+    let started = tokio::time::Instant::now();
+    let mut backoff = initial_backoff.min(maximum_backoff);
+    loop {
+        let remaining = timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err(ClientError::ServiceUnavailable(
+                "connect timeout".to_string(),
+            ));
+        }
+        let result = tokio::time::timeout(remaining, connect())
+            .await
+            .map_err(|_| ClientError::ServiceUnavailable("connect timeout".to_string()))?;
+        match result {
+            Ok(value) => return Ok(value),
+            Err(error)
+                if matches!(
+                    error,
+                    ClientError::ServiceUnavailable(_) | ClientError::Io(_)
+                ) =>
+            {
+                let remaining = timeout.saturating_sub(started.elapsed());
+                if remaining.is_zero() {
+                    return Err(error);
+                }
+                tokio::time::sleep(backoff.min(remaining)).await;
+                backoff = backoff.saturating_mul(2).min(maximum_backoff);
+            }
+            Err(error) => return Err(error),
         }
     }
 }
@@ -1503,6 +1553,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
     const FIRST: &str = "0123456789abcdef0123456789abcdef";
     const SECOND: &str = "fedcba9876543210fedcba9876543210";
@@ -1513,6 +1564,72 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
 
         assert_send_sync::<ServiceClient>();
+    }
+
+    #[tokio::test]
+    async fn connection_retry_recovers_from_transient_unavailability() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let value = retry_transient_connection(
+            Duration::from_secs(1),
+            Duration::from_millis(1),
+            Duration::from_millis(2),
+            {
+                let attempts = attempts.clone();
+                move || {
+                    let attempt = attempts.fetch_add(1, AtomicOrdering::SeqCst);
+                    async move {
+                        if attempt < 2 {
+                            Err(ClientError::ServiceUnavailable("starting".to_string()))
+                        } else {
+                            Ok(7)
+                        }
+                    }
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(value, 7);
+        assert_eq!(attempts.load(AtomicOrdering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn connection_retry_fails_fast_on_server_trust_errors() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let error = retry_transient_connection(
+            Duration::from_secs(1),
+            Duration::from_millis(1),
+            Duration::from_millis(2),
+            {
+                let attempts = attempts.clone();
+                move || {
+                    attempts.fetch_add(1, AtomicOrdering::SeqCst);
+                    async { Err::<(), _>(ClientError::ServerNotTrusted("test".to_string())) }
+                }
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(error, ClientError::ServerNotTrusted(_)));
+        assert_eq!(attempts.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn connection_retry_enforces_one_overall_timeout() {
+        let started = tokio::time::Instant::now();
+        let error = retry_transient_connection(
+            Duration::from_millis(25),
+            Duration::from_millis(1),
+            Duration::from_millis(2),
+            || async { std::future::pending::<Result<(), ClientError>>().await },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(error, ClientError::ServiceUnavailable(_)));
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[tokio::test]
