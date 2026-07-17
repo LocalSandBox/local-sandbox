@@ -22,6 +22,7 @@ use crate::SERVICE_NAME;
 define_windows_service!(ffi_service_main, service_main);
 
 const STARTUP_WAIT_HINT: Duration = Duration::from_secs(120);
+const STARTUP_HEARTBEAT: Duration = Duration::from_secs(2);
 const SHUTDOWN_HEARTBEAT: Duration = Duration::from_secs(2);
 
 pub fn dispatch() -> Result<()> {
@@ -55,9 +56,10 @@ fn run_registered(
     status_handle: &service_control_handler::ServiceStatusHandle,
     mut control_rx: tokio::sync::mpsc::UnboundedReceiver<ServiceControl>,
 ) -> Result<()> {
+    let mut startup_checkpoint = 1u32;
     status_handle.set_service_status(status::pending(
         ServiceState::StartPending,
-        1,
+        startup_checkpoint,
         STARTUP_WAIT_HINT,
     ))?;
 
@@ -65,33 +67,44 @@ fn run_registered(
     paths.prepare()?;
     let logger = JsonLogger::new(&paths.logs)?;
     logger.write(1, "startup", "START_PENDING")?;
-    status_handle.set_service_status(status::pending(
-        ServiceState::StartPending,
-        2,
-        STARTUP_WAIT_HINT,
-    ))?;
+    advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
     let config = ServiceConfig::load_or_default(&paths.config)?;
     let reconciliation = ledger::reconcile(&paths.ledger, &paths.quarantine)?;
     if !reconciliation.admissions_open {
         logger.write(3, "reconcile", "HEALTH_ONLY_QUARANTINE")?;
     }
-    status_handle.set_service_status(status::pending(
-        ServiceState::StartPending,
-        3,
-        STARTUP_WAIT_HINT,
-    ))?;
-    let engine = match ServiceEngineConfig::discover(&paths) {
-        Ok(engine) => Some(engine),
+    advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
+    let engine = match run_startup_operation(
+        &mut startup_checkpoint,
+        STARTUP_HEARTBEAT,
+        || {
+            let report = crate::bundle::verify_adjacent_bundle()
+                .context("verify adjacent installed bundle")?;
+            let engine = ServiceEngineConfig::discover(&paths)?;
+            Ok((report.files_verified, engine))
+        },
+        |checkpoint| {
+            status_handle.set_service_status(status::pending(
+                ServiceState::StartPending,
+                checkpoint,
+                STARTUP_WAIT_HINT,
+            ))
+        },
+    ) {
+        Ok((files_verified, engine)) => {
+            logger.write(
+                1,
+                "bundle",
+                &format!("BUNDLE_VERIFIED_FILES={files_verified}"),
+            )?;
+            Some(engine)
+        }
         Err(_) => {
             logger.write(3, "bundle", "BUNDLE_INVALID")?;
             None
         }
     };
-    status_handle.set_service_status(status::pending(
-        ServiceState::StartPending,
-        4,
-        STARTUP_WAIT_HINT,
-    ))?;
+    advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -121,20 +134,20 @@ fn run_registered(
         config.maintenance_roots.clone(),
         config.publisher_thumbprints.clone(),
     );
-    status_handle.set_service_status(status::pending(
-        ServiceState::StartPending,
-        5,
+    advance_startup_checkpoint(
+        status_handle,
+        &mut startup_checkpoint,
         Duration::from_secs(30),
-    ))?;
+    )?;
     let pipe = runtime.block_on(async { HealthPipe::bind(context.clone()) })?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let mut pipe_task = runtime.spawn(pipe.run(shutdown_rx));
 
-    status_handle.set_service_status(status::pending(
-        ServiceState::StartPending,
-        6,
+    advance_startup_checkpoint(
+        status_handle,
+        &mut startup_checkpoint,
         Duration::from_secs(30),
-    ))?;
+    )?;
 
     status_handle.set_service_status(status::running())?;
     logger.write(1, "runtime", "RUNNING")?;
@@ -194,6 +207,64 @@ fn run_registered(
 enum RuntimeExit {
     Control(Option<ServiceControl>),
     Pipe(std::result::Result<Result<()>, tokio::task::JoinError>),
+}
+
+fn advance_startup_checkpoint(
+    status_handle: &service_control_handler::ServiceStatusHandle,
+    checkpoint: &mut u32,
+    wait_hint: Duration,
+) -> Result<()> {
+    *checkpoint = checkpoint
+        .checked_add(1)
+        .context("startup checkpoint exhausted")?;
+    status_handle.set_service_status(status::pending(
+        ServiceState::StartPending,
+        *checkpoint,
+        wait_hint,
+    ))?;
+    Ok(())
+}
+
+fn run_startup_operation<T, F, R>(
+    checkpoint: &mut u32,
+    heartbeat: Duration,
+    operation: F,
+    mut report_checkpoint: R,
+) -> Result<T>
+where
+    T: Send,
+    F: FnOnce() -> Result<T> + Send,
+    R: FnMut(u32) -> windows_service::Result<()>,
+{
+    std::thread::scope(|scope| {
+        let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+        let worker = scope.spawn(move || {
+            let _ = result_tx.send(operation());
+        });
+
+        loop {
+            match result_rx.recv_timeout(heartbeat) {
+                Ok(result) => {
+                    worker
+                        .join()
+                        .map_err(|_| anyhow::anyhow!("startup operation panicked"))?;
+                    return result;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    *checkpoint = checkpoint
+                        .checked_add(1)
+                        .context("startup checkpoint exhausted")?;
+                    report_checkpoint(*checkpoint)?;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    worker
+                        .join()
+                        .map_err(|_| anyhow::anyhow!("startup operation panicked"))?;
+                    anyhow::bail!("startup operation disconnected");
+                }
+            }
+        }
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,7 +360,8 @@ fn cap_memory_limit(configured_mib: u32, physical_mib: u64) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cap_memory_limit, wait_for_pipe_drain, wait_for_runtime_exit, PipeDrainOutcome, RuntimeExit,
+        cap_memory_limit, run_startup_operation, wait_for_pipe_drain, wait_for_runtime_exit,
+        PipeDrainOutcome, RuntimeExit,
     };
     use std::time::Duration;
     use windows_service::service::ServiceControl;
@@ -299,6 +371,48 @@ mod tests {
         assert_eq!(cap_memory_limit(24 * 1024, 16 * 1024).unwrap(), 12 * 1024);
         assert_eq!(cap_memory_limit(24 * 1024, 64 * 1024).unwrap(), 24 * 1024);
         assert!(cap_memory_limit(24 * 1024, 682).is_err());
+    }
+
+    #[test]
+    fn startup_operation_heartbeats_with_monotonic_checkpoints() {
+        let mut checkpoint = 3u32;
+        let mut checkpoints = Vec::new();
+        let value = run_startup_operation(
+            &mut checkpoint,
+            Duration::from_millis(10),
+            || {
+                std::thread::sleep(Duration::from_millis(35));
+                Ok(42)
+            },
+            |checkpoint| {
+                checkpoints.push(checkpoint);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(value, 42);
+        assert_eq!(checkpoints.first(), Some(&4));
+        assert!(checkpoints.len() >= 2);
+        assert!(checkpoints
+            .windows(2)
+            .all(|pair| pair[1] == pair[0].saturating_add(1)));
+        assert_eq!(checkpoints.last(), Some(&checkpoint));
+    }
+
+    #[test]
+    fn startup_operation_propagates_operation_error() {
+        let mut checkpoint = 1u32;
+        let error = run_startup_operation::<(), _, _>(
+            &mut checkpoint,
+            Duration::from_secs(1),
+            || anyhow::bail!("verification failed"),
+            |_| Ok(()),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("verification failed"));
+        assert_eq!(checkpoint, 1);
     }
 
     #[tokio::test]
