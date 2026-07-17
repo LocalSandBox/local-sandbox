@@ -182,10 +182,10 @@ impl StreamRegistry {
             .streams
             .lock()
             .map_err(|_| anyhow::anyhow!("stream registry poisoned"))?;
-        streams
-            .get(&update.stream_id)
-            .context("stream not found")?
-            .grant(update.credit_bytes)
+        match streams.get(&update.stream_id) {
+            Some(stream) => stream.grant(update.credit_bytes),
+            None => Ok(()),
+        }
     }
 
     fn remove(&self, stream_id: &str) {
@@ -821,9 +821,7 @@ async fn pump_process_output(
             Ok(Ok(Some(ManagedProcessOutput::Exited(code)))) => break code,
             Ok(Ok(None)) => {
                 if !sessions.owns_managed_process(session_id, &identity, process.id) {
-                    streams.remove(&process.stdout_stream.to_string());
-                    streams.remove(&process.stderr_stream.to_string());
-                    return;
+                    break 1;
                 }
             }
             _ => break 1,

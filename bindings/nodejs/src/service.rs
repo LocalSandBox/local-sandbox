@@ -198,6 +198,52 @@ impl SeaWorkSandbox {
   }
 
   #[napi]
+  pub async fn spawn(
+    &self,
+    command: Either<String, Vec<String>>,
+    opts: Option<SeaWorkExecOptions>,
+  ) -> Result<SeaWorkProcess> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+      let opts = opts.unwrap_or(SeaWorkExecOptions {
+        cwd: None,
+        env: None,
+      });
+      let command = match command {
+        Either::A(shell) => lsb_service_client::RemoteCommand::Shell(shell),
+        Either::B(argv) => lsb_service_client::RemoteCommand::Argv(argv),
+      };
+      let process = self
+        .client
+        .lock()
+        .await
+        .spawn(
+          &self.sandbox,
+          command,
+          lsb_service_client::ExecOptions {
+            cwd: opts.cwd,
+            env: opts
+              .env
+              .unwrap_or_default()
+              .into_iter()
+              .collect::<BTreeMap<_, _>>(),
+          },
+        )
+        .await
+        .map_err(service_error)?;
+      return Ok(SeaWorkProcess {
+        process: Arc::new(process),
+      });
+    }
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    {
+      let _ = command;
+      let _ = opts;
+      Err(unsupported_platform_error())
+    }
+  }
+
+  #[napi]
   pub async fn mkdir(&self, path: String, opts: Option<MkdirOptions>) -> Result<()> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     return self
@@ -422,6 +468,65 @@ impl SeaWorkSandbox {
       .stop_sandbox(&self.sandbox)
       .await
       .map_err(service_error);
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    Err(unsupported_platform_error())
+  }
+}
+
+#[napi]
+pub struct SeaWorkProcess {
+  #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+  process: Arc<lsb_service_client::RemoteProcess>,
+}
+
+#[napi]
+impl SeaWorkProcess {
+  #[napi(getter)]
+  pub fn id(&self) -> Result<String> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return Ok(self.process.id().to_string());
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    Err(unsupported_platform_error())
+  }
+
+  #[napi]
+  pub async fn next_stdout(&self) -> Result<Option<Buffer>> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return self
+      .process
+      .next_stdout()
+      .await
+      .map(|chunk| chunk.map(Buffer::from))
+      .map_err(service_error);
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    Err(unsupported_platform_error())
+  }
+
+  #[napi]
+  pub async fn next_stderr(&self) -> Result<Option<Buffer>> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return self
+      .process
+      .next_stderr()
+      .await
+      .map(|chunk| chunk.map(Buffer::from))
+      .map_err(service_error);
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    Err(unsupported_platform_error())
+  }
+
+  #[napi]
+  pub async fn kill(&self) -> Result<()> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return self.process.kill().await.map_err(service_error);
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    Err(unsupported_platform_error())
+  }
+
+  #[napi(getter)]
+  pub async fn exited(&self) -> Result<i32> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return self.process.exited().await.map_err(service_error);
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     Err(unsupported_platform_error())
   }
