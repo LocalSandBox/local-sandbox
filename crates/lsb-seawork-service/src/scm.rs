@@ -1,5 +1,4 @@
 use std::ffi::OsString;
-use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -34,7 +33,7 @@ fn service_main(_arguments: Vec<OsString>) {
 }
 
 fn run() -> Result<()> {
-    let (control_tx, control_rx) = mpsc::channel();
+    let (control_tx, control_rx) = tokio::sync::mpsc::unbounded_channel();
     let status_handle =
         service_control_handler::register(SERVICE_NAME, move |event| match event {
             ServiceControl::Stop | ServiceControl::Preshutdown => {
@@ -53,7 +52,7 @@ fn run() -> Result<()> {
 
 fn run_registered(
     status_handle: &service_control_handler::ServiceStatusHandle,
-    control_rx: mpsc::Receiver<ServiceControl>,
+    mut control_rx: tokio::sync::mpsc::UnboundedReceiver<ServiceControl>,
 ) -> Result<()> {
     status_handle.set_service_status(status::pending(
         ServiceState::StartPending,
@@ -128,7 +127,7 @@ fn run_registered(
     ))?;
     let pipe = runtime.block_on(async { HealthPipe::bind(context.clone()) })?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-    let pipe_task = runtime.spawn(pipe.run(shutdown_rx));
+    let mut pipe_task = runtime.spawn(pipe.run(shutdown_rx));
 
     status_handle.set_service_status(status::pending(
         ServiceState::StartPending,
@@ -138,9 +137,24 @@ fn run_registered(
 
     status_handle.set_service_status(status::running())?;
     logger.write(1, "runtime", "RUNNING")?;
-    let control = control_rx
-        .recv()
-        .context("SCM control channel disconnected")?;
+    let control = match runtime.block_on(wait_for_runtime_exit(&mut control_rx, &mut pipe_task)) {
+        RuntimeExit::Control(Some(control)) => control,
+        RuntimeExit::Control(None) => {
+            drain_sessions(&context, &logger);
+            let _ = shutdown_tx.send(());
+            let _ = runtime.block_on(pipe_task);
+            anyhow::bail!("SCM control channel disconnected");
+        }
+        RuntimeExit::Pipe(result) => {
+            drain_sessions(&context, &logger);
+            let _ = logger.write(4, "runtime", "PIPE_TASK_EXITED");
+            match result {
+                Ok(Ok(())) => anyhow::bail!("pipe task exited before SCM stop"),
+                Ok(Err(error)) => return Err(error).context("pipe task failed before SCM stop"),
+                Err(error) => anyhow::bail!("pipe task join failed before SCM stop: {error}"),
+            }
+        }
+    };
     let wait_hint = if control == ServiceControl::Preshutdown {
         Duration::from_secs(60)
     } else {
@@ -148,14 +162,7 @@ fn run_registered(
     };
     status_handle.set_service_status(status::pending(ServiceState::StopPending, 1, wait_hint))?;
     logger.write(2, "shutdown", "STOP_PENDING")?;
-    match context.begin_shutdown() {
-        Ok(drained) => {
-            let _ = logger.write(2, "shutdown", &format!("DRAINED_SESSIONS={drained}"));
-        }
-        Err(_) => {
-            let _ = logger.write(4, "shutdown", "SESSION_DRAIN_FAILED");
-        }
-    }
+    drain_sessions(&context, &logger);
     let _ = shutdown_tx.send(());
     match runtime.block_on(pipe_task) {
         Ok(Ok(())) => {}
@@ -168,6 +175,33 @@ fn run_registered(
     }
     status_handle.set_service_status(status::stopped())?;
     Ok(())
+}
+
+enum RuntimeExit {
+    Control(Option<ServiceControl>),
+    Pipe(std::result::Result<Result<()>, tokio::task::JoinError>),
+}
+
+async fn wait_for_runtime_exit(
+    control_rx: &mut tokio::sync::mpsc::UnboundedReceiver<ServiceControl>,
+    pipe_task: &mut tokio::task::JoinHandle<Result<()>>,
+) -> RuntimeExit {
+    tokio::select! {
+        biased;
+        result = pipe_task => RuntimeExit::Pipe(result),
+        control = control_rx.recv() => RuntimeExit::Control(control),
+    }
+}
+
+fn drain_sessions(context: &HealthContext, logger: &JsonLogger) {
+    match context.begin_shutdown() {
+        Ok(drained) => {
+            let _ = logger.write(2, "shutdown", &format!("DRAINED_SESSIONS={drained}"));
+        }
+        Err(_) => {
+            let _ = logger.write(4, "shutdown", "SESSION_DRAIN_FAILED");
+        }
+    }
 }
 
 fn effective_memory_limit(configured_mib: u32) -> Result<u32> {
@@ -196,12 +230,37 @@ fn cap_memory_limit(configured_mib: u32, physical_mib: u64) -> Result<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::cap_memory_limit;
+    use super::{cap_memory_limit, wait_for_runtime_exit, RuntimeExit};
+    use windows_service::service::ServiceControl;
 
     #[test]
     fn memory_limit_is_capped_at_three_quarters_of_physical_ram() {
         assert_eq!(cap_memory_limit(24 * 1024, 16 * 1024).unwrap(), 12 * 1024);
         assert_eq!(cap_memory_limit(24 * 1024, 64 * 1024).unwrap(), 24 * 1024);
         assert!(cap_memory_limit(24 * 1024, 682).is_err());
+    }
+
+    #[tokio::test]
+    async fn runtime_wait_observes_pipe_exit_without_an_scm_control() {
+        let (_control_tx, mut control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut pipe_task = tokio::spawn(async { anyhow::bail!("pipe failed") });
+
+        assert!(matches!(
+            wait_for_runtime_exit(&mut control_rx, &mut pipe_task).await,
+            RuntimeExit::Pipe(Ok(Err(_)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn runtime_wait_observes_scm_control_while_pipe_is_running() {
+        let (control_tx, mut control_rx) = tokio::sync::mpsc::unbounded_channel();
+        control_tx.send(ServiceControl::Stop).unwrap();
+        let mut pipe_task = tokio::spawn(std::future::pending());
+
+        assert!(matches!(
+            wait_for_runtime_exit(&mut control_rx, &mut pipe_task).await,
+            RuntimeExit::Control(Some(ServiceControl::Stop))
+        ));
+        pipe_task.abort();
     }
 }
