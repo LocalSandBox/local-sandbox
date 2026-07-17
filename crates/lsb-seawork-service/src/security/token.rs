@@ -5,12 +5,12 @@ use std::ptr;
 use anyhow::{bail, Context, Result};
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Security::{
-    AllocateAndInitializeSid, CheckTokenMembership, DuplicateTokenEx, FreeSid,
-    GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, SecurityImpersonation,
-    TokenElevation, TokenGroups, TokenImpersonation, TokenIntegrityLevel, TokenIsAppContainer,
-    TokenSessionId, TokenStatistics, TokenUser, PSID, SECURITY_NT_AUTHORITY,
-    SID_IDENTIFIER_AUTHORITY, TOKEN_DUPLICATE, TOKEN_ELEVATION, TOKEN_GROUPS, TOKEN_IMPERSONATE,
-    TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_USER,
+    AllocateAndInitializeSid, CheckTokenMembership, DuplicateTokenEx, FreeSid, GetSidSubAuthority,
+    GetSidSubAuthorityCount, GetTokenInformation, SecurityImpersonation, TokenElevation,
+    TokenGroups, TokenImpersonation, TokenIntegrityLevel, TokenIsAppContainer, TokenSessionId,
+    TokenStatistics, TokenUser, PSID, SECURITY_NT_AUTHORITY, SID_IDENTIFIER_AUTHORITY,
+    TOKEN_DUPLICATE, TOKEN_ELEVATION, TOKEN_GROUPS, TOKEN_IMPERSONATE, TOKEN_INFORMATION_CLASS,
+    TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_USER,
 };
 use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
 use windows_sys::Win32::System::SystemServices::{
@@ -113,6 +113,10 @@ impl ClientIdentity {
 
     pub fn duplicate_impersonation_token(&self) -> std::io::Result<OwnedHandle> {
         self._impersonation_token.try_clone()
+    }
+
+    pub fn duplicate_process_handle(&self) -> std::io::Result<OwnedHandle> {
+        self._process.try_clone()
     }
 }
 

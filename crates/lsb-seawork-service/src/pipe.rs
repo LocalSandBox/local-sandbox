@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -17,11 +17,13 @@ use lsb_service_proto::{
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{NamedPipeServer, PipeMode, ServerOptions};
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
+use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
 use crate::ipc::connection::{
-    ConnectionState, RequestDeadline, DEFAULT_BOOT_DEADLINE, DEFAULT_TRANSFER_DEADLINE,
-    DEFAULT_UNARY_DEADLINE,
+    ConnectionState, RateLimiter, RequestDeadline, DEFAULT_BOOT_DEADLINE,
+    DEFAULT_TRANSFER_DEADLINE, DEFAULT_UNARY_DEADLINE,
 };
 use crate::maintenance::MaintenanceManager;
 use crate::resource::process::{GuestProcessResource, ManagedProcessOutput};
@@ -362,6 +364,7 @@ pub struct HealthPipe {
 struct PreAuthGate {
     global: Arc<Semaphore>,
     by_pid: Arc<Mutex<HashMap<u32, usize>>>,
+    accepts: Arc<Mutex<RateLimiter>>,
 }
 
 struct PreAuthPidPermit {
@@ -385,7 +388,24 @@ impl PreAuthGate {
         Self {
             global: Arc::new(Semaphore::new(crate::ipc::pipe::MAX_UNAUTHENTICATED_GLOBAL)),
             by_pid: Arc::new(Mutex::new(HashMap::new())),
+            accepts: Arc::new(Mutex::new(RateLimiter::new(
+                crate::ipc::pipe::ACCEPTS_PER_SECOND,
+                crate::ipc::pipe::ACCEPT_BURST,
+                Instant::now(),
+            ))),
         }
+    }
+
+    fn admit_accept(&self, now: Instant) -> Result<()> {
+        if !self
+            .accepts
+            .lock()
+            .map_err(|_| anyhow::anyhow!("accept rate limiter poisoned"))?
+            .try_acquire(now)
+        {
+            bail!("pipe accept rate exceeded");
+        }
+        Ok(())
     }
 
     fn try_global(&self) -> Result<OwnedSemaphorePermit> {
@@ -446,6 +466,9 @@ impl HealthPipe {
             }
             let connected = self.server;
             self.server = create_server(false)?;
+            if self.preauth.admit_accept(Instant::now()).is_err() {
+                continue;
+            }
             let global = match self.preauth.try_global() {
                 Ok(permit) => permit,
                 Err(_) => continue,
@@ -499,6 +522,7 @@ async fn handle_client(
     if !authorization.client && !authorization.maintenance {
         bail!("client image is not authorized by a protected publisher policy");
     }
+    let process = identity.duplicate_process_handle()?;
     let session_id = context.sessions.open(identity.key.clone())?;
     let (mut reader, pipe_writer) = tokio::io::split(pipe);
     let (writer, writer_task) = OutboundWriter::start(pipe_writer);
@@ -510,6 +534,7 @@ async fn handle_client(
         &identity.key,
         authorization,
         Some(preauth),
+        Some(process),
     )
     .await;
     let _ = context.sessions.close(session_id, &identity.key);
@@ -523,6 +548,7 @@ async fn handle_client(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_authenticated_client<R>(
     pipe: &mut R,
     writer: &OutboundWriter,
@@ -531,13 +557,22 @@ async fn handle_authenticated_client<R>(
     identity: &ClientIdentityKey,
     authorization: ConnectionAuthorization,
     preauth: Option<PreAuthAdmission>,
+    process: Option<OwnedHandle>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
 {
-    let hello_frame = tokio::time::timeout(crate::ipc::pipe::HELLO_TIMEOUT, read_frame(pipe))
-        .await
-        .context("Hello deadline exceeded")??;
+    let process_exit = wait_for_process_exit(process);
+    tokio::pin!(process_exit);
+    let hello_frame = tokio::select! {
+        exited = &mut process_exit => {
+            exited?;
+            return Ok(());
+        }
+        frame = tokio::time::timeout(crate::ipc::pipe::HELLO_TIMEOUT, read_frame(pipe)) => {
+            frame.context("Hello deadline exceeded")??
+        }
+    };
     if hello_frame.header.kind != FrameKind::Hello
         || hello_frame.header.correlation != Correlation::default()
         || hello_frame.header.protocol.major != CURRENT.major
@@ -574,7 +609,16 @@ where
 
     let connection = Arc::new(Mutex::new(ConnectionState::new(epoch)?));
     loop {
-        let frame = match read_frame(pipe).await {
+        let frame = match tokio::select! {
+            exited = &mut process_exit => {
+                exited?;
+                if let Ok(state) = connection.lock() {
+                    state.cancel_all();
+                }
+                return Ok(());
+            }
+            frame = read_frame(pipe) => frame,
+        } {
             Ok(frame) => frame,
             Err(_) => {
                 if let Ok(state) = connection.lock() {
@@ -630,6 +674,21 @@ where
                 )
                 .await?;
             }
+            continue;
+        }
+        if connection
+            .lock()
+            .map_err(|_| anyhow::anyhow!("connection state poisoned"))?
+            .admit_request(Instant::now())
+            .is_err()
+        {
+            write_error(
+                writer,
+                selected,
+                frame.header.correlation,
+                ErrorCode::QuotaExceeded,
+            )
+            .await?;
             continue;
         }
         let request: Request = parse_control(&frame.payload)?;
@@ -755,6 +814,25 @@ where
             deadline,
             request_permit,
         ));
+    }
+}
+
+async fn wait_for_process_exit(process: Option<OwnedHandle>) -> Result<()> {
+    let Some(process) = process else {
+        return std::future::pending().await;
+    };
+    loop {
+        match unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } {
+            WAIT_OBJECT_0 => return Ok(()),
+            WAIT_TIMEOUT => tokio::time::sleep(Duration::from_millis(100)).await,
+            WAIT_FAILED => {
+                bail!(
+                    "WaitForSingleObject failed: {}",
+                    std::io::Error::last_os_error()
+                )
+            }
+            status => bail!("WaitForSingleObject returned unexpected status {status}"),
+        }
     }
 }
 
@@ -1771,6 +1849,7 @@ mod tests {
                         client: true,
                         maintenance: false,
                     },
+                    None,
                     None,
                 )
                 .await;

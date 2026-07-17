@@ -7,10 +7,56 @@ use crate::session::CancellationToken;
 
 use super::pipe::MAX_REQUESTS_PER_CONNECTION;
 
+const NANOS_PER_SECOND: u128 = 1_000_000_000;
+
 pub const DEFAULT_UNARY_DEADLINE: Duration = Duration::from_secs(30);
 pub const DEFAULT_BOOT_DEADLINE: Duration = Duration::from_secs(120);
 pub const DEFAULT_TRANSFER_DEADLINE: Duration = Duration::from_secs(5 * 60);
 pub const MAX_REQUEST_DEADLINE: Duration = Duration::from_secs(10 * 60);
+
+#[derive(Debug)]
+pub struct RateLimiter {
+    rate_per_second: u32,
+    capacity: u32,
+    tokens: u32,
+    fractional_tokens: u128,
+    last_refill: Instant,
+}
+
+impl RateLimiter {
+    pub fn new(rate_per_second: u32, capacity: u32, now: Instant) -> Self {
+        assert!(rate_per_second > 0 && capacity > 0);
+        Self {
+            rate_per_second,
+            capacity,
+            tokens: capacity,
+            fractional_tokens: 0,
+            last_refill: now,
+        }
+    }
+
+    pub fn try_acquire(&mut self, now: Instant) -> bool {
+        let elapsed = now.saturating_duration_since(self.last_refill).as_nanos();
+        let generated = elapsed
+            .saturating_mul(u128::from(self.rate_per_second))
+            .saturating_add(self.fractional_tokens);
+        let whole_tokens = generated / NANOS_PER_SECOND;
+        self.fractional_tokens = generated % NANOS_PER_SECOND;
+        self.last_refill = now;
+        if whole_tokens > 0 {
+            let refill = u32::try_from(whole_tokens).unwrap_or(u32::MAX);
+            self.tokens = self.tokens.saturating_add(refill).min(self.capacity);
+        }
+        if self.tokens == self.capacity {
+            self.fractional_tokens = 0;
+        }
+        if self.tokens == 0 {
+            return false;
+        }
+        self.tokens -= 1;
+        true
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct RequestDeadline(Instant);
@@ -45,6 +91,7 @@ pub struct ConnectionState {
     epoch: u64,
     last_sequence: u64,
     active: HashMap<u64, ActiveRequest>,
+    request_rate: RateLimiter,
 }
 
 impl ConnectionState {
@@ -56,7 +103,19 @@ impl ConnectionState {
             epoch,
             last_sequence: 0,
             active: HashMap::new(),
+            request_rate: RateLimiter::new(
+                super::pipe::REQUESTS_PER_SECOND,
+                super::pipe::REQUEST_BURST,
+                Instant::now(),
+            ),
         })
+    }
+
+    pub fn admit_request(&mut self, now: Instant) -> Result<()> {
+        if !self.request_rate.try_acquire(now) {
+            bail!("per-connection request rate exceeded");
+        }
+        Ok(())
     }
 
     pub fn accept_sequence(&mut self, epoch: u64, sequence: u64) -> Result<()> {
@@ -181,5 +240,25 @@ mod tests {
             RequestDeadline::from_client(now, Some(u32::MAX), DEFAULT_UNARY_DEADLINE)
                 .expired(now + DEFAULT_UNARY_DEADLINE)
         );
+    }
+
+    #[test]
+    fn token_bucket_enforces_burst_and_integer_refill() {
+        let now = Instant::now();
+        let mut limiter = RateLimiter::new(100, 200, now);
+        for _ in 0..200 {
+            assert!(limiter.try_acquire(now));
+        }
+        assert!(!limiter.try_acquire(now));
+        assert!(!limiter.try_acquire(now + Duration::from_millis(5)));
+        assert!(limiter.try_acquire(now + Duration::from_millis(10)));
+        assert!(!limiter.try_acquire(now + Duration::from_millis(10)));
+        assert!(limiter.try_acquire(now + Duration::from_millis(20)));
+
+        let mut full = RateLimiter::new(100, 2, now);
+        assert!(full.try_acquire(now + Duration::from_millis(5)));
+        assert!(full.try_acquire(now + Duration::from_millis(5)));
+        assert!(!full.try_acquire(now + Duration::from_millis(10)));
+        assert!(full.try_acquire(now + Duration::from_millis(15)));
     }
 }
