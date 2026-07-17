@@ -1039,6 +1039,7 @@ version = "0.4.6"
 dependencies = [
  "anyhow",
  "blake3",
+ "crossbeam-channel",
  "getrandom 0.3.4",
  "lsb-service-proto",
  "lsb-vm",

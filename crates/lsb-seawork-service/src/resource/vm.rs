@@ -7,6 +7,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 
 use crate::engine::ServiceEngineConfig;
+use crate::resource::process::ManagedProcess;
 use crate::session::CancellationToken;
 
 #[derive(Debug, Clone)]
@@ -20,6 +21,7 @@ pub struct ManagedVmSpec {
 enum Command {
     Stop(mpsc::SyncSender<Result<()>>),
     Exec(ManagedExecSpec, mpsc::SyncSender<Result<ManagedExecResult>>),
+    Spawn(ManagedExecSpec, mpsc::SyncSender<Result<ManagedProcess>>),
     File(ManagedFileOp, mpsc::SyncSender<Result<ManagedFileResult>>),
 }
 
@@ -194,6 +196,16 @@ impl ManagedVmController {
             .recv_timeout(timeout)
             .map_err(|_| anyhow::anyhow!("managed VM file operation exceeded bounded deadline"))?
     }
+
+    pub fn spawn(&self, spec: ManagedExecSpec, timeout: Duration) -> Result<ManagedProcess> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.commands
+            .try_send(Command::Spawn(spec, reply))
+            .map_err(|_| anyhow::anyhow!("managed VM command queue is unavailable"))?;
+        response
+            .recv_timeout(timeout)
+            .map_err(|_| anyhow::anyhow!("managed VM spawn exceeded bounded deadline"))?
+    }
 }
 
 impl Drop for ManagedVm {
@@ -249,6 +261,9 @@ fn run(
             Ok(Command::Exec(spec, reply)) => {
                 let _ = reply.send(exec(&sandbox, spec));
             }
+            Ok(Command::Spawn(spec, reply)) => {
+                let _ = reply.send(spawn(&sandbox, spec));
+            }
             Ok(Command::File(op, reply)) => {
                 let _ = reply.send(file_op(&sandbox, op));
             }
@@ -260,6 +275,12 @@ fn run(
             }
         }
     }
+}
+
+fn spawn(sandbox: &lsb_vm::Sandbox, spec: ManagedExecSpec) -> Result<ManagedProcess> {
+    let writer = sandbox.open_exec_session(&spec.argv, &spec.env, spec.cwd.as_deref())?;
+    let reader = writer.try_clone()?;
+    ManagedProcess::start(reader, writer)
 }
 
 fn file_op(sandbox: &lsb_vm::Sandbox, op: ManagedFileOp) -> Result<ManagedFileResult> {

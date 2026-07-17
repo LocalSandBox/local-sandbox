@@ -11,6 +11,9 @@ pub struct QuotaLimits {
     pub sandboxes_global: usize,
     pub sandboxes_per_user: usize,
     pub sandboxes_per_connection: usize,
+    pub processes_global: usize,
+    pub processes_per_user: usize,
+    pub processes_per_sandbox: usize,
 }
 
 impl Default for QuotaLimits {
@@ -21,6 +24,9 @@ impl Default for QuotaLimits {
             sandboxes_global: 8,
             sandboxes_per_user: 4,
             sandboxes_per_connection: 2,
+            processes_global: 256,
+            processes_per_user: 128,
+            processes_per_sandbox: 64,
         }
     }
 }
@@ -32,6 +38,9 @@ pub enum QuotaError {
     GlobalSandboxes,
     UserSandboxes,
     ConnectionSandboxes,
+    GlobalProcesses,
+    UserProcesses,
+    SandboxProcesses,
 }
 
 impl fmt::Display for QuotaError {
@@ -42,6 +51,9 @@ impl fmt::Display for QuotaError {
             Self::GlobalSandboxes => "global sandbox quota exceeded",
             Self::UserSandboxes => "per-user sandbox quota exceeded",
             Self::ConnectionSandboxes => "per-connection sandbox quota exceeded",
+            Self::GlobalProcesses => "global guest process quota exceeded",
+            Self::UserProcesses => "per-user guest process quota exceeded",
+            Self::SandboxProcesses => "per-sandbox guest process quota exceeded",
         })
     }
 }
@@ -56,6 +68,9 @@ pub struct QuotaBook {
     sandboxes: usize,
     sandboxes_by_user: HashMap<String, usize>,
     sandboxes_by_connection: HashMap<ResourceHandle, usize>,
+    processes: usize,
+    processes_by_user: HashMap<String, usize>,
+    processes_by_sandbox: HashMap<ResourceHandle, usize>,
 }
 
 impl QuotaBook {
@@ -67,6 +82,9 @@ impl QuotaBook {
             sandboxes: 0,
             sandboxes_by_user: HashMap::new(),
             sandboxes_by_connection: HashMap::new(),
+            processes: 0,
+            processes_by_user: HashMap::new(),
+            processes_by_sandbox: HashMap::new(),
         }
     }
 
@@ -134,6 +152,45 @@ impl QuotaBook {
         decrement(&mut self.sandboxes_by_connection, &connection);
     }
 
+    pub fn reserve_process(
+        &mut self,
+        sandbox: ResourceHandle,
+        identity: &ClientIdentityKey,
+    ) -> Result<(), QuotaError> {
+        if self.processes >= self.limits.processes_global {
+            return Err(QuotaError::GlobalProcesses);
+        }
+        let user = self
+            .processes_by_user
+            .get(&identity.user_sid)
+            .copied()
+            .unwrap_or(0);
+        if user >= self.limits.processes_per_user {
+            return Err(QuotaError::UserProcesses);
+        }
+        let sandbox_count = self
+            .processes_by_sandbox
+            .get(&sandbox)
+            .copied()
+            .unwrap_or(0);
+        if sandbox_count >= self.limits.processes_per_sandbox {
+            return Err(QuotaError::SandboxProcesses);
+        }
+        self.processes += 1;
+        *self
+            .processes_by_user
+            .entry(identity.user_sid.clone())
+            .or_default() += 1;
+        *self.processes_by_sandbox.entry(sandbox).or_default() += 1;
+        Ok(())
+    }
+
+    pub fn release_process(&mut self, sandbox: ResourceHandle, identity: &ClientIdentityKey) {
+        self.processes = self.processes.saturating_sub(1);
+        decrement(&mut self.processes_by_user, &identity.user_sid);
+        decrement(&mut self.processes_by_sandbox, &sandbox);
+    }
+
     pub fn totals(&self) -> (usize, usize) {
         (self.connections, self.sandboxes)
     }
@@ -167,6 +224,9 @@ mod tests {
             sandboxes_global: 2,
             sandboxes_per_user: 1,
             sandboxes_per_connection: 1,
+            processes_global: 2,
+            processes_per_user: 1,
+            processes_per_sandbox: 1,
         };
         let mut book = QuotaBook::new(limits);
         let a = identity("A");
@@ -189,6 +249,17 @@ mod tests {
             Err(QuotaError::UserSandboxes)
         );
         book.reserve_sandbox(connection_b, &b).unwrap();
+        book.reserve_process(connection_a, &a).unwrap();
+        assert_eq!(
+            book.reserve_process(connection_a, &a),
+            Err(QuotaError::UserProcesses)
+        );
+        book.reserve_process(connection_b, &b).unwrap();
+        assert_eq!(
+            book.reserve_process(ResourceHandle::random().unwrap(), &identity("C")),
+            Err(QuotaError::GlobalProcesses)
+        );
+        book.release_process(connection_a, &a);
         assert_eq!(book.totals(), (2, 2));
         book.release_sandbox(connection_a, &a);
         book.release_connection(&a);

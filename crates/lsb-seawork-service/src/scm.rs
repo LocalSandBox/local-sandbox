@@ -77,6 +77,7 @@ fn run() -> Result<()> {
                     sandboxes_global: config.quotas.sandboxes_global as usize,
                     sandboxes_per_user: config.quotas.sandboxes_per_user as usize,
                     sandboxes_per_connection: config.quotas.sandboxes_per_connection as usize,
+                    ..QuotaLimits::default()
                 },
             )
             .with_engine(engine),

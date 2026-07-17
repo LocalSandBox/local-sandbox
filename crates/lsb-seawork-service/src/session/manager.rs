@@ -9,6 +9,10 @@ use super::{CancellationToken, ResourceHandle};
 #[cfg(windows)]
 use crate::engine::ServiceEngineConfig;
 #[cfg(windows)]
+use crate::resource::process::{
+    GuestProcessResource, ManagedProcess, ManagedProcessController, ManagedProcessOutput,
+};
+#[cfg(windows)]
 use crate::resource::vm::{
     ManagedExecResult, ManagedExecSpec, ManagedFileOp, ManagedFileResult, ManagedVm, ManagedVmSpec,
 };
@@ -43,6 +47,8 @@ struct Session {
     test_resources: HashMap<ResourceHandle, String>,
     #[cfg(windows)]
     sandboxes: HashMap<ResourceHandle, SandboxSlot>,
+    #[cfg(windows)]
+    processes: HashMap<ResourceHandle, ProcessSlot>,
     retired: VecDeque<(Instant, ResourceHandle)>,
 }
 
@@ -51,6 +57,32 @@ struct Session {
 enum SandboxSlot {
     Preparing,
     Running(ManagedVm),
+}
+
+#[cfg(windows)]
+#[derive(Debug)]
+enum ProcessSlot {
+    Preparing(GuestProcessResource),
+    Running {
+        resource: GuestProcessResource,
+        process: ManagedProcess,
+    },
+}
+
+#[cfg(windows)]
+impl ProcessSlot {
+    fn resource(&self) -> &GuestProcessResource {
+        match self {
+            Self::Preparing(resource) | Self::Running { resource, .. } => resource,
+        }
+    }
+
+    fn controller(&self) -> Option<ManagedProcessController> {
+        match self {
+            Self::Preparing(_) => None,
+            Self::Running { process, .. } => Some(process.controller()),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -89,6 +121,8 @@ impl SessionManager {
                 test_resources: HashMap::new(),
                 #[cfg(windows)]
                 sandboxes: HashMap::new(),
+                #[cfg(windows)]
+                processes: HashMap::new(),
                 retired: VecDeque::new(),
             },
         );
@@ -117,6 +151,15 @@ impl SessionManager {
         let sandbox_count = 0;
         for _ in 0..session.test_resources.len() + sandbox_count {
             state.quotas.release_sandbox(session_id, identity);
+        }
+        #[cfg(windows)]
+        for process in session.processes.values() {
+            state
+                .quotas
+                .release_process(process.resource().sandbox_id, identity);
+            if let Some(controller) = process.controller() {
+                let _ = controller.kill();
+            }
         }
         state.quotas.release_connection(identity);
         Ok(true)
@@ -285,7 +328,7 @@ impl SessionManager {
         handle: ResourceHandle,
         timeout: std::time::Duration,
     ) -> Result<bool> {
-        let vm = {
+        let (vm, processes) = {
             let mut state = self
                 .state
                 .lock()
@@ -297,15 +340,37 @@ impl SessionManager {
             if &session.identity != identity {
                 return Ok(false);
             }
-            match session.sandboxes.remove(&handle) {
+            let vm = match session.sandboxes.remove(&handle) {
                 Some(SandboxSlot::Running(vm)) => vm,
                 Some(slot @ SandboxSlot::Preparing) => {
                     session.sandboxes.insert(handle, slot);
                     bail!("sandbox is still preparing");
                 }
                 None => return Ok(false),
+            };
+            let process_ids = session
+                .processes
+                .iter()
+                .filter_map(|(id, process)| {
+                    (process.resource().sandbox_id == handle).then_some(*id)
+                })
+                .collect::<Vec<_>>();
+            let processes = process_ids
+                .into_iter()
+                .filter_map(|id| session.processes.remove(&id))
+                .collect::<Vec<_>>();
+            for process in &processes {
+                state
+                    .quotas
+                    .release_process(process.resource().sandbox_id, identity);
             }
+            (vm, processes)
         };
+        for process in processes {
+            if let Some(controller) = process.controller() {
+                let _ = controller.kill();
+            }
+        }
         let result = vm.stop(timeout);
         let mut state = self
             .state
@@ -369,6 +434,169 @@ impl SessionManager {
             }
         };
         controller.file(op, timeout).map(Some)
+    }
+
+    #[cfg(windows)]
+    pub fn spawn_managed_process(
+        &self,
+        session_id: ResourceHandle,
+        identity: &ClientIdentityKey,
+        sandbox_id: ResourceHandle,
+        spec: ManagedExecSpec,
+        timeout: Duration,
+    ) -> Result<Option<GuestProcessResource>> {
+        let (resource, controller) = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
+            let controller = {
+                let Some(session) = state.sessions.get(&session_id) else {
+                    return Ok(None);
+                };
+                if &session.identity != identity {
+                    return Ok(None);
+                }
+                match session.sandboxes.get(&sandbox_id) {
+                    Some(SandboxSlot::Running(vm)) => vm.controller(),
+                    _ => return Ok(None),
+                }
+            };
+            let resource = GuestProcessResource::new(sandbox_id)?;
+            state.quotas.reserve_process(sandbox_id, identity)?;
+            let session = state
+                .sessions
+                .get_mut(&session_id)
+                .context("session disappeared")?;
+            session
+                .processes
+                .insert(resource.id, ProcessSlot::Preparing(resource.clone()));
+            (resource, controller)
+        };
+
+        let started = controller.spawn(spec, timeout);
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
+        let valid = state.sessions.get(&session_id).is_some_and(|session| {
+            &session.identity == identity
+                && session.processes.contains_key(&resource.id)
+                && matches!(
+                    session.sandboxes.get(&sandbox_id),
+                    Some(SandboxSlot::Running(_))
+                )
+        });
+        if !valid {
+            if let Ok(process) = started {
+                let _ = process.controller().kill();
+            }
+            return Ok(None);
+        }
+        match started {
+            Ok(process) => {
+                let session = state
+                    .sessions
+                    .get_mut(&session_id)
+                    .context("session disappeared")?;
+                session.processes.insert(
+                    resource.id,
+                    ProcessSlot::Running {
+                        resource: resource.clone(),
+                        process,
+                    },
+                );
+                Ok(Some(resource))
+            }
+            Err(error) => {
+                let session = state
+                    .sessions
+                    .get_mut(&session_id)
+                    .context("session disappeared")?;
+                session.processes.remove(&resource.id);
+                state.quotas.release_process(sandbox_id, identity);
+                Err(error)
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn kill_managed_process(
+        &self,
+        session_id: ResourceHandle,
+        identity: &ClientIdentityKey,
+        process_id: ResourceHandle,
+    ) -> Result<bool> {
+        let process = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
+            let session = state
+                .sessions
+                .get_mut(&session_id)
+                .context("resource not found")?;
+            if &session.identity != identity {
+                return Ok(false);
+            }
+            prune_retired(&mut session.retired);
+            if session
+                .retired
+                .iter()
+                .any(|(_, retired)| *retired == process_id)
+            {
+                return Ok(true);
+            }
+            let Some(process) = session.processes.remove(&process_id) else {
+                return Ok(false);
+            };
+            if matches!(process, ProcessSlot::Preparing(_)) {
+                session.processes.insert(process_id, process);
+                bail!("process is still preparing");
+            }
+            session.retired.push_back((Instant::now(), process_id));
+            if session.retired.len() > MAX_RETIRED_HANDLES {
+                session.retired.pop_front();
+            }
+            state
+                .quotas
+                .release_process(process.resource().sandbox_id, identity);
+            process
+        };
+        if let Some(controller) = process.controller() {
+            controller.kill()?;
+        }
+        Ok(true)
+    }
+
+    #[cfg(windows)]
+    pub fn managed_process_output(
+        &self,
+        session_id: ResourceHandle,
+        identity: &ClientIdentityKey,
+        process_id: ResourceHandle,
+        timeout: Duration,
+    ) -> Result<Option<ManagedProcessOutput>> {
+        let controller = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
+            let Some(session) = state.sessions.get(&session_id) else {
+                return Ok(None);
+            };
+            if &session.identity != identity {
+                return Ok(None);
+            }
+            let Some(process) = session.processes.get(&process_id) else {
+                return Ok(None);
+            };
+            process.controller()
+        };
+        match controller {
+            Some(controller) => controller.output(timeout),
+            None => Ok(None),
+        }
     }
 }
 
