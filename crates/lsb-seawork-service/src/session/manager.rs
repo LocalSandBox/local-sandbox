@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 
-use super::quota::{QuotaBook, QuotaLimits};
+use super::quota::{QuotaBook, QuotaLimits, SandboxResources};
 use super::{CancellationToken, ResourceHandle};
 #[cfg(windows)]
 use crate::engine::ServiceEngineConfig;
@@ -179,12 +179,11 @@ impl SessionManager {
             .sessions
             .remove(&session_id)
             .context("session disappeared")?;
+        let mut sandbox_handles = session.test_resources.keys().copied().collect::<Vec<_>>();
         #[cfg(windows)]
-        let sandbox_count = session.sandboxes.len();
-        #[cfg(not(windows))]
-        let sandbox_count = 0;
-        for _ in 0..session.test_resources.len() + sandbox_count {
-            state.quotas.release_sandbox(session_id, identity);
+        sandbox_handles.extend(session.sandboxes.keys().copied());
+        for handle in sandbox_handles {
+            state.quotas.release_sandbox(session_id, handle, identity);
         }
         #[cfg(windows)]
         for process in session.processes.values() {
@@ -263,8 +262,10 @@ impl SessionManager {
         if !matches {
             bail!("resource not found");
         }
-        state.quotas.reserve_sandbox(session_id, identity)?;
         let handle = ResourceHandle::random()?;
+        state
+            .quotas
+            .reserve_sandbox(session_id, handle, identity, SandboxResources::default())?;
         let session = state
             .sessions
             .get_mut(&session_id)
@@ -319,7 +320,7 @@ impl SessionManager {
         if session.retired.len() > MAX_RETIRED_HANDLES {
             session.retired.pop_front();
         }
-        state.quotas.release_sandbox(session_id, identity);
+        state.quotas.release_sandbox(session_id, handle, identity);
         Ok(true)
     }
 
@@ -331,35 +332,88 @@ impl SessionManager {
     }
 
     #[cfg(windows)]
-    pub fn start_managed_vm(
+    pub fn reserve_managed_vm(
         &self,
         session_id: ResourceHandle,
         identity: &ClientIdentityKey,
+        resources: SandboxResources,
+    ) -> Result<ResourceHandle> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
+        let matches = state
+            .sessions
+            .get(&session_id)
+            .is_some_and(|session| &session.identity == identity);
+        if !matches {
+            bail!("resource not found");
+        }
+        let handle = ResourceHandle::random()?;
+        state
+            .quotas
+            .reserve_sandbox(session_id, handle, identity, resources)?;
+        let session = state
+            .sessions
+            .get_mut(&session_id)
+            .context("session disappeared")?;
+        session.sandboxes.insert(handle, SandboxSlot::Preparing);
+        Ok(handle)
+    }
+
+    #[cfg(windows)]
+    pub fn cancel_managed_vm_reservation(
+        &self,
+        session_id: ResourceHandle,
+        identity: &ClientIdentityKey,
+        handle: ResourceHandle,
+    ) -> Result<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
+        let removed = state
+            .sessions
+            .get_mut(&session_id)
+            .filter(|session| &session.identity == identity)
+            .is_some_and(|session| {
+                if matches!(session.sandboxes.get(&handle), Some(SandboxSlot::Preparing)) {
+                    session.sandboxes.remove(&handle);
+                    true
+                } else {
+                    false
+                }
+            });
+        if removed {
+            state.quotas.release_sandbox(session_id, handle, identity);
+        }
+        Ok(removed)
+    }
+
+    #[cfg(windows)]
+    pub fn start_reserved_managed_vm(
+        &self,
+        session_id: ResourceHandle,
+        identity: &ClientIdentityKey,
+        handle: ResourceHandle,
         engine: &ServiceEngineConfig,
         spec: ManagedVmSpec,
         startup_cancellation: CancellationToken,
     ) -> Result<ResourceHandle> {
-        let (handle, cancellation) = {
-            let mut state = self
+        let cancellation = {
+            let state = self
                 .state
                 .lock()
                 .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
-            let matches = state
-                .sessions
-                .get(&session_id)
-                .is_some_and(|session| &session.identity == identity);
-            if !matches {
-                bail!("resource not found");
-            }
-            state.quotas.reserve_sandbox(session_id, identity)?;
-            let handle = ResourceHandle::random()?;
             let session = state
                 .sessions
-                .get_mut(&session_id)
-                .context("session disappeared")?;
-            let cancellation = session.cancellation.clone();
-            session.sandboxes.insert(handle, SandboxSlot::Preparing);
-            (handle, cancellation)
+                .get(&session_id)
+                .filter(|session| &session.identity == identity)
+                .context("resource not found")?;
+            if !matches!(session.sandboxes.get(&handle), Some(SandboxSlot::Preparing)) {
+                bail!("sandbox reservation is unavailable");
+            }
+            session.cancellation.clone()
         };
 
         let started = ManagedVm::start(engine, spec, cancellation, startup_cancellation);
@@ -386,7 +440,7 @@ impl SessionManager {
             }
             Err(error) => {
                 session.sandboxes.remove(&handle);
-                state.quotas.release_sandbox(session_id, identity);
+                state.quotas.release_sandbox(session_id, handle, identity);
                 Err(error)
             }
         }
@@ -472,7 +526,7 @@ impl SessionManager {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
-        state.quotas.release_sandbox(session_id, identity);
+        state.quotas.release_sandbox(session_id, handle, identity);
         result.map(|()| true)
     }
 
@@ -1049,5 +1103,32 @@ mod tests {
         assert_eq!(manager.drain_all().unwrap(), 2);
         assert!(manager.is_empty());
         assert_eq!(manager.counts(), (0, 0));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cancelled_vm_preparation_releases_its_reservation() {
+        let manager = SessionManager::new(QuotaLimits::default());
+        let identity = ClientIdentityKey::for_test("user", "logon", 1);
+        let session = manager.open(identity.clone()).unwrap();
+        let handle = manager
+            .reserve_managed_vm(
+                session,
+                &identity,
+                SandboxResources {
+                    cpus: 2,
+                    memory_mib: 1024,
+                    disk_mib: 4096,
+                },
+            )
+            .unwrap();
+        assert_eq!(manager.counts(), (1, 1));
+        assert!(manager
+            .cancel_managed_vm_reservation(session, &identity, handle)
+            .unwrap());
+        assert!(!manager
+            .cancel_managed_vm_reservation(session, &identity, handle)
+            .unwrap());
+        assert_eq!(manager.counts(), (1, 0));
     }
 }

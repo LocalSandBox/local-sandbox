@@ -1,5 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::time::Duration;
 
@@ -7,11 +8,13 @@ use anyhow::{Context, Result};
 use lsb_service_proto::{
     ErrorCode, ResponseValue, ServiceMountSpec, ServiceNetworkSpec, ServicePortSpec,
 };
+use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 
 use crate::engine::ServiceEngineConfig;
 use crate::resource::vm::ManagedVmSpec;
 use crate::session::{
-    CancellationToken, ClientIdentityKey, QuotaError, ResourceHandle, SessionManager,
+    CancellationToken, ClientIdentityKey, QuotaError, ResourceHandle, SandboxResources,
+    SessionManager,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -49,24 +52,65 @@ pub async fn start(
     if requested_bytes < base_bytes {
         return Err(ErrorCode::InvalidRequest);
     }
-    tokio::task::spawn_blocking(move || {
-        let spec = prepare_instance(
+    let free_bytes =
+        available_disk_bytes(engine.resources_root()).map_err(|_| ErrorCode::ServiceUnavailable)?;
+    if requested_bytes > free_bytes {
+        return Err(ErrorCode::QuotaExceeded);
+    }
+    let sandbox_id = sessions
+        .reserve_managed_vm(
+            session_id,
+            &identity,
+            SandboxResources {
+                cpus,
+                memory_mib,
+                disk_mib,
+            },
+        )
+        .map_err(|error| {
+            if error.downcast_ref::<QuotaError>().is_some() {
+                ErrorCode::QuotaExceeded
+            } else {
+                ErrorCode::ResourceNotFound
+            }
+        })?;
+    let cleanup_sessions = sessions.clone();
+    let cleanup_identity = identity.clone();
+    let cleanup_engine = engine.clone();
+    let cleanup_instance_dir = engine
+        .resources_root()
+        .join(identity_hash(&identity))
+        .join("instances")
+        .join(sandbox_id.to_string());
+    let result = tokio::task::spawn_blocking(move || {
+        let spec = match prepare_instance(
             &engine,
             &identity,
+            sandbox_id,
             cpus,
             memory_mib,
             disk_mib,
             &cancellation,
-        )
-        .map_err(|error| {
-            if error.to_string().contains("cancelled") {
-                ErrorCode::Cancelled
-            } else {
-                ErrorCode::InternalError
+        ) {
+            Ok(spec) => spec,
+            Err(error) => {
+                let _ = sessions.cancel_managed_vm_reservation(session_id, &identity, sandbox_id);
+                return Err(if error.to_string().contains("cancelled") {
+                    ErrorCode::Cancelled
+                } else {
+                    ErrorCode::InternalError
+                });
             }
-        })?;
+        };
         let instance_dir = spec.instance_dir.clone();
-        let started = sessions.start_managed_vm(session_id, &identity, &engine, spec, cancellation);
+        let started = sessions.start_reserved_managed_vm(
+            session_id,
+            &identity,
+            sandbox_id,
+            &engine,
+            spec,
+            cancellation,
+        );
         match started {
             Ok(handle) => Ok(ResponseValue::SandboxStarted {
                 sandbox_id: handle.to_string(),
@@ -83,8 +127,43 @@ pub async fn start(
             }
         }
     })
-    .await
-    .map_err(|_| ErrorCode::InternalError)?
+    .await;
+    match result {
+        Ok(result) => result,
+        Err(_) => {
+            if cleanup_sessions
+                .cancel_managed_vm_reservation(session_id, &cleanup_identity, sandbox_id)
+                .unwrap_or(false)
+            {
+                let _ = remove_prepared_instance(&cleanup_engine, &cleanup_instance_dir);
+            }
+            Err(ErrorCode::InternalError)
+        }
+    }
+}
+
+fn available_disk_bytes(path: &Path) -> Result<u64> {
+    let wide = path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let mut available = 0u64;
+    if unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut available,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        anyhow::bail!(
+            "GetDiskFreeSpaceExW failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(available)
 }
 
 pub async fn stop(
@@ -116,6 +195,7 @@ pub async fn stop(
 fn prepare_instance(
     engine: &ServiceEngineConfig,
     identity: &ClientIdentityKey,
+    sandbox_id: ResourceHandle,
     cpus: u16,
     memory_mib: u32,
     disk_mib: u32,
@@ -126,7 +206,7 @@ fn prepare_instance(
     let instances = identity_dir.join("instances");
     engine.require_resource_path(&instances)?;
     std::fs::create_dir_all(&instances).context("create protected identity instances root")?;
-    let instance_dir = instances.join(ResourceHandle::random()?.to_string());
+    let instance_dir = instances.join(sandbox_id.to_string());
     engine.require_resource_path(&instance_dir)?;
     std::fs::create_dir(&instance_dir).context("create protected VM instance")?;
     let rootfs_image = instance_dir.join("rootfs.ext4");

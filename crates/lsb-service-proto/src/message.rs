@@ -168,9 +168,9 @@ impl Request {
                 ports,
                 network,
             } => {
-                if !(1..=16).contains(cpus)
-                    || !(256..=32 * 1024).contains(memory_mib)
-                    || !(512..=64 * 1024).contains(disk_mib)
+                if !(1..=8).contains(cpus)
+                    || !(512..=8 * 1024).contains(memory_mib)
+                    || !(1024..=32 * 1024).contains(disk_mib)
                     || mounts.len() > 32
                     || ports.len() > 32
                 {
@@ -718,7 +718,7 @@ mod tests {
         let oversized = Request {
             deadline_ms: None,
             op: RequestOp::StartSandbox {
-                cpus: 17,
+                cpus: 9,
                 memory_mib: 2048,
                 disk_mib: 4096,
                 mounts: Vec::new(),
