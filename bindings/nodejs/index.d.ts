@@ -165,12 +165,15 @@ export declare class SeaWorkSandbox {
 
 export declare class SeaWorkService {
   static connect(): Promise<SeaWorkService>
+  getServiceInfo(): Promise<SeaWorkServiceInfo>
+  healthCheck(): Promise<SeaWorkServiceHealth>
   health(): Promise<SeaWorkHealth>
   prepareUpdate(targetBundle: string, targetProtocolRange: SeaWorkProtocolRange): Promise<string>
   commitUpdate(updateId: string): Promise<void>
   abortUpdate(updateId: string): Promise<void>
   prepareUninstall(): Promise<SeaWorkUninstallPreparation>
   start(opts?: SeaWorkStartOptions | undefined | null): Promise<SeaWorkSandbox>
+  startSandbox(options: ServiceSandboxStartOptions): Promise<RemoteSandbox>
   close(): Promise<void>
 }
 
@@ -231,6 +234,8 @@ export declare class SpawnedProcess {
 export declare class WatchStream implements AsyncIterable<FileChangeEvent> {
   [Symbol.asyncIterator](): AsyncIterator<FileChangeEvent>
 }
+
+export declare function connectSeaWorkService(options?: SeaWorkServiceConnectOptions | undefined | null): Promise<SeaWorkServiceClient>
 
 /** Options for copying files or directories. */
 export interface CopyOptions {
@@ -432,6 +437,13 @@ export interface SandboxInitResult {
   fixes: Array<SandboxFixResult>
 }
 
+export interface SeaWorkCapabilities {
+  directMount: boolean
+  directMountBackends: Array<'pinned-ro' | 'staged-sync'>
+  watch: boolean
+  ports: boolean
+}
+
 export interface SeaWorkExecOptions {
   cwd?: string
   env?: Record<string, string>
@@ -444,10 +456,34 @@ export interface SeaWorkHealth {
   bundleReady: boolean
 }
 
+export interface SeaWorkNegotiatedProtocol {
+  major: number
+  minor: number
+  features: Array<string>
+}
+
 export interface SeaWorkProtocolRange {
   major: number
   minMinor: number
   maxMinor: number
+}
+
+export interface SeaWorkServiceConnectOptions {
+  connectTimeoutMs?: number
+}
+
+export interface SeaWorkServiceHealth {
+  ready: boolean
+  admissionsOpen: boolean
+  stableCode: string
+  serviceInfo: SeaWorkServiceInfo
+}
+
+export interface SeaWorkServiceInfo {
+  serviceVersion: string
+  protocol: SeaWorkNegotiatedProtocol
+  bundleVersion: string
+  capabilities: SeaWorkCapabilities
 }
 
 export interface SeaWorkStartOptions {
@@ -527,3 +563,8 @@ export interface WatchOptions {
   /** Watch subdirectories recursively. Defaults to true. */
   recursive?: boolean
 }
+
+export type SeaWorkServiceClient = SeaWorkService
+export type ServiceSandboxStartOptions = SeaWorkStartOptions
+export type RemoteSandbox = SeaWorkSandbox
+export type RemoteProcess = SeaWorkProcess

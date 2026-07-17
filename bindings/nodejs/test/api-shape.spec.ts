@@ -68,6 +68,20 @@ test('SeaWork service declarations expose only remote sandbox inputs', (t) => {
   t.regex(declarations, /static connect\(\): Promise<SeaWorkService>/)
   t.regex(
     declarations,
+    /connectSeaWorkService\(options\?: SeaWorkServiceConnectOptions[^)]*\): Promise<SeaWorkServiceClient>/,
+  )
+  t.regex(declarations, /export type SeaWorkServiceClient = SeaWorkService/)
+  t.regex(declarations, /export type ServiceSandboxStartOptions = SeaWorkStartOptions/)
+  t.regex(declarations, /export type RemoteSandbox = SeaWorkSandbox/)
+  t.regex(declarations, /export type RemoteProcess = SeaWorkProcess/)
+  t.regex(declarations, /getServiceInfo\(\): Promise<SeaWorkServiceInfo>/)
+  t.regex(declarations, /healthCheck\(\): Promise<SeaWorkServiceHealth>/)
+  t.regex(
+    declarations,
+    /startSandbox\(options: ServiceSandboxStartOptions\): Promise<RemoteSandbox>/,
+  )
+  t.regex(
+    declarations,
     /prepareUpdate\(targetBundle: string, targetProtocolRange: SeaWorkProtocolRange\): Promise<string>/,
   )
   t.regex(declarations, /commitUpdate\(updateId: string\): Promise<void>/)
@@ -112,6 +126,21 @@ test('SeaWork service declarations expose only remote sandbox inputs', (t) => {
   for (const forbidden of ['dataDir', 'instanceId', 'baseVersion', 'from', 'qemu', 'identity']) {
     t.false((options ?? '').includes(forbidden), `forbidden service option: ${forbidden}`)
   }
+
+  const connectOptions = declarations.match(
+    /export interface SeaWorkServiceConnectOptions \{(?<body>[\s\S]*?)\n\}/,
+  )?.groups?.body
+  t.truthy(connectOptions)
+  t.regex(connectOptions ?? '', /connectTimeoutMs\?: number/)
+
+  const capabilities = declarations.match(
+    /export interface SeaWorkCapabilities \{(?<body>[\s\S]*?)\n\}/,
+  )?.groups?.body
+  t.truthy(capabilities)
+  t.regex(
+    capabilities ?? '',
+    /directMountBackends: Array<'pinned-ro' \| 'staged-sync'>/,
+  )
 
   const execOptions = declarations.match(
     /export interface SeaWorkExecOptions \{(?<body>[\s\S]*?)\n\}/,

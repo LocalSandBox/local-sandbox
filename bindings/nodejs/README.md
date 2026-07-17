@@ -56,22 +56,24 @@ remote API contains no caller-selected runtime directory, QEMU path, instance ID
 identity fields:
 
 ```ts
-import { SeaWorkService } from '@local-sandbox/lsb-nodejs'
+import { connectSeaWorkService } from '@local-sandbox/lsb-nodejs'
 
-const service = await SeaWorkService.connect()
-const health = await service.health()
+const service = await connectSeaWorkService({ connectTimeoutMs: 10_000 })
+const info = await service.getServiceInfo()
+const health = await service.healthCheck()
 if (!health.ready) throw new Error(health.stableCode)
 
-const sandbox = await service.start({ cpus: 2, memoryMb: 2048, diskSizeMb: 4096 })
+const sandbox = await service.startSandbox({ cpus: 2, memoryMb: 2048, diskSizeMb: 4096 })
 const result = await sandbox.exec(['sh', '-lc', 'echo service-ready'])
 await sandbox.mkdir('/workspace/out', { recursive: true })
 await sandbox.stop()
 await service.close()
 ```
 
-This surface currently includes lifecycle, bounded unary exec, and guest filesystem metadata and
-mutation operations. Spawn, watches, and file byte transfer remain unavailable until their credited
-stream protocol is complete. The existing `Sandbox` API remains the direct SDK compatibility path.
+This surface includes lifecycle, bounded unary/cancellable exec, credited process streams, guest
+filesystem metadata and byte transfer, and managed watches. Mounts and host ports remain
+intentionally unavailable in the initial service scope. `SeaWorkService.connect()`, `health()`, and
+`start()` remain compatibility aliases. The existing `Sandbox` API remains the direct SDK path.
 
 ### Start a sandbox and run commands
 

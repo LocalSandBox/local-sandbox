@@ -91,4 +91,50 @@ function patchAsyncIterator(className, yieldType) {
 
 patchAsyncIterator('ByteStream', 'Uint8Array')
 patchAsyncIterator('WatchStream', 'FileChangeEvent')
+
+const generatedConnect =
+  /export declare function connectSeaWorkService\(([^)]*)\): Promise<SeaWorkService>/
+const patchedConnect =
+  /export declare function connectSeaWorkService\(([^)]*)\): Promise<SeaWorkServiceClient>/
+if (generatedConnect.test(declarations)) {
+  declarations = declarations.replace(
+    generatedConnect,
+    'export declare function connectSeaWorkService($1): Promise<SeaWorkServiceClient>',
+  )
+} else if (!patchedConnect.test(declarations)) {
+  throw new Error('could not patch connectSeaWorkService return type')
+}
+
+const serviceAliases = `
+export type SeaWorkServiceClient = SeaWorkService
+export type ServiceSandboxStartOptions = SeaWorkStartOptions
+export type RemoteSandbox = SeaWorkSandbox
+export type RemoteProcess = SeaWorkProcess
+`
+if (!declarations.includes('export type SeaWorkServiceClient = SeaWorkService')) {
+  declarations += serviceAliases
+} else if (!declarations.includes(serviceAliases.trim())) {
+  throw new Error('incomplete SeaWork service compatibility aliases')
+}
+
+const generatedStartSandbox =
+  /startSandbox\(options: SeaWorkStartOptions\): Promise<SeaWorkSandbox>/
+const patchedStartSandbox =
+  /startSandbox\(options: ServiceSandboxStartOptions\): Promise<RemoteSandbox>/
+if (generatedStartSandbox.test(declarations)) {
+  declarations = declarations.replace(
+    generatedStartSandbox,
+    'startSandbox(options: ServiceSandboxStartOptions): Promise<RemoteSandbox>',
+  )
+} else if (!patchedStartSandbox.test(declarations)) {
+  throw new Error('could not patch startSandbox compatibility types')
+}
+
+const generatedMountBackends = 'directMountBackends: Array<string>'
+const patchedMountBackends = "directMountBackends: Array<'pinned-ro' | 'staged-sync'>"
+if (declarations.includes(generatedMountBackends)) {
+  declarations = declarations.replace(generatedMountBackends, patchedMountBackends)
+} else if (!declarations.includes(patchedMountBackends)) {
+  throw new Error('could not patch direct mount backend union')
+}
 writeFileSync(declarationsPath, declarations)

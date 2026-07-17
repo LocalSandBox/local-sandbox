@@ -151,6 +151,10 @@ impl ServiceClient {
         &self.info
     }
 
+    pub fn negotiated_protocol(&self) -> ProtocolVersion {
+        self.core.protocol
+    }
+
     pub async fn get_service_info(&mut self) -> Result<ServiceInfo, ClientError> {
         match self.request(RequestOp::GetServiceInfo {}).await? {
             ResponseValue::ServiceInfo { info } => Ok(info),

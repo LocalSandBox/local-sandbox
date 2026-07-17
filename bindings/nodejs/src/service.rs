@@ -17,6 +17,12 @@ use tokio::sync::Mutex;
 
 #[allow(non_snake_case)]
 #[napi(object)]
+pub struct SeaWorkServiceConnectOptions {
+  pub connectTimeoutMs: Option<u32>,
+}
+
+#[allow(non_snake_case)]
+#[napi(object)]
 pub struct SeaWorkStartOptions {
   pub cpus: Option<u32>,
   pub memoryMb: Option<u32>,
@@ -37,6 +43,40 @@ pub struct SeaWorkHealth {
   pub admissionsOpen: bool,
   pub stableCode: String,
   pub bundleReady: bool,
+}
+
+#[allow(non_snake_case)]
+#[napi(object)]
+pub struct SeaWorkCapabilities {
+  pub directMount: bool,
+  pub directMountBackends: Vec<String>,
+  pub watch: bool,
+  pub ports: bool,
+}
+
+#[napi(object)]
+pub struct SeaWorkNegotiatedProtocol {
+  pub major: u32,
+  pub minor: u32,
+  pub features: Vec<String>,
+}
+
+#[allow(non_snake_case)]
+#[napi(object)]
+pub struct SeaWorkServiceInfo {
+  pub serviceVersion: String,
+  pub protocol: SeaWorkNegotiatedProtocol,
+  pub bundleVersion: String,
+  pub capabilities: SeaWorkCapabilities,
+}
+
+#[allow(non_snake_case)]
+#[napi(object)]
+pub struct SeaWorkServiceHealth {
+  pub ready: bool,
+  pub admissionsOpen: bool,
+  pub stableCode: String,
+  pub serviceInfo: SeaWorkServiceInfo,
 }
 
 #[allow(non_snake_case)]
@@ -62,16 +102,65 @@ pub struct SeaWorkService {
 
 #[napi]
 impl SeaWorkService {
-  #[napi(factory)]
-  pub async fn connect() -> Result<Self> {
+  async fn connect_with_options(options: Option<SeaWorkServiceConnectOptions>) -> Result<Self> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
-      let client = lsb_service_client::connect(lsb_service_client::ConnectOptions::default())
-        .await
-        .map_err(service_error)?;
-      return Ok(Self {
+      let timeout_ms = options
+        .and_then(|options| options.connectTimeoutMs)
+        .unwrap_or(10_000);
+      if !(1..=60_000).contains(&timeout_ms) {
+        return Err(napi::Error::from_reason(
+          "connectTimeoutMs must be between 1 and 60000",
+        ));
+      }
+      let client = lsb_service_client::connect(lsb_service_client::ConnectOptions {
+        timeout: std::time::Duration::from_millis(u64::from(timeout_ms)),
+      })
+      .await
+      .map_err(service_error)?;
+      Ok(Self {
         client: Arc::new(Mutex::new(client)),
-      });
+      })
+    }
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    {
+      let _ = options;
+      Err(unsupported_platform_error())
+    }
+  }
+
+  #[napi(factory)]
+  pub async fn connect() -> Result<Self> {
+    Self::connect_with_options(None).await
+  }
+
+  #[napi]
+  pub async fn get_service_info(&self) -> Result<SeaWorkServiceInfo> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+      let mut client = self.client.lock().await;
+      let info = client.get_service_info().await.map_err(service_error)?;
+      let protocol = client.negotiated_protocol();
+      Ok(map_service_info(info, protocol))
+    }
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    Err(unsupported_platform_error())
+  }
+
+  #[napi]
+  pub async fn health_check(&self) -> Result<SeaWorkServiceHealth> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+      let mut client = self.client.lock().await;
+      let health = client.health_check().await.map_err(service_error)?;
+      let info = client.get_service_info().await.map_err(service_error)?;
+      let protocol = client.negotiated_protocol();
+      Ok(SeaWorkServiceHealth {
+        ready: health.ready,
+        admissionsOpen: health.admissions_open,
+        stableCode: health.stable_code,
+        serviceInfo: map_service_info(info, protocol),
+      })
     }
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     Err(unsupported_platform_error())
@@ -221,6 +310,11 @@ impl SeaWorkService {
   }
 
   #[napi]
+  pub async fn start_sandbox(&self, options: SeaWorkStartOptions) -> Result<SeaWorkSandbox> {
+    self.start(Some(options)).await
+  }
+
+  #[napi]
   pub async fn close(&self) -> Result<()> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     return self
@@ -232,6 +326,35 @@ impl SeaWorkService {
       .map_err(service_error);
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     Err(unsupported_platform_error())
+  }
+}
+
+#[napi(js_name = "connectSeaWorkService")]
+pub async fn connect_seawork_service(
+  options: Option<SeaWorkServiceConnectOptions>,
+) -> Result<SeaWorkService> {
+  SeaWorkService::connect_with_options(options).await
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn map_service_info(
+  info: lsb_service_proto::ServiceInfo,
+  protocol: lsb_service_proto::ProtocolVersion,
+) -> SeaWorkServiceInfo {
+  SeaWorkServiceInfo {
+    serviceVersion: info.service_version,
+    protocol: SeaWorkNegotiatedProtocol {
+      major: u32::from(protocol.major),
+      minor: u32::from(protocol.minor),
+      features: Vec::new(),
+    },
+    bundleVersion: info.bundle_version,
+    capabilities: SeaWorkCapabilities {
+      directMount: info.capabilities.direct_mount,
+      directMountBackends: info.capabilities.direct_mount_backends,
+      watch: info.capabilities.watch,
+      ports: info.capabilities.ports,
+    },
   }
 }
 

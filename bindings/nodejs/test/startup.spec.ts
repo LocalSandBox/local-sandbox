@@ -12,7 +12,7 @@ test('exports the documented runtime methods from the built entrypoint', (t) => 
     return
   }
 
-  const { Sandbox } = entrypoint
+  const { Sandbox, SeaWorkService, connectSeaWorkService } = entrypoint
 
   t.is(typeof Sandbox.prototype.spawn, 'function')
   t.is(typeof Sandbox.prototype.watch, 'function')
@@ -21,6 +21,11 @@ test('exports the documented runtime methods from the built entrypoint', (t) => 
   t.is(typeof Sandbox.prototype.rename, 'function')
   t.is(typeof Sandbox.prototype.copy, 'function')
   t.is(typeof Sandbox.prototype.chmod, 'function')
+  t.is(typeof connectSeaWorkService, 'function')
+  t.is(typeof SeaWorkService.connect, 'function')
+  t.is(typeof SeaWorkService.prototype.getServiceInfo, 'function')
+  t.is(typeof SeaWorkService.prototype.healthCheck, 'function')
+  t.is(typeof SeaWorkService.prototype.startSandbox, 'function')
 })
 
 test('supported builds reject mount host paths that do not exist before boot', async (t) => {
