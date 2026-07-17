@@ -208,6 +208,34 @@ impl SessionManager {
         Ok(true)
     }
 
+    pub fn drain_all(&self) -> Result<usize> {
+        let sessions = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
+            state
+                .sessions
+                .iter()
+                .map(|(id, session)| (*id, session.identity.clone()))
+                .collect::<Vec<_>>()
+        };
+        let mut drained = 0;
+        for (session_id, identity) in sessions {
+            if self.close(session_id, &identity)? {
+                drained += 1;
+            }
+        }
+        Ok(drained)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.state
+            .lock()
+            .map(|state| state.sessions.is_empty())
+            .unwrap_or(false)
+    }
+
     pub fn cancellation(
         &self,
         session_id: ResourceHandle,
@@ -999,6 +1027,21 @@ mod tests {
         let cancellation = manager.cancellation(session, &identity).unwrap();
         assert!(manager.close(session, &identity).unwrap());
         assert!(cancellation.is_cancelled());
+        assert_eq!(manager.counts(), (0, 0));
+    }
+
+    #[test]
+    fn global_drain_closes_every_identity_and_releases_quotas() {
+        let manager = SessionManager::new(QuotaLimits::default());
+        for (user, session_id) in [("user-a", 1), ("user-b", 2)] {
+            let identity = ClientIdentityKey::for_test(user, user, session_id);
+            let session = manager.open(identity.clone()).unwrap();
+            manager
+                .create_test_resource(session, &identity, "resource".to_string())
+                .unwrap();
+        }
+        assert_eq!(manager.drain_all().unwrap(), 2);
+        assert!(manager.is_empty());
         assert_eq!(manager.counts(), (0, 0));
     }
 }

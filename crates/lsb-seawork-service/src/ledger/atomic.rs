@@ -7,6 +7,10 @@ use super::schema::LedgerDocument;
 
 pub fn write(path: &Path, document: &LedgerDocument) -> Result<()> {
     document.validate()?;
+    write_value(path, document)
+}
+
+pub fn write_value(path: &Path, document: &impl serde::Serialize) -> Result<()> {
     let parent = path.parent().context("ledger path has no parent")?;
     std::fs::create_dir_all(parent)?;
     let id = path

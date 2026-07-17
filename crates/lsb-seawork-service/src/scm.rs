@@ -12,6 +12,7 @@ use crate::config::ServiceConfig;
 use crate::engine::ServiceEngineConfig;
 use crate::ledger;
 use crate::logging::JsonLogger;
+use crate::maintenance::MaintenanceManager;
 use crate::paths::ServicePaths;
 use crate::pipe::{HealthContext, HealthPipe};
 use crate::session::QuotaLimits;
@@ -67,6 +68,10 @@ fn run() -> Result<()> {
         .enable_all()
         .build()
         .context("create service async runtime")?;
+    let maintenance = MaintenanceManager::load(
+        paths.pending_update.clone(),
+        reconciliation.admissions_open && engine.is_some(),
+    );
     let pipe = runtime.block_on(async {
         HealthPipe::bind(
             HealthContext::new(
@@ -80,7 +85,12 @@ fn run() -> Result<()> {
                     ..QuotaLimits::default()
                 },
             )
-            .with_engine(engine),
+            .with_engine(engine)
+            .with_maintenance(
+                maintenance,
+                config.maintenance_roots.clone(),
+                config.publisher_thumbprints.clone(),
+            ),
         )
     })?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();

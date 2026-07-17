@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::os::windows::io::AsRawHandle;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -22,8 +23,10 @@ use crate::ipc::connection::{
     ConnectionState, RequestDeadline, DEFAULT_BOOT_DEADLINE, DEFAULT_TRANSFER_DEADLINE,
     DEFAULT_UNARY_DEADLINE,
 };
+use crate::maintenance::MaintenanceManager;
 use crate::resource::process::{GuestProcessResource, ManagedProcessOutput};
 use crate::resource::watch::WatchResource;
+use crate::security::client_image::authorize_maintenance_image;
 use crate::security::descriptor::SecurityDescriptor;
 use crate::security::ClientIdentity;
 use crate::session::{
@@ -206,19 +209,25 @@ impl StreamRegistry {
 
 #[derive(Clone)]
 pub struct HealthContext {
-    pub admissions_open: bool,
+    admissions_open: Arc<AtomicBool>,
     sessions: SessionManager,
     engine: Option<ServiceEngineConfig>,
     requests: Arc<Semaphore>,
+    maintenance: Option<MaintenanceManager>,
+    maintenance_roots: Vec<String>,
+    publisher_thumbprints: Vec<String>,
 }
 
 impl HealthContext {
     pub fn new(admissions_open: bool, quota_limits: QuotaLimits) -> Self {
         Self {
-            admissions_open,
+            admissions_open: Arc::new(AtomicBool::new(admissions_open)),
             sessions: SessionManager::new(quota_limits),
             engine: None,
             requests: Arc::new(Semaphore::new(crate::ipc::pipe::MAX_REQUESTS_GLOBAL)),
+            maintenance: None,
+            maintenance_roots: Vec::new(),
+            publisher_thumbprints: Vec::new(),
         }
     }
 
@@ -227,14 +236,44 @@ impl HealthContext {
         self
     }
 
+    pub fn with_maintenance(
+        mut self,
+        maintenance: MaintenanceManager,
+        maintenance_roots: Vec<String>,
+        publisher_thumbprints: Vec<String>,
+    ) -> Self {
+        self.admissions_open = maintenance.admissions();
+        self.maintenance = Some(maintenance);
+        self.maintenance_roots = maintenance_roots;
+        self.publisher_thumbprints = publisher_thumbprints;
+        self
+    }
+
+    fn admissions_open(&self) -> bool {
+        self.admissions_open.load(Ordering::Acquire) && self.engine.is_some()
+    }
+
+    fn maintenance_authorized(&self, identity: &ClientIdentity) -> bool {
+        identity.elevated
+            && identity.administrator
+            && authorize_maintenance_image(
+                &identity.process_image,
+                &self.maintenance_roots,
+                &self.publisher_thumbprints,
+            )
+            .is_ok()
+    }
+
     fn health(&self) -> Health {
         Health {
-            ready: self.admissions_open && self.engine.is_some(),
-            admissions_open: self.admissions_open && self.engine.is_some(),
+            ready: self.admissions_open(),
+            admissions_open: self.admissions_open(),
             stable_code: if self.engine.is_none() {
                 "BUNDLE_INVALID"
-            } else if self.admissions_open {
+            } else if self.admissions_open() {
                 "READY"
+            } else if let Some(maintenance) = &self.maintenance {
+                maintenance.stable_code()
             } else {
                 "HEALTH_ONLY_QUARANTINE"
             }
@@ -335,12 +374,19 @@ fn create_server(first: bool) -> Result<NamedPipeServer> {
 
 async fn handle_client(pipe: NamedPipeServer, context: HealthContext) -> Result<()> {
     let identity = ClientIdentity::from_named_pipe(pipe.as_raw_handle())?;
+    let maintenance_authorized = context.maintenance_authorized(&identity);
     let session_id = context.sessions.open(identity.key.clone())?;
     let (mut reader, pipe_writer) = tokio::io::split(pipe);
     let (writer, writer_task) = OutboundWriter::start(pipe_writer);
-    let result =
-        handle_authenticated_client(&mut reader, &writer, &context, session_id, &identity.key)
-            .await;
+    let result = handle_authenticated_client(
+        &mut reader,
+        &writer,
+        &context,
+        session_id,
+        &identity.key,
+        maintenance_authorized,
+    )
+    .await;
     let _ = context.sessions.close(session_id, &identity.key);
     drop(writer);
     let writer_result = tokio::time::timeout(Duration::from_secs(5), writer_task).await;
@@ -358,6 +404,7 @@ async fn handle_authenticated_client<R>(
     context: &HealthContext,
     session_id: ResourceHandle,
     identity: &ClientIdentityKey,
+    maintenance_authorized: bool,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
@@ -484,6 +531,26 @@ where
             .await?;
             return Ok(());
         }
+        if !context.admissions_open()
+            && !matches!(
+                request.op,
+                RequestOp::GetServiceInfo {}
+                    | RequestOp::HealthCheck {}
+                    | RequestOp::PrepareUpdate { .. }
+                    | RequestOp::CommitUpdate { .. }
+                    | RequestOp::AbortUpdate { .. }
+                    | RequestOp::PrepareUninstall {}
+            )
+        {
+            write_error(
+                writer,
+                selected,
+                frame.header.correlation,
+                ErrorCode::ServiceDraining,
+            )
+            .await?;
+            continue;
+        }
         let maximum = request_maximum(&request.op);
         let deadline = RequestDeadline::from_client(Instant::now(), request.deadline_ms, maximum);
         let request_permit = match context.requests.clone().try_acquire_owned() {
@@ -551,6 +618,7 @@ where
             context.clone(),
             session_id,
             identity.clone(),
+            maintenance_authorized,
             events.clone(),
             streams.clone(),
             connection.clone(),
@@ -571,6 +639,7 @@ async fn run_request(
     context: HealthContext,
     session_id: ResourceHandle,
     identity: ClientIdentityKey,
+    maintenance_authorized: bool,
     events: EventSequence,
     streams: StreamRegistry,
     connection: Arc<Mutex<ConnectionState>>,
@@ -587,6 +656,7 @@ async fn run_request(
         context,
         session_id,
         identity,
+        maintenance_authorized,
         events,
         streams,
     );
@@ -637,6 +707,7 @@ async fn dispatch_request(
     context: HealthContext,
     session_id: ResourceHandle,
     identity: ClientIdentityKey,
+    maintenance_authorized: bool,
     events: EventSequence,
     streams: StreamRegistry,
 ) -> Result<()> {
@@ -660,6 +731,30 @@ async fn dispatch_request(
         };
     }
 
+    macro_rules! maintenance_value {
+        ($value:expr) => {
+            match $value {
+                Ok(result) => result,
+                Err(_) => {
+                    write_error(&writer, protocol, correlation, ErrorCode::InternalError).await?;
+                    return Ok(());
+                }
+            }
+        };
+    }
+
+    if matches!(
+        request.op,
+        RequestOp::PrepareUpdate { .. }
+            | RequestOp::CommitUpdate { .. }
+            | RequestOp::AbortUpdate { .. }
+            | RequestOp::PrepareUninstall {}
+    ) && !maintenance_authorized
+    {
+        write_error(&writer, protocol, correlation, ErrorCode::AccessDenied).await?;
+        return Ok(());
+    }
+
     let result = match request.op {
         RequestOp::GetServiceInfo {} => ResponseValue::ServiceInfo {
             info: context.service_info(),
@@ -675,7 +770,7 @@ async fn dispatch_request(
             ports,
             network,
         } => rpc_value!(rpc::sandbox::start(
-            context.admissions_open,
+            context.admissions_open(),
             context.engine.clone(),
             context.sessions.clone(),
             session_id,
@@ -932,6 +1027,53 @@ async fn dispatch_request(
             },
             deadline_ms,
         )),
+        RequestOp::PrepareUpdate {
+            target_bundle,
+            target_protocol_range,
+        } => {
+            let maintenance = context
+                .maintenance
+                .as_ref()
+                .context("maintenance manager is unavailable")?;
+            let update_id = maintenance_value!(maintenance.prepare_update(
+                &context.sessions,
+                target_bundle,
+                target_protocol_range,
+            ));
+            ResponseValue::UpdatePrepared { update_id }
+        }
+        RequestOp::CommitUpdate { update_id } => {
+            let maintenance = context
+                .maintenance
+                .as_ref()
+                .context("maintenance manager is unavailable")?;
+            let running_bundle = context
+                .engine
+                .as_ref()
+                .context("service engine is unavailable")?
+                .bundle_version();
+            maintenance_value!(maintenance.commit_update(&update_id, running_bundle, SUPPORTED,));
+            ResponseValue::Empty {}
+        }
+        RequestOp::AbortUpdate { update_id } => {
+            let maintenance = context
+                .maintenance
+                .as_ref()
+                .context("maintenance manager is unavailable")?;
+            maintenance_value!(maintenance.abort_update(&update_id));
+            ResponseValue::Empty {}
+        }
+        RequestOp::PrepareUninstall {} => {
+            let maintenance = context
+                .maintenance
+                .as_ref()
+                .context("maintenance manager is unavailable")?;
+            let clean = maintenance_value!(maintenance.prepare_uninstall(&context.sessions));
+            ResponseValue::UninstallPrepared {
+                clean,
+                quarantine_ids: Vec::new(),
+            }
+        }
         RequestOp::CloseSession {} => return Ok(()),
     };
     write_control(
@@ -1382,6 +1524,7 @@ mod tests {
                     &context,
                     session_id,
                     &identity,
+                    false,
                 )
                 .await;
                 drop(writer);

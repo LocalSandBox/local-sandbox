@@ -7,6 +7,7 @@ pub struct ServicePaths {
     pub root: PathBuf,
     pub config: PathBuf,
     pub ledger: PathBuf,
+    pub pending_update: PathBuf,
     pub users: PathBuf,
     pub quarantine: PathBuf,
     pub runtime: PathBuf,
@@ -26,6 +27,7 @@ impl ServicePaths {
         Ok(Self {
             config: root.join("config").join("service.json"),
             ledger: root.join("state").join("ledger"),
+            pending_update: root.join("state").join("pending-update.json"),
             users: root.join("state").join("users"),
             quarantine: root.join("state").join("quarantine"),
             runtime: root.join("runtime"),
@@ -104,6 +106,7 @@ mod tests {
         assert_eq!(paths.root, base.join("LocalSandbox").join("SeaWork"));
         assert!(paths.config.starts_with(&paths.root));
         assert!(paths.ledger.starts_with(&paths.root));
+        assert!(paths.pending_update.starts_with(&paths.root));
         assert!(paths.require_below_root(&base.join("elsewhere")).is_err());
     }
 }

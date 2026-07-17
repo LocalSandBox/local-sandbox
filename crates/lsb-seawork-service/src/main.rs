@@ -4,6 +4,8 @@ pub mod engine;
 pub mod ipc;
 pub mod ledger;
 mod logging;
+#[cfg(windows)]
+mod maintenance;
 mod paths;
 #[cfg(windows)]
 mod pipe;
