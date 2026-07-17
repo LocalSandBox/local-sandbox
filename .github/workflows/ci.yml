@@ -54,6 +54,25 @@ jobs:
           cmake --version
       - name: Validate Windows diagnostic collector
         run: .\scripts\collect-windows-diagnostics.ps1 -StageRoot "$env:RUNNER_TEMP\windows-diagnostics-probe" -AssetWorkRoot "$env:RUNNER_TEMP\missing-lsb-assets" -SkipCargoLogs
+      - name: Validate Windows release scripts
+        run: |
+          $failed = $false
+          foreach ($path in @(
+            '.\scripts\sign-seawork-service.ps1',
+            '.\scripts\prepare-seawork-release-metadata.ps1'
+          )) {
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$null,
+              [ref]$errors
+            )
+            if ($errors.Count -ne 0) {
+              $failed = $true
+              $errors | ForEach-Object { Write-Error "$path`: $($_.ToString())" }
+            }
+          }
+          if ($failed) { throw 'Windows release script parsing failed' }
       - name: Cargo check Windows target
         run: cargo check --workspace --locked --target x86_64-pc-windows-msvc
       - name: QEMU argv golden tests
@@ -67,6 +86,27 @@ jobs:
           cargo test -p lsb-store --locked qemu_img_discovery
       - name: Cargo unit tests
         run: cargo test --workspace --locked
+      - name: Strict service release lint
+        run: cargo clippy -p xtask -p lsb-service-proto -p lsb-service-client -p lsb-seawork-service --locked --no-deps -- -D warnings
+      - name: Generate service SBOM and license inventory
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'seawork-release-metadata'
+          New-Item -ItemType Directory -Path $root | Out-Null
+          $metadataPath = Join-Path $root 'cargo-metadata.json'
+          $process = Start-Process cargo.exe `
+            -ArgumentList @('metadata', '--locked', '--format-version', '1') `
+            -RedirectStandardOutput $metadataPath `
+            -NoNewWindow -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'cargo metadata failed' }
+          $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+          $version = ($metadata.packages | Where-Object name -eq 'lsb-seawork-service').version
+          $created = git show -s --format=%cI HEAD
+          .\scripts\prepare-seawork-release-metadata.ps1 `
+            -MetadataPath $metadataPath `
+            -OutputDirectory (Join-Path $root 'output') `
+            -Version $version `
+            -CommitSha $env:GITHUB_SHA `
+            -CreatedUtc $created
       - name: Stage Windows hosted diagnostics
         if: failure()
         run: .\scripts\collect-windows-diagnostics.ps1 -AssetWorkRoot "$env:RUNNER_TEMP\missing-lsb-assets"

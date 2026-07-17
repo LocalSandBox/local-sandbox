@@ -135,6 +135,232 @@ jobs:
           curl -fsSL "${LSB_MANAGED_QEMU_URL}" -o "${LSB_MANAGED_QEMU_TARBALL}"
           echo "${LSB_MANAGED_QEMU_SHA256}  ${LSB_MANAGED_QEMU_TARBALL}" | sha256sum -c -
 
+  build-seawork-service:
+    name: Build and sign SeaWork Windows service
+    if: ${{ vars.SEAWORK_SERVICE_SIGNING_ENABLED == 'true' }}
+    needs: [build-os-image]
+    runs-on: windows-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      SEAWORK_PUBLISHER_SUBJECT: ${{ vars.SEAWORK_PUBLISHER_SUBJECT }}
+      SEAWORK_PUBLISHER_SHA256: ${{ vars.SEAWORK_PUBLISHER_SHA256 }}
+      SEAWORK_TIMESTAMP_URL: ${{ vars.SEAWORK_TIMESTAMP_URL }}
+      SEAWORK_CODESIGN_PFX_BASE64: ${{ secrets.SEAWORK_CODESIGN_PFX_BASE64 }}
+      SEAWORK_CODESIGN_PASSWORD: ${{ secrets.SEAWORK_CODESIGN_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Resolve release metadata
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          if ($version -notmatch '^\d+\.\d+\.\d+([+-][0-9A-Za-z.-]+)?$') {
+            throw 'release tag is not a supported SemVer tag'
+          }
+          "LSB_SEAWORK_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          cargo run -p xtask --locked -- platform-meta `
+            --platform windows-x86_64 --format env --version $env:GITHUB_REF_NAME |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Validate signing configuration
+        run: |
+          foreach ($value in @(
+            $env:SEAWORK_PUBLISHER_SUBJECT,
+            $env:SEAWORK_PUBLISHER_SHA256,
+            $env:SEAWORK_TIMESTAMP_URL,
+            $env:SEAWORK_CODESIGN_PFX_BASE64,
+            $env:SEAWORK_CODESIGN_PASSWORD
+          )) {
+            if ([string]::IsNullOrWhiteSpace($value)) {
+              throw 'SeaWork service signing configuration is incomplete'
+            }
+          }
+
+      - name: Build service and symbols
+        run: cargo build -p lsb-seawork-service --locked --release --target x86_64-pc-windows-msvc
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: os-image-windows-x86_64
+          path: target/seawork-service/os-image
+
+      - name: Prepare signed bundle inputs
+        run: |
+          $root = Join-Path $PWD 'target\seawork-service'
+          $input = Join-Path $root 'input'
+          $runtime = Join-Path $input 'runtime'
+          $qemuExtract = Join-Path $input 'qemu-extract'
+          New-Item -ItemType Directory -Path $runtime, $qemuExtract, (Join-Path $root 'out') | Out-Null
+
+          $osArchive = @(Get-ChildItem -LiteralPath (Join-Path $root 'os-image') -File -Filter 'lsb-os-*.tar.gz')
+          if ($osArchive.Count -ne 1) { throw 'expected exactly one Windows OS image archive' }
+          tar -xzf $osArchive[0].FullName -C $runtime
+          if ($LASTEXITCODE -ne 0) { throw 'extracting the OS image archive failed' }
+
+          $qemuArchive = Join-Path $input $env:LSB_MANAGED_QEMU_TARBALL
+          Invoke-WebRequest -Uri $env:LSB_MANAGED_QEMU_URL -OutFile $qemuArchive
+          $actualQemuHash = (Get-FileHash -LiteralPath $qemuArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualQemuHash -cne $env:LSB_MANAGED_QEMU_SHA256) {
+            throw 'managed QEMU archive hash mismatch'
+          }
+          tar -xzf $qemuArchive -C $qemuExtract
+          if ($LASTEXITCODE -ne 0) { throw 'extracting the managed QEMU archive failed' }
+
+          $secrets = Join-Path $env:RUNNER_TEMP 'seawork-signing'
+          New-Item -ItemType Directory -Path $secrets | Out-Null
+          [IO.File]::WriteAllBytes(
+            (Join-Path $secrets 'codesign.pfx'),
+            [Convert]::FromBase64String($env:SEAWORK_CODESIGN_PFX_BASE64)
+          )
+          [IO.File]::WriteAllText(
+            (Join-Path $secrets 'password.txt'),
+            $env:SEAWORK_CODESIGN_PASSWORD,
+            [Text.UTF8Encoding]::new($false)
+          )
+          "LSB_SEAWORK_INPUT=$input" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LSB_SEAWORK_QEMU=$qemuExtract\$env:LSB_MANAGED_QEMU_TOP_LEVEL_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LSB_SEAWORK_PFX=$secrets\codesign.pfx" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LSB_SEAWORK_PASSWORD=$secrets\password.txt" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Sign service PE
+        run: |
+          .\scripts\sign-seawork-service.ps1 `
+            -Mode SignPe `
+            -ServiceBinary '.\target\x86_64-pc-windows-msvc\release\localsandbox-seawork-service.exe' `
+            -PfxPath $env:LSB_SEAWORK_PFX `
+            -PasswordFile $env:LSB_SEAWORK_PASSWORD `
+            -TimestampUrl $env:SEAWORK_TIMESTAMP_URL `
+            -ExpectedPublisherSubject $env:SEAWORK_PUBLISHER_SUBJECT `
+            -ExpectedPublisherSha256 $env:SEAWORK_PUBLISHER_SHA256
+
+      - name: Generate SBOM and license inventory
+        run: |
+          $metadataPath = Join-Path $env:LSB_SEAWORK_INPUT 'cargo-metadata.json'
+          $process = Start-Process cargo.exe `
+            -ArgumentList @('metadata', '--locked', '--format-version', '1') `
+            -RedirectStandardOutput $metadataPath `
+            -NoNewWindow -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'cargo metadata failed' }
+          $created = git show -s --format=%cI HEAD
+          .\scripts\prepare-seawork-release-metadata.ps1 `
+            -MetadataPath $metadataPath `
+            -OutputDirectory (Join-Path $env:LSB_SEAWORK_INPUT 'metadata') `
+            -Version $env:LSB_SEAWORK_VERSION `
+            -CommitSha $env:GITHUB_SHA `
+            -CreatedUtc $created
+
+      - name: Stage bundle and manifests
+        run: |
+          cargo run -p xtask --locked -- package-release `
+            --artifact seawork-service `
+            --mode stage `
+            --platform windows-x86_64 `
+            --version $env:LSB_SEAWORK_VERSION `
+            --output-dir target/seawork-service/out `
+            --service-binary target/x86_64-pc-windows-msvc/release/localsandbox-seawork-service.exe `
+            --runtime-dir $env:LSB_SEAWORK_INPUT\runtime `
+            --qemu-dir $env:LSB_SEAWORK_QEMU `
+            --sbom $env:LSB_SEAWORK_INPUT\metadata\sbom.spdx.json `
+            --licenses $env:LSB_SEAWORK_INPUT\metadata\licenses `
+            --publisher-subject $env:SEAWORK_PUBLISHER_SUBJECT `
+            --publisher-thumbprint $env:SEAWORK_PUBLISHER_SHA256
+          "LSB_SEAWORK_STAGE=$PWD\target\seawork-service\out\lsb-seawork-service-v$env:LSB_SEAWORK_VERSION-windows-x86_64-stage" | `
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Generate and sign catalog
+        run: |
+          $work = Join-Path $PWD 'target\seawork-service\catalog-work'
+          New-Item -ItemType Directory -Path $work | Out-Null
+          .\scripts\sign-seawork-service.ps1 `
+            -Mode Catalog `
+            -BundleRoot $env:LSB_SEAWORK_STAGE\LocalSandbox `
+            -WorkDirectory $work `
+            -PfxPath $env:LSB_SEAWORK_PFX `
+            -PasswordFile $env:LSB_SEAWORK_PASSWORD `
+            -TimestampUrl $env:SEAWORK_TIMESTAMP_URL `
+            -ExpectedPublisherSubject $env:SEAWORK_PUBLISHER_SUBJECT `
+            -ExpectedPublisherSha256 $env:SEAWORK_PUBLISHER_SHA256
+
+      - name: Generate source map and final archives
+        run: |
+          $service = Resolve-Path '.\target\x86_64-pc-windows-msvc\release\localsandbox-seawork-service.exe'
+          $pdb = Resolve-Path '.\target\x86_64-pc-windows-msvc\release\localsandbox-seawork-service.pdb'
+          $sourceMap = [ordered]@{
+            schema_version = 1
+            version = $env:LSB_SEAWORK_VERSION
+            commit = $env:GITHUB_SHA
+            target = 'x86_64-pc-windows-msvc'
+            service_sha256 = (Get-FileHash -LiteralPath $service -Algorithm SHA256).Hash.ToLowerInvariant()
+            pdb_sha256 = (Get-FileHash -LiteralPath $pdb -Algorithm SHA256).Hash.ToLowerInvariant()
+          } | ConvertTo-Json
+          $sourceMapPath = Join-Path $env:LSB_SEAWORK_INPUT 'source-map.json'
+          [IO.File]::WriteAllText($sourceMapPath, $sourceMap + "`n", [Text.UTF8Encoding]::new($false))
+          cargo run -p xtask --locked -- package-release `
+            --artifact seawork-service `
+            --mode archive `
+            --platform windows-x86_64 `
+            --version $env:LSB_SEAWORK_VERSION `
+            --output-dir target/seawork-service/out `
+            --stage-dir $env:LSB_SEAWORK_STAGE `
+            --catalog $env:LSB_SEAWORK_STAGE\LocalSandbox\manifests\LocalSandboxSeaWork.cat `
+            --pdb $pdb `
+            --source-map $sourceMapPath
+
+      - name: Verify final signatures and bundle
+        run: |
+          .\scripts\sign-seawork-service.ps1 `
+            -Mode Verify `
+            -BundleRoot $env:LSB_SEAWORK_STAGE\LocalSandbox `
+            -ExpectedPublisherSubject $env:SEAWORK_PUBLISHER_SUBJECT `
+            -ExpectedPublisherSha256 $env:SEAWORK_PUBLISHER_SHA256
+          & "$env:LSB_SEAWORK_STAGE\LocalSandbox\bin\localsandbox-seawork-service.exe" --verify-bundle --json
+          if ($LASTEXITCODE -ne 0) { throw 'service bundle verification failed' }
+
+      - name: Attest service release assets
+        uses: actions/attest@v4
+        with:
+          subject-path: target/seawork-service/out/lsb-seawork-service-*.zip
+
+      - name: Upload service release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: seawork-service-release
+          path: |
+            target/seawork-service/out/lsb-seawork-service-*.zip
+            target/seawork-service/out/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-seawork-service:
+    name: Publish SeaWork Windows service
+    if: ${{ vars.SEAWORK_SERVICE_SIGNING_ENABLED == 'true' }}
+    needs: [build-seawork-service]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: seawork-service-release
+          path: artifacts/
+
+      - name: Publish service release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+
   release:
     needs: [build-os-image, build-cli, validate-managed-qemu]
     runs-on: ubuntu-latest
