@@ -11,8 +11,8 @@ pub use stream::CreditWindow;
 
 #[cfg(windows)]
 pub use connection::{
-    ExecOptions, RemoteCommand, RemoteExecResult, RemoteProcess, RemoteSandbox, RemoteWatch,
-    RemoteWatchEvent, ServiceClient, StartSandboxOptions,
+    ExecOptions, RemoteCommand, RemoteExecOperation, RemoteExecResult, RemoteProcess,
+    RemoteSandbox, RemoteWatch, RemoteWatchEvent, ServiceClient, StartSandboxOptions,
 };
 
 pub const SERVICE_NAME: &str = "LocalSandboxSeaWork";

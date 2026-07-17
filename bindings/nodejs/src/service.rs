@@ -201,6 +201,52 @@ impl SeaWorkSandbox {
   }
 
   #[napi]
+  pub async fn begin_exec(
+    &self,
+    command: Either<String, Vec<String>>,
+    opts: Option<SeaWorkExecOptions>,
+  ) -> Result<SeaWorkExecOperation> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+      let opts = opts.unwrap_or(SeaWorkExecOptions {
+        cwd: None,
+        env: None,
+      });
+      let command = match command {
+        Either::A(shell) => lsb_service_client::RemoteCommand::Shell(shell),
+        Either::B(argv) => lsb_service_client::RemoteCommand::Argv(argv),
+      };
+      let operation = self
+        .client
+        .lock()
+        .await
+        .begin_exec(
+          &self.sandbox,
+          command,
+          lsb_service_client::ExecOptions {
+            cwd: opts.cwd,
+            env: opts
+              .env
+              .unwrap_or_default()
+              .into_iter()
+              .collect::<BTreeMap<_, _>>(),
+          },
+        )
+        .await
+        .map_err(service_error)?;
+      return Ok(SeaWorkExecOperation {
+        operation: Arc::new(operation),
+      });
+    }
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    {
+      let _ = command;
+      let _ = opts;
+      Err(unsupported_platform_error())
+    }
+  }
+
+  #[napi]
   pub async fn spawn(
     &self,
     command: Either<String, Vec<String>>,
@@ -507,6 +553,48 @@ impl SeaWorkSandbox {
 pub struct SeaWorkProcess {
   #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
   process: Arc<lsb_service_client::RemoteProcess>,
+}
+
+#[napi]
+pub struct SeaWorkExecOperation {
+  #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+  operation: Arc<lsb_service_client::RemoteExecOperation>,
+}
+
+#[napi]
+impl SeaWorkExecOperation {
+  #[napi(getter)]
+  pub fn id(&self) -> Result<String> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return Ok(self.operation.id().to_string());
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    Err(unsupported_platform_error())
+  }
+
+  #[napi]
+  pub async fn cancel(&self) -> Result<()> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return self.operation.cancel().await.map_err(service_error);
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    Err(unsupported_platform_error())
+  }
+
+  #[napi]
+  pub async fn complete(&self) -> Result<ExecResult> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return self
+      .operation
+      .complete()
+      .await
+      .map(|result| ExecResult {
+        stdout: result.stdout,
+        stderr: result.stderr,
+        exitCode: result.exit_code,
+      })
+      .map_err(service_error);
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    Err(unsupported_platform_error())
+  }
 }
 
 #[napi]

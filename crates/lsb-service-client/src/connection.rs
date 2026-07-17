@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use lsb_service_proto::limits::HEADER_LEN;
 use lsb_service_proto::{
-    decode_stream_payload, parse_control, Correlation, ErrorEnvelope, Event, FrameHeader,
+    decode_stream_payload, parse_control, Cancel, Correlation, ErrorEnvelope, Event, FrameHeader,
     FrameKind, Health, Hello, HelloReply, HexU64, ProtocolVersion, Request, RequestOp, Response,
     ResponseValue, ServiceInfo, WindowUpdate, CURRENT, SUPPORTED,
 };
@@ -209,36 +209,36 @@ impl ServiceClient {
         command: RemoteCommand,
         options: ExecOptions,
     ) -> Result<RemoteExecResult, ClientError> {
-        let command = match command {
-            RemoteCommand::Argv(argv) => {
-                lsb_service_proto::ServiceCommand::Argv(lsb_service_proto::ArgvCommand { argv })
-            }
-            RemoteCommand::Shell(shell) => {
-                lsb_service_proto::ServiceCommand::Shell(lsb_service_proto::ShellCommand { shell })
-            }
-        };
-        match self
-            .request(RequestOp::Exec {
-                sandbox_id: sandbox.sandbox_id.clone(),
-                command,
-                cwd: options.cwd,
-                env: options.env,
-            })
+        self.begin_exec(sandbox, command, options)
             .await?
-        {
-            ResponseValue::ExecCompleted {
-                stdout,
-                stderr,
-                exit_code,
-            } => Ok(RemoteExecResult {
-                stdout,
-                stderr,
-                exit_code,
-            }),
-            _ => Err(ClientError::Protocol(
-                "Exec returned a mismatched result".to_string(),
-            )),
-        }
+            .complete()
+            .await
+    }
+
+    pub async fn begin_exec(
+        &self,
+        sandbox: &RemoteSandbox,
+        command: RemoteCommand,
+        options: ExecOptions,
+    ) -> Result<RemoteExecOperation, ClientError> {
+        let (sender, receiver) = oneshot::channel();
+        let correlation = self
+            .core
+            .send_request(
+                RequestOp::Exec {
+                    sandbox_id: sandbox.sandbox_id.clone(),
+                    command: service_command(command),
+                    cwd: options.cwd,
+                    env: options.env,
+                },
+                PendingRequest::Unary(sender),
+            )
+            .await?;
+        Ok(RemoteExecOperation {
+            core: self.core.clone(),
+            request_id: correlation_id(correlation),
+            response: Mutex::new(Some(receiver)),
+        })
     }
 
     pub async fn mkdir(
@@ -604,7 +604,7 @@ impl ConnectionCore {
         &self,
         op: RequestOp,
         pending: PendingRequest,
-    ) -> Result<(), ClientError> {
+    ) -> Result<Correlation, ClientError> {
         self.ensure_open()?;
         let mut writer = self.writer.lock().await;
         let correlation = {
@@ -633,7 +633,54 @@ impl ConnectionCore {
             self.closed.store(true, Ordering::Release);
             self.pending.lock().await.remove(&correlation.low);
         }
-        result
+        result?;
+        Ok(correlation)
+    }
+
+    async fn cancel_request(&self, request_id: String) -> Result<(), ClientError> {
+        let target = stream_correlation(&request_id)?;
+        if target.high != self.epoch {
+            return Err(ClientError::Protocol(
+                "cancel request epoch mismatch".to_string(),
+            ));
+        }
+        let (sender, receiver) = oneshot::channel();
+        self.ensure_open()?;
+        let mut writer = self.writer.lock().await;
+        let correlation = {
+            let mut active = self.pending.lock().await;
+            if active.len() >= 16 {
+                return Err(ClientError::Protocol(
+                    "active request quota exceeded".to_string(),
+                ));
+            }
+            let correlation = self.next_correlation()?;
+            active.insert(correlation.low, PendingRequest::Unary(sender));
+            correlation
+        };
+        let result = write_control(
+            &mut *writer,
+            FrameKind::Cancel,
+            self.protocol,
+            correlation,
+            &Cancel { request_id },
+        )
+        .await;
+        if result.is_err() {
+            self.closed.store(true, Ordering::Release);
+            self.pending.lock().await.remove(&correlation.low);
+        }
+        result?;
+        match receiver
+            .await
+            .map_err(|_| ClientError::Protocol("connection closed during Cancel".to_string()))?
+        {
+            Response::Ok {
+                result: ResponseValue::Empty {},
+            } => Ok(()),
+            Response::Ok { .. } => Err(mismatched("Cancel")),
+            Response::Err { error } => Err(map_service_error(error)),
+        }
     }
 
     async fn window_update(&self, stream_id: &str, bytes: usize) -> Result<(), ClientError> {
@@ -823,6 +870,47 @@ pub struct RemoteProcess {
     stdout: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
     stderr: Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
     exited: watch::Receiver<Option<i32>>,
+}
+
+pub struct RemoteExecOperation {
+    core: Arc<ConnectionCore>,
+    request_id: String,
+    response: Mutex<Option<oneshot::Receiver<Response>>>,
+}
+
+impl RemoteExecOperation {
+    pub fn id(&self) -> &str {
+        &self.request_id
+    }
+
+    pub async fn cancel(&self) -> Result<(), ClientError> {
+        self.core.cancel_request(self.request_id.clone()).await
+    }
+
+    pub async fn complete(&self) -> Result<RemoteExecResult, ClientError> {
+        let receiver = self.response.lock().await.take().ok_or_else(|| {
+            ClientError::Protocol("exec operation was already completed".to_string())
+        })?;
+        match receiver
+            .await
+            .map_err(|_| ClientError::Protocol("connection closed during Exec".to_string()))?
+        {
+            Response::Ok {
+                result:
+                    ResponseValue::ExecCompleted {
+                        stdout,
+                        stderr,
+                        exit_code,
+                    },
+            } => Ok(RemoteExecResult {
+                stdout,
+                stderr,
+                exit_code,
+            }),
+            Response::Ok { .. } => Err(mismatched("Exec")),
+            Response::Err { error } => Err(map_service_error(error)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1225,6 +1313,10 @@ fn correlation_key(correlation: Correlation) -> (u64, u64) {
     (correlation.high, correlation.low)
 }
 
+fn correlation_id(correlation: Correlation) -> String {
+    format!("{:016x}{:016x}", correlation.high, correlation.low)
+}
+
 struct WireFrame {
     header: FrameHeader,
     payload: Vec<u8>,
@@ -1385,5 +1477,16 @@ mod tests {
         assert!(watches.contains_key(FIRST));
         let channels = receiver.try_recv().unwrap().unwrap();
         assert_eq!(channels.watch_id, FIRST);
+    }
+
+    #[test]
+    fn cancellable_request_id_round_trips_full_correlation() {
+        let correlation = Correlation {
+            high: 0x0123_4567_89ab_cdef,
+            low: 0xfedc_ba98_7654_3210,
+        };
+        let request_id = correlation_id(correlation);
+        assert_eq!(request_id, "0123456789abcdeffedcba9876543210");
+        assert_eq!(stream_correlation(&request_id).unwrap(), correlation);
     }
 }

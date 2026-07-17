@@ -130,6 +130,12 @@ export declare class Sandbox {
   get instanceDir(): string
 }
 
+export declare class SeaWorkExecOperation {
+  get id(): string
+  cancel(): Promise<void>
+  complete(): Promise<ExecResult>
+}
+
 export declare class SeaWorkProcess {
   get id(): string
   nextStdout(): Promise<Buffer | null>
@@ -141,6 +147,7 @@ export declare class SeaWorkProcess {
 export declare class SeaWorkSandbox {
   get id(): string
   exec(command: string | Array<string>, opts?: SeaWorkExecOptions | undefined | null): Promise<ExecResult>
+  beginExec(command: string | Array<string>, opts?: SeaWorkExecOptions | undefined | null): Promise<SeaWorkExecOperation>
   spawn(command: string | Array<string>, opts?: SeaWorkExecOptions | undefined | null): Promise<SeaWorkProcess>
   watch(path: string, opts?: WatchOptions | undefined | null): Promise<SeaWorkWatch>
   mkdir(path: string, opts?: MkdirOptions | undefined | null): Promise<void>

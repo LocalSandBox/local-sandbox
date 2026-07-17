@@ -27,8 +27,8 @@ use crate::error::unsupported_platform_error;
 pub use process::SpawnedProcess;
 pub use sandbox::Sandbox;
 pub use service::{
-  SeaWorkExecOptions, SeaWorkHealth, SeaWorkSandbox, SeaWorkService, SeaWorkStartOptions,
-  SeaWorkWatch,
+  SeaWorkExecOperation, SeaWorkExecOptions, SeaWorkHealth, SeaWorkSandbox, SeaWorkService,
+  SeaWorkStartOptions, SeaWorkWatch,
 };
 pub use streams::{ByteStream, WatchStream};
 pub use types::{
