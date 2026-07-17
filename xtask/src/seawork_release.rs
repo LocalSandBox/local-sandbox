@@ -632,7 +632,7 @@ fn service_contract() -> ServiceContract {
             account: "LocalSystem",
             start: "automatic",
             delayed_auto_start: true,
-            binary_path_template: "%ProgramFiles%\\SeaWork\\LocalSandbox\\versions\\<version>\\bin\\localsandbox-seawork-service.exe --service",
+            binary_path_template: "\"%ProgramFiles%\\SeaWork\\LocalSandbox\\versions\\<version>\\bin\\localsandbox-seawork-service.exe\" --service",
             dependencies: Vec::new(),
             service_sid_type: "SERVICE_SID_TYPE_UNRESTRICTED",
             service_object_sddl: "O:SYG:SYD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00000005;;;IU)",
@@ -938,6 +938,14 @@ mod tests {
             )
             .unwrap(),
             "a".repeat(64)
+        );
+    }
+
+    #[test]
+    fn service_contract_quotes_the_exact_service_command() {
+        assert_eq!(
+            service_contract().service.binary_path_template,
+            r#""%ProgramFiles%\SeaWork\LocalSandbox\versions\<version>\bin\localsandbox-seawork-service.exe" --service"#
         );
     }
 

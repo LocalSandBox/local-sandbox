@@ -1,5 +1,7 @@
-use std::os::windows::ffi::OsStrExt;
+use std::ffi::{OsStr, OsString};
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::io::AsRawHandle;
+use std::path::{Path, PathBuf};
 use std::ptr;
 
 use tokio::net::windows::named_pipe::NamedPipeClient;
@@ -72,10 +74,10 @@ fn verify_server(client: &NamedPipeClient) -> Result<(), ClientError> {
         .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("LocalSystem"));
     if config.service_type != ServiceType::OWN_PROCESS
         || !local_system
-        || !config.executable_path.is_absolute()
+        || configured_service_executable(config.executable_path.as_os_str()).is_none()
     {
         return Err(ClientError::ServerNotTrusted(
-            "service configuration is not protected LocalSystem own-process".to_string(),
+            "service configuration is not the packaged LocalSystem own-process command".to_string(),
         ));
     }
     let second_pid = pipe_server_pid(client)?;
@@ -88,6 +90,72 @@ fn verify_server(client: &NamedPipeClient) -> Result<(), ClientError> {
         ));
     }
     Ok(())
+}
+
+fn configured_service_executable(command: &OsStr) -> Option<PathBuf> {
+    let command = command.encode_wide().collect::<Vec<_>>();
+    let closing_quote = command
+        .get(1..)?
+        .iter()
+        .position(|unit| *unit == u16::from(b'"'))?
+        .checked_add(1)?;
+    if command.first() != Some(&u16::from(b'"')) || closing_quote == 1 {
+        return None;
+    }
+    let expected_suffix = " --service".encode_utf16().collect::<Vec<_>>();
+    if command.get(closing_quote + 1..)? != expected_suffix {
+        return None;
+    }
+
+    let executable = PathBuf::from(OsString::from_wide(&command[1..closing_quote]));
+    if executable.is_absolute() && has_packaged_layout(&executable) {
+        Some(executable)
+    } else {
+        None
+    }
+}
+
+fn has_packaged_layout(executable: &Path) -> bool {
+    if !file_name_eq(executable, "localsandbox-seawork-service.exe") {
+        return false;
+    }
+    let Some(bin) = executable.parent() else {
+        return false;
+    };
+    let Some(version_root) = bin.parent() else {
+        return false;
+    };
+    let Some(versions) = version_root.parent() else {
+        return false;
+    };
+    let Some(local_sandbox) = versions.parent() else {
+        return false;
+    };
+    let Some(seawork) = local_sandbox.parent() else {
+        return false;
+    };
+
+    file_name_eq(bin, "bin")
+        && version_root
+            .file_name()
+            .is_some_and(valid_version_component)
+        && file_name_eq(versions, "versions")
+        && file_name_eq(local_sandbox, "LocalSandbox")
+        && file_name_eq(seawork, "SeaWork")
+}
+
+fn file_name_eq(path: &Path, expected: &str) -> bool {
+    path.file_name()
+        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case(expected))
+}
+
+fn valid_version_component(version: &OsStr) -> bool {
+    let version = version.to_string_lossy();
+    !version.is_empty()
+        && version.len() <= 64
+        && version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
 }
 
 fn pipe_server_pid(client: &NamedPipeClient) -> Result<u32, ClientError> {
@@ -112,5 +180,31 @@ mod tests {
         assert_eq!(DESIRED_ACCESS & FILE_APPEND_DATA, 0);
         assert_ne!(DESIRED_ACCESS & FILE_WRITE_DATA, 0);
         assert_ne!(DESIRED_ACCESS & GENERIC_READ, 0);
+    }
+
+    #[test]
+    fn parses_exact_packaged_service_command() {
+        let command = OsStr::new(
+            r#""C:\Program Files\SeaWork\LocalSandbox\versions\0.4.6\bin\localsandbox-seawork-service.exe" --service"#,
+        );
+        assert_eq!(
+            configured_service_executable(command),
+            Some(PathBuf::from(
+                r"C:\Program Files\SeaWork\LocalSandbox\versions\0.4.6\bin\localsandbox-seawork-service.exe"
+            ))
+        );
+    }
+
+    #[test]
+    fn rejects_non_exact_or_non_packaged_service_commands() {
+        for command in [
+            r"C:\Program Files\SeaWork\LocalSandbox\versions\0.4.6\bin\localsandbox-seawork-service.exe --service",
+            r#""C:\Program Files\SeaWork\LocalSandbox\versions\0.4.6\bin\localsandbox-seawork-service.exe""#,
+            r#""C:\Program Files\SeaWork\LocalSandbox\versions\0.4.6\bin\localsandbox-seawork-service.exe" --service --extra"#,
+            r#""C:\Program Files\SeaWork\LocalSandbox\current\bin\localsandbox-seawork-service.exe" --service"#,
+            r#""relative\SeaWork\LocalSandbox\versions\0.4.6\bin\localsandbox-seawork-service.exe" --service"#,
+        ] {
+            assert_eq!(configured_service_executable(OsStr::new(command)), None);
+        }
     }
 }
