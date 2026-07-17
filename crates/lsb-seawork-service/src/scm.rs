@@ -114,6 +114,10 @@ fn run_registered(
         paths.pending_update.clone(),
         reconciliation.admissions_open && engine.is_some(),
     );
+    let whpx = crate::windows::whpx::health_state();
+    if whpx != lsb_service_proto::HealthState::Ready {
+        logger.write(3, "runtime", "WHPX_UNAVAILABLE")?;
+    }
     let effective_memory_mib = effective_memory_limit(config.quotas.memory_mib_global)?;
     let context = HealthContext::new(
         reconciliation.admissions_open,
@@ -128,6 +132,7 @@ fn run_registered(
         },
     )
     .with_engine(engine)
+    .with_whpx(whpx)
     .with_client_policy(
         maintenance,
         config.client_roots.clone(),

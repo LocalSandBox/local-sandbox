@@ -330,6 +330,7 @@ struct PendingUpload {
 #[derive(Clone)]
 pub struct HealthContext {
     admissions_open: Arc<AtomicBool>,
+    whpx: HealthState,
     sessions: SessionManager,
     engine: Option<ServiceEngineConfig>,
     requests: Arc<Semaphore>,
@@ -343,6 +344,7 @@ impl HealthContext {
     pub fn new(admissions_open: bool, quota_limits: QuotaLimits) -> Self {
         Self {
             admissions_open: Arc::new(AtomicBool::new(admissions_open)),
+            whpx: HealthState::Unknown,
             sessions: SessionManager::new(quota_limits),
             engine: None,
             requests: Arc::new(Semaphore::new(crate::ipc::pipe::MAX_REQUESTS_GLOBAL)),
@@ -355,6 +357,11 @@ impl HealthContext {
 
     pub fn with_engine(mut self, engine: Option<ServiceEngineConfig>) -> Self {
         self.engine = engine;
+        self
+    }
+
+    pub fn with_whpx(mut self, whpx: HealthState) -> Self {
+        self.whpx = whpx;
         self
     }
 
@@ -376,6 +383,7 @@ impl HealthContext {
     fn admissions_open(&self) -> bool {
         self.admissions_open.load(Ordering::Acquire)
             && self.engine.is_some()
+            && self.whpx == HealthState::Ready
             && !self.client_roots.is_empty()
             && !self.publisher_thumbprints.is_empty()
     }
@@ -413,6 +421,8 @@ impl HealthContext {
                 "CLIENT_POLICY_INVALID"
             } else if self.engine.is_none() {
                 "BUNDLE_INVALID"
+            } else if self.whpx != HealthState::Ready {
+                "WHPX_UNAVAILABLE"
             } else if self.admissions_open() {
                 "READY"
             } else if let Some(maintenance) = &self.maintenance {
@@ -421,7 +431,7 @@ impl HealthContext {
                 "HEALTH_ONLY_QUARANTINE"
             }
             .to_string(),
-            whpx: HealthState::Unknown,
+            whpx: self.whpx.clone(),
             smb: HealthState::Unknown,
             wfp: HealthState::Unavailable,
             bundle: if self.engine.is_some() {
@@ -2089,8 +2099,9 @@ mod tests {
             &paths,
         )
         .unwrap();
-        let mut context =
-            HealthContext::new(true, QuotaLimits::default()).with_engine(Some(engine));
+        let mut context = HealthContext::new(true, QuotaLimits::default())
+            .with_engine(Some(engine))
+            .with_whpx(HealthState::Ready);
         context
             .client_roots
             .push(r"C:\Program Files\SeaWork".to_string());
