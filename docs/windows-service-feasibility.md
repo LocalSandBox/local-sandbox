@@ -56,6 +56,7 @@ The following decisions unblock implementation without claiming evidence that do
 
 - Host ports remain disabled for v1 because logon-SID WFP isolation is not implemented or proven.
 - The production platform QEMU supervisor now starts the child suspended and resumes only after assignment to its injected service-owned Job. `ManagedVm` retains that quota-limited Job outside the VM thread and force-terminates it at the stop deadline; if the worker still cannot finish after a bounded grace period, the service aborts rather than detach the thread and falsely report `STOPPED`. Separately approved standard-token development runs proved both the platform's injected-Job path and the concrete service `SandboxJob`: the child's first instruction observed Job containment and Job termination removed the child/grandchild tree. This is source-level CON-01 evidence, not SCM/LocalSystem, nested-enterprise-Job, production-ledger, crash/reboot, WHPX, or exact production-artifact evidence.
+- The client now pins the configured service process, single-link non-reparse executable, and each non-reparse package directory from `ProgramFiles\SeaWork` through `bin`, then repeats the full SCM identity/configuration query before sending Hello. Local compilation, 16 client tests, and strict Clippy pass. This is source-level SEC-01 evidence only: Authenticode publisher validation, package ACL/ownership proof, and adversarial SCM/squatter/replacement tests remain pending.
 - Managed proxy/VPN/Defender/EDR compatibility remains a downstream fleet validation item.
 - Direct RW in the spike exercises existing SMB behavior only. Production direct RW remains disallowed; Phase 3 must use staged-sync.
 
@@ -70,6 +71,7 @@ The following decisions unblock implementation without claiming evidence that do
 | Crash/forced-stop/reboot cleanup | Pending Phase 3 ledger/reconciliation | | Existing caller-owned manifests are not production authority |
 | Suspended-start service-authoritative QEMU Job | Development test passed | Current source test binaries; 2026-07-20 | 16/16 QEMU supervisor tests plus direct service Job proof; injected Job was the sole boundary and child entrypoint was already contained |
 | Nested/SCM lifecycle QEMU Job | Pending privileged SCM/LocalSystem run | | Nested enterprise Job, production intent/commit ledger, every helper, forced-stop deadline, crash, reboot, WHPX, and exact artifact remain required |
+| Client pre-Hello service/package pinning | Source tests passed | Current source; 2026-07-20 | Process/image identity, known-folder package chain, non-reparse/final-path pins, and second SCM query implemented; signer and ACL proof plus adversarial runtime evidence remain required |
 | IPv4/IPv6 WFP logon isolation | Disabled for v1 | | `PORT_ISOLATION_UNAVAILABLE` |
 | Proxy/VPN/certificate behavior | Pending managed-machine run | | |
 | Defender/EDR behavior | Pending managed-machine run | | |
