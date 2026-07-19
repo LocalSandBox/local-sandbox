@@ -13,6 +13,13 @@ shape, `instanceId`, `dataDir`, and the legacy `from` string. The pinned source 
 no checkpoint operation or checkpoint producer, so a non-empty `from` must fail with
 `CHECKPOINT_UNSUPPORTED` rather than selecting any path or state.
 
+`instanceId` is a bounded one-shot replay key, never a filesystem name or sandbox
+adoption token. Protocol 1.4 caches only service-generated start outcomes. A replay on
+the owning live connection returns the same opaque sandbox handle. Disconnect still
+cleans every owned resource; the replay key becomes a bounded tombstone and reconnect
+returns non-retryable `START_RESULT_EXPIRED`, requiring an explicit new `instanceId`
+instead of silently creating or adopting a VM.
+
 Each parity entry is one of:
 
 - `equivalent`: the host-neutral service contract already matches the reachable

@@ -363,7 +363,7 @@ pub enum RequestOp {
     GetServiceInfo {},
     HealthCheck {},
     StartSandbox {
-        /// Caller correlation/cache hint. The service never derives a path or resource id from it.
+        /// One-shot replay key. It never selects a path, resource id, or adopted sandbox.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         client_instance_id: Option<String>,
         /// Legacy checkpoint selector, accepted only to return CHECKPOINT_UNSUPPORTED.

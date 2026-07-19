@@ -30,6 +30,7 @@ pub enum ErrorCode {
     MountConflict,
     MountUnavailable,
     CheckpointUnsupported,
+    StartResultExpired,
     NetworkPolicyDenied,
     PortIsolationUnavailable,
     BundleInvalid,
@@ -64,6 +65,7 @@ impl ErrorCode {
             Self::MountConflict => "MOUNT_CONFLICT",
             Self::MountUnavailable => "MOUNT_UNAVAILABLE",
             Self::CheckpointUnsupported => "CHECKPOINT_UNSUPPORTED",
+            Self::StartResultExpired => "START_RESULT_EXPIRED",
             Self::NetworkPolicyDenied => "NETWORK_POLICY_DENIED",
             Self::PortIsolationUnavailable => "PORT_ISOLATION_UNAVAILABLE",
             Self::BundleInvalid => "BUNDLE_INVALID",
@@ -94,6 +96,10 @@ impl ErrorEnvelope {
             ErrorCode::PortIsolationUnavailable => ("Isolated host ports are unavailable.", false),
             ErrorCode::CheckpointUnsupported => (
                 "Sandbox checkpoints are not supported by the SeaWork service. Start a new sandbox without 'from'.",
+                false,
+            ),
+            ErrorCode::StartResultExpired => (
+                "The original sandbox start is unavailable on this connection and cannot be adopted. If its connection closed, it was cleaned up. Start again with a new instanceId.",
                 false,
             ),
             ErrorCode::AccessDenied | ErrorCode::ClientNotTrusted => ("Access was denied.", false),
@@ -167,5 +173,13 @@ mod tests {
         assert!(!envelope.retryable);
         assert!(envelope.message.contains("without 'from'"));
         assert_eq!(envelope.code.as_str(), "CHECKPOINT_UNSUPPORTED");
+    }
+
+    #[test]
+    fn expired_start_result_has_stable_recovery_guidance() {
+        let envelope = ErrorEnvelope::safe(ErrorCode::StartResultExpired, "correlation");
+        assert_eq!(envelope.code.as_str(), "START_RESULT_EXPIRED");
+        assert!(!envelope.retryable);
+        assert!(envelope.message.contains("new instanceId"));
     }
 }

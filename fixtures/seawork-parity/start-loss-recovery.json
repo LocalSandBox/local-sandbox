@@ -6,6 +6,7 @@
     {"op":"start","request_id":"00000000-0000-4000-8000-000000000001","instance_id":"seawork-session-fixture"},
     {"op":"start","request_id":"00000000-0000-4000-8000-000000000002","from":"unexpected-checkpoint"},
     {"op":"disconnect"},
+    {"op":"start","request_id":"00000000-0000-4000-8000-000000000001","instance_id":"seawork-session-fixture"},
     {"op":"reconcile"}
   ],
   "assertions": [
@@ -13,6 +14,7 @@
     {"kind":"same-result","steps":[0,1]},
     {"kind":"opaque-id-not-derived-from","value":"seawork-session-fixture"},
     {"kind":"stable-error","step":2,"code":"CHECKPOINT_UNSUPPORTED"},
-    {"kind":"resource-count","after_step":4,"sandboxes":0}
+    {"kind":"stable-error","step":4,"code":"START_RESULT_EXPIRED"},
+    {"kind":"resource-count","after_step":5,"sandboxes":0}
   ]
 }

@@ -14,7 +14,7 @@ use crate::engine::ServiceEngineConfig;
 use crate::resource::vm::ManagedVmSpec;
 use crate::session::{
     CancellationToken, ClientIdentityKey, QuotaError, ResourceHandle, SandboxResources,
-    SessionManager,
+    SessionManager, StartReplayDecision,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -27,7 +27,7 @@ pub async fn start(
     protected_egress_allow: Vec<String>,
     product_ca_bundle_pem: Vec<u8>,
     upstream_proxy: Option<lsb_proxy::UpstreamProxyConfig>,
-    _client_instance_id: Option<String>,
+    client_instance_id: Option<String>,
     from: Option<String>,
     cpus: u16,
     memory_mib: u32,
@@ -73,25 +73,47 @@ pub async fn start(
     if requested_bytes > free_bytes {
         return Err(ErrorCode::QuotaExceeded);
     }
-    let sandbox_id = sessions
-        .reserve_managed_vm(
-            session_id,
-            &identity,
-            SandboxResources {
-                cpus,
-                memory_mib,
-                disk_mib,
-            },
-        )
-        .map_err(|error| {
-            if error.downcast_ref::<QuotaError>().is_some() {
-                ErrorCode::QuotaExceeded
-            } else {
-                ErrorCode::ResourceNotFound
+    if let Some(replay_id) = client_instance_id.as_deref() {
+        match sessions
+            .begin_start_replay(session_id, &identity, replay_id)
+            .map_err(|_| ErrorCode::ResourceNotFound)?
+        {
+            StartReplayDecision::Begin => {}
+            StartReplayDecision::InProgress => return Err(ErrorCode::DuplicateRequest),
+            StartReplayDecision::Replay(sandbox_id) => {
+                return Ok(sandbox_started(sandbox_id));
             }
-        })?;
+            StartReplayDecision::Expired => return Err(ErrorCode::StartResultExpired),
+            StartReplayDecision::CapacityExceeded => return Err(ErrorCode::QuotaExceeded),
+        }
+    }
+    let sandbox_id = match sessions.reserve_managed_vm(
+        session_id,
+        &identity,
+        SandboxResources {
+            cpus,
+            memory_mib,
+            disk_mib,
+        },
+    ) {
+        Ok(sandbox_id) => sandbox_id,
+        Err(error) => {
+            abandon_start_replay(
+                &sessions,
+                session_id,
+                &identity,
+                client_instance_id.as_deref(),
+            );
+            if error.downcast_ref::<QuotaError>().is_some() {
+                return Err(ErrorCode::QuotaExceeded);
+            } else {
+                return Err(ErrorCode::ResourceNotFound);
+            }
+        }
+    };
     let cleanup_sessions = sessions.clone();
     let cleanup_identity = identity.clone();
+    let cleanup_client_instance_id = client_instance_id.clone();
     let cleanup_engine = engine.clone();
     let cleanup_instance_dir = engine
         .resources_root()
@@ -112,6 +134,12 @@ pub async fn start(
             Ok(spec) => spec,
             Err(error) => {
                 let _ = sessions.cancel_managed_vm_reservation(session_id, &identity, sandbox_id);
+                abandon_start_replay(
+                    &sessions,
+                    session_id,
+                    &identity,
+                    client_instance_id.as_deref(),
+                );
                 return Err(if error.to_string().contains("cancelled") {
                     ErrorCode::Cancelled
                 } else {
@@ -129,13 +157,31 @@ pub async fn start(
             cancellation,
         );
         match started {
-            Ok(handle) => Ok(ResponseValue::SandboxStarted {
-                sandbox_id: handle.to_string(),
-                mounts: Vec::new(),
-                host_ports: Vec::new(),
-            }),
+            Ok(handle) => {
+                if let Some(replay_id) = client_instance_id.as_deref() {
+                    let committed = sessions
+                        .complete_start_replay(session_id, &identity, replay_id, handle)
+                        .unwrap_or(false);
+                    if !committed {
+                        let _ = sessions.stop_managed_vm(
+                            session_id,
+                            &identity,
+                            handle,
+                            Duration::from_secs(30),
+                        );
+                        return Err(ErrorCode::ServiceUnavailable);
+                    }
+                }
+                Ok(sandbox_started(handle))
+            }
             Err(error) => {
                 let _ = remove_prepared_instance(&engine, &instance_dir);
+                abandon_start_replay(
+                    &sessions,
+                    session_id,
+                    &identity,
+                    client_instance_id.as_deref(),
+                );
                 if error.downcast_ref::<QuotaError>().is_some() {
                     Err(ErrorCode::QuotaExceeded)
                 } else {
@@ -148,6 +194,12 @@ pub async fn start(
     match result {
         Ok(result) => result,
         Err(_) => {
+            abandon_start_replay(
+                &cleanup_sessions,
+                session_id,
+                &cleanup_identity,
+                cleanup_client_instance_id.as_deref(),
+            );
             if cleanup_sessions
                 .cancel_managed_vm_reservation(session_id, &cleanup_identity, sandbox_id)
                 .unwrap_or(false)
@@ -156,6 +208,25 @@ pub async fn start(
             }
             Err(ErrorCode::InternalError)
         }
+    }
+}
+
+fn sandbox_started(sandbox_id: ResourceHandle) -> ResponseValue {
+    ResponseValue::SandboxStarted {
+        sandbox_id: sandbox_id.to_string(),
+        mounts: Vec::new(),
+        host_ports: Vec::new(),
+    }
+}
+
+fn abandon_start_replay(
+    sessions: &SessionManager,
+    session_id: ResourceHandle,
+    identity: &ClientIdentityKey,
+    client_instance_id: Option<&str>,
+) {
+    if let Some(replay_id) = client_instance_id {
+        let _ = sessions.abandon_start_replay(session_id, identity, replay_id);
     }
 }
 

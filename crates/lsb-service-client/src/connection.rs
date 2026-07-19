@@ -1001,7 +1001,7 @@ where
 
 #[derive(Debug, Clone)]
 pub struct StartSandboxOptions {
-    /// Correlation/cache hint only. It never selects a service path or resource id.
+    /// One-shot replay key. It never selects a service path, resource id, or adopted sandbox.
     pub client_instance_id: Option<String>,
     /// Legacy checkpoint selector. A non-empty value receives CHECKPOINT_UNSUPPORTED.
     pub from: Option<String>,

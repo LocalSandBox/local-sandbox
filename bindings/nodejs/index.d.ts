@@ -489,7 +489,7 @@ export interface SeaWorkServiceInfo {
 }
 
 export interface SeaWorkStartOptions {
-  /** Correlation/cache hint only; never a service path or caller-selected resource. */
+  /** One-shot replay key; never a service path, caller-selected resource, or adoption key. */
   instanceId?: string
   /** Legacy checkpoint name. Non-empty values return CHECKPOINT_UNSUPPORTED. */
   from?: string

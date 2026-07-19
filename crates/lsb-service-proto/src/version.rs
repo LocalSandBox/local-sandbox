@@ -4,16 +4,17 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::ProtocolError;
 
-pub const CURRENT: ProtocolVersion = ProtocolVersion { major: 1, minor: 3 };
+pub const CURRENT: ProtocolVersion = ProtocolVersion { major: 1, minor: 4 };
 pub const SUPPORTED: ProtocolRange = ProtocolRange {
     major: 1,
     min_minor: 0,
-    max_minor: 3,
+    max_minor: 4,
 };
 
 pub const FEATURE_NETWORK_EGRESS: u64 = 1 << 0;
 pub const FEATURE_NETWORK_SECRETS: u64 = 1 << 1;
 pub const FEATURE_HTTPS_INTERCEPTION: u64 = 1 << 2;
+pub const START_REPLAY_MIN_MINOR: u16 = 4;
 pub const CLIENT_FEATURE_BITS: u64 =
     FEATURE_NETWORK_EGRESS | FEATURE_NETWORK_SECRETS | FEATURE_HTTPS_INTERCEPTION;
 
@@ -120,6 +121,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(selected.minor, 2);
+    }
+
+    #[test]
+    fn current_protocol_supports_connection_bound_start_replay() {
+        let selected = negotiate(
+            SUPPORTED,
+            ProtocolRange {
+                major: CURRENT.major,
+                min_minor: START_REPLAY_MIN_MINOR,
+                max_minor: START_REPLAY_MIN_MINOR,
+            },
+        )
+        .unwrap();
+        assert_eq!(selected.minor, START_REPLAY_MIN_MINOR);
     }
 
     #[test]

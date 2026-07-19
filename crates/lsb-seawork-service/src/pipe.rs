@@ -12,7 +12,7 @@ use lsb_service_proto::{
     encode_stream_payload, negotiate, parse_control, Cancel, CapabilityHealth, Correlation,
     ErrorCode, ErrorEnvelope, Event, FrameHeader, FrameKind, Health, HealthState, Hello,
     HelloReply, HexU64, ProtocolRange, Request, RequestOp, Response, ResponseValue, ServiceInfo,
-    WindowUpdate, CLIENT_FEATURE_BITS, CURRENT, SUPPORTED,
+    WindowUpdate, CLIENT_FEATURE_BITS, CURRENT, START_REPLAY_MIN_MINOR, SUPPORTED,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{NamedPipeServer, PipeMode, ServerOptions};
@@ -1263,7 +1263,11 @@ async fn dispatch_request(
             context.protected_egress_allow.clone(),
             context.product_ca_bundle_pem.clone(),
             context.upstream_proxy.clone(),
-            client_instance_id,
+            if protocol.minor >= START_REPLAY_MIN_MINOR {
+                client_instance_id
+            } else {
+                None
+            },
             from,
             cpus,
             memory_mib,

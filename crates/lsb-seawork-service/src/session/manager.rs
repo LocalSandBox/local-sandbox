@@ -23,6 +23,8 @@ use crate::resource::watch::{
 
 const MAX_RETIRED_HANDLES: usize = 4_096;
 const RETIRED_HANDLE_TTL: Duration = Duration::from_secs(10 * 60);
+const MAX_START_REPLAY_RECORDS: usize = 4_096;
+const START_REPLAY_TTL: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ClientIdentityKey {
@@ -121,6 +123,36 @@ impl ProcessSlot {
 struct State {
     sessions: HashMap<ResourceHandle, Session>,
     quotas: QuotaBook,
+    start_replays: HashMap<StartReplayKey, StartReplayRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct StartReplayKey {
+    identity: ClientIdentityKey,
+    client_instance_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartReplayState {
+    Preparing,
+    Running(ResourceHandle),
+    Retired,
+}
+
+#[derive(Debug)]
+struct StartReplayRecord {
+    session_id: ResourceHandle,
+    state: StartReplayState,
+    updated_at: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartReplayDecision {
+    Begin,
+    InProgress,
+    Replay(ResourceHandle),
+    Expired,
+    CapacityExceeded,
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +166,7 @@ impl SessionManager {
             state: Arc::new(Mutex::new(State {
                 sessions: HashMap::new(),
                 quotas: QuotaBook::new(limits),
+                start_replays: HashMap::new(),
             })),
         }
     }
@@ -175,6 +208,13 @@ impl SessionManager {
             return Ok(false);
         }
         session.cancellation.cancel();
+        let now = Instant::now();
+        for record in state.start_replays.values_mut() {
+            if record.session_id == session_id {
+                record.state = StartReplayState::Retired;
+                record.updated_at = now;
+            }
+        }
         let session = state
             .sessions
             .remove(&session_id)
@@ -329,6 +369,123 @@ impl SessionManager {
             .lock()
             .map(|state| state.quotas.totals())
             .unwrap_or_default()
+    }
+
+    pub fn begin_start_replay(
+        &self,
+        session_id: ResourceHandle,
+        identity: &ClientIdentityKey,
+        client_instance_id: &str,
+    ) -> Result<StartReplayDecision> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
+        let owns_session = state
+            .sessions
+            .get(&session_id)
+            .is_some_and(|session| &session.identity == identity);
+        if !owns_session {
+            bail!("resource not found");
+        }
+        prune_start_replays(&mut state.start_replays);
+        let key = StartReplayKey {
+            identity: identity.clone(),
+            client_instance_id: client_instance_id.to_string(),
+        };
+        if let Some(record) = state.start_replays.get(&key) {
+            return Ok(match record.state {
+                StartReplayState::Preparing if record.session_id == session_id => {
+                    StartReplayDecision::InProgress
+                }
+                StartReplayState::Running(handle) if record.session_id == session_id => {
+                    StartReplayDecision::Replay(handle)
+                }
+                StartReplayState::Preparing
+                | StartReplayState::Running(_)
+                | StartReplayState::Retired => StartReplayDecision::Expired,
+            });
+        }
+        if state.start_replays.len() >= MAX_START_REPLAY_RECORDS {
+            return Ok(StartReplayDecision::CapacityExceeded);
+        }
+        state.start_replays.insert(
+            key,
+            StartReplayRecord {
+                session_id,
+                state: StartReplayState::Preparing,
+                updated_at: Instant::now(),
+            },
+        );
+        Ok(StartReplayDecision::Begin)
+    }
+
+    pub fn complete_start_replay(
+        &self,
+        session_id: ResourceHandle,
+        identity: &ClientIdentityKey,
+        client_instance_id: &str,
+        sandbox_id: ResourceHandle,
+    ) -> Result<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
+        let key = StartReplayKey {
+            identity: identity.clone(),
+            client_instance_id: client_instance_id.to_string(),
+        };
+        let Some(record) = state.start_replays.get_mut(&key) else {
+            return Ok(false);
+        };
+        if record.session_id != session_id || record.state != StartReplayState::Preparing {
+            return Ok(false);
+        }
+        record.state = StartReplayState::Running(sandbox_id);
+        record.updated_at = Instant::now();
+        Ok(true)
+    }
+
+    pub fn abandon_start_replay(
+        &self,
+        session_id: ResourceHandle,
+        identity: &ClientIdentityKey,
+        client_instance_id: &str,
+    ) -> Result<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
+        let key = StartReplayKey {
+            identity: identity.clone(),
+            client_instance_id: client_instance_id.to_string(),
+        };
+        let remove = state.start_replays.get(&key).is_some_and(|record| {
+            record.session_id == session_id && record.state == StartReplayState::Preparing
+        });
+        if remove {
+            state.start_replays.remove(&key);
+        }
+        Ok(remove)
+    }
+
+    #[cfg(windows)]
+    fn retire_start_replay(
+        state: &mut State,
+        session_id: ResourceHandle,
+        identity: &ClientIdentityKey,
+        sandbox_id: ResourceHandle,
+    ) {
+        let now = Instant::now();
+        for (key, record) in &mut state.start_replays {
+            if &key.identity == identity
+                && record.session_id == session_id
+                && record.state == StartReplayState::Running(sandbox_id)
+            {
+                record.state = StartReplayState::Retired;
+                record.updated_at = now;
+            }
+        }
     }
 
     #[cfg(windows)]
@@ -527,6 +684,7 @@ impl SessionManager {
             .lock()
             .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
         state.quotas.release_sandbox(session_id, handle, identity);
+        Self::retire_start_replay(&mut state, session_id, identity, handle);
         result.map(|()| true)
     }
 
@@ -1038,9 +1196,124 @@ fn prune_retired(retired: &mut VecDeque<(Instant, ResourceHandle)>) {
     }
 }
 
+fn prune_start_replays(records: &mut HashMap<StartReplayKey, StartReplayRecord>) {
+    let cutoff = Instant::now() - START_REPLAY_TTL;
+    records.retain(|_, record| {
+        record.state != StartReplayState::Retired || record.updated_at >= cutoff
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn start_replay_is_at_most_once_and_connection_bound() {
+        let manager = SessionManager::new(QuotaLimits::default());
+        let identity = ClientIdentityKey::for_test("user", "logon", 1);
+        let original_session = manager.open(identity.clone()).unwrap();
+        let reconnect_session = manager.open(identity.clone()).unwrap();
+        let sandbox_id = ResourceHandle::random().unwrap();
+
+        assert_eq!(
+            manager
+                .begin_start_replay(original_session, &identity, "stable-start")
+                .unwrap(),
+            StartReplayDecision::Begin
+        );
+        assert_eq!(
+            manager
+                .begin_start_replay(original_session, &identity, "stable-start")
+                .unwrap(),
+            StartReplayDecision::InProgress
+        );
+        assert!(manager
+            .complete_start_replay(original_session, &identity, "stable-start", sandbox_id,)
+            .unwrap());
+        assert_eq!(
+            manager
+                .begin_start_replay(original_session, &identity, "stable-start")
+                .unwrap(),
+            StartReplayDecision::Replay(sandbox_id)
+        );
+        assert_eq!(
+            manager
+                .begin_start_replay(reconnect_session, &identity, "stable-start")
+                .unwrap(),
+            StartReplayDecision::Expired
+        );
+
+        assert!(manager.close(original_session, &identity).unwrap());
+        assert_eq!(
+            manager
+                .begin_start_replay(reconnect_session, &identity, "stable-start")
+                .unwrap(),
+            StartReplayDecision::Expired
+        );
+    }
+
+    #[test]
+    fn failed_start_can_retry_but_disconnect_tombstones_pending_start() {
+        let manager = SessionManager::new(QuotaLimits::default());
+        let identity = ClientIdentityKey::for_test("user", "logon", 1);
+        let first_session = manager.open(identity.clone()).unwrap();
+
+        assert_eq!(
+            manager
+                .begin_start_replay(first_session, &identity, "retryable-start")
+                .unwrap(),
+            StartReplayDecision::Begin
+        );
+        assert!(manager
+            .abandon_start_replay(first_session, &identity, "retryable-start")
+            .unwrap());
+        assert_eq!(
+            manager
+                .begin_start_replay(first_session, &identity, "retryable-start")
+                .unwrap(),
+            StartReplayDecision::Begin
+        );
+        assert!(manager.close(first_session, &identity).unwrap());
+
+        let reconnect_session = manager.open(identity.clone()).unwrap();
+        assert_eq!(
+            manager
+                .begin_start_replay(reconnect_session, &identity, "retryable-start")
+                .unwrap(),
+            StartReplayDecision::Expired
+        );
+        assert!(!manager
+            .abandon_start_replay(reconnect_session, &identity, "retryable-start")
+            .unwrap());
+    }
+
+    #[test]
+    fn active_start_replay_records_are_bounded_without_eviction() {
+        let manager = SessionManager::new(QuotaLimits::default());
+        let identity = ClientIdentityKey::for_test("user", "logon", 1);
+        let session = manager.open(identity.clone()).unwrap();
+
+        for index in 0..MAX_START_REPLAY_RECORDS {
+            assert_eq!(
+                manager
+                    .begin_start_replay(session, &identity, &format!("start-{index}"))
+                    .unwrap(),
+                StartReplayDecision::Begin
+            );
+        }
+        assert_eq!(
+            manager
+                .begin_start_replay(session, &identity, "one-too-many")
+                .unwrap(),
+            StartReplayDecision::CapacityExceeded
+        );
+        assert_eq!(
+            manager
+                .begin_start_replay(session, &identity, "start-0")
+                .unwrap(),
+            StartReplayDecision::InProgress
+        );
+    }
 
     #[test]
     fn resources_are_owner_and_connection_bound() {

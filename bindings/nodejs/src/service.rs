@@ -31,7 +31,7 @@ pub struct SeaWorkServiceConnectOptions {
 #[allow(non_snake_case)]
 #[napi(object)]
 pub struct SeaWorkStartOptions {
-  /// Correlation/cache hint only; never a service path or caller-selected resource.
+  /// One-shot replay key; never a service path, caller-selected resource, or adoption key.
   pub instanceId: Option<String>,
   /// Legacy checkpoint name. Non-empty values return CHECKPOINT_UNSUPPORTED.
   pub from: Option<String>,
@@ -980,5 +980,32 @@ impl SeaWorkProcess {
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 fn service_error(error: lsb_service_client::ClientError) -> napi::Error {
-  napi::Error::from_reason(error.to_string())
+  match error {
+    lsb_service_client::ClientError::Service(envelope) => {
+      napi::Error::from_reason(stable_service_error_reason(&envelope))
+    }
+    other => napi::Error::from_reason(other.to_string()),
+  }
+}
+
+fn stable_service_error_reason(error: &lsb_service_proto::ErrorEnvelope) -> String {
+  format!("[{}] {}", error.code.as_str(), error.message)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn service_errors_preserve_stable_codes_for_adapter_recovery() {
+    let error = lsb_service_proto::ErrorEnvelope::safe(
+      lsb_service_proto::ErrorCode::StartResultExpired,
+      "correlation-not-exposed",
+    );
+    let reason = stable_service_error_reason(&error);
+
+    assert!(reason.starts_with("[START_RESULT_EXPIRED] "));
+    assert!(reason.contains("new instanceId"));
+    assert!(!reason.contains("correlation-not-exposed"));
+  }
 }
