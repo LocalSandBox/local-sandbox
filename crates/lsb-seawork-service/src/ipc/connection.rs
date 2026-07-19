@@ -156,11 +156,9 @@ impl ConnectionState {
     }
 
     pub fn cancel(&self, request_id: u64) -> Option<CancelOutcome> {
-        if let Some(request) = self.active.get(&request_id) {
-            Some(request.cancellation.cancel())
-        } else {
-            None
-        }
+        self.active
+            .get(&request_id)
+            .map(|request| request.cancellation.cancel())
     }
 
     pub fn finish(&mut self, request_id: u64) -> bool {
@@ -170,10 +168,10 @@ impl ConnectionState {
     pub fn cancel_expired(&self, now: Instant) -> usize {
         let mut count = 0;
         for request in self.active.values() {
-            if request.deadline.expired(now) {
-                if request.cancellation.expire() != CancelOutcome::TooLate {
-                    count += 1;
-                }
+            if request.deadline.expired(now)
+                && request.cancellation.expire() != CancelOutcome::TooLate
+            {
+                count += 1;
             }
         }
         count
