@@ -565,6 +565,7 @@ async fn handle_mitm(
         let result = crate::http1::transform_requests(
             &mut guest_rd,
             &mut upstream_wr,
+            &request_domain,
             &header_rules,
             &substitutions,
             request_opaque_upgrade,

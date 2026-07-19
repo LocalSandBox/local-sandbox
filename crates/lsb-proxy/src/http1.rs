@@ -8,6 +8,7 @@ use tokio::io::{
 use tokio::sync::Notify;
 
 use crate::config::RequestHeaderRule;
+use crate::policy::normalize_domain;
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_LINE_BYTES: usize = 16 * 1024;
@@ -36,6 +37,7 @@ struct ParsedRequest {
 pub(crate) async fn transform_requests<R, W>(
     reader: &mut R,
     writer: &mut W,
+    expected_domain: &str,
     rules: &[RequestHeaderRule],
     substitutions: &[(String, String)],
     opaque_upgrade: Arc<AtomicBool>,
@@ -90,6 +92,7 @@ where
         };
         stats.bytes_read += block.len() as u64;
         let request = parse_request(&block)?;
+        authorize_request_host(&request.headers, expected_domain)?;
         stats.requests += 1;
 
         if request.upgrade_requested {
@@ -125,6 +128,32 @@ where
         }
         writer.flush().await?;
     }
+}
+
+fn authorize_request_host(headers: &[(Vec<u8>, Vec<u8>)], expected_domain: &str) -> io::Result<()> {
+    let hosts = header_values(headers, b"host").collect::<Vec<_>>();
+    if hosts.len() != 1 {
+        return Err(invalid_data(
+            "intercepted HTTP request requires exactly one Host header",
+        ));
+    }
+    let authority = std::str::from_utf8(trim_ascii(hosts[0]))
+        .map_err(|_| invalid_data("intercepted HTTP Host is not UTF-8"))?;
+    let host = match authority.rsplit_once(':') {
+        Some((host, port)) if !host.contains(':') && port.parse::<u16>() == Ok(443) => host,
+        Some(_) => return Err(invalid_data("intercepted HTTP Host authority is invalid")),
+        None => authority,
+    };
+    let actual =
+        normalize_domain(host).ok_or_else(|| invalid_data("intercepted HTTP Host is invalid"))?;
+    let expected = normalize_domain(expected_domain)
+        .ok_or_else(|| invalid_data("intercepted TLS domain is invalid"))?;
+    if actual != expected {
+        return Err(invalid_data(
+            "intercepted HTTP Host differs from the authorized TLS domain",
+        ));
+    }
+    Ok(())
 }
 
 fn substitution_bytes(substitutions: &[(String, String)]) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
@@ -781,6 +810,7 @@ mod tests {
         transform_requests(
             &mut reader,
             &mut output,
+            "example.test",
             rules,
             substitutions,
             Arc::new(AtomicBool::new(false)),
@@ -828,6 +858,7 @@ mod tests {
         transform_requests(
             &mut reader,
             &mut output,
+            "example.test",
             rules,
             &[],
             Arc::new(AtomicBool::new(false)),
@@ -885,6 +916,49 @@ mod tests {
         .unwrap();
         let text = String::from_utf8(output).unwrap();
         assert!(text.find("X-First: one").unwrap() < text.find("X-Second: two").unwrap());
+    }
+
+    #[tokio::test]
+    async fn authorizes_every_request_host_against_the_tls_domain() {
+        let normalized = b"GET / HTTP/1.1\r\nHost: EXAMPLE.TEST.:443\r\n\r\n";
+        transform(normalized, &[], &[]).await.unwrap();
+
+        for denied in [
+            b"GET / HTTP/1.1\r\n\r\n".as_slice(),
+            b"GET / HTTP/1.1\r\nHost: example.test\r\nHost: example.test\r\n\r\n".as_slice(),
+            b"GET / HTTP/1.1\r\nHost: redirected.test\r\n\r\n".as_slice(),
+            b"GET / HTTP/1.1\r\nHost: example.test:\r\n\r\n".as_slice(),
+            b"GET / HTTP/1.1\r\nHost: example.test:444\r\n\r\n".as_slice(),
+        ] {
+            assert_eq!(
+                transform(denied, &[], &[]).await.unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cross_host_reuse_is_rejected_before_secret_or_header_injection() {
+        let input = b"GET /one?token=TOKEN HTTP/1.1\r\nHost: example.test\r\n\r\nGET /two?token=TOKEN HTTP/1.1\r\nHost: redirected.test\r\n\r\n";
+        let mut reader = input.as_slice();
+        let mut output = Vec::new();
+        let error = transform_requests(
+            &mut reader,
+            &mut output,
+            "example.test",
+            &[rule("Authorization", "scoped")],
+            &[("TOKEN".into(), "secret".into())],
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Notify::new()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        let output = String::from_utf8(output).unwrap();
+        assert_eq!(output.matches("secret").count(), 1);
+        assert_eq!(output.matches("Authorization: scoped").count(), 1);
+        assert!(!output.contains("redirected.test"));
     }
 
     #[tokio::test]
@@ -961,6 +1035,7 @@ mod tests {
             transform_requests(
                 &mut proxy_reader,
                 &mut output,
+                "example.test",
                 &[],
                 &[],
                 Arc::new(AtomicBool::new(false)),
@@ -995,6 +1070,7 @@ mod tests {
             transform_requests(
                 &mut proxy_reader,
                 &mut proxy_writer,
+                "example.test",
                 &[],
                 &[],
                 relay_opaque,
