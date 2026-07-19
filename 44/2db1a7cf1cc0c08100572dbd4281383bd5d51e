@@ -1,0 +1,45 @@
+docs/staged-mount-sync.md
+  s_e405041362b96d::t_a8860acf725feb 1-42
+crates/lsb-service-proto/src/limits.rs
+  s_e405041362b96d::t_897dcf74b2eb1e 22-37
+  s_e405041362b96d::t_ed01e4e6f988fa 10-17
+plan.md
+  s_e405041362b96d::t_1c103b41c1a402 377,416,421
+crates/lsb-seawork-service/src/resource/mod.rs
+  s_e405041362b96d::t_ed01e4e6f988fa 1,4,6,8,10,12,14,16
+crates/lsb-seawork-service/src/security/path/walk.rs
+  s_e405041362b96d::t_1c103b41c1a402 97-100,119-121,126
+  s_e405041362b96d::t_38d2e6e71a43ac 7-9,43,96,137-144
+  s_e405041362b96d::t_a4840d033a7f98 145-146
+crates/lsb-seawork-service/src/resource/mount_sync.rs
+  s_e405041362b96d::t_9b28ba02a640b9 107
+  s_e405041362b96d::t_ed01e4e6f988fa 8,11,113-114,123-125,129,152-161
+  s_e405041362b96d::t_357e92480280a9 40-83,469-479,481-488
+  s_e405041362b96d::t_9c110de788c5f2 9-10
+  s_e405041362b96d::t_1c103b41c1a402 151
+  s_e405041362b96d::t_9a927eeeca0142 426,465,467-468,480
+  s_e405041362b96d::t_9117a1b4bf030f 31-39,97-100,117-118,132,162,179-183,195-263,303-307,311,317-322,325-331,379-425,427-464,466
+  s_e405041362b96d::t_2a80810b0e3ce2 163
+state.md
+  s_e405041362b96d::t_a8860acf725feb 16
+crates/lsb-seawork-service/src/main.rs
+  s_e405041362b96d::t_ed01e4e6f988fa 15
+crates/lsb-seawork-service/src/security/path/policy.rs
+  s_e405041362b96d::t_ed01e4e6f988fa 5-6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "442db1a7cf1cc0c08100572dbd4281383bd5d51e",
+  "prompts": {},
+  "sessions": {
+    "s_e405041362b96d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f79d9-86a6-77c0-8b37-10e93d6c9147",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
