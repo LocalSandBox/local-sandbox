@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "contract_id": "seawork-production-parity-v1",
+  "baseline": {
+    "seawork_commit": "0ae88c6d338ffb10d765296625ea38b3b3991f64",
+    "local_sandbox_version": "0.4.6",
+    "windows_target": "windows-11-x86_64"
+  },
+  "source_assertions": [
+    {
+      "id": "source.baseline-package",
+      "path": "packages/local-sandbox-tools/package.json",
+      "contains": ["\"@local-sandbox/lsb-nodejs\": \"0.4.6\""],
+      "conclusion": "The production adapter baseline is LocalSandbox 0.4.6."
+    },
+    {
+      "id": "source.start-fields",
+      "path": "packages/local-sandbox-tools/src/shared.ts",
+      "contains": ["instanceId?: string", "from?: string", "ports?: readonly LocalSandboxPortMappingConfig[]", "mounts?: readonly LocalSandboxMountConfig[]", "network?: LocalSandboxNetworkConfig"],
+      "conclusion": "Every listed start field is forwarded to Sandbox.start by the production tool runtime."
+    },
+    {
+      "id": "source.default-network",
+      "path": "apps/electron/src/main/ingress-server.ts",
+      "contains": ["defaultNetworkEnabled: true"],
+      "conclusion": "The default production Electron runtime enables outbound networking."
+    },
+    {
+      "id": "source.ports-and-host-exposure",
+      "path": "packages/agent-registry/src/agents/main-agent.ts",
+      "contains": ["sandboxContext?.ports ?? []", "sandboxContext?.network?.exposeHost ?? []"],
+      "conclusion": "Ports and host exposure are persisted and rendered as reachable runtime behavior."
+    },
+    {
+      "id": "source.mount-layout",
+      "path": "packages/local-sandbox-tools/src/shared.ts",
+      "contains": ["DEFAULT_LOCAL_SANDBOX_WORKSPACE_MOUNT_PATH = \"/workspace\"", "OUTPUT_DIRECTORY_NAME = \"output\"", "LSB_MOUNT_FLAG_RDONLY = 0x1", "agentContext.skills.from"],
+      "conclusion": "Workspace, output, skills, overlay, and explicit mounts are production start inputs with fixed guest paths."
+    },
+    {
+      "id": "source.operation-reachability",
+      "path": "apps/electron/src/main/sandbox-helper/helper-server.ts",
+      "contains": ["case \"startSandbox\"", "case \"exec\"", "case \"spawn\"", "case \"readFile\"", "case \"writeFile\"", "case \"mkdir\"", "case \"killProcess\"", "case \"stopSandbox\""],
+      "absent": ["case \"checkpoint\"", ".checkpoint("],
+      "conclusion": "The helper boundary proves the reachable operation set and has no checkpoint operation."
+    },
+    {
+      "id": "source.checkpoint-plumbing-only",
+      "path": "packages/local-sandbox-tools/src/shared.ts",
+      "contains": ["from: normalizeOptionalText(context.from)"],
+      "absent": ["checkpoint("],
+      "conclusion": "The legacy from value is forwarded generically but this production adapter does not create checkpoints."
+    },
+    {
+      "id": "source.start-retry",
+      "path": "packages/local-sandbox-tools/src/shared.ts",
+      "contains": ["DEFAULT_SANDBOX_START_ATTEMPTS = 2", "isRetryableSandboxStartupError", "return await starter.start(opts)"],
+      "conclusion": "The production adapter blindly replays selected failed starts and requires an at-most-once replacement."
+    }
+  ],
+  "start_fields": [
+    {"id":"start.instance-id","reachable":true,"status":"blocking","backlog":"LIF-01","service_mapping":"Correlation/cache identity only; map to a service-generated opaque identifier and never to a path or adopted resource.","evidence":["source.start-fields"]},
+    {"id":"start.from","reachable":true,"status":"blocking","backlog":"LIF-01","service_mapping":"Reject any non-empty value with CHECKPOINT_UNSUPPORTED and migration guidance.","evidence":["source.checkpoint-plumbing-only"]},
+    {"id":"start.cpus","reachable":true,"status":"equivalent","backlog":null,"service_mapping":"Bounded StartSandbox vCPU request, 1 through 8.","evidence":["crates/lsb-seawork-service/src/rpc/sandbox.rs","crates/lsb-seawork-service/src/session/quota.rs"]},
+    {"id":"start.memory-mib","reachable":true,"status":"equivalent","backlog":null,"service_mapping":"Bounded StartSandbox memory request, 512 through 8192 MiB.","evidence":["crates/lsb-seawork-service/src/rpc/sandbox.rs"]},
+    {"id":"start.disk-size-mib","reachable":true,"status":"equivalent","backlog":null,"service_mapping":"Bounded logical disk request, 1024 through 32768 MiB.","evidence":["crates/lsb-seawork-service/src/rpc/sandbox.rs"]},
+    {"id":"start.data-dir","reachable":true,"status":"service-superset","backlog":null,"service_mapping":"Caller path is intentionally removed; installed bundle and protected service state provide the behavior without caller-selected runtime paths.","evidence":["crates/lsb-seawork-service/src/bundle.rs","crates/lsb-seawork-service/src/paths.rs"]},
+    {"id":"start.ports","reachable":true,"status":"blocking","backlog":"NET-02","service_mapping":"Exact requested host/guest TCP ports with logon-scoped WFP isolation.","evidence":["source.ports-and-host-exposure"]},
+    {"id":"start.mounts","reachable":true,"status":"blocking","backlog":"MNT-01","service_mapping":"Service-selected admin-live or non-admin staged-sync capabilities, never raw trusted caller paths.","evidence":["source.mount-layout"]},
+    {"id":"start.network","reachable":true,"status":"blocking","backlog":"NET-01,NET-02","service_mapping":"Service-owned public egress proxy, scoped secrets/headers/TLS, and authenticated app-owned host relay.","evidence":["source.default-network","source.ports-and-host-exposure"]}
+  ],
+  "operations": [
+    {"id":"op.start","reachable":true,"status":"blocking","backlog":"LIF-01","service_mapping":"At-most-once service start returning an owner-bound opaque sandbox handle.","evidence":["source.operation-reachability","source.start-retry"]},
+    {"id":"op.exec","reachable":true,"status":"equivalent","backlog":null,"service_mapping":"Bounded argv or shell exec with cwd, environment, output, exit code, cancellation, and deadlines.","evidence":["crates/lsb-seawork-service/src/rpc/process.rs"]},
+    {"id":"op.spawn","reachable":true,"status":"equivalent","backlog":null,"service_mapping":"Owner-bound process with sequenced credited stdout/stderr, exit, and idempotent kill.","evidence":["crates/lsb-seawork-service/src/rpc/process.rs"]},
+    {"id":"op.read-file","reachable":true,"status":"equivalent","backlog":null,"service_mapping":"Binary credited stream with canonical guest path and 64 MiB transfer ceiling.","evidence":["crates/lsb-seawork-service/src/rpc/file.rs"]},
+    {"id":"op.write-file","reachable":true,"status":"blocking","backlog":"CAN-01","service_mapping":"Binary credited upload committed through a sibling temporary file and atomic rename; mid-call Win32 cancellation remains to prove.","evidence":["crates/lsb-seawork-service/src/rpc/file.rs"]},
+    {"id":"op.mkdir","reachable":true,"status":"blocking","backlog":"CAN-01","service_mapping":"Canonical guest-path mkdir with recursive option; synchronous mutation cancellation remains to prove.","evidence":["crates/lsb-seawork-service/src/rpc/file.rs"]},
+    {"id":"op.kill-process","reachable":true,"status":"equivalent","backlog":null,"service_mapping":"Owner-bound idempotent kill followed by ordered exit retirement.","evidence":["crates/lsb-seawork-service/src/rpc/process.rs"]},
+    {"id":"op.stop","reachable":true,"status":"blocking","backlog":"SEC-02","service_mapping":"Bounded stop with mandatory final mount flush and exact protected-ledger cleanup.","evidence":["crates/lsb-seawork-service/src/rpc/sandbox.rs"]},
+    {"id":"op.extended-filesystem","reachable":false,"status":"service-superset","backlog":null,"service_mapping":"Service also offers readDir, stat, remove, rename, copy, chmod, exists, and watch; these are not required by the pinned helper workload.","evidence":["crates/lsb-service-proto/src/message.rs"]}
+  ],
+  "mount_profiles": [
+    {"id":"mount.workspace-ro","reachable":true,"status":"blocking","backlog":"MNT-01","service_mapping":"Host workspace appears read-only at /workspace.","evidence":["source.mount-layout"]},
+    {"id":"mount.output-rw","reachable":true,"status":"blocking","backlog":"MNT-01","service_mapping":"Host workspace output appears read-write at /workspace/output with caller-owned writeback.","evidence":["source.mount-layout"]},
+    {"id":"mount.skills-ro","reachable":true,"status":"blocking","backlog":"MNT-01","service_mapping":"Agent skill source appears read-only at its declared guest path.","evidence":["source.mount-layout"]},
+    {"id":"mount.overlay","reachable":true,"status":"blocking","backlog":"MNT-01","service_mapping":"Host input is visible while guest writes remain isolated and disposable.","evidence":["source.start-fields"]},
+    {"id":"mount.explicit-direct","reachable":true,"status":"blocking","backlog":"MNT-01","service_mapping":"Supported explicit direct mounts preserve guest path and read-only/read-write semantics through service capabilities.","evidence":["source.start-fields"]}
+  ],
+  "network_capabilities": [
+    {"id":"network.default-public","reachable":true,"status":"blocking","backlog":"NET-01","service_mapping":"Public internet is enabled by default while non-global and metadata destinations stay denied.","evidence":["source.default-network"]},
+    {"id":"network.allow","reachable":true,"status":"blocking","backlog":"NET-01","service_mapping":"IDNA-normalized exact and subdomain wildcard scopes intersect protected product policy and are rechecked after DNS and redirects.","evidence":["source.start-fields"]},
+    {"id":"network.secrets","reachable":true,"status":"blocking","backlog":"NET-01","service_mapping":"Named secret values are injected only for declared host scopes, redacted, and zeroized.","evidence":["source.start-fields"]},
+    {"id":"network.https-interception","reachable":true,"status":"blocking","backlog":"NET-01","service_mapping":"Service proxy performs required TLS interception using LocalMachine roots plus optional protected product CA bundle.","evidence":["backlog.md#NET-01"]},
+    {"id":"network.request-headers","reachable":true,"status":"blocking","backlog":"NET-01","service_mapping":"Scoped headers are mutated only inside their host scope and stripped on scope exit.","evidence":["backlog.md#NET-01"]},
+    {"id":"network.expose-host","reachable":true,"status":"blocking","backlog":"NET-02","service_mapping":"Authenticated SeaWork-owned relay opens declared host loopback connections under the caller token.","evidence":["source.ports-and-host-exposure"]},
+    {"id":"network.ports","reachable":true,"status":"blocking","backlog":"NET-02","service_mapping":"Exact host-to-guest TCP mapping is loopback-only and owning-logon isolated with WFP.","evidence":["source.ports-and-host-exposure"]},
+    {"id":"network.explicit-proxy","reachable":true,"status":"blocking","backlog":"NET-01","service_mapping":"Protected explicit proxy and scoped credentials only; WPAD and machine-default credentials are forbidden.","evidence":["backlog.md#NET-01"]}
+  ],
+  "lifecycle_behaviors": [
+    {"id":"lifecycle.at-most-once-start","reachable":true,"status":"blocking","backlog":"LIF-01","service_mapping":"A stable request identity returns the first start result after response loss and never creates a second VM.","evidence":["source.start-retry"]},
+    {"id":"lifecycle.disconnect","reachable":true,"status":"blocking","backlog":"SEC-02","service_mapping":"Caller process/connection loss drains owner resources and exact cleanup is reconciled after crash.","evidence":["apps/electron/src/main/sandbox-helper/helper-server.ts"]},
+    {"id":"lifecycle.reboot-update-repair","reachable":true,"status":"blocking","backlog":"LIF-01,TST-02","service_mapping":"Protected bundle selection and durable maintenance state provide reboot-required, repair, update, rollback, and reconnect outcomes without helper fallback.","evidence":["crates/lsb-seawork-service/src/maintenance.rs"]},
+    {"id":"lifecycle.shutdown","reachable":true,"status":"blocking","backlog":"CON-01,SEC-02","service_mapping":"SCM stop/preshutdown bounds drain and force-closes the authoritative VM Job after cleanup deadlines.","evidence":["crates/lsb-seawork-service/src/scm.rs"]}
+  ],
+  "error_categories": [
+    {"id":"error.invalid-input","reachable":true,"status":"equivalent","backlog":null,"service_mapping":"INVALID_REQUEST and protocol validation errors.","evidence":["crates/lsb-service-proto/src/error.rs"]},
+    {"id":"error.unsupported-capability","reachable":true,"status":"blocking","backlog":"API-01,LIF-01","service_mapping":"Stable capability-specific errors including CHECKPOINT_UNSUPPORTED and MOUNT_UNSUPPORTED.","evidence":["backlog.md#fixed-capacity-timeout-and-compatibility-contract"]},
+    {"id":"error.policy-denial","reachable":true,"status":"equivalent","backlog":null,"service_mapping":"ACCESS_DENIED, PATH_POLICY_DENIED, and NETWORK_POLICY_DENIED.","evidence":["crates/lsb-service-proto/src/error.rs"]},
+    {"id":"error.quota","reachable":true,"status":"equivalent","backlog":null,"service_mapping":"QUOTA_EXCEEDED after reservation-before-side-effect admission.","evidence":["crates/lsb-seawork-service/src/session/quota.rs"]},
+    {"id":"error.timeout-cancel","reachable":true,"status":"blocking","backlog":"CAN-01","service_mapping":"DEADLINE_EXCEEDED and CANCELLED with explicit commit semantics.","evidence":["crates/lsb-service-proto/src/error.rs"]},
+    {"id":"error.conflict","reachable":true,"status":"blocking","backlog":"MNT-01","service_mapping":"MOUNT_CONFLICT and retained recovery metadata.","evidence":["backlog.md#MNT-01"]},
+    {"id":"error.unavailable-reboot","reachable":true,"status":"blocking","backlog":"LIF-01","service_mapping":"SERVICE_UNAVAILABLE plus stable reboot-required and repair guidance.","evidence":["crates/lsb-service-proto/src/error.rs"]},
+    {"id":"error.incompatible-protocol","reachable":true,"status":"equivalent","backlog":null,"service_mapping":"INCOMPATIBLE_PROTOCOL with current and previous minor support.","evidence":["crates/lsb-service-proto/src/version.rs"]},
+    {"id":"error.trust","reachable":true,"status":"blocking","backlog":"SEC-01,REL-01","service_mapping":"Client/server/artifact trust failure categories without internal path or signer disclosure.","evidence":["crates/lsb-service-proto/src/error.rs"]},
+    {"id":"error.internal","reachable":true,"status":"equivalent","backlog":null,"service_mapping":"INTERNAL_ERROR with safe message and correlation identifier.","evidence":["crates/lsb-service-proto/src/error.rs"]}
+  ],
+  "limits": {
+    "connections_global":32,"connections_per_user":4,"sandboxes_global":8,"sandboxes_per_user":4,"sandboxes_per_connection":2,
+    "sandbox_cpus_min":1,"sandbox_cpus_max":8,"sandbox_memory_mib_min":512,"sandbox_memory_mib_max":8192,"sandbox_disk_mib_min":1024,"sandbox_disk_mib_max":32768,
+    "cpus_per_user":8,"cpus_global":16,"memory_mib_per_user":8192,"memory_mib_global":24576,"disk_mib_per_user":65536,"disk_mib_global":131072,
+    "processes_per_sandbox":64,"processes_per_user":128,"processes_global":256,"watches_per_sandbox":64,"watches_per_user":128,"watches_global":512,"watch_events_queued":256,
+    "active_rpcs_per_connection":16,"active_rpcs_global":64,"control_payload_bytes":262144,"stream_frame_bytes":65536,"string_bytes":32768,"json_depth":32,
+    "unary_output_bytes":8388608,"environment_bytes":131072,"file_transfer_bytes":67108864,"initial_credit_bytes":262144,"file_transfer_default_seconds":300,
+    "process_credit_bytes":4194304,"stalled_consumer_seconds":30,"boot_seconds":120,"unary_default_seconds":30,"server_max_seconds":600,"stop_seconds":30,"preshutdown_seconds":60,
+    "mount_entries":100000,"mount_tree_bytes":21474836480,"mount_file_bytes":4294967296,"mount_path_components":256,"mount_path_utf16_units":32767,"mount_change_queue":100,"mount_small_file_bytes":16777216,"mount_small_change_p95_millis":1000,"mount_final_flush_seconds":30,
+    "port_mappings_per_sandbox":32,"port_mappings_per_user":64,"port_mappings_global":128,"tunnel_connections_per_sandbox":128
+  },
+  "golden_workloads": [
+    {"id":"golden.workspace-shell","covers":["mount.workspace-ro","mount.output-rw","op.exec","op.spawn","op.kill-process"],"fixture":"fixtures/seawork-parity/workspace-shell.json","comparison":["stdout","stderr","exit-order","workspace-read-only","output-tree"],"status":"blocking","backlog":"PAR-01,MNT-01"},
+    {"id":"golden.skills-files","covers":["mount.skills-ro","op.read-file","op.write-file","op.mkdir"],"fixture":"fixtures/seawork-parity/skills-files.json","comparison":["content","encoding","permissions","filesystem-tree","stable-errors"],"status":"blocking","backlog":"PAR-01,MNT-01,CAN-01"},
+    {"id":"golden.network-public-auth","covers":["network.default-public","network.allow","network.secrets","network.https-interception","network.request-headers"],"fixture":"fixtures/seawork-parity/network-public-auth.json","comparison":["network-effects","redirect-policy","secret-scope","header-scope","stable-errors"],"status":"blocking","backlog":"PAR-01,NET-01"},
+    {"id":"golden.host-connectivity","covers":["network.ports","network.expose-host"],"fixture":"fixtures/seawork-parity/host-connectivity.json","comparison":["exact-ports","ipv4-ipv6","connection-failure","shutdown","cross-logon-denial"],"status":"blocking","backlog":"PAR-01,NET-02"},
+    {"id":"golden.start-loss-recovery","covers":["start.instance-id","start.from","lifecycle.at-most-once-start","lifecycle.disconnect"],"fixture":"fixtures/seawork-parity/start-loss-recovery.json","comparison":["resource-count","opaque-identity","retry-result","cleanup-state","stable-errors"],"status":"blocking","backlog":"PAR-01,LIF-01,SEC-02"}
+  ],
+  "external_sign_off": [
+    {"role":"seawork-product","status":"external-verification-pending"},
+    {"role":"localsandbox","status":"external-verification-pending"},
+    {"role":"windows-security","status":"external-verification-pending"},
+    {"role":"installer","status":"external-verification-pending"}
+  ]
+}

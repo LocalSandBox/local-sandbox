@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "workload_id": "golden.network-public-auth",
+  "steps": [
+    {"op":"start","network":{"default_public":true,"allow":["api.example.test","*.packages.example.test"],"secret_refs":["fixture-token"],"https_interception":true}},
+    {"op":"http","url":"https://api.example.test/start","redirects":["https://cdn.packages.example.test/file","https://outside.example.test/final"]},
+    {"op":"http","url":"http://169.254.169.254/latest/meta-data"},
+    {"op":"stop"}
+  ],
+  "assertions": [
+    {"kind":"hop-authorized","step":1,"hop":0,"secret_present":true},
+    {"kind":"hop-authorized","step":1,"hop":1,"secret_present":false},
+    {"kind":"hop-denied","step":1,"hop":2},
+    {"kind":"stable-error-category","step":2,"category":"policy-denial"},
+    {"kind":"redaction","forbidden_values":["fixture-token-value"]}
+  ]
+}

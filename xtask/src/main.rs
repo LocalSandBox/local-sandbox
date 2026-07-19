@@ -5,6 +5,7 @@ mod guest;
 mod kernel;
 mod release;
 mod rootfs;
+mod seawork_parity;
 mod seawork_release;
 
 use std::env;
@@ -26,6 +27,7 @@ fn main() -> Result<()> {
         "build-kernel" => kernel::build_kernel(&rest),
         "prepare-rootfs" => rootfs::prepare_rootfs(&rest),
         "package-release" => release::package_release(&rest),
+        "verify-seawork-parity" => seawork_parity::verify(&rest),
         _ => {
             print_usage();
             bail!("unknown xtask command: {command}");
@@ -43,4 +45,7 @@ fn print_usage() {
     eprintln!("  cargo run -p xtask -- build-kernel [--platform <id>]");
     eprintln!("  cargo run -p xtask -- prepare-rootfs [--platform <id>]");
     eprintln!("  cargo run -p xtask -- package-release --artifact <cli|os-image|seawork-service> --version <v> [--platform <id>] [--output-dir <dir>] [--mode stage|archive]");
+    eprintln!(
+        "  cargo run -p xtask -- verify-seawork-parity [--contract <path>] [--seawork-repo <path>]"
+    );
 }

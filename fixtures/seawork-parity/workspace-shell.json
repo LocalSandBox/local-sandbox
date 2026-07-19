@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "workload_id": "golden.workspace-shell",
+  "steps": [
+    {"op":"start","profile":"workspace-output","cpus":2,"memory_mib":2048,"disk_mib":4096},
+    {"op":"exec","argv":["/bin/sh","-lc","test -r /workspace/input.txt && test ! -w /workspace/input.txt && printf result > /workspace/output/result.txt"]},
+    {"op":"spawn","argv":["/bin/sh","-lc","printf out; printf err >&2; exit 7"]},
+    {"op":"stop"}
+  ],
+  "assertions": [
+    {"kind":"exec-exit","value":0},
+    {"kind":"process-output","stdout":"out","stderr":"err","exit":7,"exit_after_streams":true},
+    {"kind":"host-file","path":"output/result.txt","content":"result","caller_writable":true},
+    {"kind":"guest-write-denied","path":"/workspace/input.txt"}
+  ]
+}

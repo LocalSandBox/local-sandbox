@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "workload_id": "golden.skills-files",
+  "steps": [
+    {"op":"start","profile":"workspace-output-skills"},
+    {"op":"read_file","path":"/skills/example/SKILL.md"},
+    {"op":"write_file","path":"/workspace/output/nested/value.bin","encoding":"base64","content":"AAEC/w==","mkdir_parent":true},
+    {"op":"write_file","path":"/skills/example/SKILL.md","encoding":"utf8","content":"forbidden"},
+    {"op":"stop"}
+  ],
+  "assertions": [
+    {"kind":"read-content","path":"/skills/example/SKILL.md","content":"fixture skill\n"},
+    {"kind":"host-file-base64","path":"output/nested/value.bin","content":"AAEC/w=="},
+    {"kind":"stable-error-category","step":3,"category":"policy-denial"}
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "workload_id": "golden.host-connectivity",
+  "steps": [
+    {"op":"start","ports":[{"host":24101,"guest":24101}],"expose_host":[{"host":24102,"guest":24102}]},
+    {"op":"connect_host_to_guest","host":"127.0.0.1","port":24101},
+    {"op":"connect_guest_to_host","host":"host.lsb.internal","port":24102},
+    {"op":"cross_logon_probe","ports":[24101,24102]},
+    {"op":"stop"}
+  ],
+  "assertions": [
+    {"kind":"exact-port","host":24101,"guest":24101},
+    {"kind":"exact-port","host":24102,"guest":24102},
+    {"kind":"round-trip","steps":[1,2]},
+    {"kind":"cross-logon-denied","step":3},
+    {"kind":"listeners-absent-after-stop","ports":[24101,24102]}
+  ]
+}

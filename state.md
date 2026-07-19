@@ -4,6 +4,8 @@
 
 Phases 0-6 upstream shipping foundations are implemented. The initial service scope is deliberately mount-free and host-port-free; production signing, downstream installer integration, and the real-machine acceptance matrix remain explicitly gated.
 
+- PAR-01 contract tranche (2026-07-19): `contracts/seawork-parity-v1.json` now records the pinned SeaWork `0ae88c6d338ffb10d765296625ea38b3b3991f64` / LocalSandbox `0.4.6` reachability inventory, safe service mappings, fixed capacity and timeout decisions, explicit backlog blockers, and four external sign-off roles. Five deterministic helper-versus-service workload fixtures cover workspace/output shell behavior, skills/files, public authenticated networking, both host-connectivity directions, and lost-start recovery. `cargo run -p xtask -- verify-seawork-parity --seawork-repo ~/code/seawork` validates the contract/fixture schema and rechecks eight positive/negative assertions against the pinned source. PAR-01 remains `macOS implementation in progress; Windows comparison and owner sign-off pending` because the dual-backend Windows runner and executed evidence are not yet complete.
+
 - Baseline branch: `feat/lsb-win-service`
 - Investigated commit: `c9e447cec349723f6e70ee3b78dd429af171e879`
 - LocalSandbox version: `0.4.6`

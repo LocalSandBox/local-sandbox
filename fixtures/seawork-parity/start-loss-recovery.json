@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "workload_id": "golden.start-loss-recovery",
+  "steps": [
+    {"op":"start","request_id":"00000000-0000-4000-8000-000000000001","instance_id":"seawork-session-fixture","drop_response_after_commit":true},
+    {"op":"start","request_id":"00000000-0000-4000-8000-000000000001","instance_id":"seawork-session-fixture"},
+    {"op":"start","request_id":"00000000-0000-4000-8000-000000000002","from":"unexpected-checkpoint"},
+    {"op":"disconnect"},
+    {"op":"reconcile"}
+  ],
+  "assertions": [
+    {"kind":"resource-count","after_step":1,"sandboxes":1},
+    {"kind":"same-result","steps":[0,1]},
+    {"kind":"opaque-id-not-derived-from","value":"seawork-session-fixture"},
+    {"kind":"stable-error","step":2,"code":"CHECKPOINT_UNSUPPORTED"},
+    {"kind":"resource-count","after_step":4,"sandboxes":0}
+  ]
+}
