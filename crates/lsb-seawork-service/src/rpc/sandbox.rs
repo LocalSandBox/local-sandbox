@@ -26,6 +26,7 @@ pub async fn start(
     identity: ClientIdentityKey,
     protected_egress_allow: Vec<String>,
     product_ca_bundle_pem: Vec<u8>,
+    upstream_proxy: Option<lsb_proxy::UpstreamProxyConfig>,
     _client_instance_id: Option<String>,
     from: Option<String>,
     cpus: u16,
@@ -45,6 +46,7 @@ pub async fn start(
                 policy,
                 protected_egress_allow,
                 product_ca_bundle_pem,
+                upstream_proxy,
             )
         })
         .transpose()

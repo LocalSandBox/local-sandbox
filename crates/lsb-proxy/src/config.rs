@@ -16,6 +16,7 @@ pub const MAX_REQUEST_HEADER_NAME_BYTES: usize = 128;
 pub const MAX_REQUEST_HEADER_VALUE_BYTES: usize = 8 * 1024;
 pub const MAX_REQUEST_HEADER_TOTAL_BYTES: usize = 64 * 1024;
 pub const MAX_PRODUCT_CA_BUNDLE_BYTES: usize = 256 * 1024;
+pub const MAX_UPSTREAM_PROXY_AUTHORIZATION_BYTES: usize = 8 * 1024;
 
 const FORBIDDEN_REQUEST_HEADERS: &[&str] = &[
     "host",
@@ -80,6 +81,8 @@ pub struct ProxyConfig {
     /// Installer-protected product egress rules intersected with caller policy.
     /// Empty means the product policy permits any otherwise-safe public host.
     pub protected_network: NetworkConfig,
+    /// Optional installer-protected explicit upstream HTTP CONNECT proxy.
+    pub upstream_proxy: Option<UpstreamProxyConfig>,
     /// Optional installer-protected PEM CA bundle for upstream TLS.
     pub product_ca_bundle_pem: Vec<u8>,
     /// Opt-in HTTPS request interception and mutation.
@@ -95,6 +98,7 @@ impl fmt::Debug for ProxyConfig {
             .field("secrets", &self.secrets)
             .field("network", &self.network)
             .field("protected_network", &self.protected_network)
+            .field("upstream_proxy", &self.upstream_proxy)
             .field(
                 "product_ca_bundle_pem",
                 &format_args!("<{} bytes>", self.product_ca_bundle_pem.len()),
@@ -102,6 +106,38 @@ impl fmt::Debug for ProxyConfig {
             .field("https_interception", &self.https_interception)
             .field("expose_host", &self.expose_host)
             .finish()
+    }
+}
+
+/// Installer-protected explicit upstream proxy configuration.
+///
+/// `authorization` is the value of Proxy-Authorization (for example,
+/// `Basic <base64>`). It is emitted only during CONNECT to this exact endpoint.
+#[derive(Clone, PartialEq, Eq)]
+pub struct UpstreamProxyConfig {
+    pub host: String,
+    pub port: u16,
+    pub authorization: Option<String>,
+}
+
+impl fmt::Debug for UpstreamProxyConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UpstreamProxyConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field(
+                "authorization",
+                &self.authorization.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
+}
+
+impl Drop for UpstreamProxyConfig {
+    fn drop(&mut self) {
+        if let Some(authorization) = &mut self.authorization {
+            zeroize::Zeroize::zeroize(authorization);
+        }
     }
 }
 
@@ -215,6 +251,9 @@ impl ProxyConfig {
     pub fn validate(&self) -> Result<()> {
         validate_host_patterns(&self.network.allow)?;
         validate_host_patterns(&self.protected_network.allow)?;
+        if let Some(upstream_proxy) = &self.upstream_proxy {
+            upstream_proxy.validate()?;
+        }
         validate_product_ca_bundle(&self.product_ca_bundle_pem)?;
         for (name, secret) in &self.secrets {
             if !valid_environment_name(name) {
@@ -389,6 +428,41 @@ impl ProxyConfig {
     }
 }
 
+impl UpstreamProxyConfig {
+    fn validate(&self) -> Result<()> {
+        if self.port == 0 {
+            bail!("upstream proxy port must not be zero");
+        }
+        if self.host.len() > 253 || self.host.contains(['\0', '/', '\\', '@']) {
+            bail!("upstream proxy host is invalid");
+        }
+        if self.host.parse::<std::net::IpAddr>().is_err()
+            && normalize_domain(&self.host)
+                .is_none_or(|host| !host.contains('.') || is_wpad_name(&host))
+        {
+            bail!("upstream proxy host must be an explicit IP address or qualified DNS name");
+        }
+        if let Some(authorization) = &self.authorization {
+            if authorization.is_empty()
+                || authorization.len() > MAX_UPSTREAM_PROXY_AUTHORIZATION_BYTES
+            {
+                bail!("upstream proxy authorization exceeds compiled bounds or is empty");
+            }
+            validate_request_header_value(authorization)?;
+            let Some((scheme, credential)) = authorization.split_once(' ') else {
+                bail!("upstream proxy authorization requires an explicit scheme and credential");
+            };
+            if scheme.is_empty()
+                || !scheme.bytes().all(is_http_token_byte)
+                || credential.trim().is_empty()
+            {
+                bail!("upstream proxy authorization is invalid");
+            }
+        }
+        Ok(())
+    }
+}
+
 fn validate_product_ca_bundle(bundle: &[u8]) -> Result<()> {
     if bundle.is_empty() {
         return Ok(());
@@ -557,6 +631,50 @@ mod tests {
         };
         assert!(oversized.validate().is_err());
         assert!(!format!("{oversized:?}").contains(&"x".repeat(128)));
+    }
+
+    #[test]
+    fn upstream_proxy_is_explicit_bounded_and_redacted() {
+        let valid = ProxyConfig {
+            upstream_proxy: Some(UpstreamProxyConfig {
+                host: "proxy.example.test".into(),
+                port: 8443,
+                authorization: Some("Basic never-log-this".into()),
+            }),
+            ..Default::default()
+        };
+        valid.validate().unwrap();
+        assert!(!format!("{valid:?}").contains("never-log-this"));
+
+        for proxy in [
+            UpstreamProxyConfig {
+                host: "wpad".into(),
+                port: 8080,
+                authorization: None,
+            },
+            UpstreamProxyConfig {
+                host: "proxy.example.test".into(),
+                port: 0,
+                authorization: None,
+            },
+            UpstreamProxyConfig {
+                host: "proxy.example.test".into(),
+                port: 8080,
+                authorization: Some("Basic value\r\nInjected: yes".into()),
+            },
+            UpstreamProxyConfig {
+                host: "proxy.example.test".into(),
+                port: 8080,
+                authorization: Some("implicit-default-credentials".into()),
+            },
+        ] {
+            assert!(ProxyConfig {
+                upstream_proxy: Some(proxy),
+                ..Default::default()
+            }
+            .validate()
+            .is_err());
+        }
     }
 
     #[test]

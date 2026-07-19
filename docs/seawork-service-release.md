@@ -144,6 +144,7 @@ production configuration is:
   "client_roots": ["C:\\Program Files\\SeaWork"],
   "maintenance_roots": ["C:\\Program Files\\SeaWork"],
   "egress_allow": [],
+  "upstream_proxy": null,
   "ports_enabled": false
 }
 ```
@@ -159,6 +160,23 @@ An optional product CA bundle must be installed at
 fixed, installer-protected path once at startup, accepts only a bounded PEM certificate
 bundle, and adds it to LocalMachine trust for proxy upstream TLS without trusting a
 caller-supplied path.
+`upstream_proxy` may instead name one explicit installer-protected HTTP CONNECT
+endpoint:
+
+```json
+{
+  "host": "proxy.example.test",
+  "port": 8080,
+  "authorization": "Basic <explicit-base64-credential>"
+}
+```
+
+The optional `authorization` value is a complete `Proxy-Authorization` value. It is
+redacted and zeroized, and is sent only on the CONNECT handshake to that configured
+endpoint. The tunnel targets the already policy-authorized destination IP, preventing
+the proxy from resolving a permitted public name to a private destination. The service
+never discovers a proxy through WPAD, environment variables, or operating-system
+defaults and never acquires default Windows or machine credentials.
 Empty roots or publishers intentionally keep normal admissions closed; an
 empty maintenance root denies all maintenance calls. Host ports remain
 compiled fail-closed, so setting `ports_enabled` to `true` is rejected.

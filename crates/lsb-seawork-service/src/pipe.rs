@@ -342,6 +342,7 @@ pub struct HealthContext {
     publisher_thumbprints: Vec<String>,
     protected_egress_allow: Vec<String>,
     product_ca_bundle_pem: Vec<u8>,
+    upstream_proxy: Option<lsb_proxy::UpstreamProxyConfig>,
 }
 
 impl HealthContext {
@@ -358,6 +359,7 @@ impl HealthContext {
             publisher_thumbprints: Vec::new(),
             protected_egress_allow: Vec::new(),
             product_ca_bundle_pem: Vec::new(),
+            upstream_proxy: None,
         }
     }
 
@@ -379,6 +381,7 @@ impl HealthContext {
         publisher_thumbprints: Vec<String>,
         protected_egress_allow: Vec<String>,
         product_ca_bundle_pem: Vec<u8>,
+        upstream_proxy: Option<lsb_proxy::UpstreamProxyConfig>,
     ) -> Self {
         self.admissions_open = maintenance.admissions();
         self.maintenance = Some(maintenance);
@@ -387,6 +390,7 @@ impl HealthContext {
         self.publisher_thumbprints = publisher_thumbprints;
         self.protected_egress_allow = protected_egress_allow;
         self.product_ca_bundle_pem = product_ca_bundle_pem;
+        self.upstream_proxy = upstream_proxy;
         self
     }
 
@@ -1258,6 +1262,7 @@ async fn dispatch_request(
             identity.clone(),
             context.protected_egress_allow.clone(),
             context.product_ca_bundle_pem.clone(),
+            context.upstream_proxy.clone(),
             client_instance_id,
             from,
             cpus,

@@ -34,12 +34,33 @@ struct ParsedRequest {
     upgrade_requested: bool,
 }
 
+pub(crate) struct RequestTransformPolicy<'a> {
+    expected_domain: &'a str,
+    expected_port: u16,
+    rules: &'a [RequestHeaderRule],
+    substitutions: &'a [(String, String)],
+}
+
+impl<'a> RequestTransformPolicy<'a> {
+    pub(crate) fn new(
+        expected_domain: &'a str,
+        expected_port: u16,
+        rules: &'a [RequestHeaderRule],
+        substitutions: &'a [(String, String)],
+    ) -> Self {
+        Self {
+            expected_domain,
+            expected_port,
+            rules,
+            substitutions,
+        }
+    }
+}
+
 pub(crate) async fn transform_requests<R, W>(
     reader: &mut R,
     writer: &mut W,
-    expected_domain: &str,
-    rules: &[RequestHeaderRule],
-    substitutions: &[(String, String)],
+    policy: RequestTransformPolicy<'_>,
     opaque_upgrade: Arc<AtomicBool>,
     upgrade_pending: Arc<AtomicBool>,
     upgrade_notify: Arc<Notify>,
@@ -48,7 +69,7 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let patterns = substitution_bytes(substitutions)?;
+    let patterns = substitution_bytes(policy.substitutions)?;
     let mut reader = BufReader::new(reader);
     let mut stats = TransformStats::default();
 
@@ -92,7 +113,11 @@ where
         };
         stats.bytes_read += block.len() as u64;
         let request = parse_request(&block)?;
-        authorize_request_host(&request.headers, expected_domain)?;
+        authorize_request_host(
+            &request.headers,
+            policy.expected_domain,
+            policy.expected_port,
+        )?;
         stats.requests += 1;
 
         if request.upgrade_requested {
@@ -107,7 +132,7 @@ where
             request.framing
         };
         let (headers, replacements) =
-            serialize_request(request, rules, &patterns, rewritten_framing)?;
+            serialize_request(request, policy.rules, &patterns, rewritten_framing)?;
         stats.replacements += replacements;
         writer.write_all(&headers).await?;
 
@@ -130,7 +155,11 @@ where
     }
 }
 
-fn authorize_request_host(headers: &[(Vec<u8>, Vec<u8>)], expected_domain: &str) -> io::Result<()> {
+fn authorize_request_host(
+    headers: &[(Vec<u8>, Vec<u8>)],
+    expected_domain: &str,
+    expected_port: u16,
+) -> io::Result<()> {
     let hosts = header_values(headers, b"host").collect::<Vec<_>>();
     if hosts.len() != 1 {
         return Err(invalid_data(
@@ -140,7 +169,9 @@ fn authorize_request_host(headers: &[(Vec<u8>, Vec<u8>)], expected_domain: &str)
     let authority = std::str::from_utf8(trim_ascii(hosts[0]))
         .map_err(|_| invalid_data("intercepted HTTP Host is not UTF-8"))?;
     let host = match authority.rsplit_once(':') {
-        Some((host, port)) if !host.contains(':') && port.parse::<u16>() == Ok(443) => host,
+        Some((host, port)) if !host.contains(':') && port.parse::<u16>() == Ok(expected_port) => {
+            host
+        }
         Some(_) => return Err(invalid_data("intercepted HTTP Host authority is invalid")),
         None => authority,
     };
@@ -810,9 +841,7 @@ mod tests {
         transform_requests(
             &mut reader,
             &mut output,
-            "example.test",
-            rules,
-            substitutions,
+            RequestTransformPolicy::new("example.test", 443, rules, substitutions),
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
             Arc::new(Notify::new()),
@@ -858,9 +887,7 @@ mod tests {
         transform_requests(
             &mut reader,
             &mut output,
-            "example.test",
-            rules,
-            &[],
+            RequestTransformPolicy::new("example.test", 443, rules, &[]),
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
             Arc::new(Notify::new()),
@@ -935,6 +962,19 @@ mod tests {
                 io::ErrorKind::InvalidData
             );
         }
+
+        let mut reader = b"GET / HTTP/1.1\r\nHost: example.test:80\r\n\r\n".as_slice();
+        let mut output = Vec::new();
+        transform_requests(
+            &mut reader,
+            &mut output,
+            RequestTransformPolicy::new("example.test", 80, &[], &[]),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Notify::new()),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -945,9 +985,12 @@ mod tests {
         let error = transform_requests(
             &mut reader,
             &mut output,
-            "example.test",
-            &[rule("Authorization", "scoped")],
-            &[("TOKEN".into(), "secret".into())],
+            RequestTransformPolicy::new(
+                "example.test",
+                443,
+                &[rule("Authorization", "scoped")],
+                &[("TOKEN".into(), "secret".into())],
+            ),
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
             Arc::new(Notify::new()),
@@ -1035,9 +1078,7 @@ mod tests {
             transform_requests(
                 &mut proxy_reader,
                 &mut output,
-                "example.test",
-                &[],
-                &[],
+                RequestTransformPolicy::new("example.test", 443, &[], &[]),
                 Arc::new(AtomicBool::new(false)),
                 Arc::new(AtomicBool::new(false)),
                 Arc::new(Notify::new()),
@@ -1070,9 +1111,7 @@ mod tests {
             transform_requests(
                 &mut proxy_reader,
                 &mut proxy_writer,
-                "example.test",
-                &[],
-                &[],
+                RequestTransformPolicy::new("example.test", 443, &[], &[]),
                 relay_opaque,
                 relay_pending,
                 relay_notify,

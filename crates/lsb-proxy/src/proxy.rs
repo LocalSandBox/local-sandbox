@@ -8,8 +8,6 @@ use std::sync::Arc;
 
 use boring::ssl::{SslConnector, SslConnectorBuilder, SslMethod};
 use boring::x509::X509;
-#[cfg(windows)]
-use boring::x509::X509;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Notify};
@@ -19,8 +17,9 @@ use windows_sys::Win32::Security::Cryptography::{
     CertCloseStore, CertEnumCertificatesInStore, CertOpenStore, CERT_CONTEXT,
     CERT_STORE_PROV_SYSTEM_W, CERT_STORE_READONLY_FLAG, CERT_SYSTEM_STORE_LOCAL_MACHINE,
 };
+use zeroize::Zeroize;
 
-use crate::config::{ProxyConfig, RequestHeaderRule, SMB_MOUNT_PORT};
+use crate::config::{ProxyConfig, RequestHeaderRule, UpstreamProxyConfig, SMB_MOUNT_PORT};
 use crate::dns::{self, SharedDnsCache};
 use crate::policy::is_public_destination;
 use crate::stack::{ConnectionId, StackCommand, StackEvent, TcpConnection};
@@ -270,6 +269,214 @@ fn host_loopback_socket(port: u16) -> SocketAddr {
     SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), port)
 }
 
+const UPSTREAM_PROXY_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const MAX_UPSTREAM_PROXY_RESPONSE_BYTES: usize = 16 * 1024;
+const MAX_POLICY_VISIBLE_HTTP_HEADER_BYTES: usize = 64 * 1024;
+
+async fn connect_outbound(
+    proxy: Option<&UpstreamProxyConfig>,
+    destination: SocketAddr,
+) -> anyhow::Result<TcpStream> {
+    let Some(proxy) = proxy else {
+        return Ok(TcpStream::connect(destination).await?);
+    };
+
+    let proxy_host = proxy
+        .host
+        .parse::<IpAddr>()
+        .map(|address| address.to_string())
+        .unwrap_or_else(|_| {
+            crate::policy::normalize_domain(&proxy.host).unwrap_or_else(|| proxy.host.clone())
+        });
+    let mut stream = tokio::time::timeout(
+        UPSTREAM_PROXY_CONNECT_TIMEOUT,
+        TcpStream::connect((proxy_host.as_str(), proxy.port)),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("upstream proxy connection timed out"))??;
+
+    establish_connect_tunnel(&mut stream, destination, proxy.authorization.as_deref()).await?;
+    Ok(stream)
+}
+
+async fn establish_connect_tunnel<S>(
+    stream: &mut S,
+    destination: SocketAddr,
+    authorization: Option<&str>,
+) -> anyhow::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let authority = destination.to_string();
+    let mut request = format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n");
+    if let Some(authorization) = authorization {
+        request.push_str("Proxy-Authorization: ");
+        request.push_str(authorization);
+        request.push_str("\r\n");
+    }
+    request.push_str("\r\n");
+    let write_result = stream.write_all(request.as_bytes()).await;
+    request.zeroize();
+    write_result?;
+    stream.flush().await?;
+
+    let mut response = Vec::new();
+    let read_result = tokio::time::timeout(UPSTREAM_PROXY_CONNECT_TIMEOUT, async {
+        let mut chunk = [0u8; 1024];
+        loop {
+            let count = stream.read(&mut chunk).await?;
+            if count == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "upstream proxy closed during CONNECT",
+                ));
+            }
+            response.extend_from_slice(&chunk[..count]);
+            if response.len() > MAX_UPSTREAM_PROXY_RESPONSE_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "upstream proxy CONNECT response exceeds limit",
+                ));
+            }
+            if let Some(end) = response
+                .windows(4)
+                .position(|bytes| bytes == b"\r\n\r\n")
+                .map(|position| position + 4)
+            {
+                if response.len() != end {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "upstream proxy sent unexpected tunnel bytes during CONNECT",
+                    ));
+                }
+                return Ok(end);
+            }
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("upstream proxy CONNECT timed out"))?;
+
+    let result = match read_result {
+        Ok(end) => parse_connect_response(&response[..end]),
+        Err(error) => Err(error.into()),
+    };
+    response.zeroize();
+    result
+}
+
+fn parse_connect_response(response: &[u8]) -> anyhow::Result<()> {
+    let line_end = response
+        .windows(2)
+        .position(|bytes| bytes == b"\r\n")
+        .ok_or_else(|| anyhow::anyhow!("upstream proxy returned a malformed CONNECT response"))?;
+    let mut parts = response[..line_end].split(|byte| *byte == b' ');
+    let version = parts.next().unwrap_or_default();
+    if !matches!(version, b"HTTP/1.0" | b"HTTP/1.1") {
+        anyhow::bail!("upstream proxy returned an unsupported HTTP version");
+    }
+    let status = parts
+        .next()
+        .and_then(|value| std::str::from_utf8(value).ok())
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|status| (100..=999).contains(status))
+        .ok_or_else(|| anyhow::anyhow!("upstream proxy returned a malformed CONNECT status"))?;
+    if !(200..300).contains(&status) {
+        anyhow::bail!("upstream proxy rejected CONNECT with status {status}");
+    }
+    Ok(())
+}
+
+async fn connect_default_tcp(
+    config: &ProxyConfig,
+    dns_cache: &SharedDnsCache,
+    destination: SocketAddr,
+) -> anyhow::Result<TcpStream> {
+    enforce_connection_policy(config, dns_cache, None, destination, "TCP")?;
+    connect_outbound(config.upstream_proxy.as_ref(), destination).await
+}
+
+async fn read_policy_visible_http_request(
+    data_rx: &mut mpsc::UnboundedReceiver<Vec<u8>>,
+) -> anyhow::Result<Vec<u8>> {
+    let mut buffered = Vec::new();
+    loop {
+        if let Some(end) = buffered
+            .windows(4)
+            .position(|bytes| bytes == b"\r\n\r\n")
+            .map(|position| position + 4)
+        {
+            if end > MAX_POLICY_VISIBLE_HTTP_HEADER_BYTES {
+                anyhow::bail!("policy-visible HTTP request headers exceed limit");
+            }
+            return Ok(buffered);
+        }
+        if buffered.len() > MAX_POLICY_VISIBLE_HTTP_HEADER_BYTES {
+            anyhow::bail!("policy-visible HTTP request headers exceed limit");
+        }
+        let chunk = data_rx
+            .recv()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("connection closed before complete HTTP headers"))?;
+        buffered.extend_from_slice(&chunk);
+    }
+}
+
+async fn relay_authorized_http(
+    id: ConnectionId,
+    destination: SocketAddr,
+    domain: String,
+    first_request: Vec<u8>,
+    data_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    cmd_tx: mpsc::UnboundedSender<StackCommand>,
+    upstream: TcpStream,
+) -> anyhow::Result<()> {
+    let mut guest = ChannelStream::new(id, data_rx, cmd_tx.clone());
+    guest.prepend(first_request);
+    let (mut guest_rd, mut guest_wr) = tokio::io::split(guest);
+    let (mut upstream_rd, mut upstream_wr) = upstream.into_split();
+    let opaque_upgrade = Arc::new(AtomicBool::new(false));
+    let upgrade_pending = Arc::new(AtomicBool::new(false));
+    let upgrade_notify = Arc::new(Notify::new());
+
+    let request_domain = domain.clone();
+    let request_opaque = opaque_upgrade.clone();
+    let request_pending = upgrade_pending.clone();
+    let request_notify = upgrade_notify.clone();
+    let guest_to_upstream = async move {
+        crate::http1::transform_requests(
+            &mut guest_rd,
+            &mut upstream_wr,
+            crate::http1::RequestTransformPolicy::new(
+                &request_domain,
+                destination.port(),
+                &[],
+                &[],
+            ),
+            request_opaque,
+            request_pending,
+            request_notify,
+        )
+        .await
+    };
+
+    let upstream_to_guest = relay_upstream_response(
+        &domain,
+        &mut upstream_rd,
+        &mut guest_wr,
+        opaque_upgrade,
+        upgrade_pending,
+        upgrade_notify,
+    );
+
+    let result = tokio::select! {
+        result = guest_to_upstream => result.map(|_| ()),
+        result = upstream_to_guest => result.map(|_| ()),
+    };
+    let _ = cmd_tx.send(StackCommand::Close { id });
+    result?;
+    Ok(())
+}
+
 /// Handle a single proxied TCP connection.
 async fn handle_connection(
     id: ConnectionId,
@@ -349,6 +556,7 @@ async fn handle_connection(
                     ca,
                     substitutions,
                     header_rules,
+                    config.upstream_proxy.clone(),
                     upstream_ssl,
                 )
                 .await;
@@ -357,7 +565,7 @@ async fn handle_connection(
 
         // Blind tunnel: forward the buffered data and relay the rest
         debug!("blind tunnel to {dst}");
-        let upstream = TcpStream::connect(dst).await?;
+        let upstream = connect_outbound(config.upstream_proxy.as_ref(), dst).await?;
         let (mut upstream_rd, mut upstream_wr) = upstream.into_split();
 
         // Send the buffered TLS data
@@ -367,24 +575,20 @@ async fn handle_connection(
     }
 
     if config.has_domain_allowlist() {
-        let first_chunk = data_rx
-            .recv()
-            .await
-            .ok_or_else(|| anyhow::anyhow!("connection closed before data"))?;
-        let host = extract_http_host(&first_chunk);
-        enforce_connection_policy(config, dns_cache, host.as_deref(), dst, "TCP")?;
+        let first_request = read_policy_visible_http_request(&mut data_rx).await?;
+        let host = extract_http_host(&first_request)
+            .ok_or_else(|| anyhow::anyhow!("TCP connection denied: no policy-visible domain"))?;
+        enforce_connection_policy(config, dns_cache, Some(&host), dst, "TCP")?;
 
         debug!("TCP tunnel to {dst}");
-        let upstream = TcpStream::connect(dst).await?;
-        let (mut upstream_rd, mut upstream_wr) = upstream.into_split();
-        upstream_wr.write_all(&first_chunk).await?;
-
-        return blind_relay(id, &mut upstream_rd, &mut upstream_wr, data_rx, cmd_tx).await;
+        let upstream = connect_outbound(config.upstream_proxy.as_ref(), dst).await?;
+        return relay_authorized_http(id, dst, host, first_request, data_rx, cmd_tx, upstream)
+            .await;
     }
 
     // Non-TLS without an explicit allowlist: blind tunnel.
     debug!("TCP tunnel to {dst}");
-    let upstream = TcpStream::connect(dst).await?;
+    let upstream = connect_default_tcp(config, dns_cache, dst).await?;
     let (mut upstream_rd, mut upstream_wr) = upstream.into_split();
 
     blind_relay(id, &mut upstream_rd, &mut upstream_wr, data_rx, cmd_tx).await
@@ -502,6 +706,7 @@ async fn handle_mitm(
     ca: Arc<tokio::sync::Mutex<CertificateAuthority>>,
     substitutions: Vec<(String, String)>,
     header_rules: Vec<RequestHeaderRule>,
+    upstream_proxy: Option<UpstreamProxyConfig>,
     upstream_ssl: SslConnector,
 ) -> anyhow::Result<()> {
     debug!(
@@ -527,11 +732,11 @@ async fn handle_mitm(
 
     // Upstream: BoringSSL — Chrome's TLS fingerprint passes Cloudflare
     debug!("MITM {domain}: opening upstream TCP {dst}");
-    let upstream_tcp = match TcpStream::connect(dst).await {
+    let upstream_tcp = match connect_outbound(upstream_proxy.as_ref(), dst).await {
         Ok(stream) => stream,
         Err(error) => {
             let _ = cmd_tx.send(StackCommand::Close { id });
-            return Err(error.into());
+            return Err(error);
         }
     };
     debug!("MITM {domain}: opening upstream TLS with SNI {domain}");
@@ -565,9 +770,12 @@ async fn handle_mitm(
         let result = crate::http1::transform_requests(
             &mut guest_rd,
             &mut upstream_wr,
-            &request_domain,
-            &header_rules,
-            &substitutions,
+            crate::http1::RequestTransformPolicy::new(
+                &request_domain,
+                dst.port(),
+                &header_rules,
+                &substitutions,
+            ),
             request_opaque_upgrade,
             request_upgrade_pending,
             request_upgrade_notify,
@@ -830,6 +1038,151 @@ mod tests {
 
     fn loopback(port: u16) -> SocketAddr {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
+    }
+
+    async fn read_connect_request<S>(stream: &mut S) -> Vec<u8>
+    where
+        S: AsyncRead + Unpin,
+    {
+        let mut request = Vec::new();
+        let mut byte = [0u8; 1];
+        while !request.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).await.unwrap();
+            request.push(byte[0]);
+            assert!(request.len() <= 16 * 1024);
+        }
+        request
+    }
+
+    #[tokio::test]
+    async fn explicit_proxy_connect_scopes_authorization_to_the_proxy_handshake() {
+        let listener = tokio::net::TcpListener::bind(loopback(0)).await.unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_connect_request(&mut stream).await;
+            stream
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+            request
+        });
+
+        let proxy = UpstreamProxyConfig {
+            host: endpoint.ip().to_string(),
+            port: endpoint.port(),
+            authorization: Some("Basic explicit-credential".into()),
+        };
+        let destination = dst(Ipv4Addr::new(93, 184, 216, 34), 443);
+        let stream = connect_outbound(Some(&proxy), destination).await.unwrap();
+        drop(stream);
+        let request = String::from_utf8(server.await.unwrap()).unwrap();
+        assert!(request
+            .starts_with("CONNECT 93.184.216.34:443 HTTP/1.1\r\nHost: 93.184.216.34:443\r\n"));
+        assert!(request.contains("Proxy-Authorization: Basic explicit-credential\r\n"));
+        assert_eq!(request.matches("Proxy-Authorization").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn proxy_rejection_never_echoes_explicit_credentials() {
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let server_task = tokio::spawn(async move {
+            let request = read_connect_request(&mut server).await;
+            server
+                .write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n")
+                .await
+                .unwrap();
+            request
+        });
+        let error = establish_connect_tunnel(
+            &mut client,
+            dst(Ipv4Addr::new(93, 184, 216, 34), 443),
+            Some("Bearer never-echo-this"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "upstream proxy rejected CONNECT with status 407"
+        );
+        assert!(!error.to_string().contains("never-echo-this"));
+        let request = String::from_utf8(server_task.await.unwrap()).unwrap();
+        assert!(request.contains("Proxy-Authorization: Bearer never-echo-this"));
+    }
+
+    #[tokio::test]
+    async fn proxy_connect_without_explicit_authorization_sends_no_credentials() {
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let server_task = tokio::spawn(async move {
+            let request = read_connect_request(&mut server).await;
+            server
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+            request
+        });
+        establish_connect_tunnel(&mut client, dst(Ipv4Addr::new(93, 184, 216, 34), 443), None)
+            .await
+            .unwrap();
+        let request = String::from_utf8(server_task.await.unwrap()).unwrap();
+        assert!(!request.contains("Proxy-Authorization"));
+        assert!(!request.contains("Negotiate"));
+        assert!(!request.contains("NTLM"));
+    }
+
+    #[tokio::test]
+    async fn default_non_tls_private_destination_is_denied_before_proxy_connection() {
+        let listener = tokio::net::TcpListener::bind(loopback(0)).await.unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        let config = ProxyConfig {
+            upstream_proxy: Some(UpstreamProxyConfig {
+                host: endpoint.ip().to_string(),
+                port: endpoint.port(),
+                authorization: Some("Basic must-not-be-sent".into()),
+            }),
+            ..Default::default()
+        };
+        let cache = dns::new_shared_dns_cache();
+        let error = connect_default_tcp(&config, &cache, loopback(80))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not globally routable"));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn policy_visible_http_headers_are_bounded_and_may_span_guest_frames() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(b"GET / HTTP/1.1\r\nHo".to_vec()).unwrap();
+        tx.send(b"st: api.example.test\r\n\r\nbody".to_vec())
+            .unwrap();
+        let request = read_policy_visible_http_request(&mut rx).await.unwrap();
+        assert_eq!(
+            request,
+            b"GET / HTTP/1.1\r\nHost: api.example.test\r\n\r\nbody"
+        );
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(vec![b'x'; MAX_POLICY_VISIBLE_HTTP_HEADER_BYTES + 1])
+            .unwrap();
+        assert!(read_policy_visible_http_request(&mut rx).await.is_err());
+    }
+
+    #[test]
+    fn connect_response_parser_accepts_only_bounded_success_statuses() {
+        parse_connect_response(b"HTTP/1.0 200 OK\r\n\r\n").unwrap();
+        parse_connect_response(b"HTTP/1.1 204 No Content\r\n\r\n").unwrap();
+        for invalid in [
+            b"HTTP/2 200 OK\r\n\r\n".as_slice(),
+            b"HTTP/1.1 nope\r\n\r\n".as_slice(),
+            b"HTTP/1.1 407 Required\r\n\r\n".as_slice(),
+        ] {
+            assert!(parse_connect_response(invalid).is_err());
+        }
     }
 
     #[derive(Default)]

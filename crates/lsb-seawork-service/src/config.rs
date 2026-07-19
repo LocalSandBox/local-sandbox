@@ -1,12 +1,12 @@
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 const MAX_CONFIG_SIZE: u64 = 256 * 1024;
 const MAX_PRODUCT_CA_BUNDLE_SIZE: u64 = lsb_proxy::config::MAX_PRODUCT_CA_BUNDLE_BYTES as u64;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceConfig {
     pub schema_version: u32,
@@ -23,9 +23,51 @@ pub struct ServiceConfig {
     pub ports_enabled: bool,
     #[serde(default)]
     pub egress_allow: Vec<String>,
+    #[serde(default)]
+    pub upstream_proxy: Option<ServiceUpstreamProxyConfig>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceUpstreamProxyConfig {
+    pub host: String,
+    pub port: u16,
+    #[serde(default)]
+    pub authorization: Option<String>,
+}
+
+impl std::fmt::Debug for ServiceUpstreamProxyConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServiceUpstreamProxyConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field(
+                "authorization",
+                &self.authorization.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
+}
+
+impl Drop for ServiceUpstreamProxyConfig {
+    fn drop(&mut self) {
+        if let Some(authorization) = &mut self.authorization {
+            zeroize::Zeroize::zeroize(authorization);
+        }
+    }
+}
+
+impl ServiceUpstreamProxyConfig {
+    pub fn to_proxy_config(&self) -> lsb_proxy::UpstreamProxyConfig {
+        lsb_proxy::UpstreamProxyConfig {
+            host: self.host.clone(),
+            port: self.port,
+            authorization: self.authorization.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Quotas {
     pub connections_global: u16,
@@ -60,6 +102,7 @@ impl Default for ServiceConfig {
             maintenance_roots: Vec::new(),
             ports_enabled: false,
             egress_allow: Vec::new(),
+            upstream_proxy: None,
         }
     }
 }
@@ -130,6 +173,10 @@ impl ServiceConfig {
             protected_network: lsb_proxy::config::NetworkConfig {
                 allow: self.egress_allow.clone(),
             },
+            upstream_proxy: self
+                .upstream_proxy
+                .as_ref()
+                .map(ServiceUpstreamProxyConfig::to_proxy_config),
             ..Default::default()
         }
         .validate()
@@ -205,10 +252,22 @@ mod tests {
     fn maintenance_policy_is_bounded_and_normalized() {
         let mut config = ServiceConfig::default();
         config.publisher_thumbprints = vec!["a".repeat(40)];
-        config.client_roots = vec![r"C:\Program Files\SeaWork".to_string()];
-        config.maintenance_roots = vec![r"C:\Program Files\LocalSandbox".to_string()];
+        config.client_roots = vec![if cfg!(windows) {
+            r"C:\Program Files\SeaWork".to_string()
+        } else {
+            "/Applications/SeaWork".to_string()
+        }];
+        config.maintenance_roots = vec![if cfg!(windows) {
+            r"C:\Program Files\LocalSandbox".to_string()
+        } else {
+            "/Library/Application Support/LocalSandbox".to_string()
+        }];
         assert!(config.validate().is_ok());
-        config.client_roots = vec![r"C:\Program Files\..\Windows".to_string()];
+        config.client_roots = vec![if cfg!(windows) {
+            r"C:\Program Files\..\Windows".to_string()
+        } else {
+            "/Applications/../System".to_string()
+        }];
         assert!(config.validate().is_err());
     }
 
@@ -237,5 +296,39 @@ mod tests {
         std::fs::write(&path, b"not a certificate").unwrap();
         assert!(load_product_ca_bundle(&path).is_err());
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn explicit_upstream_proxy_is_strict_and_redacted() {
+        let config: ServiceConfig = serde_json::from_str(
+            r#"{
+                "schema_version": 1,
+                "config_revision": 1,
+                "upstream_proxy": {
+                    "host": "proxy.example.test",
+                    "port": 8080,
+                    "authorization": "Basic never-log-this"
+                }
+            }"#,
+        )
+        .unwrap();
+        config.validate().unwrap();
+        assert!(!format!("{config:?}").contains("never-log-this"));
+
+        let mut invalid = config.clone();
+        invalid.upstream_proxy.as_mut().unwrap().host = "wpad".into();
+        assert!(invalid.validate().is_err());
+        assert!(serde_json::from_str::<ServiceConfig>(
+            r#"{
+                "schema_version": 1,
+                "config_revision": 1,
+                "upstream_proxy": {
+                    "host": "proxy.example.test",
+                    "port": 8080,
+                    "use_default_credentials": true
+                }
+            }"#
+        )
+        .is_err());
     }
 }

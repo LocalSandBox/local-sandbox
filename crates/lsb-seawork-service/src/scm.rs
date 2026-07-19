@@ -141,6 +141,10 @@ fn run_registered(
         config.publisher_thumbprints.clone(),
         config.egress_allow.clone(),
         product_ca_bundle_pem,
+        config
+            .upstream_proxy
+            .as_ref()
+            .map(crate::config::ServiceUpstreamProxyConfig::to_proxy_config),
     );
     advance_startup_checkpoint(
         status_handle,

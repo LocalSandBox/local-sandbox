@@ -15,7 +15,9 @@ mod stream;
 #[cfg(any(unix, windows))]
 mod tls;
 
-pub use config::{HostScope, HttpsInterceptionConfig, ProxyConfig, RequestHeaderRule};
+pub use config::{
+    HostScope, HttpsInterceptionConfig, ProxyConfig, RequestHeaderRule, UpstreamProxyConfig,
+};
 
 #[cfg(any(unix, windows))]
 use std::collections::HashMap;
