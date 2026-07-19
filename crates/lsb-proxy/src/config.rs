@@ -4,6 +4,8 @@ use std::net::Ipv4Addr;
 
 use anyhow::{bail, Result};
 
+use crate::policy::{domain_matches, is_wpad_name, normalize_domain};
+
 pub const GUEST_GATEWAY_IP: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 1);
 pub const HOST_LSB_INTERNAL: &str = "host.lsb.internal";
 pub const SMB_MOUNT_PORT: u16 = 445;
@@ -134,6 +136,12 @@ impl HostScope {
         if self.deny.as_ref().is_some_and(Vec::is_empty) {
             bail!("request header host deny list must not be empty when supplied");
         }
+        if let Some(patterns) = &self.allow {
+            validate_host_patterns(patterns)?;
+        }
+        if let Some(patterns) = &self.deny {
+            validate_host_patterns(patterns)?;
+        }
         Ok(())
     }
 }
@@ -168,6 +176,13 @@ pub struct NetworkConfig {
 impl ProxyConfig {
     /// Validate request-interception configuration before starting a VM.
     pub fn validate(&self) -> Result<()> {
+        validate_host_patterns(&self.network.allow)?;
+        for secret in self.secrets.values() {
+            if secret.hosts.is_empty() {
+                bail!("secret host scope must not be empty");
+            }
+            validate_host_patterns(&secret.hosts)?;
+        }
         let rules = &self.https_interception.request_headers;
         if self.https_interception.enabled && rules.is_empty() {
             bail!("HTTPS interception is enabled but no request header rules are configured");
@@ -234,6 +249,11 @@ impl ProxyConfig {
     /// Empty allowlist means all domains are allowed.
     pub fn is_domain_allowed(&self, domain: &str) -> bool {
         if !self.permits_network_policy() {
+            return false;
+        }
+        if normalize_domain(domain).is_none_or(|domain| !domain.contains('.'))
+            || is_wpad_name(domain)
+        {
             return false;
         }
         if self.network.allow.is_empty() {
@@ -317,6 +337,19 @@ impl ProxyConfig {
     }
 }
 
+fn validate_host_patterns(patterns: &[String]) -> Result<()> {
+    for pattern in patterns {
+        let name = pattern.strip_prefix("*.").unwrap_or(pattern);
+        if pattern.contains('*') && !pattern.starts_with("*.") {
+            bail!("host pattern contains an invalid wildcard");
+        }
+        if normalize_domain(name).is_none_or(|name| !name.contains('.')) {
+            bail!("host pattern is not a valid IDNA name");
+        }
+    }
+    Ok(())
+}
+
 fn validate_request_header_name(name: &str) -> Result<()> {
     if name.is_empty() {
         bail!("HTTPS request header name must not be empty");
@@ -370,21 +403,6 @@ fn is_http_token_byte(byte: u8) -> bool {
         )
 }
 
-/// Simple wildcard domain matching.
-/// "*.example.com" matches "api.example.com" but not "example.com".
-/// "example.com" matches exactly "example.com".
-fn domain_matches(pattern: &str, domain: &str) -> bool {
-    let pattern = pattern.trim_end_matches('.');
-    let domain = domain.trim_end_matches('.');
-    if let Some(suffix) = pattern.strip_prefix("*.") {
-        domain.len() > suffix.len()
-            && domain[domain.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
-            && domain.as_bytes()[domain.len() - suffix.len() - 1] == b'.'
-    } else {
-        pattern.eq_ignore_ascii_case(domain)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,6 +425,38 @@ mod tests {
         assert!(domain_matches("*.example.com", "deep.api.example.com"));
         assert!(!domain_matches("*.example.com", "example.com"));
         assert!(!domain_matches("*.example.com", "notexample.com"));
+        assert!(domain_matches("xn--bcher-kva.example", "Bücher.example"));
+    }
+
+    #[test]
+    fn default_network_never_authorizes_wpad_or_invalid_names() {
+        let config = ProxyConfig::default();
+        assert!(!config.is_domain_allowed("wpad"));
+        assert!(!config.is_domain_allowed("WPAD.corp.example."));
+        assert!(!config.is_domain_allowed("intranet"));
+        assert!(!config.is_domain_allowed("bad*name.example"));
+        assert!(config.is_domain_allowed("api.example.com"));
+    }
+
+    #[test]
+    fn validation_rejects_invalid_network_and_secret_host_patterns() {
+        let invalid_allow = ProxyConfig {
+            network: NetworkConfig {
+                allow: vec!["bad*pattern.example".into()],
+            },
+            ..Default::default()
+        };
+        assert!(invalid_allow.validate().is_err());
+
+        let mut empty_secret_scope = ProxyConfig::default();
+        empty_secret_scope.secrets.insert(
+            "TOKEN".into(),
+            SecretConfig {
+                value: "redacted".into(),
+                hosts: Vec::new(),
+            },
+        );
+        assert!(empty_secret_scope.validate().is_err());
     }
 
     #[test]

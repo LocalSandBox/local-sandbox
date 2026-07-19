@@ -5,6 +5,7 @@ mod device;
 mod dns;
 #[cfg(any(unix, windows))]
 mod http1;
+mod policy;
 #[cfg(any(unix, windows))]
 mod proxy;
 #[cfg(any(unix, windows))]

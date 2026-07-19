@@ -8,6 +8,7 @@ repository = "https://github.com/LocalSandBox/local-sandbox.git"
 
 [dependencies]
 anyhow = "1"
+idna = "1.1"
 
 [target.'cfg(any(unix, windows))'.dependencies]
 smoltcp = { version = "0.12", default-features = false, features = [

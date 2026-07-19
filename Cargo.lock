@@ -1000,6 +1000,7 @@ dependencies = [
  "anyhow",
  "boring",
  "httparse",
+ "idna",
  "libc",
  "lru",
  "rcgen",

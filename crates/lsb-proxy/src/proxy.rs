@@ -22,6 +22,7 @@ use windows_sys::Win32::Security::Cryptography::{
 
 use crate::config::{ProxyConfig, RequestHeaderRule, SMB_MOUNT_PORT};
 use crate::dns::{self, SharedDnsCache};
+use crate::policy::is_public_destination;
 use crate::stack::{ConnectionId, StackCommand, StackEvent, TcpConnection};
 use crate::stream::ChannelStream;
 use crate::tls::CertificateAuthority;
@@ -430,6 +431,14 @@ fn enforce_connection_policy(
 ) -> anyhow::Result<()> {
     if !config.permits_network_policy() {
         anyhow::bail!("{protocol} connection denied by mount-only SMB policy");
+    }
+
+    if !is_public_destination(dst.ip()) {
+        anyhow::bail!("{protocol} connection denied: destination is not globally routable");
+    }
+
+    if let Some(domain) = domain.filter(|domain| !config.is_domain_allowed(domain)) {
+        anyhow::bail!("{protocol} connection denied by network policy for {domain}");
     }
 
     if !config.has_domain_allowlist() {
@@ -924,7 +933,7 @@ mod tests {
     #[test]
     fn allowlist_policy_allows_visible_allowed_domain() {
         let config = allowed_config("api.example.test");
-        let allowed_ip = Ipv4Addr::new(203, 0, 113, 10);
+        let allowed_ip = Ipv4Addr::new(93, 184, 216, 34);
         let cache = cache_answer("api.example.test", allowed_ip);
 
         enforce_connection_policy(
@@ -935,6 +944,34 @@ mod tests {
             "TLS",
         )
         .expect("allowed domain should pass");
+    }
+
+    #[test]
+    fn default_network_allows_public_destinations_and_denies_non_global_ranges() {
+        let config = ProxyConfig::default();
+        let cache = dns::new_shared_dns_cache();
+        enforce_connection_policy(
+            &config,
+            &cache,
+            None,
+            dst(Ipv4Addr::new(93, 184, 216, 34), 443),
+            "TLS",
+        )
+        .expect("globally routable direct IP should pass default policy");
+
+        for denied in [
+            Ipv4Addr::LOCALHOST,
+            Ipv4Addr::new(10, 0, 0, 1),
+            Ipv4Addr::new(100, 64, 0, 1),
+            Ipv4Addr::new(169, 254, 169, 254),
+            Ipv4Addr::new(192, 0, 2, 1),
+            Ipv4Addr::new(198, 51, 100, 1),
+            Ipv4Addr::new(203, 0, 113, 1),
+        ] {
+            let error = enforce_connection_policy(&config, &cache, None, dst(denied, 80), "TCP")
+                .expect_err("non-global destination must fail closed");
+            assert!(error.to_string().contains("not globally routable"));
+        }
     }
 
     #[test]
@@ -950,7 +987,7 @@ mod tests {
             ConnectionRoute::DenyMountOnly
         );
         assert_eq!(
-            classify_connection_route(&config, dst(Ipv4Addr::new(203, 0, 113, 10), 445)),
+            classify_connection_route(&config, dst(Ipv4Addr::new(93, 184, 216, 34), 445)),
             ConnectionRoute::DenyMountOnly
         );
     }
@@ -972,7 +1009,7 @@ mod tests {
             &config,
             &dns::new_shared_dns_cache(),
             Some("api.example.test"),
-            dst(Ipv4Addr::new(203, 0, 113, 10), 443),
+            dst(Ipv4Addr::new(93, 184, 216, 34), 443),
             "TLS",
         )
         .is_err());
@@ -995,7 +1032,7 @@ mod tests {
             ConnectionRoute::ExposeHost(loopback(3000))
         );
         assert_eq!(
-            classify_connection_route(&config, dst(Ipv4Addr::new(203, 0, 113, 10), 443)),
+            classify_connection_route(&config, dst(Ipv4Addr::new(93, 184, 216, 34), 443)),
             ConnectionRoute::Outbound
         );
     }
@@ -1009,7 +1046,7 @@ mod tests {
             &config,
             &cache,
             None,
-            dst(Ipv4Addr::new(203, 0, 113, 10), 80),
+            dst(Ipv4Addr::new(93, 184, 216, 34), 80),
             "TCP",
         )
         .expect_err("missing domain should be blocked");
@@ -1026,7 +1063,7 @@ mod tests {
             &config,
             &cache,
             Some("blocked.example.test"),
-            dst(Ipv4Addr::new(203, 0, 113, 10), 443),
+            dst(Ipv4Addr::new(93, 184, 216, 34), 443),
             "TLS",
         )
         .expect_err("blocked domain should fail");
@@ -1038,13 +1075,13 @@ mod tests {
     #[test]
     fn allowlist_policy_blocks_forged_http_host_to_arbitrary_ip() {
         let config = allowed_config("api.example.test");
-        let cache = cache_answer("api.example.test", Ipv4Addr::new(203, 0, 113, 10));
+        let cache = cache_answer("api.example.test", Ipv4Addr::new(93, 184, 216, 34));
 
         let err = enforce_connection_policy(
             &config,
             &cache,
             Some("api.example.test"),
-            dst(Ipv4Addr::new(198, 51, 100, 42), 80),
+            dst(Ipv4Addr::new(1, 1, 1, 1), 80),
             "TCP",
         )
         .expect_err("forged Host header must not authorize arbitrary destination IP");
@@ -1055,13 +1092,13 @@ mod tests {
     #[test]
     fn allowlist_policy_blocks_forged_sni_to_arbitrary_ip() {
         let config = allowed_config("api.example.test");
-        let cache = cache_answer("api.example.test", Ipv4Addr::new(203, 0, 113, 10));
+        let cache = cache_answer("api.example.test", Ipv4Addr::new(93, 184, 216, 34));
 
         let err = enforce_connection_policy(
             &config,
             &cache,
             Some("api.example.test"),
-            dst(Ipv4Addr::new(198, 51, 100, 42), 443),
+            dst(Ipv4Addr::new(1, 1, 1, 1), 443),
             "TLS",
         )
         .expect_err("forged SNI must not authorize arbitrary destination IP");
@@ -1090,7 +1127,7 @@ mod tests {
             },
         );
         let placeholders = HashMap::from([("API_KEY".into(), "lsb_tok_placeholder".into())]);
-        let allowed_ip = Ipv4Addr::new(203, 0, 113, 10);
+        let allowed_ip = Ipv4Addr::new(93, 184, 216, 34);
         let cache = cache_answer("api.example.test", allowed_ip);
 
         enforce_connection_policy(

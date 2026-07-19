@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::config::{ProxyConfig, GUEST_GATEWAY_IP, HOST_LSB_INTERNAL};
+use crate::policy::{is_public_ipv4, is_wpad_name, normalize_domain};
 use crate::stack::StackCommand;
 
 const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
@@ -30,7 +31,14 @@ impl DnsResolutionCache {
     fn record(&mut self, domain: &str, addresses: &[Ipv4Addr]) {
         self.purge_expired();
 
-        let domain = normalize_domain(domain);
+        let Some(domain) = normalize_domain(domain) else {
+            return;
+        };
+        let addresses = addresses
+            .iter()
+            .copied()
+            .filter(|address| is_public_ipv4(*address))
+            .collect::<HashSet<_>>();
         if addresses.is_empty() {
             self.records.remove(&domain);
             return;
@@ -39,7 +47,7 @@ impl DnsResolutionCache {
         self.records.insert(
             domain,
             CachedDnsRecord {
-                addresses: addresses.iter().copied().collect(),
+                addresses,
                 expires_at: Instant::now() + DNS_CACHE_TTL,
             },
         );
@@ -47,8 +55,14 @@ impl DnsResolutionCache {
 
     fn allows_destination(&mut self, domain: &str, addr: Ipv4Addr) -> bool {
         self.purge_expired();
+        if !is_public_ipv4(addr) {
+            return false;
+        }
+        let Some(domain) = normalize_domain(domain) else {
+            return false;
+        };
         self.records
-            .get(&normalize_domain(domain))
+            .get(&domain)
             .is_some_and(|record| record.addresses.contains(&addr))
     }
 
@@ -94,7 +108,7 @@ pub async fn handle_dns_query(
     config: &ProxyConfig,
     dns_cache: SharedDnsCache,
 ) {
-    let response = match resolve_query(&payload, &config).await {
+    let response = match resolve_query(&payload, config).await {
         Ok(resolved) => {
             if let Some(answer) = &resolved.allowed_answer {
                 record_allowed_dns_answer(&dns_cache, &answer.domain, &answer.addresses);
@@ -148,6 +162,7 @@ async fn resolve_query(query_bytes: &[u8], config: &ProxyConfig) -> anyhow::Resu
         }
     };
 
+    let addresses = public_answers(addresses);
     Ok(ResolvedQuery {
         response: build_a_responses(query_bytes, &addresses)?,
         allowed_answer: Some(AllowedDnsAnswer { domain, addresses }),
@@ -192,6 +207,7 @@ where
             Vec::new()
         }
     };
+    let addresses = public_answers(addresses);
     Ok(ResolvedQuery {
         response: build_a_responses(query_bytes, &addresses)?,
         allowed_answer: Some(AllowedDnsAnswer { domain, addresses }),
@@ -251,6 +267,11 @@ fn classify_query(query_bytes: &[u8], config: &ProxyConfig) -> anyhow::Result<Qu
 
     debug!("DNS query: {domain}");
 
+    if is_wpad_name(domain) {
+        debug!("DNS blocked WPAD name: {domain}");
+        return Ok(QueryAction::Respond(build_refused_response(query_bytes)?));
+    }
+
     if !config.is_domain_allowed(domain) {
         debug!("DNS blocked: {domain}");
         return Ok(QueryAction::Respond(build_refused_response(query_bytes)?));
@@ -261,11 +282,16 @@ fn classify_query(query_bytes: &[u8], config: &ProxyConfig) -> anyhow::Result<Qu
         return Ok(QueryAction::Respond(build_empty_response(query_bytes)?));
     }
 
-    Ok(QueryAction::ResolveA(normalize_domain(domain)))
+    let domain = normalize_domain(domain)
+        .ok_or_else(|| anyhow::anyhow!("DNS query name is not valid IDNA"))?;
+    Ok(QueryAction::ResolveA(domain))
 }
 
-fn normalize_domain(domain: &str) -> String {
-    domain.trim_end_matches('.').to_ascii_lowercase()
+fn public_answers(addresses: Vec<Ipv4Addr>) -> Vec<Ipv4Addr> {
+    addresses
+        .into_iter()
+        .filter(|address| is_public_ipv4(*address))
+        .collect()
 }
 
 fn system_ipv4_lookup(domain: &str) -> anyhow::Result<Vec<Ipv4Addr>> {
@@ -369,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_a_query_with_host_resolver_addresses() {
+    fn removes_non_public_host_resolver_addresses() {
         let query = build_query("internal.example.test", 1);
         let response = resolve_query_with_resolver(&query, &ProxyConfig::default(), |domain| {
             assert_eq!(domain, "internal.example.test");
@@ -382,10 +408,7 @@ mod tests {
 
         let packet = Packet::parse(&response).expect("parse DNS response");
         assert_eq!(packet.rcode(), RCODE::NoError);
-        assert_eq!(
-            a_addresses(&response),
-            vec![Ipv4Addr::new(10, 134, 2, 6), Ipv4Addr::new(10, 134, 2, 7)]
-        );
+        assert!(a_addresses(&response).is_empty());
     }
 
     #[test]
@@ -394,7 +417,7 @@ mod tests {
         let resolved =
             resolve_query_with_resolver_result(&query, &ProxyConfig::default(), |domain| {
                 assert_eq!(domain, "api.example.test");
-                Ok(vec![Ipv4Addr::new(203, 0, 113, 10)])
+                Ok(vec![Ipv4Addr::new(93, 184, 216, 34)])
             })
             .expect("resolve query");
         let answer = resolved
@@ -407,13 +430,13 @@ mod tests {
         assert!(destination_matches_dns_answer(
             &cache,
             "api.example.test",
-            Ipv4Addr::new(203, 0, 113, 10)
+            Ipv4Addr::new(93, 184, 216, 34)
         )
         .expect("DNS cache should be available"));
         assert!(!destination_matches_dns_answer(
             &cache,
             "api.example.test",
-            Ipv4Addr::new(198, 51, 100, 42)
+            Ipv4Addr::new(1, 1, 1, 1)
         )
         .expect("DNS cache should be available"));
     }
@@ -492,11 +515,14 @@ mod tests {
 
         let response = resolve_query_with_resolver(&query, &config, |domain| {
             assert_eq!(domain, "api.example.test");
-            Ok(vec![Ipv4Addr::new(203, 0, 113, 10)])
+            Ok(vec![Ipv4Addr::new(93, 184, 216, 34)])
         })
         .expect("resolve allowed query");
 
-        assert_eq!(a_addresses(&response), vec![Ipv4Addr::new(203, 0, 113, 10)]);
+        assert_eq!(
+            a_addresses(&response),
+            vec![Ipv4Addr::new(93, 184, 216, 34)]
+        );
     }
 
     #[test]
@@ -516,6 +542,49 @@ mod tests {
         let packet = Packet::parse(&response).expect("parse DNS response");
         assert_eq!(packet.rcode(), RCODE::Refused);
         assert!(packet.answers.is_empty());
+    }
+
+    #[test]
+    fn refuses_wpad_even_when_default_public_networking_is_enabled() {
+        for name in ["wpad", "WPAD.corp.example"] {
+            let query = build_query(name, 1);
+            let response =
+                resolve_query_with_resolver(&query, &ProxyConfig::default(), |_domain| {
+                    panic!("WPAD must never use the host resolver")
+                })
+                .expect("build refused response");
+            assert_eq!(Packet::parse(&response).unwrap().rcode(), RCODE::Refused);
+        }
+    }
+
+    #[test]
+    fn mixed_dns_answer_retains_only_public_addresses_in_response_and_cache() {
+        let query = build_query("api.example.test", 1);
+        let resolved =
+            resolve_query_with_resolver_result(&query, &ProxyConfig::default(), |_domain| {
+                Ok(vec![
+                    Ipv4Addr::new(93, 184, 216, 34),
+                    Ipv4Addr::new(127, 0, 0, 1),
+                    Ipv4Addr::new(169, 254, 169, 254),
+                ])
+            })
+            .unwrap();
+        assert_eq!(
+            a_addresses(&resolved.response),
+            vec![Ipv4Addr::new(93, 184, 216, 34)]
+        );
+        let answer = resolved.allowed_answer.unwrap();
+        let cache = new_shared_dns_cache();
+        record_allowed_dns_answer(&cache, &answer.domain, &answer.addresses);
+        assert!(destination_matches_dns_answer(
+            &cache,
+            &answer.domain,
+            Ipv4Addr::new(93, 184, 216, 34)
+        )
+        .unwrap());
+        assert!(
+            !destination_matches_dns_answer(&cache, &answer.domain, Ipv4Addr::LOCALHOST).unwrap()
+        );
     }
 
     #[test]
