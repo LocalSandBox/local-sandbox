@@ -1,0 +1,61 @@
+crates/lsb-service-proto/src/version.rs
+  s_e405041362b96d::t_27e4dd665cd8c1 7,11,18
+  s_e405041362b96d::t_cb05d5ad1efe96 142-154
+  s_e405041362b96d::t_09cb8a5d0c87a4 141
+crates/lsb-seawork-service/src/ipc/connection.rs
+  s_e405041362b96d::t_cb05d5ad1efe96 246-262
+  s_e405041362b96d::t_27e4dd665cd8c1 6,158,160,162,174-176
+  s_e405041362b96d::t_a76036e1d6a459 245
+crates/lsb-seawork-service/src/session/cancel.rs
+  s_e405041362b96d::t_27e4dd665cd8c1 1-2,5-45,47-55,59-81,86-93,97-109,113-114,128-129,133-159
+  s_e405041362b96d::t_d56b55fa455bba 82-85
+  s_e405041362b96d::t_cb05d5ad1efe96 160-188
+crates/lsb-service-proto/src/error.rs
+  s_e405041362b96d::t_27e4dd665cd8c1 25,61,107-110,191-197
+  s_e405041362b96d::t_2d0456b0227eba 198
+crates/lsb-seawork-service/src/pipe.rs
+  s_e405041362b96d::t_d56b55fa455bba 1192-1197
+  s_e405041362b96d::t_c710855381d95f 15-16,37-38,873-874,877-884,909-920,1166,1168,1173,1176-1178,1191,1198-1199,1229-1232,1235-1237
+  s_e405041362b96d::t_129b1d3a0e86d1 1170,1174
+  s_e405041362b96d::t_db8ebd95d3920a 1238
+crates/lsb-seawork-service/src/resource/vm.rs
+  s_e405041362b96d::t_d8d0a513c74d0a 272,335-353
+  s_e405041362b96d::t_d616989e5a0392 82,356,885-910
+  s_e405041362b96d::t_c710855381d95f 65-67,69-70,74-81,317-325,354-355,470-476,524,554,559,568,573,593-596,601-604
+  s_e405041362b96d::t_981d72f8e158b0 357-358
+contracts/seawork-parity-v1.json
+  s_e405041362b96d::t_a72ab8bc47b96b 111
+crates/lsb-seawork-service/src/rpc/file.rs
+  s_e405041362b96d::t_cb05d5ad1efe96 6-9,55-56,74-83
+state.md
+  s_e405041362b96d::t_490f73ebe28ad8 10
+  s_e405041362b96d::t_e62ab10e4a744e 45
+plan.md
+  s_e405041362b96d::t_e62ab10e4a744e 358-360
+crates/lsb-service-proto/src/lib.rs
+  s_e405041362b96d::t_d56b55fa455bba 20-22
+docs/filesystem-cancellation.md
+  s_e405041362b96d::t_e62ab10e4a744e 1-55
+docs/seawork-parity-contract.md
+  s_e405041362b96d::t_e62ab10e4a744e 23-28
+crates/lsb-seawork-service/src/session/mod.rs
+  s_e405041362b96d::t_d56b55fa455bba 6
+bindings/nodejs/src/service.rs
+  s_e405041362b96d::t_d142d41a665b1f 1011-1023
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "f10f8fc65a2307d7336ea64cbd9ce91d87aac49f",
+  "prompts": {},
+  "sessions": {
+    "s_e405041362b96d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f79d9-86a6-77c0-8b37-10e93d6c9147",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
