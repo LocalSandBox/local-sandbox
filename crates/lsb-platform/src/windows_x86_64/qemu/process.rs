@@ -2,13 +2,13 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, File};
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::windows_x86_64::apply_qemu_no_window_creation_flags;
+use crate::windows_x86_64::apply_qemu_contained_creation_flags;
 
 use super::argv::QemuCommand;
 use super::lossy_excerpt;
@@ -493,9 +493,9 @@ impl QemuSupervisor {
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
         apply_environment(&mut command, &self.config.environment);
-        apply_qemu_no_window_creation_flags(&mut command);
+        apply_qemu_contained_creation_flags(&mut command);
 
-        let mut child = match command.spawn() {
+        let (mut child, suspended_primary_thread) = match spawn_suspended(&mut command) {
             Ok(child) => child,
             Err(err) => {
                 self.state = QemuProcessState::Failed;
@@ -517,6 +517,18 @@ impl QemuSupervisor {
                 return Err(err);
             }
         };
+
+        if let Err(err) = suspended_primary_thread.resume() {
+            let _ = self.containment.terminate();
+            let _ = child.kill();
+            let _ = child.wait();
+            self.state = QemuProcessState::Failed;
+            let _ = self.write_status_artifact();
+            return Err(QemuProcessError::CleanupFailed {
+                operation: "resume Job-contained QEMU primary thread",
+                detail: err.to_string(),
+            });
+        }
         self.child = Some(child);
 
         if let Err(err) = self.finish_startup_after_spawn() {
@@ -827,16 +839,118 @@ struct QemuEnvironmentArtifact {
 }
 
 #[cfg(target_os = "windows")]
-#[derive(Debug)]
-struct ProcessContainment {
-    job: Option<JobObject>,
+struct SuspendedPrimaryThread {
+    handle: std::os::windows::io::OwnedHandle,
 }
 
 #[cfg(target_os = "windows")]
-impl Default for ProcessContainment {
-    fn default() -> Self {
-        Self { job: None }
+impl SuspendedPrimaryThread {
+    fn resume(self) -> io::Result<()> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::HANDLE;
+        use windows_sys::Win32::System::Threading::ResumeThread;
+
+        let previous = unsafe { ResumeThread(self.handle.as_raw_handle() as HANDLE) };
+        if previous == u32::MAX {
+            return Err(io::Error::last_os_error());
+        }
+        if previous != 1 {
+            return Err(io::Error::other(format!(
+                "unexpected primary-thread suspend count {previous}"
+            )));
+        }
+        Ok(())
     }
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_suspended(command: &mut Command) -> io::Result<(Child, SuspendedPrimaryThread)> {
+    let mut child = command.spawn()?;
+    match open_only_thread_for_process(child.id()) {
+        Ok(thread) => Ok((child, SuspendedPrimaryThread { handle: thread })),
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(error)
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn open_only_thread_for_process(pid: u32) -> io::Result<std::os::windows::io::OwnedHandle> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetProcessIdOfThread, OpenThread, THREAD_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME,
+    };
+
+    let snapshot_raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot_raw == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let snapshot = unsafe { OwnedHandle::from_raw_handle(snapshot_raw as _) };
+    let mut entry = THREADENTRY32 {
+        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+        ..THREADENTRY32::default()
+    };
+    if unsafe { Thread32First(snapshot.as_raw_handle() as _, &mut entry) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut thread_id = None;
+    loop {
+        if entry.th32OwnerProcessID == pid && thread_id.replace(entry.th32ThreadID).is_some() {
+            return Err(io::Error::other(
+                "suspended child exposed more than one thread before Job assignment",
+            ));
+        }
+        if unsafe { Thread32Next(snapshot.as_raw_handle() as _, &mut entry) } == 0 {
+            break;
+        }
+    }
+    let thread_id = thread_id.ok_or_else(|| {
+        io::Error::other("suspended child primary thread was not present in the thread snapshot")
+    })?;
+    let raw = unsafe {
+        OpenThread(
+            THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION,
+            0,
+            thread_id,
+        )
+    };
+    if raw.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let thread = unsafe { OwnedHandle::from_raw_handle(raw as _) };
+    if unsafe { GetProcessIdOfThread(thread.as_raw_handle() as _) } != pid {
+        return Err(io::Error::other(
+            "suspended primary-thread owner changed during acquisition",
+        ));
+    }
+    Ok(thread)
+}
+
+#[cfg(not(target_os = "windows"))]
+struct SuspendedPrimaryThread;
+
+#[cfg(not(target_os = "windows"))]
+impl SuspendedPrimaryThread {
+    fn resume(self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn spawn_suspended(command: &mut Command) -> io::Result<(Child, SuspendedPrimaryThread)> {
+    command.spawn().map(|child| (child, SuspendedPrimaryThread))
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Default)]
+struct ProcessContainment {
+    job: Option<JobObject>,
 }
 
 #[cfg(target_os = "windows")]
@@ -1004,38 +1118,38 @@ fn create_artifact_file(path: &PathBuf, operation: &'static str) -> Result<File,
     File::create(path).map_err(|err| artifact_error(path, operation, err))
 }
 
-fn artifact_error(path: &PathBuf, operation: &'static str, err: io::Error) -> QemuProcessError {
+fn artifact_error(path: &Path, operation: &'static str, err: io::Error) -> QemuProcessError {
     if err.kind() == io::ErrorKind::PermissionDenied {
         QemuProcessError::PermissionDenied {
-            path: path.clone(),
+            path: path.to_path_buf(),
             operation,
             detail: err.to_string(),
         }
     } else {
         QemuProcessError::ArtifactIo {
-            path: path.clone(),
+            path: path.to_path_buf(),
             operation,
             detail: err.to_string(),
         }
     }
 }
 
-fn file_name(path: &PathBuf) -> String {
+fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "<unknown>".to_string())
 }
 
-fn spawn_error(path: &PathBuf, err: io::Error) -> QemuProcessError {
+fn spawn_error(path: &Path, err: io::Error) -> QemuProcessError {
     if err.kind() == io::ErrorKind::PermissionDenied {
         QemuProcessError::PermissionDenied {
-            path: path.clone(),
+            path: path.to_path_buf(),
             operation: "execute",
             detail: err.to_string(),
         }
     } else {
         QemuProcessError::SpawnFailed {
-            path: path.clone(),
+            path: path.to_path_buf(),
             detail: err.to_string(),
         }
     }
@@ -1270,6 +1384,23 @@ mod tests {
                     std::process::exit(19);
                 }
                 println!("secret environment was not inherited");
+                let _ = std::io::stdout().flush();
+                std::thread::sleep(Duration::from_secs(60));
+            }
+            #[cfg(target_os = "windows")]
+            "assert-job-contained-at-entry" => {
+                use windows_sys::Win32::System::JobObjects::IsProcessInJob;
+                use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+                let mut in_job = 0;
+                let check_ok = unsafe {
+                    IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &mut in_job)
+                };
+                if check_ok == 0 || in_job == 0 {
+                    eprintln!("fake QEMU reached its entrypoint outside a Job Object");
+                    std::process::exit(20);
+                }
+                println!("fake QEMU entered already Job-contained");
                 let _ = std::io::stdout().flush();
                 std::thread::sleep(Duration::from_secs(60));
             }
@@ -1585,6 +1716,38 @@ mod tests {
             0,
             "QEMU must be spawned with CREATE_NO_WINDOW for GUI parents"
         );
+        assert_ne!(
+            crate::windows_x86_64::qemu_contained_creation_flags()
+                & windows_sys::Win32::System::Threading::CREATE_SUSPENDED,
+            0,
+            "QEMU must be spawned suspended until Job assignment completes"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_child_entrypoint_observes_job_containment() {
+        let artifact_dir = temp_artifact_dir("job-at-entry");
+        let mut supervisor = fake_supervisor("assert-job-contained-at-entry", artifact_dir.clone());
+
+        if let Err(err) = supervisor.start() {
+            if err.kind() == QemuProcessErrorKind::ProcessAlreadyInJob {
+                eprintln!("skipping Job Object entrypoint test: {err}");
+                return;
+            }
+            panic!("fake process should start already contained by a Job Object: {err}");
+        }
+
+        let stdout = wait_for_file_contains(
+            &supervisor.artifacts().stdout,
+            "fake QEMU entered already Job-contained",
+        );
+        assert!(stdout.contains("fake QEMU entered already Job-contained"));
+        supervisor
+            .terminate()
+            .expect("contained fake process should terminate cleanly");
+
+        let _ = fs::remove_dir_all(artifact_dir);
     }
 
     #[cfg(target_os = "windows")]

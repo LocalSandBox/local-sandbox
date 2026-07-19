@@ -49,9 +49,28 @@ pub fn apply_qemu_no_window_creation_flags(command: &mut Command) {
     }
 }
 
+pub fn apply_qemu_contained_creation_flags(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        command.creation_flags(qemu_contained_creation_flags());
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = command;
+    }
+}
+
 #[cfg(windows)]
 pub fn qemu_no_window_creation_flags() -> u32 {
     windows_sys::Win32::System::Threading::CREATE_NO_WINDOW
+}
+
+#[cfg(windows)]
+pub fn qemu_contained_creation_flags() -> u32 {
+    qemu_no_window_creation_flags() | windows_sys::Win32::System::Threading::CREATE_SUSPENDED
 }
 
 #[cfg(test)]
@@ -64,6 +83,20 @@ mod tests {
                 & windows_sys::Win32::System::Threading::CREATE_NO_WINDOW,
             0,
             "QEMU and qemu-img must be launched with CREATE_NO_WINDOW for GUI parents"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn contained_qemu_starts_hidden_and_suspended() {
+        let flags = super::qemu_contained_creation_flags();
+        assert_ne!(
+            flags & windows_sys::Win32::System::Threading::CREATE_NO_WINDOW,
+            0
+        );
+        assert_ne!(
+            flags & windows_sys::Win32::System::Threading::CREATE_SUSPENDED,
+            0
         );
     }
 }
