@@ -7,16 +7,22 @@ use anyhow::{bail, Context, Result};
 use lsb_service_proto::limits::{
     MAX_MOUNT_COMPONENTS, MAX_MOUNT_FILE_BYTES, MAX_MOUNT_WINDOWS_UTF16,
 };
-use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{LocalFree, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+use windows_sys::Win32::Security::{
+    AccessCheck, DACL_SECURITY_INFORMATION, GENERIC_MAPPING, GROUP_SECURITY_INFORMATION,
+    OWNER_SECURITY_INFORMATION, PRIVILEGE_SET, PSECURITY_DESCRIPTOR,
+};
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, GetDriveTypeW, GetFileInformationByHandle, GetFinalPathNameByHandleW,
     GetVolumeInformationW, GetVolumePathNameW, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ADD_FILE,
-    FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_ENCRYPTED,
+    FILE_ADD_SUBDIRECTORY, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_ENCRYPTED,
     FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_RECALL_ON_OPEN,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES,
-    FILE_READ_DATA, FILE_READ_EA, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES,
-    FILE_WRITE_DATA, FILE_WRITE_EA, OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE, VOLUME_NAME_DOS,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+    FILE_LIST_DIRECTORY, FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_READ_EA,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA,
+    OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE, VOLUME_NAME_DOS,
 };
 use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::System::SystemInformation::GetWindowsDirectoryW;
@@ -45,10 +51,13 @@ pub(super) fn authorize(
     let mut ancestors = path.ancestors().skip(1).collect::<Vec<_>>();
     ancestors.reverse();
     for ancestor in ancestors {
-        ancestor_pins.push(open_checked(ancestor, ancestor_access(), true)?.0);
+        let (pin, _) = open_checked(ancestor, ancestor_access(), true)?;
+        require_access_check(token, &pin, ancestor_access(), ancestor)?;
+        ancestor_pins.push(pin);
     }
 
     let (root, root_info) = open_checked(&path, root_access(access), true)?;
+    require_access_check(token, &root, root_access(access), &path)?;
     require_directory(&root_info, &path)?;
     reject_attributes(root_info.dwFileAttributes, &path)?;
     if root_info.nNumberOfLinks > 1 {
@@ -65,7 +74,13 @@ pub(super) fn authorize(
     require_supported_volume(&final_path)?;
 
     let identity = identity(&root_info, final_path.clone());
-    let summary = inspect_tree(&path, &final_path, access)?;
+    let summary = inspect_tree(
+        token,
+        &path,
+        &final_path,
+        access,
+        ancestor_pins.len() as u32 + 1,
+    )?;
     Ok(AuthorizedMountRoot::new(
         root,
         ancestor_pins,
@@ -77,7 +92,13 @@ pub(super) fn authorize(
     ))
 }
 
-fn inspect_tree(root: &Path, final_root: &Path, access: MountAccess) -> Result<WalkSummary> {
+fn inspect_tree(
+    token: &OwnedHandle,
+    root: &Path,
+    final_root: &Path,
+    access: MountAccess,
+    mut access_checks: u32,
+) -> Result<WalkSummary> {
     let mut entries = 1u32;
     let mut file_bytes = 0u64;
     let mut pending = vec![root.to_path_buf()];
@@ -98,11 +119,12 @@ fn inspect_tree(root: &Path, final_root: &Path, access: MountAccess) -> Result<W
                 .strip_prefix(root)
                 .context("authorized mount entry escaped its lexical root")?;
             crate::resource::mount_sync::validate_relative_path(relative)?;
-            let (handle, info) = open_checked(
-                &path,
-                entry_access(access, child.file_type()?.is_dir()),
-                true,
-            )?;
+            let desired_access = entry_access(access, child.file_type()?.is_dir());
+            let (handle, info) = open_checked(&path, desired_access, true)?;
+            require_access_check(token, &handle, desired_access, &path)?;
+            access_checks = access_checks
+                .checked_add(1)
+                .context("mount access-check count overflow")?;
             reject_attributes(info.dwFileAttributes, &path)?;
             let child_final = final_path(&handle)?;
             if !is_below(&child_final, final_root) {
@@ -131,7 +153,82 @@ fn inspect_tree(root: &Path, final_root: &Path, access: MountAccess) -> Result<W
     Ok(WalkSummary {
         entries,
         file_bytes,
+        access_checks,
     })
+}
+
+fn require_access_check(
+    token: &OwnedHandle,
+    handle: &OwnedHandle,
+    desired_access: u32,
+    path: &Path,
+) -> Result<()> {
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    let status = unsafe {
+        GetSecurityInfo(
+            handle.as_raw_handle() as HANDLE,
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != 0 || descriptor.is_null() {
+        bail!(
+            "query mount DACL for {} failed with {status}",
+            path.display()
+        );
+    }
+    let descriptor = LocalSecurityDescriptor(descriptor);
+    let mapping = GENERIC_MAPPING {
+        GenericRead: FILE_GENERIC_READ,
+        GenericWrite: FILE_GENERIC_WRITE,
+        GenericExecute: FILE_GENERIC_EXECUTE,
+        GenericAll: FILE_ALL_ACCESS,
+    };
+    let mut privileges = PRIVILEGE_SET::default();
+    let mut privilege_bytes = std::mem::size_of::<PRIVILEGE_SET>() as u32;
+    let mut granted_access = 0;
+    let mut access_status = 0;
+    if unsafe {
+        AccessCheck(
+            descriptor.0,
+            token.as_raw_handle() as HANDLE,
+            desired_access,
+            &mapping,
+            &mut privileges,
+            &mut privilege_bytes,
+            &mut granted_access,
+            &mut access_status,
+        )
+    } == 0
+    {
+        bail!(
+            "AccessCheck for {} failed: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        );
+    }
+    if access_status == 0 || granted_access & desired_access != desired_access {
+        bail!(
+            "client token AccessCheck denied required mount rights for {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+struct LocalSecurityDescriptor(PSECURITY_DESCRIPTOR);
+
+impl Drop for LocalSecurityDescriptor {
+    fn drop(&mut self) {
+        unsafe {
+            LocalFree(self.0);
+        }
+    }
 }
 
 fn validate_windows_path(path: &Path) -> Result<()> {
@@ -155,7 +252,13 @@ pub(super) fn stage_snapshot(
         std::fs::remove_dir_all(destination)?;
     }
     std::fs::create_dir_all(destination)?;
-    if let Err(error) = copy_directory_under_token(token, source, final_root, destination) {
+    let mut bounds = CopyBounds {
+        entries: 1,
+        file_bytes: 0,
+    };
+    if let Err(error) =
+        copy_directory_under_token(token, source, final_root, destination, &mut bounds)
+    {
         let _ = std::fs::remove_dir_all(destination);
         return Err(error);
     }
@@ -167,6 +270,7 @@ fn copy_directory_under_token(
     source: &Path,
     final_root: &Path,
     destination: &Path,
+    bounds: &mut CopyBounds,
 ) -> Result<()> {
     let guard = crate::security::impersonation::ImpersonationGuard::for_token(token)?;
     let names = std::fs::read_dir(source)?
@@ -175,14 +279,20 @@ fn copy_directory_under_token(
     guard.revert()?;
 
     for name in names {
+        bounds.entries = bounds
+            .entries
+            .checked_add(1)
+            .context("staged mount entry count overflow")?;
+        if bounds.entries > MAX_MOUNT_ENTRIES {
+            bail!("staged mount exceeds {MAX_MOUNT_ENTRIES} entries during copy");
+        }
         let source_child = source.join(&name);
         let destination_child = destination.join(&name);
         let guard = crate::security::impersonation::ImpersonationGuard::for_token(token)?;
-        let (handle, info) = open_checked(
-            &source_child,
-            FILE_READ_DATA | FILE_READ_ATTRIBUTES | FILE_READ_EA | READ_CONTROL | SYNCHRONIZE,
-            true,
-        )?;
+        let desired_access =
+            FILE_READ_DATA | FILE_READ_ATTRIBUTES | FILE_READ_EA | READ_CONTROL | SYNCHRONIZE;
+        let (handle, info) = open_checked(&source_child, desired_access, true)?;
+        require_access_check(token, &handle, desired_access, &source_child)?;
         let child_final = final_path(&handle)?;
         if !is_below(&child_final, final_root) {
             bail!("staged mount entry resolves outside the authorized root");
@@ -195,18 +305,70 @@ fn copy_directory_under_token(
 
         if directory {
             std::fs::create_dir(&destination_child)?;
-            copy_directory_under_token(token, &source_child, final_root, &destination_child)?;
+            copy_directory_under_token(
+                token,
+                &source_child,
+                final_root,
+                &destination_child,
+                bounds,
+            )?;
         } else {
+            let expected_len = ((info.nFileSizeHigh as u64) << 32) | info.nFileSizeLow as u64;
+            if expected_len > MAX_MOUNT_FILE_BYTES {
+                bail!("staged mount file exceeds the 4 GiB per-file limit during copy");
+            }
+            bounds.file_bytes = bounds
+                .file_bytes
+                .checked_add(expected_len)
+                .context("staged mount byte count overflow")?;
+            if bounds.file_bytes > MAX_MOUNT_BYTES {
+                bail!("staged mount exceeds the 20 GiB data limit during copy");
+            }
             let mut input = std::fs::File::from(handle);
             let mut output = std::fs::OpenOptions::new()
                 .create_new(true)
                 .write(true)
                 .open(&destination_child)?;
-            std::io::copy(&mut input, &mut output)?;
+            let copied = std::io::copy(
+                &mut std::io::Read::take(&mut input, expected_len.saturating_add(1)),
+                &mut output,
+            )?;
+            if copied != expected_len {
+                bail!("staged mount file changed length while it was copied");
+            }
+            let mut final_info = unsafe { std::mem::zeroed() };
+            if unsafe {
+                GetFileInformationByHandle(input.as_raw_handle() as HANDLE, &mut final_info)
+            } == 0
+            {
+                bail!(
+                    "revalidate staged mount source {}: {}",
+                    source_child.display(),
+                    std::io::Error::last_os_error()
+                );
+            }
+            if file_version(&final_info) != file_version(&info) {
+                bail!("staged mount file changed identity or metadata while it was copied");
+            }
             output.sync_all()?;
         }
     }
     Ok(())
+}
+
+struct CopyBounds {
+    entries: u32,
+    file_bytes: u64,
+}
+
+fn file_version(info: &BY_HANDLE_FILE_INFORMATION) -> (u32, u64, u64, u64) {
+    (
+        info.dwVolumeSerialNumber,
+        ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
+        ((info.nFileSizeHigh as u64) << 32) | info.nFileSizeLow as u64,
+        ((info.ftLastWriteTime.dwHighDateTime as u64) << 32)
+            | info.ftLastWriteTime.dwLowDateTime as u64,
+    )
 }
 
 fn open_checked(
@@ -458,4 +620,125 @@ fn normalize(path: &Path) -> String {
 
 fn wide(value: &OsStr) -> Vec<u16> {
     value.encode_wide().chain(Some(0)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Security::{
+        DuplicateTokenEx, SecurityImpersonation, TokenImpersonation, TOKEN_DUPLICATE,
+        TOKEN_IMPERSONATE, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    #[test]
+    fn current_impersonation_token_passes_handle_dacl_access_check() {
+        let root = unique_temp_path("access-check");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let impersonation = current_impersonation_token();
+        let desired = root_access(MountAccess::ReadOnly);
+        let (directory, _) = open_checked(&root, desired, true).unwrap();
+        require_access_check(&impersonation, &directory, desired, &root).unwrap();
+
+        drop(directory);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn current_token_checks_and_stages_a_bounded_snapshot() {
+        let source = unique_temp_path("stage-source");
+        let destination = unique_temp_path("stage-destination");
+        let _ = std::fs::remove_dir_all(&source);
+        let _ = std::fs::remove_dir_all(&destination);
+        std::fs::create_dir_all(source.join("nested")).unwrap();
+        std::fs::write(source.join("root.txt"), b"root").unwrap();
+        std::fs::write(source.join("nested").join("child.txt"), b"child").unwrap();
+
+        let impersonation = current_impersonation_token();
+        let desired = root_access(MountAccess::ReadOnly);
+        let (root, root_info) = open_checked(&source, desired, true).unwrap();
+        require_access_check(&impersonation, &root, desired, &source).unwrap();
+        let final_root = final_path(&root).unwrap();
+        let summary = inspect_tree(
+            &impersonation,
+            &source,
+            &final_root,
+            MountAccess::ReadOnly,
+            1,
+        )
+        .unwrap();
+        require_directory(&root_info, &source).unwrap();
+        assert_eq!(summary.entries, 4);
+        assert_eq!(summary.file_bytes, 9);
+        assert_eq!(summary.access_checks, summary.entries);
+
+        let snapshot = stage_snapshot(
+            &impersonation,
+            root.try_clone().unwrap(),
+            &source,
+            &final_root,
+            &destination,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(destination.join("root.txt")).unwrap(),
+            b"root"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("nested").join("child.txt")).unwrap(),
+            b"child"
+        );
+        assert_eq!(snapshot.entries.len(), 3);
+
+        drop(root);
+        std::fs::remove_dir_all(source).unwrap();
+        std::fs::remove_dir_all(destination).unwrap();
+    }
+
+    fn current_impersonation_token() -> OwnedHandle {
+        let mut primary = std::ptr::null_mut();
+        assert_ne!(
+            unsafe {
+                OpenProcessToken(
+                    GetCurrentProcess(),
+                    TOKEN_QUERY | TOKEN_DUPLICATE,
+                    &mut primary,
+                )
+            },
+            0
+        );
+        let primary = unsafe { OwnedHandle::from_raw_handle(primary as _) };
+        let mut impersonation = std::ptr::null_mut();
+        assert_ne!(
+            unsafe {
+                DuplicateTokenEx(
+                    primary.as_raw_handle() as HANDLE,
+                    TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_IMPERSONATE,
+                    std::ptr::null(),
+                    SecurityImpersonation,
+                    TokenImpersonation,
+                    &mut impersonation,
+                )
+            },
+            0
+        );
+        unsafe { OwnedHandle::from_raw_handle(impersonation as _) }
+    }
+
+    fn unique_temp_path(label: &str) -> PathBuf {
+        std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!(
+                "lsbsw-{label}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ))
+    }
 }

@@ -19,6 +19,18 @@ change during the read invalidates the snapshot. A Windows implementation must r
 the stronger handle/file-identity proof around these pure decisions because path-based
 macOS tests cannot establish resistance to a Windows rename or reparse race.
 
+The Windows path worker now performs an explicit `AccessCheck` against the held caller
+impersonation token for every pinned ancestor, the mount root, and every opened tree
+entry. Snapshot staging repeats the per-entry check, enforces the entry, per-file, and
+tree-byte limits during the actual copy, caps each read at the authorized length plus
+one byte, and re-queries volume/file identity, size, and last-write time on the held
+source handle before accepting the copy. A current-token Windows regression exercises
+the checked walk and staged snapshot. This is only a fail-closed authorization and
+copying tranche: traversal is not yet handle-relative, active monitoring and
+periodic/final synchronization are not wired, caller-token writeback is absent, and
+mount requests remain `MOUNT_UNAVAILABLE` until service/SMB lifecycle integration and
+the privileged NTFS/ReFS acceptance matrix are complete.
+
 ## Reconciliation
 
 For each relative path, the baseline, current host, and current guest snapshots produce

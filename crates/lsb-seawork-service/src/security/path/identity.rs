@@ -23,6 +23,7 @@ pub struct FileIdentity {
 pub struct WalkSummary {
     pub entries: u32,
     pub file_bytes: u64,
+    pub access_checks: u32,
 }
 
 pub struct AuthorizedMountRoot {
