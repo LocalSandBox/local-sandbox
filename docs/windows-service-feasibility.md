@@ -28,6 +28,12 @@ $env:LSB_SESSION0_SPIKE_RESULT = 'C:\ProgramData\LocalSandbox\SeaWorkSpike\resul
 cargo test -p lsb-service-spike --features windows-session0-spike --test windows_session0 -- --ignored
 ```
 
+Release-candidate results must additionally be assembled and validated with the
+digest-bound contract in `docs/windows-acceptance-evidence.md`. The Phase 0 spike JSON
+alone is not release evidence: the final `win01` or `full` profile must be tied to the
+exact production artifact SHA-256, contain only explicitly redacted retained files, and
+pass `verify-windows-evidence --require-complete`.
+
 The manual `Windows service self-hosted acceptance` workflow runs the same
 harness on an elevated disposable runner labeled `self-hosted`, `Windows`,
 `X64`, and `seawork-service`. Its required `data_dir` input must name prepared,

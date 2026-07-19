@@ -7,6 +7,7 @@ mod release;
 mod rootfs;
 mod seawork_parity;
 mod seawork_release;
+mod windows_evidence;
 
 use std::env;
 
@@ -28,6 +29,7 @@ fn main() -> Result<()> {
         "prepare-rootfs" => rootfs::prepare_rootfs(&rest),
         "package-release" => release::package_release(&rest),
         "verify-seawork-parity" => seawork_parity::verify(&rest),
+        "verify-windows-evidence" => windows_evidence::verify(&rest),
         _ => {
             print_usage();
             bail!("unknown xtask command: {command}");
@@ -47,5 +49,8 @@ fn print_usage() {
     eprintln!("  cargo run -p xtask -- package-release --artifact <cli|os-image|seawork-service> --version <v> [--platform <id>] [--output-dir <dir>] [--mode stage|archive]");
     eprintln!(
         "  cargo run -p xtask -- verify-seawork-parity [--contract <path>] [--seawork-repo <path>]"
+    );
+    eprintln!(
+        "  cargo run -p xtask -- verify-windows-evidence --manifest <path> [--require-complete]"
     );
 }
