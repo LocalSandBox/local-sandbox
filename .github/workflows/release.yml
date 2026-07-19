@@ -188,10 +188,34 @@ jobs:
             }
           }
 
+      - name: Resolve Windows SDK event-message tools
+        run: |
+          $roots = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots'
+          if ([string]::IsNullOrWhiteSpace($roots.KitsRoot10)) {
+            throw 'Windows SDK KitsRoot10 is unavailable'
+          }
+          $toolset = Get-ChildItem -LiteralPath (Join-Path $roots.KitsRoot10 'bin') -Directory |
+            Sort-Object Name -Descending |
+            Where-Object {
+              (Test-Path -LiteralPath (Join-Path $_.FullName 'x64\mc.exe') -PathType Leaf) -and
+              (Test-Path -LiteralPath (Join-Path $_.FullName 'x64\rc.exe') -PathType Leaf)
+            } |
+            Select-Object -First 1
+          if ($null -eq $toolset) { throw 'no complete x64 Windows SDK mc.exe/rc.exe toolset was found' }
+          "LSB_COMPILE_EVENT_MESSAGES=1" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LSB_WINDOWS_MC_PATH=$($toolset.FullName)\x64\mc.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LSB_WINDOWS_RC_PATH=$($toolset.FullName)\x64\rc.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Build service and symbols
         env:
           RUSTFLAGS: -C target-feature=+crt-static
         run: cargo build -p lsb-seawork-service --locked --release --target x86_64-pc-windows-msvc
+
+      - name: Verify embedded Event Log messages
+        run: |
+          .\scripts\verify-seawork-event-messages.ps1 `
+            -ServiceBinary '.\target\x86_64-pc-windows-msvc\release\localsandbox-seawork-service.exe' `
+            -OutputPath '.\target\seawork-service\event-messages-unsigned.json'
 
       - uses: actions/download-artifact@v4
         with:
@@ -246,6 +270,12 @@ jobs:
             -TimestampUrl $env:SEAWORK_TIMESTAMP_URL `
             -ExpectedPublisherSubject $env:SEAWORK_PUBLISHER_SUBJECT `
             -ExpectedPublisherSha256 $env:SEAWORK_PUBLISHER_SHA256
+
+      - name: Verify signed PE Event Log messages
+        run: |
+          .\scripts\verify-seawork-event-messages.ps1 `
+            -ServiceBinary '.\target\x86_64-pc-windows-msvc\release\localsandbox-seawork-service.exe' `
+            -OutputPath '.\target\seawork-service\event-messages-signed.json'
 
       - name: Generate SBOM and license inventory
         run: |
@@ -346,6 +376,7 @@ jobs:
           path: |
             target/seawork-service/out/lsb-seawork-service-*.zip
             target/seawork-service/out/SHA256SUMS
+            target/seawork-service/event-messages-signed.json
           if-no-files-found: error
           retention-days: 1
 

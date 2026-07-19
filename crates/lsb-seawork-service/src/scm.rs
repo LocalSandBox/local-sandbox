@@ -11,7 +11,7 @@ use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORY
 use crate::config::ServiceConfig;
 use crate::engine::ServiceEngineConfig;
 use crate::ledger;
-use crate::logging::JsonLogger;
+use crate::logging::{EventId, ServiceLogger};
 use crate::maintenance::MaintenanceManager;
 use crate::paths::ServicePaths;
 use crate::pipe::{HealthContext, HealthPipe};
@@ -65,14 +65,18 @@ fn run_registered(
 
     let paths = ServicePaths::discover()?;
     paths.prepare()?;
-    let logger = JsonLogger::new(&paths.logs)?;
-    logger.write(1, "startup", "START_PENDING")?;
+    let logger = ServiceLogger::new(&paths.logs)?;
+    logger.write(EventId::ServiceStartPending, "startup", "START_PENDING")?;
     advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
     let config = ServiceConfig::load_or_default(&paths.config)?;
     let product_ca_bundle_pem = crate::config::load_product_ca_bundle(&paths.product_ca_bundle)?;
     let reconciliation = ledger::reconcile(&paths.ledger, &paths.quarantine)?;
     if !reconciliation.admissions_open {
-        logger.write(3, "reconcile", "HEALTH_ONLY_QUARANTINE")?;
+        logger.write(
+            EventId::LedgerQuarantined,
+            "reconcile",
+            "HEALTH_ONLY_QUARANTINE",
+        )?;
     }
     advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
     let engine = match run_startup_operation(
@@ -92,16 +96,16 @@ fn run_registered(
             ))
         },
     ) {
-        Ok((files_verified, engine)) => {
-            logger.write(
-                1,
-                "bundle",
-                &format!("BUNDLE_VERIFIED_FILES={files_verified}"),
-            )?;
+        Ok((_files_verified, engine)) => {
+            logger.write(EventId::BundleVerified, "bundle", "BUNDLE_VERIFIED")?;
             Some(engine)
         }
         Err(_) => {
-            logger.write(3, "bundle", "BUNDLE_INVALID")?;
+            logger.write(
+                EventId::BundleVerificationFailed,
+                "bundle",
+                "BUNDLE_INVALID",
+            )?;
             None
         }
     };
@@ -117,7 +121,11 @@ fn run_registered(
     );
     let whpx = crate::windows::whpx::health_state();
     if whpx != lsb_service_proto::HealthState::Ready {
-        logger.write(3, "runtime", "WHPX_UNAVAILABLE")?;
+        logger.write(
+            EventId::RuntimeCapabilityUnavailable,
+            "runtime",
+            "WHPX_UNAVAILABLE",
+        )?;
     }
     let effective_memory_mib = effective_memory_limit(config.quotas.memory_mib_global)?;
     let context = HealthContext::new(
@@ -162,7 +170,7 @@ fn run_registered(
     )?;
 
     status_handle.set_service_status(status::running())?;
-    logger.write(1, "runtime", "RUNNING")?;
+    logger.write(EventId::ServiceStarted, "runtime", "RUNNING")?;
     let control = match runtime.block_on(wait_for_runtime_exit(&mut control_rx, &mut pipe_task)) {
         RuntimeExit::Control(Some(control)) => control,
         RuntimeExit::Control(None) => {
@@ -170,11 +178,16 @@ fn run_registered(
             let _ = shutdown_tx.send(());
             pipe_task.abort();
             let _ = runtime.block_on(&mut pipe_task);
+            let _ = logger.write(
+                EventId::ServiceFatalExit,
+                "runtime",
+                "CONTROL_CHANNEL_DISCONNECTED",
+            );
             anyhow::bail!("SCM control channel disconnected");
         }
         RuntimeExit::Pipe(result) => {
             drain_sessions(&context, &logger);
-            let _ = logger.write(4, "runtime", "PIPE_TASK_EXITED");
+            let _ = logger.write(EventId::ServiceFatalExit, "runtime", "PIPE_TASK_EXITED");
             match result {
                 Ok(Ok(())) => anyhow::bail!("pipe task exited before SCM stop"),
                 Ok(Err(error)) => return Err(error).context("pipe task failed before SCM stop"),
@@ -188,7 +201,12 @@ fn run_registered(
         Duration::from_secs(30)
     };
     status_handle.set_service_status(status::pending(ServiceState::StopPending, 1, wait_hint))?;
-    logger.write(2, "shutdown", "STOP_PENDING")?;
+    let stop_code = if control == ServiceControl::Preshutdown {
+        "PRESHUTDOWN_PENDING"
+    } else {
+        "STOP_PENDING"
+    };
+    logger.write(EventId::ServiceStopPending, "shutdown", stop_code)?;
     drain_sessions(&context, &logger);
     let _ = shutdown_tx.send(());
     let pipe_drain = runtime.block_on(wait_for_pipe_drain(
@@ -206,12 +224,21 @@ fn run_registered(
     match pipe_drain {
         PipeDrainOutcome::Clean => {}
         PipeDrainOutcome::Failed => {
-            let _ = logger.write(4, "shutdown", "PIPE_DRAIN_FAILED");
+            let _ = logger.write(
+                EventId::ResourceCleanupFailed,
+                "shutdown",
+                "PIPE_DRAIN_FAILED",
+            );
         }
         PipeDrainOutcome::TimedOut => {
-            let _ = logger.write(4, "shutdown", "PIPE_DRAIN_TIMEOUT");
+            let _ = logger.write(
+                EventId::ResourceCleanupFailed,
+                "shutdown",
+                "PIPE_DRAIN_TIMEOUT",
+            );
         }
     }
+    let _ = logger.write(EventId::ServiceStopped, "shutdown", "STOPPED");
     status_handle.set_service_status(status::stopped())?;
     Ok(())
 }
@@ -334,13 +361,17 @@ where
     }
 }
 
-fn drain_sessions(context: &HealthContext, logger: &JsonLogger) {
+fn drain_sessions(context: &HealthContext, logger: &ServiceLogger) {
     match context.begin_shutdown() {
-        Ok(drained) => {
-            let _ = logger.write(2, "shutdown", &format!("DRAINED_SESSIONS={drained}"));
+        Ok(_drained) => {
+            let _ = logger.write(EventId::SessionsDrained, "shutdown", "SESSIONS_DRAINED");
         }
         Err(_) => {
-            let _ = logger.write(4, "shutdown", "SESSION_DRAIN_FAILED");
+            let _ = logger.write(
+                EventId::ResourceCleanupFailed,
+                "shutdown",
+                "SESSION_DRAIN_FAILED",
+            );
         }
     }
 }

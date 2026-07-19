@@ -4,6 +4,7 @@ mod config;
 pub mod engine;
 pub mod ipc;
 pub mod ledger;
+#[cfg(any(windows, test))]
 mod logging;
 #[cfg(windows)]
 mod maintenance;
