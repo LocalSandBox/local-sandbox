@@ -1,0 +1,43 @@
+crates/lsb-seawork-service/src/ipc/connection.rs
+  s_e405041362b96d::t_d6e69ce91751d0 159-161,171-174
+crates/lsb-seawork-service/src/ledger/reconcile.rs
+  s_e405041362b96d::t_0a573a601539cd 90-93,96-98,120,205
+  s_e405041362b96d::t_3adf6e99c30d4e 179-198
+  s_e405041362b96d::t_8d92e12b666ba6 1-4,6,18,22-26,30-38,44,51-55,57-59,63,69-89,94-95,99-119,121-142,147-156,159,164-168,171-178,199-204,206-235,237-274
+  s_e405041362b96d::t_6e26a9562dae79 56,60
+  s_e405041362b96d::t_2e2c53038baae2 47-49
+state.md
+  s_e405041362b96d::t_ade9f2fb36bd04 11
+plan.md
+  s_e405041362b96d::t_a0402e6bd7499a 477
+docs/protected-ledger-reconciliation.md
+  s_e405041362b96d::t_7a53c13d8e71d6 1-55
+crates/lsb-seawork-service/src/ledger/atomic.rs
+  s_e405041362b96d::t_9233d9d05935e3 8-9,16-18
+  s_e405041362b96d::t_000a98ff67b12e 134-137,160-163,175-178
+  s_e405041362b96d::t_8bebf699a5dda7 27-61,99-108,138-159,164-174
+  s_e405041362b96d::t_dd4cbfebb261ac 26
+  s_e405041362b96d::t_6e84d6a0e7ad43 109
+crates/lsb-seawork-service/src/ledger/schema.rs
+  s_e405041362b96d::t_3311c31364d870 290-296,312-313
+  s_e405041362b96d::t_9be9d204447ec2 1-2,132-144,148-154,164-270,272-283,289,297-311,314-323,358-407,409-416
+  s_e405041362b96d::t_8a27c555a3f296 408
+contracts/seawork-parity-v1.json
+  s_e405041362b96d::t_7a53c13d8e71d6 102
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "b523bb05844362ebfbae7edf0ca0b8be93412da6",
+  "prompts": {},
+  "sessions": {
+    "s_e405041362b96d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f79d9-86a6-77c0-8b37-10e93d6c9147",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
