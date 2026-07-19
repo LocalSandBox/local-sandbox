@@ -1,0 +1,76 @@
+state.md
+  s_e405041362b96d::t_0cd05648b49590 9-11
+crates/lsb-proxy/Cargo.toml
+  s_e405041362b96d::t_4eacdf10489297 12
+crates/lsb-proxy/src/config.rs
+  s_e405041362b96d::t_1b8f36c1c74b15 77-79,195,281-293,299-300
+  s_e405041362b96d::t_4eacdf10489297 113-118,177-179,181,407
+  s_e405041362b96d::t_7b0d4321b95e53 196-202,401-406
+  s_e405041362b96d::t_dfc34efa1bbb9b 180,479-495
+  s_e405041362b96d::t_f444fce4a76473 515-524
+  s_e405041362b96d::t_74fd5cba14dfa9 182
+  s_e405041362b96d::t_3ecaf9c66c2787 408
+  s_e405041362b96d::t_5bc20adf574b84 478
+crates/lsb-seawork-service/Cargo.toml
+  s_e405041362b96d::t_eac23e67c08d4f 19
+crates/lsb-seawork-service/src/network_policy.rs
+  s_e405041362b96d::t_532fad75a017a2 99
+  s_e405041362b96d::t_4481bf85e9e9d6 6-9,44-46,90
+  s_e405041362b96d::t_2a968ac9d095bc 108-111
+  s_e405041362b96d::t_af965860a4275c 1-2,52-60,96-98,100-107,112-115
+  s_e405041362b96d::t_eac23e67c08d4f 3-5,10-43,47-51,61-89,91-95,116-117
+crates/lsb-seawork-service/src/config.rs
+  s_e405041362b96d::t_2a968ac9d095bc 194-197
+  s_e405041362b96d::t_c4f16166475b83 23-24,61,125-135
+  s_e405041362b96d::t_6708f2d5c1476e 190-193,198-205
+crates/lsb-proxy/src/lib.rs
+  s_e405041362b96d::t_21ef1f491e6278 319
+  s_e405041362b96d::t_0def32a94acfc4 320-321
+crates/lsb-service-proto/src/message.rs
+  s_e405041362b96d::t_7b0d4321b95e53 209-213,737-742
+  s_e405041362b96d::t_9ce4c80a9817dd 743-744
+crates/lsb-seawork-service/src/pipe.rs
+  s_e405041362b96d::t_a66d000b5feb43 15,42
+  s_e405041362b96d::t_1a89151243a659 343,358,378,385,1255
+crates/lsb-seawork-service/src/rpc/sandbox.rs
+  s_e405041362b96d::t_1a89151243a659 27
+  s_e405041362b96d::t_50a810c9726071 42
+  s_e405041362b96d::t_026aee9c0e17ca 41,43-44,100,210,240
+crates/lsb-service-client/src/connection.rs
+  s_e405041362b96d::t_a66d000b5feb43 1026
+crates/lsb-proxy/src/proxy.rs
+  s_e405041362b96d::t_4eacdf10489297 19,155-156
+  s_e405041362b96d::t_fd1101922f8ed0 55,60,63,72,136,138-143,148-149,181
+bindings/nodejs/src/service.rs
+  s_e405041362b96d::t_27b1ab5ff4a9a1 299-305
+crates/lsb-seawork-service/src/main.rs
+  s_e405041362b96d::t_525bce837bd350 10
+crates/lsb-seawork-service/src/scm.rs
+  s_e405041362b96d::t_1a89151243a659 141
+crates/lsb-seawork-service/src/resource/vm.rs
+  s_e405041362b96d::t_af965860a4275c 738
+  s_e405041362b96d::t_79cab8b88537e3 21,335,346-347,352-355,382,389
+  s_e405041362b96d::t_e87632cfbddeed 673-693,701-705,707-737,739,784
+docs/seawork-service-release.md
+  s_e405041362b96d::t_c4f16166475b83 146,155-156
+crates/lsb-vm/src/lib.rs
+  s_e405041362b96d::t_b0bca083ecc5fd 7
+Cargo.lock
+  s_e405041362b96d::t_6810ebfedde583 1016,1046
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "4b2604d34baee97f9d0de201a4dab9c6bb6b1802",
+  "prompts": {},
+  "sessions": {
+    "s_e405041362b96d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f79d9-86a6-77c0-8b37-10e93d6c9147",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
