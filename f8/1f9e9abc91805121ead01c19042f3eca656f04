@@ -1,0 +1,63 @@
+crates/lsb-seawork-service/src/pipe.rs
+  s_e405041362b96d::t_ac067a0e3c4f04 42,470,704,714,928-943
+  s_e405041362b96d::t_fb75ebbde2925e 23,738,915-917
+  s_e405041362b96d::t_ce2e26279f668a 944
+bindings/nodejs/test/api-shape.spec.ts
+  s_e405041362b96d::t_d78802bea772da 128
+crates/lsb-service-client/Cargo.toml
+  s_e405041362b96d::t_fb75ebbde2925e 12
+crates/lsb-service-proto/src/version.rs
+  s_e405041362b96d::t_a6fc9bb5f75499 7,11,14-18
+  s_e405041362b96d::t_d42bcbabfe499e 19
+crates/lsb-service-proto/src/message.rs
+  s_e405041362b96d::t_f56841097a31fb 733-744
+  s_e405041362b96d::t_a6fc9bb5f75499 203-225,503,506,508-513,527-590
+  s_e405041362b96d::t_ac067a0e3c4f04 514-526
+  s_e405041362b96d::t_4c7935bad58ab7 892-938
+  s_e405041362b96d::t_190da41f3d035c 891
+bindings/nodejs/README.md
+  s_e405041362b96d::t_d78802bea772da 66-74
+crates/lsb-service-proto/src/lib.rs
+  s_e405041362b96d::t_f56841097a31fb 14-17
+  s_e405041362b96d::t_a6fc9bb5f75499 19-21
+  s_e405041362b96d::t_7e08dd64f86b67 18
+state.md
+  s_e405041362b96d::t_8a28dd0d087acf 10
+  s_e405041362b96d::t_746325b7b1b969 9
+bindings/nodejs/Cargo.toml
+  s_e405041362b96d::t_f24da3cdbfe4db 20
+crates/lsb-service-proto/Cargo.toml
+  s_e405041362b96d::t_a6fc9bb5f75499 10
+crates/lsb-seawork-service/Cargo.toml
+  s_e405041362b96d::t_fb75ebbde2925e 18
+crates/lsb-service-client/src/connection.rs
+  s_e405041362b96d::t_683ded16bf1c44 172-175
+  s_e405041362b96d::t_fb75ebbde2925e 16,1562
+  s_e405041362b96d::t_7ce1ffb649c48c 33,97,119,135,257,259-262
+  s_e405041362b96d::t_ac067a0e3c4f04 11,258
+bindings/nodejs/src/service.rs
+  s_e405041362b96d::t_81d72f5c66dc3c 368-371,383-385
+  s_e405041362b96d::t_22e6b17545b172 363,382
+  s_e405041362b96d::t_683ded16bf1c44 7-8,41-42,157-161,179,290,299,344,351,364-367,372-381,386-435
+  s_e405041362b96d::t_8531fa34837f01 436
+Cargo.lock
+  s_e405041362b96d::t_58ed53cf485629 1053,1067,1076
+bindings/nodejs/index.d.ts
+  s_e405041362b96d::t_9b3a0b581dc834 497-498
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "f81f9e9abc91805121ead01c19042f3eca656f04",
+  "prompts": {},
+  "sessions": {
+    "s_e405041362b96d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f79d9-86a6-77c0-8b37-10e93d6c9147",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
