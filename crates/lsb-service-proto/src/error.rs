@@ -22,6 +22,7 @@ pub enum ErrorCode {
     QuotaExceeded,
     DeadlineExceeded,
     Cancelled,
+    CancellationTooLate,
     OutputLimit,
     OutputBackpressure,
     PathPolicyDenied,
@@ -57,6 +58,7 @@ impl ErrorCode {
             Self::QuotaExceeded => "QUOTA_EXCEEDED",
             Self::DeadlineExceeded => "DEADLINE_EXCEEDED",
             Self::Cancelled => "CANCELLED",
+            Self::CancellationTooLate => "CANCELLATION_TOO_LATE",
             Self::OutputLimit => "OUTPUT_LIMIT",
             Self::OutputBackpressure => "OUTPUT_BACKPRESSURE",
             Self::PathPolicyDenied => "PATH_POLICY_DENIED",
@@ -100,6 +102,10 @@ impl ErrorEnvelope {
             ),
             ErrorCode::StartResultExpired => (
                 "The original sandbox start is unavailable on this connection and cannot be adopted. If its connection closed, it was cleaned up. Start again with a new instanceId.",
+                false,
+            ),
+            ErrorCode::CancellationTooLate => (
+                "The operation has crossed its commit point and will return its actual result.",
                 false,
             ),
             ErrorCode::AccessDenied | ErrorCode::ClientNotTrusted => ("Access was denied.", false),
@@ -181,5 +187,13 @@ mod tests {
         assert_eq!(envelope.code.as_str(), "START_RESULT_EXPIRED");
         assert!(!envelope.retryable);
         assert!(envelope.message.contains("new instanceId"));
+    }
+
+    #[test]
+    fn cancellation_too_late_has_stable_commit_guidance() {
+        let envelope = ErrorEnvelope::safe(ErrorCode::CancellationTooLate, "correlation");
+        assert_eq!(envelope.code.as_str(), "CANCELLATION_TOO_LATE");
+        assert!(!envelope.retryable);
+        assert!(envelope.message.contains("commit point"));
     }
 }

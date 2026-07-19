@@ -62,10 +62,23 @@ impl OperationContext {
 
     fn check(&self) -> Result<()> {
         self.cancellation.check()?;
+        if self.cancellation.is_committing() {
+            return Ok(());
+        }
         if Instant::now() >= self.deadline {
-            bail!("operation exceeded bounded deadline");
+            self.cancellation.expire();
+            self.cancellation.check()?;
         }
         Ok(())
+    }
+
+    fn begin_commit(&self) -> Result<()> {
+        self.check()?;
+        if self.cancellation.begin_commit() {
+            Ok(())
+        } else {
+            self.cancellation.check()
+        }
     }
 }
 
@@ -256,7 +269,7 @@ impl ManagedVmController {
         self.commands
             .try_send(Command::File(op, operation.clone(), reply))
             .map_err(|_| anyhow::anyhow!("managed VM command queue is unavailable"))?;
-        wait_response(response, &operation, "file operation")
+        wait_file_response(response, &operation)
     }
 
     pub fn spawn(
@@ -301,12 +314,43 @@ fn wait_response<T>(
 ) -> Result<T> {
     loop {
         operation.check()?;
-        let remaining = operation.deadline.saturating_duration_since(Instant::now());
-        match response.recv_timeout(remaining.min(Duration::from_millis(25))) {
+        let wait = if operation.cancellation.is_committing() {
+            Duration::from_millis(25)
+        } else {
+            operation
+                .deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(25))
+        };
+        match response.recv_timeout(wait) {
             Ok(result) => return result,
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 bail!("managed VM {name} worker disconnected")
+            }
+        }
+    }
+}
+
+fn wait_file_response(
+    response: mpsc::Receiver<Result<ManagedFileResult>>,
+    operation: &OperationContext,
+) -> Result<ManagedFileResult> {
+    loop {
+        let cancellation_pending = operation.check().is_err();
+        let wait = if cancellation_pending || operation.cancellation.is_committing() {
+            Duration::from_millis(25)
+        } else {
+            operation
+                .deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(25))
+        };
+        match response.recv_timeout(wait) {
+            Ok(result) => return result,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("managed VM file operation worker disconnected")
             }
         }
     }
@@ -423,7 +467,13 @@ fn run(
                 let result = operation
                     .check()
                     .and_then(|()| file_op(&sandbox, op, &operation))
-                    .and_then(|result| operation.check().map(|()| result));
+                    .and_then(|result| {
+                        if operation.cancellation.is_committing() {
+                            Ok(result)
+                        } else {
+                            operation.check().map(|()| result)
+                        }
+                    });
                 let _ = reply.send(result);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
@@ -471,6 +521,7 @@ fn file_op(
 ) -> Result<ManagedFileResult> {
     match op {
         ManagedFileOp::Mkdir { path, recursive } => {
+            operation.begin_commit()?;
             sandbox.mkdir(&path, recursive)?;
             Ok(ManagedFileResult::Empty)
         }
@@ -500,10 +551,12 @@ fn file_op(
             }))
         }
         ManagedFileOp::Remove { path, recursive } => {
+            operation.begin_commit()?;
             sandbox.remove(&path, recursive)?;
             Ok(ManagedFileResult::Empty)
         }
         ManagedFileOp::Rename { old_path, new_path } => {
+            operation.begin_commit()?;
             sandbox.rename(&old_path, &new_path)?;
             Ok(ManagedFileResult::Empty)
         }
@@ -512,10 +565,12 @@ fn file_op(
             dst,
             recursive,
         } => {
+            operation.begin_commit()?;
             sandbox.copy(&src, &dst, recursive)?;
             Ok(ManagedFileResult::Empty)
         }
         ManagedFileOp::Chmod { path, mode } => {
+            operation.begin_commit()?;
             sandbox.chmod(&path, mode)?;
             Ok(ManagedFileResult::Empty)
         }
@@ -535,8 +590,15 @@ fn file_op(
         }
         ManagedFileOp::WriteFile { path, bytes } => {
             let temporary = temporary_guest_path(&path)?;
-            sandbox.write_file(&temporary, &bytes)?;
+            if let Err(error) = sandbox.write_file(&temporary, &bytes) {
+                let _ = sandbox.remove(&temporary, false);
+                return Err(error);
+            }
             if let Err(error) = operation.check() {
+                let _ = sandbox.remove(&temporary, false);
+                return Err(error);
+            }
+            if let Err(error) = operation.begin_commit() {
                 let _ = sandbox.remove(&temporary, false);
                 return Err(error);
             }
@@ -816,6 +878,32 @@ mod tests {
         let operation = OperationContext::new(cancellation, Duration::from_secs(1));
         let (_reply, response) = mpsc::sync_channel::<Result<()>>(1);
         assert!(wait_response(response, &operation, "test")
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled"));
+    }
+
+    #[test]
+    fn cancelled_file_waiter_does_not_finish_before_worker_cleanup() {
+        let cancellation = CancellationToken::default();
+        cancellation.cancel();
+        let operation = OperationContext::new(cancellation.clone(), Duration::from_secs(1));
+        let (reply, response) = mpsc::sync_channel(1);
+        let (finished, result) = mpsc::sync_channel(1);
+
+        std::thread::spawn(move || {
+            let outcome = wait_file_response(response, &operation);
+            finished.send(outcome).unwrap();
+        });
+
+        assert!(matches!(
+            result.recv_timeout(Duration::from_millis(25)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        reply.send(Err(cancellation.check().unwrap_err())).unwrap();
+        assert!(result
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
             .unwrap_err()
             .to_string()
             .contains("cancelled"));

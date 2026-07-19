@@ -12,7 +12,8 @@ use lsb_service_proto::{
     encode_stream_payload, negotiate, parse_control, Cancel, CapabilityHealth, Correlation,
     ErrorCode, ErrorEnvelope, Event, FrameHeader, FrameKind, Health, HealthState, Hello,
     HelloReply, HexU64, ProtocolRange, Request, RequestOp, Response, ResponseValue, ServiceInfo,
-    WindowUpdate, CLIENT_FEATURE_BITS, CURRENT, START_REPLAY_MIN_MINOR, SUPPORTED,
+    WindowUpdate, CANCELLATION_COMMIT_MIN_MINOR, CLIENT_FEATURE_BITS, CURRENT,
+    START_REPLAY_MIN_MINOR, SUPPORTED,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{NamedPipeServer, PipeMode, ServerOptions};
@@ -33,7 +34,8 @@ use crate::security::client_image::authorize_maintenance_image;
 use crate::security::descriptor::SecurityDescriptor;
 use crate::security::ClientIdentity;
 use crate::session::{
-    CancellationToken, ClientIdentityKey, QuotaLimits, ResourceHandle, SessionManager,
+    CancelOutcome, CancellationReason, CancellationToken, ClientIdentityKey, QuotaLimits,
+    ResourceHandle, SessionManager,
 };
 use crate::{engine::ServiceEngineConfig, rpc};
 use crate::{LEDGER_SCHEMA_VERSION, PIPE_NAME, PIPE_SDDL};
@@ -868,12 +870,18 @@ where
             let cancel: Cancel = parse_control(&frame.payload)?;
             cancel.validate()?;
             let target = stream_correlation(&cancel.request_id)?;
-            let found = target.high == epoch
-                && connection
+            let outcome = if target.high == epoch {
+                connection
                     .lock()
                     .map_err(|_| anyhow::anyhow!("connection state poisoned"))?
-                    .cancel(target.low);
-            if found {
+                    .cancel(target.low)
+            } else {
+                None
+            };
+            if matches!(
+                outcome,
+                Some(CancelOutcome::Requested | CancelOutcome::AlreadyRequested)
+            ) {
                 if pending_upload
                     .as_ref()
                     .is_some_and(|upload| upload.request_correlation == target)
@@ -895,6 +903,18 @@ where
                     frame.header.correlation,
                     &Response::Ok {
                         result: ResponseValue::Empty {},
+                    },
+                )
+                .await?;
+            } else if outcome == Some(CancelOutcome::TooLate) {
+                write_error(
+                    writer,
+                    selected,
+                    frame.header.correlation,
+                    if selected.minor >= CANCELLATION_COMMIT_MIN_MINOR {
+                        ErrorCode::CancellationTooLate
+                    } else {
+                        ErrorCode::RequestNotActive
                     },
                 )
                 .await?;
@@ -1143,20 +1163,19 @@ async fn run_request(
         streams,
     );
     tokio::pin!(operation);
-    tokio::select! {
+    let result = tokio::select! {
         biased;
-        result = &mut operation => {
-            if result.is_err() {
-                let _ = write_error(&writer, protocol, correlation, ErrorCode::InternalError).await;
-            }
-        }
+        result = &mut operation => result,
         _ = wait_cancelled(cancellation.clone()) => {
-            let _ = write_error(&writer, protocol, correlation, ErrorCode::Cancelled).await;
+            operation.as_mut().await
         }
         _ = tokio::time::sleep(deadline.remaining(Instant::now())) => {
-            cancellation.cancel();
-            let _ = write_error(&writer, protocol, correlation, ErrorCode::DeadlineExceeded).await;
+            cancellation.expire();
+            operation.as_mut().await
         }
+    };
+    if result.is_err() {
+        let _ = write_error(&writer, protocol, correlation, ErrorCode::InternalError).await;
     }
     if let Ok(mut state) = connection.lock() {
         state.finish(correlation.low);
@@ -1167,6 +1186,15 @@ async fn wait_cancelled(cancellation: CancellationToken) {
     while !cancellation.is_cancelled() {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+}
+
+fn cancellation_error_code(cancellation: &CancellationToken) -> Option<ErrorCode> {
+    cancellation
+        .cancellation_reason()
+        .map(|reason| match reason {
+            CancellationReason::Cancelled => ErrorCode::Cancelled,
+            CancellationReason::DeadlineExceeded => ErrorCode::DeadlineExceeded,
+        })
 }
 
 fn request_maximum(op: &RequestOp) -> Duration {
@@ -1198,8 +1226,15 @@ async fn dispatch_request(
     if matches!(request.op, RequestOp::HealthCheck {}) {
         let delay = TEST_HEALTH_DELAY_MS.load(std::sync::atomic::Ordering::Acquire);
         if delay != 0 {
-            tokio::time::sleep(Duration::from_millis(delay)).await;
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_millis(delay)) => {}
+                () = wait_cancelled(request_cancellation.clone()) => {}
+            }
         }
+    }
+    if let Some(code) = cancellation_error_code(&request_cancellation) {
+        write_error(&writer, protocol, correlation, code).await?;
+        return Ok(());
     }
     let deadline_ms = request.deadline_ms;
     macro_rules! rpc_value {

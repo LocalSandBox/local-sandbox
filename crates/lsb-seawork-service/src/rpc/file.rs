@@ -3,7 +3,10 @@ use std::time::Duration;
 use lsb_service_proto::{ErrorCode, ResponseValue, ServiceDirEntry, ServiceFileStat};
 
 use crate::resource::vm::{ManagedFileOp, ManagedFileResult};
-use crate::session::{CancellationToken, ClientIdentityKey, ResourceHandle, SessionManager};
+use crate::session::{
+    CancellationError, CancellationReason, CancellationToken, ClientIdentityKey, ResourceHandle,
+    SessionManager,
+};
 
 pub async fn run(
     sessions: SessionManager,
@@ -49,8 +52,8 @@ pub async fn read(
                 cancellation,
             )
             .map_err(|error| {
-                if error.to_string().contains("cancelled") {
-                    ErrorCode::Cancelled
+                if let Some(code) = cancellation_error_code(&error) {
+                    code
                 } else if error.to_string().contains("initial stream credit") {
                     ErrorCode::OutputLimit
                 } else {
@@ -68,13 +71,16 @@ pub async fn read(
 }
 
 fn map_file_error(error: anyhow::Error) -> ErrorCode {
-    if error.to_string().contains("cancelled") {
-        ErrorCode::Cancelled
-    } else if error.to_string().contains("deadline") {
-        ErrorCode::DeadlineExceeded
-    } else {
-        ErrorCode::InternalError
-    }
+    cancellation_error_code(&error).unwrap_or(ErrorCode::InternalError)
+}
+
+fn cancellation_error_code(error: &anyhow::Error) -> Option<ErrorCode> {
+    error
+        .downcast_ref::<CancellationError>()
+        .map(|error| match error.reason() {
+            CancellationReason::Cancelled => ErrorCode::Cancelled,
+            CancellationReason::DeadlineExceeded => ErrorCode::DeadlineExceeded,
+        })
 }
 
 fn to_response(result: ManagedFileResult) -> ResponseValue {

@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 
-use crate::session::CancellationToken;
+use crate::session::{CancelOutcome, CancellationToken};
 
 use super::pipe::MAX_REQUESTS_PER_CONNECTION;
 
@@ -155,12 +155,11 @@ impl ConnectionState {
         Ok(cancellation)
     }
 
-    pub fn cancel(&self, request_id: u64) -> bool {
+    pub fn cancel(&self, request_id: u64) -> Option<CancelOutcome> {
         if let Some(request) = self.active.get(&request_id) {
-            request.cancellation.cancel();
-            true
+            Some(request.cancellation.cancel())
         } else {
-            false
+            None
         }
     }
 
@@ -172,8 +171,9 @@ impl ConnectionState {
         let mut count = 0;
         for request in self.active.values() {
             if request.deadline.expired(now) {
-                request.cancellation.cancel();
-                count += 1;
+                if request.cancellation.expire() != CancelOutcome::TooLate {
+                    count += 1;
+                }
             }
         }
         count
@@ -240,6 +240,24 @@ mod tests {
             RequestDeadline::from_client(now, Some(u32::MAX), DEFAULT_UNARY_DEADLINE)
                 .expired(now + DEFAULT_UNARY_DEADLINE)
         );
+    }
+
+    #[test]
+    fn cancellation_reports_when_a_request_has_crossed_its_commit_point() {
+        let mut state = ConnectionState::new(1).unwrap();
+        let now = Instant::now();
+        let cancellation = state
+            .begin_request(
+                7,
+                RequestDeadline::from_client(now, Some(1), DEFAULT_UNARY_DEADLINE),
+            )
+            .unwrap();
+
+        assert!(cancellation.begin_commit());
+        assert_eq!(state.cancel(7), Some(CancelOutcome::TooLate));
+        assert_eq!(state.cancel_expired(now + Duration::from_millis(2)), 0);
+        assert!(!cancellation.is_cancelled());
+        assert!(state.finish(7));
     }
 
     #[test]

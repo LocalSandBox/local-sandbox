@@ -20,6 +20,12 @@ cleans every owned resource; the replay key becomes a bounded tombstone and reco
 returns non-retryable `START_RESULT_EXPIRED`, requiring an explicit new `instanceId`
 instead of silently creating or adopting a VM.
 
+Protocol 1.5 adds commit-aware filesystem cancellation. A cancellation that wins before
+commit returns only after cleanup as `CANCELLED`; one that loses to commit returns
+`CANCELLATION_TOO_LATE` on the Cancel control while the original operation reports its
+actual result. Protocol 1.4 clients receive the already-known `REQUEST_NOT_ACTIVE` for
+that too-late Cancel control.
+
 Each parity entry is one of:
 
 - `equivalent`: the host-neutral service contract already matches the reachable

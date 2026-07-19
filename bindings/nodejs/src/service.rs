@@ -1008,4 +1008,17 @@ mod tests {
     assert!(reason.contains("new instanceId"));
     assert!(!reason.contains("correlation-not-exposed"));
   }
+
+  #[test]
+  fn service_errors_distinguish_cancellation_that_lost_the_commit_race() {
+    let error = lsb_service_proto::ErrorEnvelope::safe(
+      lsb_service_proto::ErrorCode::CancellationTooLate,
+      "correlation-not-exposed",
+    );
+    let reason = stable_service_error_reason(&error);
+
+    assert!(reason.starts_with("[CANCELLATION_TOO_LATE] "));
+    assert!(reason.contains("commit point"));
+    assert!(!reason.contains("correlation-not-exposed"));
+  }
 }
