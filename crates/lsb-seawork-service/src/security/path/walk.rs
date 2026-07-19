@@ -549,17 +549,37 @@ fn protected_roots(
     let profiles = known_folder(&FOLDERID_UserProfiles, std::ptr::null_mut())?;
     let caller_profile = known_folder(&FOLDERID_Profile, token.as_raw_handle() as HANDLE).ok();
     let windows = windows_directory()?;
-    Ok((
-        vec![
-            program_data,
-            program_files,
-            program_files_x86,
-            windows,
-            policy.service_root().to_path_buf(),
-        ],
-        Some(profiles),
-        caller_profile,
-    ))
+    let mut protected = vec![
+        program_data,
+        program_files,
+        program_files_x86,
+        windows,
+        policy.service_root().to_path_buf(),
+    ];
+    extend_profile_roots(
+        &mut protected,
+        super::profiles::profile_list_roots()?,
+        caller_profile.as_deref(),
+    );
+    Ok((protected, Some(profiles), caller_profile))
+}
+
+fn extend_profile_roots(
+    protected: &mut Vec<PathBuf>,
+    profiles: Vec<PathBuf>,
+    caller_profile: Option<&Path>,
+) {
+    for profile in profiles {
+        if caller_profile.is_some_and(|caller| normalize(&profile) == normalize(caller)) {
+            continue;
+        }
+        if !protected
+            .iter()
+            .any(|existing| normalize(existing) == normalize(&profile))
+        {
+            protected.push(profile);
+        }
+    }
 }
 
 fn windows_directory() -> Result<PathBuf> {
@@ -696,6 +716,27 @@ mod tests {
         drop(root);
         std::fs::remove_dir_all(source).unwrap();
         std::fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    fn relocated_profile_roots_exclude_only_the_current_caller() {
+        let mut protected = vec![PathBuf::from(r"C:\ProgramData")];
+        extend_profile_roots(
+            &mut protected,
+            vec![
+                PathBuf::from(r"D:\Profiles\alice"),
+                PathBuf::from(r"D:\Profiles\bob"),
+                PathBuf::from(r"c:\PROGRAMDATA"),
+            ],
+            Some(Path::new(r"d:\PROFILES\Alice")),
+        );
+        assert_eq!(
+            protected,
+            vec![
+                PathBuf::from(r"C:\ProgramData"),
+                PathBuf::from(r"D:\Profiles\bob")
+            ]
+        );
     }
 
     fn current_impersonation_token() -> OwnedHandle {

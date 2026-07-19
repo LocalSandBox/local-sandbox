@@ -1,6 +1,7 @@
 mod export;
 mod identity;
 mod policy;
+mod profiles;
 mod walk;
 mod worker;
 

@@ -31,6 +31,17 @@ periodic/final synchronization are not wired, caller-token writeback is absent, 
 mount requests remain `MOUNT_UNAVAILABLE` until service/SMB lifecycle integration and
 the privileged NTFS/ReFS acceptance matrix are complete.
 
+Protected-profile policy no longer relies only on the default profiles directory. The
+path worker reads the protected 64-bit-machine `ProfileList` view with `KEY_READ`, caps
+enumeration at 1,024 entries, bounds and expands each `ProfileImagePath`, requires an
+absolute local-drive path, and adds every discovered root except the authenticated
+caller's exact normalized profile to the deny set. Registry access, type/size/path, or
+enumeration errors reject mount authorization. Current-machine and pure relocated-root
+tests cover expansion, termination, caller exclusion, deduplication, and UNC rejection.
+Canonical volume/file-identity comparison (including alias-resistant protection) is
+still part of the handle-relative traversal backlog and is not claimed by this string
+normalization tranche.
+
 ## Reconciliation
 
 For each relative path, the baseline, current host, and current guest snapshots produce
