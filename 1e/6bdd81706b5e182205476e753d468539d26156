@@ -1,0 +1,31 @@
+state.md
+  s_e405041362b96d::t_06753a40f8ba0f 11
+crates/lsb-seawork-service/src/ledger/mod.rs
+  s_e405041362b96d::t_991a85360e5ae3 3
+docs/protected-ledger-reconciliation.md
+  s_e405041362b96d::t_06753a40f8ba0f 39-48,63-65
+crates/lsb-seawork-service/src/ledger/recovery.rs
+  s_e405041362b96d::t_34e2c7f1318810 34-50,52-59,63,72,79,84,93
+  s_e405041362b96d::t_991a85360e5ae3 1-33,51,60-62,64-71,73-78,80-83,85-92,94-110,112-119,162-236,253,263-286,320-322
+  s_e405041362b96d::t_8009d0d1b567e8 111,120-161,287-319
+  s_e405041362b96d::t_6257b84a2d8bdd 237-252,254-262
+crates/lsb-seawork-service/src/ledger/atomic.rs
+  s_e405041362b96d::t_991a85360e5ae3 41-55,196-205,207
+  s_e405041362b96d::t_eb04b11672751c 206
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "1e6bdd81706b5e182205476e753d468539d26156",
+  "prompts": {},
+  "sessions": {
+    "s_e405041362b96d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f79d9-86a6-77c0-8b37-10e93d6c9147",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
