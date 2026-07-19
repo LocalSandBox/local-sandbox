@@ -1,0 +1,62 @@
+contracts/seawork-parity-v1.json
+  s_e405041362b96d::t_395d106daa8e29 101
+crates/lsb-service-proto/src/lib.rs
+  s_e405041362b96d::t_0b2cd1b22727a9 21-22
+bindings/nodejs/src/service.rs
+  s_e405041362b96d::t_395d106daa8e29 34
+  s_e405041362b96d::t_52914f29608473 983-1010
+crates/lsb-seawork-service/src/pipe.rs
+  s_e405041362b96d::t_fdffe453e225c8 1267-1270
+  s_e405041362b96d::t_0b2cd1b22727a9 15,1266
+crates/lsb-service-proto/src/version.rs
+  s_e405041362b96d::t_0b2cd1b22727a9 17,126-127
+  s_e405041362b96d::t_163c95af7013ef 7,11
+  s_e405041362b96d::t_c8594a10ef5d63 128-137
+  s_e405041362b96d::t_b55536f0319ee6 138-139
+crates/lsb-service-proto/src/error.rs
+  s_e405041362b96d::t_163c95af7013ef 33,68,101,103-104,177-183
+  s_e405041362b96d::t_ee4257a7328f27 102
+  s_e405041362b96d::t_d218be452de56a 184
+fixtures/seawork-parity/start-loss-recovery.json
+  s_e405041362b96d::t_395d106daa8e29 9,17-18
+crates/lsb-seawork-service/src/rpc/sandbox.rs
+  s_e405041362b96d::t_2f171358c012d6 17,30,76-90,99-106,108,110,112-113,116,137-142,160-176,179-184,197-202,214-231
+  s_e405041362b96d::t_621dd510773beb 91-98
+  s_e405041362b96d::t_d9eaa67ba327eb 232
+crates/lsb-seawork-service/src/session/mod.rs
+  s_e405041362b96d::t_71a8ac157f0dd6 8
+crates/lsb-service-client/src/connection.rs
+  s_e405041362b96d::t_395d106daa8e29 1004
+crates/lsb-service-proto/src/message.rs
+  s_e405041362b96d::t_395d106daa8e29 366
+docs/seawork-parity-contract.md
+  s_e405041362b96d::t_395d106daa8e29 16-22
+crates/lsb-seawork-service/src/session/manager.rs
+  s_e405041362b96d::t_fa1eaeae86b308 1231
+  s_e405041362b96d::t_163c95af7013ef 472
+  s_e405041362b96d::t_35efa8fa008cdf 470,1210-1230,1232-1317
+  s_e405041362b96d::t_40293122d57c03 26-27,126-155,169,211-217,374-469,473-490,687,1199-1204
+  s_e405041362b96d::t_b75c0bc7ea9c5c 471
+  s_e405041362b96d::t_1df7bb4ff3014e 1205
+state.md
+  s_e405041362b96d::t_9f1d75096e4df5 8,11
+  s_e405041362b96d::t_2b9b640ea62425 9
+bindings/nodejs/index.d.ts
+  s_e405041362b96d::t_05bab3a4015d90 492
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "b40a55ff1b4a4e556ea6a699720db29486a255eb",
+  "prompts": {},
+  "sessions": {
+    "s_e405041362b96d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f79d9-86a6-77c0-8b37-10e93d6c9147",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
