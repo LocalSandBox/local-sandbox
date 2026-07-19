@@ -1,0 +1,42 @@
+fixtures/seawork-parity/host-connectivity.json
+  s_e405041362b96d::t_2510719794b268 1-18
+contracts/seawork-parity-v1.json
+  s_e405041362b96d::t_ba734b978136e5 1-142
+xtask/src/seawork_parity.rs
+  s_e405041362b96d::t_7f6a11072f23ce 1-46,48,51-89,91-109,111-114,119,121-154,159-195,200-203,215-219,225-251,283-293,328-333,368-373,382-388,399-434,437-444
+  s_e405041362b96d::t_06f3b9d0c7fcbf 196-199,204-214,220-224,252-282,294-327,350-353,355-362,364-367,374-381
+  s_e405041362b96d::t_2510719794b268 90,110,115-118,334-349,354,363,435-436
+  s_e405041362b96d::t_b9ca37e7c5a455 120
+  s_e405041362b96d::t_ba734b978136e5 47,49-50,155-158,389-398
+fixtures/seawork-parity/start-loss-recovery.json
+  s_e405041362b96d::t_2510719794b268 1-18
+state.md
+  s_e405041362b96d::t_56a25a5294d1ca 7-8
+docs/seawork-parity-contract.md
+  s_e405041362b96d::t_2510719794b268 1-54
+fixtures/seawork-parity/workspace-shell.json
+  s_e405041362b96d::t_2510719794b268 1-16
+fixtures/seawork-parity/skills-files.json
+  s_e405041362b96d::t_2510719794b268 1-16
+fixtures/seawork-parity/network-public-auth.json
+  s_e405041362b96d::t_2510719794b268 1-17
+xtask/src/main.rs
+  s_e405041362b96d::t_06f3b9d0c7fcbf 48-50
+  s_e405041362b96d::t_7f6a11072f23ce 8,30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "1c8f162976cfdb5abfa0d63cb7881761f80dce58",
+  "prompts": {},
+  "sessions": {
+    "s_e405041362b96d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f79d9-86a6-77c0-8b37-10e93d6c9147",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
