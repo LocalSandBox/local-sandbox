@@ -1,0 +1,29 @@
+bindings/nodejs/test/api-shape.spec.ts
+  s_e405041362b96d::t_3aa149d1520523 152
+bindings/nodejs/src/config.rs
+  s_e405041362b96d::t_d2000db02e83b3 324-341
+  s_e405041362b96d::t_119e665c4d6f0e 323
+bindings/nodejs/src/service.rs
+  s_e405041362b96d::t_f4f2ce46c95c41 477,523,567
+  s_e405041362b96d::t_3aa149d1520523 50-51,474,476,478,520,522,524,564,566,568
+state.md
+  s_e405041362b96d::t_a4f48ea2e2e258 9
+bindings/nodejs/index.d.ts
+  s_e405041362b96d::t_d0242a78862a14 450-451
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "222749ec7a4ade56d754373b37e044fa3e4bb6ba",
+  "prompts": {},
+  "sessions": {
+    "s_e405041362b96d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f79d9-86a6-77c0-8b37-10e93d6c9147",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
