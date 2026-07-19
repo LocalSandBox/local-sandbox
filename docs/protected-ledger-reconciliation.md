@@ -36,6 +36,16 @@ future Windows cleanup executor must still re-query the named Job/process, accou
 right, share, ACE, staging identity, WFP object, port, or relay and compare every stable
 proof before mutation. Prefix similarity alone never authorizes deletion.
 
+The host-neutral recovery executor provides the ordering boundary for those Windows
+adapters. It validates the document and durably enters `cleaning` before the first
+external query, then processes resource records in reverse dependency order. An exact
+removal or already-absent proof removes one record and durably checkpoints before the
+next query. A mismatched identity preserves the record, persists `quarantined`, and
+prevents automatic retry. Temporary query failure preserves `cleaning` for a later
+retry. The ledger file is durably removed only after every record has an exact removed
+or absent proof. A crash after external removal but before its checkpoint safely
+re-queries the retained record and accepts only an already-absent/exact result.
+
 ## Durable writes
 
 Each persistence attempt serializes before creating state, allocates a random
@@ -50,6 +60,8 @@ discarded.
 macOS tests cover strict valid admission, corrupt/unknown/temp entries, symlinks without
 target access, duplicate ownership, bounded enumeration, forged markers, duplicate
 resources, intent/commit proof shapes, concurrent atomic writers, and failed-replace
-cleanup. Windows verification must add protected-directory ACL/tamper cases, file-ID
+cleanup. Fault injection covers every cleanup boundary, retry from each durable
+checkpoint, identity mismatch, and the crash window between external removal and ledger
+checkpoint. Windows verification must add protected-directory ACL/tamper cases, file-ID
 re-query races, disk-full/power-cut snapshots, and idempotent resource-specific cleanup
 before SEC-02 can be considered implementation complete.

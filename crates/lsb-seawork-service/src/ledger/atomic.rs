@@ -38,6 +38,21 @@ pub fn write_value(path: &Path, document: &impl serde::Serialize) -> Result<()> 
     result
 }
 
+pub fn remove_if_exists(path: &Path) -> Result<bool> {
+    let _write_guard = WRITE_LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("protected state writer lock poisoned"))?;
+    let parent = path.parent().context("ledger path has no parent")?;
+    match std::fs::remove_file(path) {
+        Ok(()) => {
+            sync_parent(parent)?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn create_temporary(parent: &Path, id: &str) -> Result<(std::path::PathBuf, std::fs::File)> {
     for _ in 0..16 {
         let mut random = [0u8; 8];
@@ -176,6 +191,18 @@ mod tests {
             std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
             1
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn durable_remove_is_idempotent() {
+        let root = std::env::temp_dir().join(format!("lsbsw-atomic-remove-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let path = root.join("ledger").join("document.json");
+        write_value(&path, &1).unwrap();
+
+        assert!(remove_if_exists(&path).unwrap());
+        assert!(!remove_if_exists(&path).unwrap());
         let _ = std::fs::remove_dir_all(root);
     }
 }
