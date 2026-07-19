@@ -7,6 +7,7 @@ pub mod ledger;
 mod logging;
 #[cfg(windows)]
 mod maintenance;
+mod network_policy;
 mod paths;
 #[cfg(windows)]
 mod pipe;

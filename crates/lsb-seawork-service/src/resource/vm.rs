@@ -18,6 +18,7 @@ pub struct ManagedVmSpec {
     pub rootfs_image: PathBuf,
     pub cpus: usize,
     pub memory_mib: u64,
+    pub proxy_config: Option<lsb_proxy::ProxyConfig>,
 }
 
 enum Command {
@@ -331,7 +332,7 @@ impl Drop for ManagedVm {
 
 fn run(
     engine: ServiceEngineConfig,
-    spec: ManagedVmSpec,
+    mut spec: ManagedVmSpec,
     session_cancellation: CancellationToken,
     startup_cancellation: CancellationToken,
     commands: mpsc::Receiver<Command>,
@@ -342,12 +343,16 @@ fn run(
         let _ = ready.send(Err(anyhow::anyhow!("operation cancelled")));
         return;
     }
-    let result = build_and_start(&engine, &spec);
-    let Ok(sandbox) = result else {
+    let result = build_and_start(&engine, &mut spec);
+    let Ok((sandbox, proxy_handle)) = result else {
         let _ = cleanup_instance(&engine, &spec);
         let _ = ready.send(result.map(|_| ()));
         return;
     };
+    let proxy_env = proxy_handle
+        .as_ref()
+        .map(|handle| handle.placeholders.clone())
+        .unwrap_or_default();
     if session_cancellation.is_cancelled() || startup_cancellation.is_cancelled() {
         let _ = sandbox.stop();
         let _ = cleanup_instance(&engine, &spec);
@@ -374,12 +379,14 @@ fn run(
                 return;
             }
             Ok(Command::Exec(spec, operation, reply)) => {
+                let spec = with_proxy_environment(spec, &proxy_env);
                 let result = operation
                     .check()
                     .and_then(|()| exec(&sandbox, spec, &operation));
                 let _ = reply.send(result);
             }
             Ok(Command::Spawn(spec, operation, reply)) => {
+                let spec = with_proxy_environment(spec, &proxy_env);
                 let result = operation
                     .check()
                     .and_then(|()| spawn(&sandbox, spec))
@@ -663,8 +670,27 @@ fn cleanup_instance(engine: &ServiceEngineConfig, spec: &ManagedVmSpec) -> Resul
     Ok(())
 }
 
-fn build_and_start(engine: &ServiceEngineConfig, spec: &ManagedVmSpec) -> Result<lsb_vm::Sandbox> {
-    let sandbox = lsb_vm::Sandbox::builder()
+fn build_and_start(
+    engine: &ServiceEngineConfig,
+    spec: &mut ManagedVmSpec,
+) -> Result<(lsb_vm::Sandbox, Option<lsb_proxy::ProxyHandle>)> {
+    let (network_attachment, proxy_handle) = match spec.proxy_config.take() {
+        Some(config) => {
+            let link = lsb_proxy::create_proxy_link()?;
+            let attachment = match link.vm {
+                lsb_proxy::VmNetworkAttachment::FileDescriptor(fd) => {
+                    lsb_vm::PlatformNetworkAttachment::file_descriptor(fd)
+                }
+                lsb_proxy::VmNetworkAttachment::QemuStream { host, port } => {
+                    lsb_vm::PlatformNetworkAttachment::qemu_stream(host, port)
+                }
+            };
+            let handle = lsb_proxy::start_link(link.host, config)?;
+            (Some(attachment), Some(handle))
+        }
+        None => (None, None),
+    };
+    let mut builder = lsb_vm::Sandbox::builder()
         .data_dir(path_text(engine.resources_root())?)
         .service_qemu_executable(path_text(engine.qemu_executable())?)
         .kernel(path_text(engine.kernel_image())?)
@@ -672,10 +698,45 @@ fn build_and_start(engine: &ServiceEngineConfig, spec: &ManagedVmSpec) -> Result
         .rootfs(path_text(&spec.rootfs_image)?)
         .cpus(spec.cpus)
         .memory_mb(spec.memory_mib)
-        .console(false)
-        .build()?;
+        .console(false);
+    if let Some(attachment) = network_attachment {
+        builder = builder.network_attachment(attachment);
+    }
+    let sandbox = builder.build()?;
     sandbox.start()?;
-    Ok(sandbox)
+    if let Some(handle) = &proxy_handle {
+        if handle.requires_guest_ca {
+            if let Err(error) = install_proxy_ca(&sandbox, &handle.ca_cert_pem) {
+                let _ = sandbox.stop();
+                return Err(error);
+            }
+        }
+    }
+    Ok((sandbox, proxy_handle))
+}
+
+fn install_proxy_ca(sandbox: &lsb_vm::Sandbox, certificate: &[u8]) -> Result<()> {
+    sandbox.write_file(
+        "/usr/local/share/ca-certificates/lsb-proxy.crt",
+        certificate,
+    )?;
+    let exit_code = sandbox.exec(
+        &["update-ca-certificates", "--fresh"],
+        &mut std::io::sink(),
+        &mut std::io::sink(),
+    )?;
+    if exit_code != 0 {
+        bail!("guest proxy CA installation failed");
+    }
+    Ok(())
+}
+
+fn with_proxy_environment(
+    mut spec: ManagedExecSpec,
+    proxy_env: &HashMap<String, String>,
+) -> ManagedExecSpec {
+    spec.env = crate::network_policy::merge_proxy_environment(proxy_env, spec.env);
+    spec
 }
 
 fn validate_spec(engine: &ServiceEngineConfig, spec: &ManagedVmSpec) -> Result<()> {
@@ -720,6 +781,7 @@ mod tests {
             rootfs_image: PathBuf::from(r"C:\Users\caller\instance\rootfs.ext4"),
             cpus: 100,
             memory_mib: 64,
+            proxy_config: None,
         };
         assert!(validate_spec(&engine, &spec).is_err());
     }

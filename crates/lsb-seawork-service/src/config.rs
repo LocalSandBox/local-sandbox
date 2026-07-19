@@ -20,6 +20,8 @@ pub struct ServiceConfig {
     pub maintenance_roots: Vec<String>,
     #[serde(default)]
     pub ports_enabled: bool,
+    #[serde(default)]
+    pub egress_allow: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +58,7 @@ impl Default for ServiceConfig {
             client_roots: Vec::new(),
             maintenance_roots: Vec::new(),
             ports_enabled: false,
+            egress_allow: Vec::new(),
         }
     }
 }
@@ -119,6 +122,17 @@ impl ServiceConfig {
         }
         validate_roots(&self.client_roots, "client")?;
         validate_roots(&self.maintenance_roots, "maintenance")?;
+        if self.egress_allow.len() > 256 {
+            bail!("protected egress allowlist exceeds compiled bounds");
+        }
+        lsb_proxy::ProxyConfig {
+            protected_network: lsb_proxy::config::NetworkConfig {
+                allow: self.egress_allow.clone(),
+            },
+            ..Default::default()
+        }
+        .validate()
+        .context("protected egress allowlist is invalid")?;
         if self.ports_enabled {
             bail!("host ports are compiled fail-closed until WFP isolation is proven");
         }
@@ -171,6 +185,22 @@ mod tests {
         config.maintenance_roots = vec![r"C:\Program Files\LocalSandbox".to_string()];
         assert!(config.validate().is_ok());
         config.client_roots = vec![r"C:\Program Files\..\Windows".to_string()];
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn protected_egress_policy_is_bounded_and_validated() {
+        let mut config = ServiceConfig {
+            egress_allow: vec![
+                "api.example.com".to_string(),
+                "*.packages.example".to_string(),
+            ],
+            ..Default::default()
+        };
+        config.validate().unwrap();
+        config.egress_allow = vec!["bad*pattern.example".to_string()];
+        assert!(config.validate().is_err());
+        config.egress_allow = vec!["api.example.com".to_string(); 257];
         assert!(config.validate().is_err());
     }
 }

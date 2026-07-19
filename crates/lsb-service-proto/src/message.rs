@@ -206,7 +206,11 @@ impl Request {
                     for (name, secret) in &network.secrets {
                         validate_string(name)?;
                         validate_string(&secret.value)?;
-                        if name.is_empty() || secret.hosts.is_empty() || secret.hosts.len() > 64 {
+                        if !valid_environment_name(name)
+                            || secret.value.is_empty()
+                            || secret.hosts.is_empty()
+                            || secret.hosts.len() > 64
+                        {
                             return Err(ProtocolError::InvalidJson);
                         }
                         for host in &secret.hosts {
@@ -728,6 +732,14 @@ fn validate_string(value: &str) -> Result<(), ProtocolError> {
         return Err(ProtocolError::MessageTooLarge);
     }
     Ok(())
+}
+
+fn valid_environment_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 fn validate_host_scope(scope: &ServiceHostScope) -> Result<(), ProtocolError> {

@@ -24,6 +24,7 @@ pub async fn start(
     sessions: SessionManager,
     session_id: ResourceHandle,
     identity: ClientIdentityKey,
+    protected_egress_allow: Vec<String>,
     _client_instance_id: Option<String>,
     from: Option<String>,
     cpus: u16,
@@ -37,6 +38,10 @@ pub async fn start(
     if from.is_some() {
         return Err(ErrorCode::CheckpointUnsupported);
     }
+    let proxy_config = network
+        .map(|policy| crate::network_policy::build_proxy_config(policy, protected_egress_allow))
+        .transpose()
+        .map_err(|_| ErrorCode::InvalidRequest)?;
     if !admissions_open {
         return Err(ErrorCode::ServiceUnavailable);
     }
@@ -45,9 +50,6 @@ pub async fn start(
     }
     if !ports.is_empty() {
         return Err(ErrorCode::PortIsolationUnavailable);
-    }
-    if network.is_some_and(|policy| !policy.allowed_hosts.is_empty()) {
-        return Err(ErrorCode::NetworkPolicyDenied);
     }
     let engine = engine.ok_or(ErrorCode::BundleInvalid)?;
     let requested_bytes = u64::from(disk_mib) * 1024 * 1024;
@@ -95,6 +97,7 @@ pub async fn start(
             cpus,
             memory_mib,
             disk_mib,
+            proxy_config,
             &cancellation,
         ) {
             Ok(spec) => spec,
@@ -204,6 +207,7 @@ fn prepare_instance(
     cpus: u16,
     memory_mib: u32,
     disk_mib: u32,
+    proxy_config: Option<lsb_proxy::ProxyConfig>,
     cancellation: &CancellationToken,
 ) -> Result<ManagedVmSpec> {
     cancellation.check()?;
@@ -233,6 +237,7 @@ fn prepare_instance(
             rootfs_image,
             cpus: usize::from(cpus),
             memory_mib: u64::from(memory_mib),
+            proxy_config,
         })
     })();
     if result.is_err() {

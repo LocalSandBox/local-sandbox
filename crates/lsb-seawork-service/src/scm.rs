@@ -138,6 +138,7 @@ fn run_registered(
         config.client_roots.clone(),
         config.maintenance_roots.clone(),
         config.publisher_thumbprints.clone(),
+        config.egress_allow.clone(),
     );
     advance_startup_checkpoint(
         status_handle,

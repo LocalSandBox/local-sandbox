@@ -296,7 +296,13 @@ impl SeaWorkService {
           .map_err(|_| napi::Error::from_reason("cpus is out of range"))?,
         memory_mib: opts.memoryMb.unwrap_or(2048),
         disk_mib: opts.diskSizeMb.unwrap_or(4096),
-        network: opts.network.map(map_service_network).transpose()?,
+        network: Some(
+          opts
+            .network
+            .map(map_service_network)
+            .transpose()?
+            .unwrap_or_default(),
+        ),
         ..lsb_service_client::StartSandboxOptions::default()
       };
       let sandbox = self

@@ -314,11 +314,11 @@ pub fn start_link(
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
 
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let mut stack_thread = spawn_stack_thread(attachment, event_tx, cmd_rx, shutdown.clone())?;
-
     let proxy_config = config;
     let proxy_placeholders = placeholders.clone();
+    let mut engine = ProxyEngine::new(proxy_config, event_rx, cmd_tx, ca, proxy_placeholders)?;
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let mut stack_thread = spawn_stack_thread(attachment, event_tx, cmd_rx, shutdown.clone())?;
     let runtime_thread = match spawn_managed_thread("lsb-proxy", move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -327,8 +327,6 @@ pub fn start_link(
             .expect("failed to create tokio runtime for proxy");
 
         rt.block_on(async move {
-            let mut engine =
-                ProxyEngine::new(proxy_config, event_rx, cmd_tx, ca, proxy_placeholders);
             engine.run().await;
         });
     }) {

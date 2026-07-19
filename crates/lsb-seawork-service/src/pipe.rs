@@ -12,7 +12,7 @@ use lsb_service_proto::{
     encode_stream_payload, negotiate, parse_control, Cancel, CapabilityHealth, Correlation,
     ErrorCode, ErrorEnvelope, Event, FrameHeader, FrameKind, Health, HealthState, Hello,
     HelloReply, HexU64, ProtocolRange, Request, RequestOp, Response, ResponseValue, ServiceInfo,
-    WindowUpdate, CURRENT, SUPPORTED,
+    WindowUpdate, CLIENT_FEATURE_BITS, CURRENT, SUPPORTED,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{NamedPipeServer, PipeMode, ServerOptions};
@@ -39,7 +39,7 @@ use crate::{engine::ServiceEngineConfig, rpc};
 use crate::{LEDGER_SCHEMA_VERSION, PIPE_NAME, PIPE_SDDL};
 
 const OUTPUT_BACKPRESSURE_TIMEOUT: Duration = Duration::from_secs(30);
-const SERVICE_FEATURE_BITS: u64 = 0;
+const SERVICE_FEATURE_BITS: u64 = CLIENT_FEATURE_BITS;
 #[cfg(test)]
 static TEST_HEALTH_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -340,6 +340,7 @@ pub struct HealthContext {
     client_roots: Vec<String>,
     maintenance_roots: Vec<String>,
     publisher_thumbprints: Vec<String>,
+    protected_egress_allow: Vec<String>,
 }
 
 impl HealthContext {
@@ -354,6 +355,7 @@ impl HealthContext {
             client_roots: Vec::new(),
             maintenance_roots: Vec::new(),
             publisher_thumbprints: Vec::new(),
+            protected_egress_allow: Vec::new(),
         }
     }
 
@@ -373,12 +375,14 @@ impl HealthContext {
         client_roots: Vec<String>,
         maintenance_roots: Vec<String>,
         publisher_thumbprints: Vec<String>,
+        protected_egress_allow: Vec<String>,
     ) -> Self {
         self.admissions_open = maintenance.admissions();
         self.maintenance = Some(maintenance);
         self.client_roots = client_roots;
         self.maintenance_roots = maintenance_roots;
         self.publisher_thumbprints = publisher_thumbprints;
+        self.protected_egress_allow = protected_egress_allow;
         self
     }
 
@@ -1248,6 +1252,7 @@ async fn dispatch_request(
             context.sessions.clone(),
             session_id,
             identity.clone(),
+            context.protected_egress_allow.clone(),
             client_instance_id,
             from,
             cpus,

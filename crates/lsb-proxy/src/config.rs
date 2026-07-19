@@ -74,6 +74,9 @@ pub struct ProxyConfig {
     pub secrets: HashMap<String, SecretConfig>,
     /// Network access rules.
     pub network: NetworkConfig,
+    /// Installer-protected product egress rules intersected with caller policy.
+    /// Empty means the product policy permits any otherwise-safe public host.
+    pub protected_network: NetworkConfig,
     /// Opt-in HTTPS request interception and mutation.
     pub https_interception: HttpsInterceptionConfig,
     /// Host ports exposed to the guest via host.lsb.internal.
@@ -104,6 +107,12 @@ impl fmt::Debug for RequestHeaderRule {
             .field("value", &"<redacted>")
             .field("hosts", &self.hosts)
             .finish()
+    }
+}
+
+impl Drop for RequestHeaderRule {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.value);
     }
 }
 
@@ -165,6 +174,12 @@ impl fmt::Debug for SecretConfig {
     }
 }
 
+impl Drop for SecretConfig {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.value);
+    }
+}
+
 /// Network access policy.
 #[derive(Debug, Clone, Default)]
 pub struct NetworkConfig {
@@ -177,7 +192,14 @@ impl ProxyConfig {
     /// Validate request-interception configuration before starting a VM.
     pub fn validate(&self) -> Result<()> {
         validate_host_patterns(&self.network.allow)?;
-        for secret in self.secrets.values() {
+        validate_host_patterns(&self.protected_network.allow)?;
+        for (name, secret) in &self.secrets {
+            if !valid_environment_name(name) {
+                bail!("secret name must be a valid environment variable name");
+            }
+            if secret.value.is_empty() {
+                bail!("secret value must not be empty");
+            }
             if secret.hosts.is_empty() {
                 bail!("secret host scope must not be empty");
             }
@@ -256,19 +278,26 @@ impl ProxyConfig {
         {
             return false;
         }
-        if self.network.allow.is_empty() {
-            return true;
-        }
-        self.network
-            .allow
-            .iter()
-            .any(|pattern| domain_matches(pattern, domain))
+        let caller_allowed = self.network.allow.is_empty()
+            || self
+                .network
+                .allow
+                .iter()
+                .any(|pattern| domain_matches(pattern, domain));
+        let product_allowed = self.protected_network.allow.is_empty()
+            || self
+                .protected_network
+                .allow
+                .iter()
+                .any(|pattern| domain_matches(pattern, domain));
+        caller_allowed && product_allowed
     }
 
     /// Whether this proxy config has an explicit allowlist. Empty allowlists
     /// preserve existing allow-all `--allow-net` behavior.
     pub fn has_domain_allowlist(&self) -> bool {
-        self.permits_network_policy() && !self.network.allow.is_empty()
+        self.permits_network_policy()
+            && (!self.network.allow.is_empty() || !self.protected_network.allow.is_empty())
     }
 
     /// Look up whether a connection to the gateway IP on `guest_port` should
@@ -369,6 +398,14 @@ fn validate_request_header_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+fn valid_environment_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
 fn validate_request_header_value(value: &str) -> Result<()> {
     if value.len() > MAX_REQUEST_HEADER_VALUE_BYTES {
         bail!("HTTPS request header value exceeds {MAX_REQUEST_HEADER_VALUE_BYTES} bytes");
@@ -439,6 +476,24 @@ mod tests {
     }
 
     #[test]
+    fn protected_product_allowlist_intersects_caller_policy() {
+        let config = ProxyConfig {
+            network: NetworkConfig {
+                allow: vec!["*.example.com".to_string()],
+            },
+            protected_network: NetworkConfig {
+                allow: vec!["api.example.com".to_string()],
+            },
+            ..Default::default()
+        };
+        config.validate().unwrap();
+        assert!(config.is_domain_allowed("api.example.com"));
+        assert!(!config.is_domain_allowed("cdn.example.com"));
+        assert!(!config.is_domain_allowed("api.other.test"));
+        assert!(config.has_domain_allowlist());
+    }
+
+    #[test]
     fn validation_rejects_invalid_network_and_secret_host_patterns() {
         let invalid_allow = ProxyConfig {
             network: NetworkConfig {
@@ -457,6 +512,16 @@ mod tests {
             },
         );
         assert!(empty_secret_scope.validate().is_err());
+
+        let mut invalid_secret_name = ProxyConfig::default();
+        invalid_secret_name.secrets.insert(
+            "BAD-NAME".into(),
+            SecretConfig {
+                value: "redacted".into(),
+                hosts: vec!["api.example.com".into()],
+            },
+        );
+        assert!(invalid_secret_name.validate().is_err());
     }
 
     #[test]

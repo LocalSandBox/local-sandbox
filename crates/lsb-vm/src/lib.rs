@@ -4,7 +4,7 @@
 mod mount_metrics;
 mod sandbox;
 
-pub use lsb_platform::VmState;
+pub use lsb_platform::{PlatformNetworkAttachment, VmState};
 pub use lsb_proto::{
     frame, ExecRequest, ForwardRequest, ForwardResponse, MountRequest, MountResponse, PortMapping,
     ReadFileRequest, WriteFileRequest, WriteFileResponse, VSOCK_PORT, VSOCK_PORT_FORWARD,

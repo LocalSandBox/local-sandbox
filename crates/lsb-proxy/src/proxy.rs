@@ -16,8 +16,7 @@ use tracing::{debug, info, trace};
 #[cfg(windows)]
 use windows_sys::Win32::Security::Cryptography::{
     CertCloseStore, CertEnumCertificatesInStore, CertOpenStore, CERT_CONTEXT,
-    CERT_STORE_PROV_SYSTEM_W, CERT_STORE_READONLY_FLAG, CERT_SYSTEM_STORE_CURRENT_USER,
-    CERT_SYSTEM_STORE_LOCAL_MACHINE,
+    CERT_STORE_PROV_SYSTEM_W, CERT_STORE_READONLY_FLAG, CERT_SYSTEM_STORE_LOCAL_MACHINE,
 };
 
 use crate::config::{ProxyConfig, RequestHeaderRule, SMB_MOUNT_PORT};
@@ -53,15 +52,15 @@ impl ProxyEngine {
         cmd_tx: mpsc::UnboundedSender<StackCommand>,
         ca: CertificateAuthority,
         placeholders: HashMap<String, String>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         // BoringSSL upstream connector — Chrome's TLS stack so Cloudflare
         // doesn't reject our MITM connections based on JA3/JA4 fingerprint.
         let mut builder = SslConnector::builder(SslMethod::tls()).expect("SslConnector");
         builder.set_alpn_protos(b"\x08http/1.1").expect("ALPN");
-        configure_upstream_tls_roots(&mut builder);
+        configure_upstream_tls_roots(&mut builder)?;
         let upstream_ssl = builder.build();
 
-        ProxyEngine {
+        Ok(ProxyEngine {
             config: Arc::new(config),
             event_rx,
             cmd_tx,
@@ -70,7 +69,7 @@ impl ProxyEngine {
             placeholders: Arc::new(placeholders),
             ca: Arc::new(tokio::sync::Mutex::new(ca)),
             upstream_ssl,
-        }
+        })
     }
 
     /// Run the proxy event loop.
@@ -134,27 +133,27 @@ impl ProxyEngine {
     }
 }
 
-fn configure_upstream_tls_roots(builder: &mut SslConnectorBuilder) {
+fn configure_upstream_tls_roots(builder: &mut SslConnectorBuilder) -> anyhow::Result<()> {
     #[cfg(windows)]
-    match add_windows_system_roots(builder) {
-        Ok(count) => debug!("loaded {count} Windows root certificate(s) for upstream TLS"),
-        Err(error) => debug!("failed to load Windows root certificates for upstream TLS: {error}"),
+    {
+        let count = add_windows_system_roots(builder)?;
+        if count == 0 {
+            anyhow::bail!("Windows LocalMachine ROOT/CA stores contained no usable certificates");
+        }
+        debug!("loaded {count} Windows LocalMachine root certificate(s) for upstream TLS");
     }
 
     #[cfg(not(windows))]
     let _ = builder;
+
+    Ok(())
 }
 
 #[cfg(windows)]
 fn add_windows_system_roots(builder: &mut SslConnectorBuilder) -> anyhow::Result<usize> {
     let mut count = 0;
-    for location in [
-        CERT_SYSTEM_STORE_CURRENT_USER,
-        CERT_SYSTEM_STORE_LOCAL_MACHINE,
-    ] {
-        for store_name in ["ROOT", "CA"] {
-            count += add_windows_cert_store(builder, location, store_name)?;
-        }
+    for store_name in ["ROOT", "CA"] {
+        count += add_windows_cert_store(builder, CERT_SYSTEM_STORE_LOCAL_MACHINE, store_name)?;
     }
     Ok(count)
 }
@@ -179,7 +178,7 @@ fn add_windows_cert_store(
         )
     };
     if store.is_null() {
-        return Ok(0);
+        return Err(std::io::Error::last_os_error().into());
     }
 
     let _guard = WindowsCertStore(store);

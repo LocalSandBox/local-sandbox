@@ -1023,7 +1023,7 @@ impl Default for StartSandboxOptions {
             disk_mib: 4096,
             mounts: Vec::new(),
             ports: Vec::new(),
-            network: None,
+            network: Some(lsb_service_proto::ServiceNetworkSpec::default()),
         }
     }
 }
