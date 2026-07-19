@@ -9,6 +9,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, TcpStream};
 use std::path::PathBuf;
+use std::process::Child;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
@@ -294,6 +295,10 @@ pub struct PlatformVmConfig {
     /// Verified service-owned QEMU executable. When set, Windows bypasses all
     /// environment, managed-tool, and PATH discovery.
     pub qemu_executable: Option<String>,
+    /// Service-owned process containment used for QEMU and its descendants.
+    /// Ordinary SDK callers leave this unset and receive platform-owned containment.
+    #[doc(hidden)]
+    pub process_containment: Option<Arc<dyn PlatformProcessContainment>>,
     pub kernel_path: String,
     pub rootfs_path: String,
     pub initrd_path: Option<String>,
@@ -305,6 +310,15 @@ pub struct PlatformVmConfig {
     pub network_attachment: Option<PlatformNetworkAttachment>,
     pub nbd_uri: Option<String>,
     pub shared_dirs: Vec<PlatformSharedDir>,
+}
+
+/// Opaque service-owned process containment boundary. The Windows QEMU backend
+/// assigns the suspended child through this interface and never creates a second
+/// Job when one is supplied.
+#[doc(hidden)]
+pub trait PlatformProcessContainment: std::fmt::Debug + Send + Sync {
+    fn assign_process(&self, process: &Child) -> Result<()>;
+    fn terminate(&self) -> Result<()>;
 }
 
 #[derive(Debug)]

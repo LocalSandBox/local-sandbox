@@ -10,7 +10,12 @@ use anyhow::{bail, Context, Result};
 use crate::engine::ServiceEngineConfig;
 use crate::resource::process::{ManagedProcess, ManagedProcessOutput};
 use crate::resource::watch::ManagedWatch;
+use crate::session::quota::SANDBOX_MEMORY_OVERHEAD_MIB;
 use crate::session::CancellationToken;
+use crate::windows::job::{JobLimits, SandboxJob};
+
+const MAX_QEMU_JOB_PROCESSES: u32 = 8;
+const FORCED_JOB_STOP_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct ManagedVmSpec {
@@ -173,6 +178,7 @@ pub struct ManagedVmController {
 pub struct ManagedVm {
     commands: mpsc::SyncSender<Command>,
     thread: Option<std::thread::JoinHandle<()>>,
+    containment: Arc<SandboxJob>,
 }
 
 impl std::fmt::Debug for ManagedVm {
@@ -189,6 +195,8 @@ impl ManagedVm {
         startup_cancellation: CancellationToken,
     ) -> Result<Self> {
         validate_spec(engine, &spec)?;
+        let containment = Arc::new(SandboxJob::create(job_limits(&spec)?)?);
+        let thread_containment = containment.clone();
         let engine = engine.clone();
         let (commands, receiver) = mpsc::sync_channel(8);
         let (ready, started) = mpsc::sync_channel(1);
@@ -200,6 +208,7 @@ impl ManagedVm {
                     spec,
                     session_cancellation,
                     startup_cancellation,
+                    thread_containment,
                     receiver,
                     ready,
                 )
@@ -212,6 +221,7 @@ impl ManagedVm {
             Ok(()) => Ok(Self {
                 commands,
                 thread: Some(thread),
+                containment,
             }),
             Err(error) => {
                 let _ = thread.join();
@@ -222,13 +232,51 @@ impl ManagedVm {
 
     pub fn stop(mut self, timeout: Duration) -> Result<()> {
         let (reply, response) = mpsc::sync_channel(1);
-        self.commands
-            .send(Command::Stop(reply))
-            .context("managed VM thread stopped before cleanup")?;
-        let result = response
-            .recv_timeout(timeout)
-            .map_err(|_| anyhow::anyhow!("managed VM stop exceeded bounded deadline"))?;
+        let graceful_deadline = Instant::now() + timeout;
+        let mut forced_deadline = None;
+        let mut pending = Command::Stop(reply);
+        loop {
+            match self.commands.try_send(pending) {
+                Ok(()) => break,
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    bail!("managed VM thread stopped before cleanup")
+                }
+                Err(mpsc::TrySendError::Full(command)) => pending = command,
+            }
+            enforce_stop_deadline(
+                &self.containment,
+                graceful_deadline,
+                &mut forced_deadline,
+                "managed VM stop command queue remained blocked",
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let result = loop {
+            match response.recv_timeout(Duration::from_millis(10)) {
+                Ok(result) => break result,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    bail!("managed VM thread stopped before cleanup reply")
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => enforce_stop_deadline(
+                    &self.containment,
+                    graceful_deadline,
+                    &mut forced_deadline,
+                    "managed VM thread remained stuck after authoritative Job termination",
+                ),
+            }
+        };
+
         if let Some(thread) = self.thread.take() {
+            while !thread.is_finished() {
+                enforce_stop_deadline(
+                    &self.containment,
+                    graceful_deadline,
+                    &mut forced_deadline,
+                    "managed VM thread did not exit after cleanup reply",
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
             thread
                 .join()
                 .map_err(|_| anyhow::anyhow!("managed VM thread panicked"))?;
@@ -240,6 +288,30 @@ impl ManagedVm {
         ManagedVmController {
             commands: self.commands.clone(),
         }
+    }
+}
+
+fn enforce_stop_deadline(
+    containment: &SandboxJob,
+    graceful_deadline: Instant,
+    forced_deadline: &mut Option<Instant>,
+    abort_reason: &'static str,
+) {
+    let now = Instant::now();
+    match *forced_deadline {
+        Some(deadline) if now >= deadline => {
+            eprintln!("{abort_reason}");
+            std::process::abort();
+        }
+        Some(_) => {}
+        None if now >= graceful_deadline => {
+            if let Err(error) = containment.terminate(1) {
+                eprintln!("authoritative QEMU Job termination failed: {error}");
+                std::process::abort();
+            }
+            *forced_deadline = Some(now + FORCED_JOB_STOP_GRACE);
+        }
+        None => {}
     }
 }
 
@@ -363,6 +435,7 @@ impl Drop for ManagedVm {
             .as_ref()
             .is_some_and(|thread| thread.is_finished());
         if !finished {
+            let _ = self.containment.terminate(1);
             return;
         }
         let Some(thread) = self.thread.take() else {
@@ -379,6 +452,7 @@ fn run(
     mut spec: ManagedVmSpec,
     session_cancellation: CancellationToken,
     startup_cancellation: CancellationToken,
+    process_containment: Arc<SandboxJob>,
     commands: mpsc::Receiver<Command>,
     ready: mpsc::SyncSender<Result<()>>,
 ) {
@@ -387,7 +461,7 @@ fn run(
         let _ = ready.send(Err(anyhow::anyhow!("operation cancelled")));
         return;
     }
-    let result = build_and_start(&engine, &mut spec);
+    let result = build_and_start(&engine, &mut spec, process_containment);
     let Ok((sandbox, proxy_handle)) = result else {
         let _ = cleanup_instance(&engine, &spec);
         let _ = ready.send(result.map(|_| ()));
@@ -735,6 +809,7 @@ fn cleanup_instance(engine: &ServiceEngineConfig, spec: &ManagedVmSpec) -> Resul
 fn build_and_start(
     engine: &ServiceEngineConfig,
     spec: &mut ManagedVmSpec,
+    process_containment: Arc<SandboxJob>,
 ) -> Result<(lsb_vm::Sandbox, Option<lsb_proxy::ProxyHandle>)> {
     let (network_attachment, proxy_handle) = match spec.proxy_config.take() {
         Some(config) => {
@@ -755,6 +830,7 @@ fn build_and_start(
     let mut builder = lsb_vm::Sandbox::builder()
         .data_dir(path_text(engine.resources_root())?)
         .service_qemu_executable(path_text(engine.qemu_executable())?)
+        .service_process_containment(process_containment)
         .kernel(path_text(engine.kernel_image())?)
         .initrd(path_text(engine.initrd_image())?)
         .rootfs(path_text(&spec.rootfs_image)?)
@@ -813,6 +889,21 @@ fn validate_spec(engine: &ServiceEngineConfig, spec: &ManagedVmSpec) -> Result<(
     Ok(())
 }
 
+fn job_limits(spec: &ManagedVmSpec) -> Result<JobLimits> {
+    let memory_mib = spec
+        .memory_mib
+        .checked_add(u64::from(SANDBOX_MEMORY_OVERHEAD_MIB))
+        .context("QEMU Job memory limit overflow")?;
+    let memory_bytes = memory_mib
+        .checked_mul(1024 * 1024)
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .context("QEMU Job memory limit does not fit this host")?;
+    Ok(JobLimits {
+        active_processes: MAX_QEMU_JOB_PROCESSES,
+        memory_bytes,
+    })
+}
+
 fn path_text(path: &Path) -> Result<String> {
     path.to_str()
         .map(str::to_string)
@@ -846,6 +937,21 @@ mod tests {
             proxy_config: None,
         };
         assert!(validate_spec(&engine, &spec).is_err());
+    }
+
+    #[test]
+    fn managed_vm_job_limits_include_fixed_overhead_and_process_cap() {
+        let spec = ManagedVmSpec {
+            instance_dir: PathBuf::from(r"C:\ProgramData\LocalSandbox\instance"),
+            rootfs_image: PathBuf::from(r"C:\ProgramData\LocalSandbox\instance\rootfs.ext4"),
+            cpus: 2,
+            memory_mib: 4096,
+            proxy_config: None,
+        };
+
+        let limits = job_limits(&spec).expect("bounded request should produce Job limits");
+        assert_eq!(limits.active_processes, 8);
+        assert_eq!(limits.memory_bytes, 6144 * 1024 * 1024usize);
     }
 
     #[test]

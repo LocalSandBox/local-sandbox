@@ -1,9 +1,12 @@
-use crate::{PlatformNetworkAttachment, PlatformVmConfig};
+use std::sync::Arc;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+use crate::{PlatformNetworkAttachment, PlatformProcessContainment, PlatformVmConfig};
+
+#[derive(Debug, Clone)]
 pub(crate) struct WindowsVmConfig {
     pub data_dir: Option<String>,
     pub qemu_executable: Option<String>,
+    pub process_containment: Option<Arc<dyn PlatformProcessContainment>>,
     pub kernel_path: String,
     pub rootfs_path: String,
     pub initrd_path: Option<String>,
@@ -22,6 +25,7 @@ impl WindowsVmConfig {
         Self {
             data_dir: config.data_dir.clone(),
             qemu_executable: config.qemu_executable.clone(),
+            process_containment: config.process_containment.clone(),
             kernel_path: config.kernel_path.clone(),
             rootfs_path: config.rootfs_path.clone(),
             initrd_path: config.initrd_path.clone(),
@@ -51,6 +55,7 @@ mod tests {
         let config = PlatformVmConfig {
             data_dir: None,
             qemu_executable: None,
+            process_containment: None,
             kernel_path: "Image".into(),
             rootfs_path: "rootfs.ext4".into(),
             initrd_path: None,

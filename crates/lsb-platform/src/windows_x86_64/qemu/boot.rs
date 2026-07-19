@@ -3,7 +3,7 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use lsb_proto::{frame, GuestReady, GuestTransport};
@@ -41,10 +41,11 @@ const CONTROL_STATE_OPENING_FOR_READY: &str = "opening_control_channel_for_guest
 const CONTROL_STATE_OPENING_FORWARD_CHANNEL: &str = "opening_forwarding_channel";
 const CONTROL_STATE_WAITING_FOR_READY: &str = "control_channel_open_waiting_for_guest_ready";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct WindowsQemuBootConfig {
     pub data_dir: Option<PathBuf>,
     pub qemu_executable: Option<PathBuf>,
+    pub process_containment: Option<Arc<dyn crate::PlatformProcessContainment>>,
     pub kernel_image: PathBuf,
     pub initrd_image: PathBuf,
     pub rootfs_image: PathBuf,
@@ -72,6 +73,7 @@ impl WindowsQemuBootConfig {
         Self {
             data_dir: None,
             qemu_executable: None,
+            process_containment: None,
             kernel_image: kernel_image.into(),
             initrd_image: initrd_image.into(),
             rootfs_image: rootfs_image.into(),
@@ -709,6 +711,7 @@ pub(crate) fn launch_windows_qemu_boot(
         })?;
 
     let mut supervisor_config = QemuSupervisorConfig::new(command, artifacts.directory.clone());
+    supervisor_config.process_containment = config.process_containment.clone();
     supervisor_config.working_directory = artifacts.directory.clone();
     let mut supervisor = QemuSupervisor::new(supervisor_config);
     supervisor.start().map_err(|source| {

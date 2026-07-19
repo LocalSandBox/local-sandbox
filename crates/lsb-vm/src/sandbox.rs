@@ -144,6 +144,7 @@ pub enum MountConfig {
 pub struct VmConfigBuilder {
     data_dir: Option<String>,
     qemu_executable: Option<String>,
+    process_containment: Option<Arc<dyn lsb_platform::PlatformProcessContainment>>,
     kernel: Option<String>,
     rootfs: Option<String>,
     initrd: Option<String>,
@@ -162,6 +163,7 @@ impl VmConfigBuilder {
         VmConfigBuilder {
             data_dir: None,
             qemu_executable: None,
+            process_containment: None,
             kernel: None,
             rootfs: None,
             initrd: None,
@@ -206,6 +208,17 @@ impl VmConfigBuilder {
     #[doc(hidden)]
     pub fn service_qemu_executable(mut self, path: impl Into<String>) -> Self {
         self.qemu_executable = Some(path.into());
+        self
+    }
+
+    /// Supply the service-owned QEMU process containment boundary. The Windows
+    /// backend will use it instead of creating an independent platform Job.
+    #[doc(hidden)]
+    pub fn service_process_containment(
+        mut self,
+        containment: Arc<dyn lsb_platform::PlatformProcessContainment>,
+    ) -> Self {
+        self.process_containment = Some(containment);
         self
     }
 
@@ -316,6 +329,7 @@ impl VmConfigBuilder {
         let vm_result = lsb_platform::create_vm(PlatformVmConfig {
             data_dir: self.data_dir,
             qemu_executable: self.qemu_executable,
+            process_containment: self.process_containment,
             kernel_path,
             rootfs_path,
             initrd_path: self.initrd,

@@ -4,6 +4,7 @@ use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -77,7 +78,7 @@ impl Default for QemuProcessEnvironment {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct QemuSupervisorConfig {
     pub command: QemuCommand,
     pub artifacts: QemuProcessArtifacts,
@@ -85,6 +86,7 @@ pub(crate) struct QemuSupervisorConfig {
     pub environment: QemuProcessEnvironment,
     pub startup_timeout: Duration,
     pub terminate_timeout: Duration,
+    pub process_containment: Option<Arc<dyn crate::PlatformProcessContainment>>,
 }
 
 impl QemuSupervisorConfig {
@@ -97,6 +99,7 @@ impl QemuSupervisorConfig {
             artifacts,
             startup_timeout: DEFAULT_STARTUP_TIMEOUT,
             terminate_timeout: DEFAULT_TERMINATE_TIMEOUT,
+            process_containment: None,
         }
     }
 }
@@ -507,7 +510,10 @@ impl QemuSupervisor {
         let pid = child.id();
         self.pid = Some(pid);
 
-        self.containment = match ProcessContainment::create_for_child(&child) {
+        self.containment = match ProcessContainment::create_for_child(
+            &child,
+            self.config.process_containment.clone(),
+        ) {
             Ok(containment) => containment,
             Err(err) => {
                 let _ = child.kill();
@@ -949,24 +955,42 @@ fn spawn_suspended(command: &mut Command) -> io::Result<(Child, SuspendedPrimary
 
 #[cfg(target_os = "windows")]
 #[derive(Debug, Default)]
-struct ProcessContainment {
-    job: Option<JobObject>,
+enum ProcessContainment {
+    #[default]
+    None,
+    Platform(JobObject),
+    External(Arc<dyn crate::PlatformProcessContainment>),
 }
 
 #[cfg(target_os = "windows")]
 impl ProcessContainment {
-    fn create_for_child(child: &Child) -> Result<Self, QemuProcessError> {
+    fn create_for_child(
+        child: &Child,
+        external: Option<Arc<dyn crate::PlatformProcessContainment>>,
+    ) -> Result<Self, QemuProcessError> {
+        if let Some(external) = external {
+            external.assign_process(child).map_err(|error| {
+                QemuProcessError::JobObjectAssignFailed {
+                    pid: child.id(),
+                    detail: format!("external service Job rejected suspended child: {error}"),
+                }
+            })?;
+            return Ok(Self::External(external));
+        }
         let job = JobObject::create_kill_on_close()?;
         job.assign_child(child)?;
-        Ok(Self { job: Some(job) })
+        Ok(Self::Platform(job))
     }
 
     fn terminate(&self) -> Result<bool, QemuProcessError> {
-        if let Some(job) = &self.job {
-            job.terminate()?;
-            Ok(true)
-        } else {
-            Ok(false)
+        match self {
+            Self::None => Ok(false),
+            Self::Platform(job) => job.terminate().map(|()| true),
+            Self::External(external) => external.terminate().map(|()| true).map_err(|error| {
+                QemuProcessError::JobObjectTerminateFailed {
+                    detail: format!("external service Job termination failed: {error}"),
+                }
+            }),
         }
     }
 }
@@ -977,7 +1001,10 @@ struct ProcessContainment;
 
 #[cfg(not(target_os = "windows"))]
 impl ProcessContainment {
-    fn create_for_child(_child: &Child) -> Result<Self, QemuProcessError> {
+    fn create_for_child(
+        _child: &Child,
+        _external: Option<Arc<dyn crate::PlatformProcessContainment>>,
+    ) -> Result<Self, QemuProcessError> {
         Ok(Self)
     }
 
@@ -1211,7 +1238,8 @@ mod tests {
     use std::env;
     use std::ffi::OsString;
     use std::io::Write;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     use crate::windows_x86_64::qemu::argv::QemuArgvBuilder;
     use crate::windows_x86_64::qemu::config::QemuBootConfig;
@@ -1223,6 +1251,62 @@ mod tests {
     const FAKE_CHILD_TEST_NAME: &str =
         "windows_x86_64::qemu::process::tests::fake_qemu_child_entrypoint";
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[derive(Debug, Default)]
+    struct FakeExternalContainment {
+        assignments: AtomicUsize,
+        terminations: AtomicUsize,
+    }
+
+    impl crate::PlatformProcessContainment for FakeExternalContainment {
+        fn assign_process(&self, _process: &Child) -> anyhow::Result<()> {
+            self.assignments.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn terminate(&self) -> anyhow::Result<()> {
+            self.terminations.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[derive(Debug)]
+    struct TestExternalJobContainment {
+        job: Mutex<JobObject>,
+        assignments: AtomicUsize,
+    }
+
+    #[cfg(target_os = "windows")]
+    impl TestExternalJobContainment {
+        fn create() -> Result<Self, QemuProcessError> {
+            Ok(Self {
+                job: Mutex::new(JobObject::create_kill_on_close()?),
+                assignments: AtomicUsize::new(0),
+            })
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    impl crate::PlatformProcessContainment for TestExternalJobContainment {
+        fn assign_process(&self, process: &Child) -> anyhow::Result<()> {
+            self.job
+                .lock()
+                .map_err(|_| anyhow::anyhow!("external test Job lock poisoned"))?
+                .assign_child(process)
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            self.assignments.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn terminate(&self) -> anyhow::Result<()> {
+            self.job
+                .lock()
+                .map_err(|_| anyhow::anyhow!("external test Job lock poisoned"))?
+                .terminate()
+                .map_err(|error| anyhow::anyhow!("{error}"))
+        }
+    }
 
     struct EnvVarGuard {
         key: String,
@@ -1510,6 +1594,63 @@ mod tests {
         assert!(diagnostics
             .redacted_command
             .contains("<qemu-system-x86_64.exe>"));
+
+        let _ = fs::remove_dir_all(artifact_dir);
+    }
+
+    #[test]
+    fn external_containment_is_the_only_supervisor_boundary() {
+        let artifact_dir = temp_artifact_dir("external-containment");
+        let containment = Arc::new(FakeExternalContainment::default());
+        let mut config = QemuSupervisorConfig::new(fake_command(), artifact_dir.clone());
+        config.startup_timeout = Duration::from_millis(50);
+        config.environment.variables.push((
+            OsString::from(FAKE_CHILD_ENV),
+            OsString::from("exit-after-startup"),
+        ));
+        config.process_containment = Some(containment.clone());
+        let mut supervisor = QemuSupervisor::new(config);
+
+        supervisor
+            .start()
+            .expect("external containment should accept suspended child");
+        assert_eq!(containment.assignments.load(Ordering::SeqCst), 1);
+        supervisor
+            .terminate()
+            .expect("external containment should terminate child");
+        assert_eq!(containment.terminations.load(Ordering::SeqCst), 1);
+
+        let _ = fs::remove_dir_all(artifact_dir);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn external_job_contains_child_before_entrypoint() {
+        let artifact_dir = temp_artifact_dir("external-job-at-entry");
+        let containment = Arc::new(
+            TestExternalJobContainment::create().expect("external test Job should be created"),
+        );
+        let mut config = QemuSupervisorConfig::new(fake_command(), artifact_dir.clone());
+        config.startup_timeout = Duration::from_millis(100);
+        config.environment.variables.push((
+            OsString::from(FAKE_CHILD_ENV),
+            OsString::from("assert-job-contained-at-entry"),
+        ));
+        config.process_containment = Some(containment.clone());
+        let mut supervisor = QemuSupervisor::new(config);
+
+        supervisor
+            .start()
+            .expect("external Job should contain child before resume");
+        let stdout = wait_for_file_contains(
+            &supervisor.artifacts().stdout,
+            "fake QEMU entered already Job-contained",
+        );
+        assert!(stdout.contains("fake QEMU entered already Job-contained"));
+        assert_eq!(containment.assignments.load(Ordering::SeqCst), 1);
+        supervisor
+            .terminate()
+            .expect("external Job should terminate child tree");
 
         let _ = fs::remove_dir_all(artifact_dir);
     }
