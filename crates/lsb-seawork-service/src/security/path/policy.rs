@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 
-pub const MAX_MOUNT_ENTRIES: u32 = 100_000;
-pub const MAX_MOUNT_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+pub use lsb_service_proto::limits::MAX_MOUNT_TREE_BYTES as MAX_MOUNT_BYTES;
+pub const MAX_MOUNT_ENTRIES: u32 = lsb_service_proto::limits::MAX_MOUNT_ENTRIES as u32;
 
 #[derive(Debug, Clone)]
 pub struct MountPolicy {

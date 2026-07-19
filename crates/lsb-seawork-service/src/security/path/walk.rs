@@ -4,6 +4,9 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+use lsb_service_proto::limits::{
+    MAX_MOUNT_COMPONENTS, MAX_MOUNT_FILE_BYTES, MAX_MOUNT_WINDOWS_UTF16,
+};
 use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, GetDriveTypeW, GetFileInformationByHandle, GetFinalPathNameByHandleW,
@@ -37,6 +40,7 @@ pub(super) fn authorize(
     owner_sid: String,
 ) -> Result<AuthorizedMountRoot> {
     validate_lexical(&path)?;
+    validate_windows_path(&path)?;
     let mut ancestor_pins = Vec::new();
     let mut ancestors = path.ancestors().skip(1).collect::<Vec<_>>();
     ancestors.reverse();
@@ -89,6 +93,11 @@ fn inspect_tree(root: &Path, final_root: &Path, access: MountAccess) -> Result<W
                 bail!("mount tree exceeds {MAX_MOUNT_ENTRIES} entries");
             }
             let path = child.path();
+            validate_windows_path(&path)?;
+            let relative = path
+                .strip_prefix(root)
+                .context("authorized mount entry escaped its lexical root")?;
+            crate::resource::mount_sync::validate_relative_path(relative)?;
             let (handle, info) = open_checked(
                 &path,
                 entry_access(access, child.file_type()?.is_dir()),
@@ -107,11 +116,14 @@ fn inspect_tree(root: &Path, final_root: &Path, access: MountAccess) -> Result<W
                     bail!("mount contains a regular file with multiple hard links");
                 }
                 let len = ((info.nFileSizeHigh as u64) << 32) | info.nFileSizeLow as u64;
+                if len > MAX_MOUNT_FILE_BYTES {
+                    bail!("mount file exceeds the 4 GiB per-file limit");
+                }
                 file_bytes = file_bytes
                     .checked_add(len)
                     .context("mount byte count overflow")?;
                 if file_bytes > MAX_MOUNT_BYTES {
-                    bail!("mount tree exceeds the 10 GiB data limit");
+                    bail!("mount tree exceeds the 20 GiB data limit");
                 }
             }
         }
@@ -120,6 +132,16 @@ fn inspect_tree(root: &Path, final_root: &Path, access: MountAccess) -> Result<W
         entries,
         file_bytes,
     })
+}
+
+fn validate_windows_path(path: &Path) -> Result<()> {
+    if path.components().count() > MAX_MOUNT_COMPONENTS {
+        bail!("mount path exceeds the 256-component limit");
+    }
+    if path.as_os_str().encode_wide().count() > MAX_MOUNT_WINDOWS_UTF16 {
+        bail!("mount path exceeds the 32,767-UTF-16-code-unit limit");
+    }
+    Ok(())
 }
 
 pub(super) fn stage_snapshot(

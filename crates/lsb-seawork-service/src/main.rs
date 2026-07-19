@@ -12,7 +12,7 @@ mod network_policy;
 mod paths;
 #[cfg(windows)]
 mod pipe;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 pub mod resource;
 #[cfg(windows)]
 mod rpc;
