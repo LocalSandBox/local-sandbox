@@ -13,6 +13,12 @@ All guest network traffic goes through a userspace proxy on the host (no NAT, no
 
 ICMP (ping) is not supported — only TCP traffic is proxied.
 
+The generated guest image configures both proxy links: `10.0.0.2/24` through
+`10.0.0.1` and `fd00::2/64` through `fd00::1`. The ULA addresses exist only on
+the isolated guest-to-proxy link. Host-resolved A and AAAA answers are filtered
+to globally routable destinations before they are returned or connected, and
+the same public-destination policy applies independently to IPv4 and IPv6.
+
 When networking is enabled, the guest should resolve DNS through the proxy
 gateway:
 

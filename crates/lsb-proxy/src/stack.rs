@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
@@ -8,7 +8,7 @@ use smoltcp::socket::udp::{self, Socket as UdpSocket};
 use smoltcp::time::Instant;
 use smoltcp::wire::{
     EthernetAddress, EthernetFrame, HardwareAddress, IpAddress, IpCidr, IpEndpoint,
-    IpListenEndpoint, Ipv4Address, Ipv4Packet, TcpPacket,
+    IpListenEndpoint, Ipv4Address, Ipv4Packet, Ipv6Address, Ipv6Packet, TcpPacket,
 };
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -17,7 +17,9 @@ use crate::device::FrameDevice;
 
 /// Gateway IP inside the virtual network (host-side smoltcp).
 pub const GATEWAY_IP: Ipv4Address = Ipv4Address::new(10, 0, 0, 1);
-const PREFIX_LEN: u8 = 24;
+pub const GATEWAY_IPV6: Ipv6Address = Ipv6Address::new(0xfd00, 0, 0, 0, 0, 0, 0, 1);
+const IPV4_PREFIX_LEN: u8 = 24;
+const IPV6_PREFIX_LEN: u8 = 64;
 /// Gateway MAC address (locally administered).
 const GATEWAY_MAC: EthernetAddress = EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
 
@@ -56,6 +58,34 @@ pub enum StackCommand {
     DnsResponse { dst: IpEndpoint, payload: Vec<u8> },
 }
 
+/// Parse a TCP SYN's destination from a raw Ethernet frame.
+/// Returns None if the frame is not a TCP SYN (without ACK).
+fn parse_syn_dst(frame: &[u8]) -> Option<(IpAddress, u16)> {
+    let eth = EthernetFrame::new_checked(frame).ok()?;
+    let (destination, payload) = match eth.ethertype() {
+        smoltcp::wire::EthernetProtocol::Ipv4 => {
+            let packet = Ipv4Packet::new_checked(eth.payload()).ok()?;
+            if packet.next_header() != smoltcp::wire::IpProtocol::Tcp {
+                return None;
+            }
+            (IpAddress::Ipv4(packet.dst_addr()), packet.payload())
+        }
+        smoltcp::wire::EthernetProtocol::Ipv6 => {
+            let packet = Ipv6Packet::new_checked(eth.payload()).ok()?;
+            if packet.next_header() != smoltcp::wire::IpProtocol::Tcp {
+                return None;
+            }
+            (IpAddress::Ipv6(packet.dst_addr()), packet.payload())
+        }
+        _ => return None,
+    };
+    let tcp = TcpPacket::new_checked(payload).ok()?;
+    if !tcp.syn() || tcp.ack() {
+        return None;
+    }
+    Some((destination, tcp.dst_port()))
+}
+
 /// The smoltcp-based network stack.
 ///
 /// Runs on a dedicated thread, polling the VZDevice and smoltcp interface.
@@ -71,14 +101,14 @@ where
     connections: HashMap<SocketHandle, SocketAddr>,
     /// Listening sockets per destination. Multiple sockets support concurrent
     /// connections to the same IP:port (e.g. parallel npm downloads).
-    listening: HashMap<(Ipv4Address, u16), Vec<SocketHandle>>,
+    listening: HashMap<(IpAddress, u16), Vec<SocketHandle>>,
     pending_send: HashMap<SocketHandle, VecDeque<u8>>,
     /// Sockets waiting for pending_send to drain before closing.
     closing: HashSet<SocketHandle>,
     /// Reusable buffer for poll_tcp_sockets recv_slice.
     recv_buf: Vec<u8>,
     /// Reusable scratch map for inspect_pending_frames.
-    syn_scratch: HashMap<(Ipv4Address, u16), usize>,
+    syn_scratch: HashMap<(IpAddress, u16), usize>,
     event_tx: mpsc::UnboundedSender<StackEvent>,
     cmd_rx: mpsc::UnboundedReceiver<StackCommand>,
 }
@@ -96,13 +126,20 @@ where
         let mut iface = Interface::new(config, &mut device, Self::now());
         iface.update_ip_addrs(|addrs| {
             addrs
-                .push(IpCidr::new(IpAddress::Ipv4(GATEWAY_IP), PREFIX_LEN))
+                .push(IpCidr::new(IpAddress::Ipv4(GATEWAY_IP), IPV4_PREFIX_LEN))
+                .unwrap();
+            addrs
+                .push(IpCidr::new(IpAddress::Ipv6(GATEWAY_IPV6), IPV6_PREFIX_LEN))
                 .unwrap();
         });
         iface.set_any_ip(true);
         iface
             .routes_mut()
             .add_default_ipv4_route(GATEWAY_IP)
+            .unwrap();
+        iface
+            .routes_mut()
+            .add_default_ipv6_route(GATEWAY_IPV6)
             .unwrap();
 
         let mut sockets = SocketSet::new(vec![]);
@@ -218,7 +255,7 @@ where
         // need separate listening sockets (one per connection).
         self.syn_scratch.clear();
         self.device.visit_pending_frames(&mut |frame| {
-            if let Some((dst_ip, dst_port)) = Self::parse_syn_dst(frame) {
+            if let Some((dst_ip, dst_port)) = parse_syn_dst(frame) {
                 *self.syn_scratch.entry((dst_ip, dst_port)).or_default() += 1;
             }
         });
@@ -240,7 +277,7 @@ where
                 let mut socket = TcpSocket::new(rx_buf, tx_buf);
                 if socket
                     .listen(IpListenEndpoint {
-                        addr: Some(IpAddress::Ipv4(dst_ip)),
+                        addr: Some(dst_ip),
                         port: dst_port,
                     })
                     .is_err()
@@ -255,24 +292,6 @@ where
                     .push(handle);
             }
         }
-    }
-
-    /// Parse a TCP SYN's destination from a raw Ethernet frame.
-    /// Returns None if the frame is not a TCP SYN (without ACK).
-    fn parse_syn_dst(frame: &[u8]) -> Option<(Ipv4Address, u16)> {
-        let eth = EthernetFrame::new_checked(frame).ok()?;
-        if eth.ethertype() != smoltcp::wire::EthernetProtocol::Ipv4 {
-            return None;
-        }
-        let ipv4 = Ipv4Packet::new_checked(eth.payload()).ok()?;
-        if ipv4.next_header() != smoltcp::wire::IpProtocol::Tcp {
-            return None;
-        }
-        let tcp = TcpPacket::new_checked(ipv4.payload()).ok()?;
-        if !tcp.syn() || tcp.ack() {
-            return None;
-        }
-        Some((ipv4.dst_addr(), tcp.dst_port()))
     }
 
     fn drain_pending_sends(&mut self) {
@@ -329,19 +348,19 @@ where
                 // local_endpoint() is the destination the guest was trying to reach
                 // (because any_ip=true, smoltcp accepted it as local)
                 if let Some(local) = socket.local_endpoint() {
-                    let ipv4 = match local.addr {
-                        IpAddress::Ipv4(ip) => ip,
-                    };
                     // Remove this specific handle from the listener vec
-                    if let Some(handles) = self.listening.get_mut(&(ipv4, local.port)) {
+                    if let Some(handles) = self.listening.get_mut(&(local.addr, local.port)) {
                         handles.retain(|h| *h != handle);
                         if handles.is_empty() {
-                            self.listening.remove(&(ipv4, local.port));
+                            self.listening.remove(&(local.addr, local.port));
                         }
                     }
 
-                    let actual_dst =
-                        SocketAddr::new(IpAddr::V4(Ipv4Addr::from(ipv4.octets())), local.port);
+                    let actual_ip = match local.addr {
+                        IpAddress::Ipv4(ip) => IpAddr::V4(Ipv4Addr::from(ip.octets())),
+                        IpAddress::Ipv6(ip) => IpAddr::V6(Ipv6Addr::from(ip.octets())),
+                    };
+                    let actual_dst = SocketAddr::new(actual_ip, local.port);
 
                     self.connections.insert(handle, actual_dst);
                     let _ = self.event_tx.send(StackEvent::NewConnection(TcpConnection {
@@ -401,5 +420,70 @@ where
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap();
         Instant::from_micros(ts.as_micros() as i64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ipv4_syn_frame(destination: Ipv4Addr, port: u16) -> Vec<u8> {
+        let mut frame = vec![0u8; 14 + 20 + 20];
+        frame[12..14].copy_from_slice(&[0x08, 0x00]);
+        let ipv4 = &mut frame[14..34];
+        ipv4[0] = 0x45;
+        ipv4[2..4].copy_from_slice(&40u16.to_be_bytes());
+        ipv4[8] = 64;
+        ipv4[9] = 6;
+        ipv4[12..16].copy_from_slice(&Ipv4Addr::new(10, 0, 0, 2).octets());
+        ipv4[16..20].copy_from_slice(&destination.octets());
+        let tcp = &mut frame[34..];
+        tcp[..2].copy_from_slice(&32_000u16.to_be_bytes());
+        tcp[2..4].copy_from_slice(&port.to_be_bytes());
+        tcp[12] = 0x50;
+        tcp[13] = 0x02;
+        frame
+    }
+
+    fn ipv6_syn_frame(destination: Ipv6Addr, port: u16, ack: bool) -> Vec<u8> {
+        let mut frame = vec![0u8; 14 + 40 + 20];
+        frame[12..14].copy_from_slice(&[0x86, 0xdd]);
+        let ipv6 = &mut frame[14..54];
+        ipv6[0] = 0x60;
+        ipv6[4..6].copy_from_slice(&20u16.to_be_bytes());
+        ipv6[6] = 6;
+        ipv6[7] = 64;
+        ipv6[8..24].copy_from_slice(&"fd00::2".parse::<Ipv6Addr>().unwrap().octets());
+        ipv6[24..40].copy_from_slice(&destination.octets());
+        let tcp = &mut frame[54..];
+        tcp[..2].copy_from_slice(&32_000u16.to_be_bytes());
+        tcp[2..4].copy_from_slice(&port.to_be_bytes());
+        tcp[12] = 0x50;
+        tcp[13] = 0x02 | (u8::from(ack) * 0x10);
+        frame
+    }
+
+    #[test]
+    fn parses_ipv6_syn_destination_and_rejects_syn_ack() {
+        let destination: Ipv6Addr = "2606:4700:4700::1111".parse().unwrap();
+        let Some((IpAddress::Ipv6(actual), port)) =
+            parse_syn_dst(&ipv6_syn_frame(destination, 443, false))
+        else {
+            panic!("expected IPv6 SYN destination");
+        };
+        assert_eq!(actual.octets(), destination.octets());
+        assert_eq!(port, 443);
+        assert!(parse_syn_dst(&ipv6_syn_frame(destination, 443, true)).is_none());
+    }
+
+    #[test]
+    fn dual_stack_syn_parser_preserves_ipv4_behavior() {
+        let destination = Ipv4Addr::new(93, 184, 216, 34);
+        let Some((IpAddress::Ipv4(actual), port)) = parse_syn_dst(&ipv4_syn_frame(destination, 80))
+        else {
+            panic!("expected IPv4 SYN destination");
+        };
+        assert_eq!(actual.octets(), destination.octets());
+        assert_eq!(port, 80);
     }
 }

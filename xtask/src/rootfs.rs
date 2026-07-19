@@ -52,6 +52,8 @@ chmod 755 /newroot/usr/bin/lsb-init
 if ifconfig eth0 up 2>/dev/null; then
     ifconfig eth0 10.0.0.2 netmask 255.255.255.0 up
     route add default gw 10.0.0.1
+    ifconfig eth0 add fd00::2/64
+    route -A inet6 add default gw fd00::1 dev eth0
     echo "nameserver 10.0.0.1" > /newroot/etc/resolv.conf
 fi
 umount /proc
@@ -493,7 +495,10 @@ fn create_sized_rootfs_image(path: &std::path::Path, size_mb: u64) -> Result<()>
 
 #[cfg(test)]
 mod tests {
-    use super::{create_sized_rootfs_image, linux_rootfs_script, macos_rootfs_docker_script};
+    use super::{
+        create_sized_rootfs_image, linux_rootfs_script, macos_rootfs_docker_script,
+        INITRAMFS_DOCKER_SCRIPT,
+    };
 
     #[test]
     fn rootfs_image_creation_does_not_require_unix_truncate() {
@@ -504,6 +509,14 @@ mod tests {
         create_sized_rootfs_image(&path, 2).expect("rootfs image should be sized");
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 2 * 1024 * 1024);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn initramfs_configures_dual_stack_proxy_routes() {
+        assert!(INITRAMFS_DOCKER_SCRIPT.contains("ifconfig eth0 10.0.0.2 netmask 255.255.255.0 up"));
+        assert!(INITRAMFS_DOCKER_SCRIPT.contains("route add default gw 10.0.0.1"));
+        assert!(INITRAMFS_DOCKER_SCRIPT.contains("ifconfig eth0 add fd00::2/64"));
+        assert!(INITRAMFS_DOCKER_SCRIPT.contains("route -A inet6 add default gw fd00::1 dev eth0"));
     }
 
     #[test]

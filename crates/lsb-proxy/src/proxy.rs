@@ -680,13 +680,7 @@ fn enforce_destination_policy(
     dst: SocketAddr,
     protocol: &str,
 ) -> anyhow::Result<()> {
-    let IpAddr::V4(dst_ip) = dst.ip() else {
-        anyhow::bail!(
-            "{protocol} connection denied: IPv6 destination {dst} is not supported by the IPv4 proxy policy"
-        );
-    };
-
-    if dns::destination_matches_dns_answer(dns_cache, domain, dst_ip)? {
+    if dns::destination_matches_dns_answer(dns_cache, domain, dst.ip())? {
         Ok(())
     } else {
         anyhow::bail!(
@@ -1028,7 +1022,7 @@ mod tests {
 
     fn cache_answer(domain: &str, addr: Ipv4Addr) -> SharedDnsCache {
         let cache = dns::new_shared_dns_cache();
-        dns::record_allowed_dns_answer(&cache, domain, &[addr]);
+        dns::record_allowed_dns_answer(&cache, domain, &[IpAddr::V4(addr)]);
         cache
     }
 
@@ -1081,6 +1075,29 @@ mod tests {
             .starts_with("CONNECT 93.184.216.34:443 HTTP/1.1\r\nHost: 93.184.216.34:443\r\n"));
         assert!(request.contains("Proxy-Authorization: Basic explicit-credential\r\n"));
         assert_eq!(request.matches("Proxy-Authorization").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn explicit_proxy_connect_brackets_ipv6_authorities() {
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let server_task = tokio::spawn(async move {
+            let request = read_connect_request(&mut server).await;
+            server
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+            request
+        });
+        let destination = SocketAddr::new(IpAddr::V6("2606:4700:4700::1111".parse().unwrap()), 443);
+
+        establish_connect_tunnel(&mut client, destination, None)
+            .await
+            .unwrap();
+
+        let request = String::from_utf8(server_task.await.unwrap()).unwrap();
+        assert!(request.starts_with(
+            "CONNECT [2606:4700:4700::1111]:443 HTTP/1.1\r\nHost: [2606:4700:4700::1111]:443\r\n"
+        ));
     }
 
     #[tokio::test]
@@ -1312,6 +1329,40 @@ mod tests {
             "TLS",
         )
         .expect("allowed domain should pass");
+    }
+
+    #[test]
+    fn allowlist_policy_supports_public_ipv6_dns_binding() {
+        let config = allowed_config("api.example.test");
+        let allowed: std::net::Ipv6Addr = "2606:4700:4700::1111".parse().unwrap();
+        let other: std::net::Ipv6Addr = "2606:4700:4700::1001".parse().unwrap();
+        let cache = dns::new_shared_dns_cache();
+        dns::record_allowed_dns_answer(&cache, "api.example.test", &[IpAddr::V6(allowed)]);
+
+        enforce_connection_policy(
+            &config,
+            &cache,
+            Some("api.example.test"),
+            SocketAddr::new(IpAddr::V6(allowed), 443),
+            "TLS",
+        )
+        .expect("allowed IPv6 DNS destination should pass");
+        assert!(enforce_connection_policy(
+            &config,
+            &cache,
+            Some("api.example.test"),
+            SocketAddr::new(IpAddr::V6(other), 443),
+            "TLS",
+        )
+        .is_err());
+        assert!(enforce_connection_policy(
+            &ProxyConfig::default(),
+            &cache,
+            None,
+            SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST), 443),
+            "TLS",
+        )
+        .is_err());
     }
 
     #[test]
