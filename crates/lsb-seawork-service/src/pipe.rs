@@ -30,7 +30,6 @@ use crate::ipc::connection::{
 use crate::maintenance::MaintenanceManager;
 use crate::resource::process::{GuestProcessResource, ManagedProcessOutput};
 use crate::resource::watch::WatchResource;
-use crate::security::client_image::authorize_maintenance_image;
 use crate::security::descriptor::SecurityDescriptor;
 use crate::security::ClientIdentity;
 use crate::session::{
@@ -412,21 +411,15 @@ impl HealthContext {
     fn maintenance_authorized(&self, identity: &ClientIdentity) -> bool {
         identity.elevated
             && identity.administrator
-            && authorize_maintenance_image(
-                &identity.process_image,
-                &self.maintenance_roots,
-                &self.publisher_thumbprints,
-            )
-            .is_ok()
+            && identity
+                .authorize_process_image(&self.maintenance_roots, &self.publisher_thumbprints)
+                .is_ok()
     }
 
     fn client_authorized(&self, identity: &ClientIdentity) -> bool {
-        authorize_maintenance_image(
-            &identity.process_image,
-            &self.client_roots,
-            &self.publisher_thumbprints,
-        )
-        .is_ok()
+        identity
+            .authorize_process_image(&self.client_roots, &self.publisher_thumbprints)
+            .is_ok()
     }
 
     fn health(&self) -> Health {

@@ -15,7 +15,7 @@ use tokio::net::windows::named_pipe::NamedPipeClient;
 use tokio::sync::{mpsc, oneshot, watch, Mutex, Semaphore};
 use zeroize::Zeroizing;
 
-use crate::pipe::open_verified;
+use crate::pipe::{open_verified, ServerIdentityHandles};
 use crate::{ClientError, ConnectOptions};
 
 const INITIAL_CONNECT_BACKOFF: Duration = Duration::from_millis(25);
@@ -37,6 +37,7 @@ struct ConnectionCore {
     outbound_streams: Mutex<HashMap<(u64, u64), Arc<Semaphore>>>,
     closed: AtomicBool,
     _shutdown: watch::Sender<()>,
+    _server_identity: ServerIdentityHandles,
 }
 
 enum PendingRequest {
@@ -89,7 +90,8 @@ impl ServiceClient {
     }
 
     async fn connect_inner() -> Result<Self, ClientError> {
-        let mut pipe = open_verified()?;
+        let verified = open_verified()?;
+        let mut pipe = verified.client;
         let hello = Hello {
             min_minor: SUPPORTED.min_minor,
             max_minor: SUPPORTED.max_minor,
@@ -139,6 +141,7 @@ impl ServiceClient {
             outbound_streams: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
             _shutdown: shutdown,
+            _server_identity: verified.identity,
         });
         tokio::spawn(read_loop(reader, Arc::downgrade(&core), shutdown_rx));
         let mut client = Self {

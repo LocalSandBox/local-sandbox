@@ -1,11 +1,11 @@
 use std::ffi::c_void;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
-use std::os::windows::io::{AsRawHandle, OwnedHandle};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::ptr;
 
 use anyhow::{bail, Result};
-use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::{GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Security::Cryptography::{
     CertCloseStore, CertFindCertificateInStore, CertFreeCertificateContext,
     CertGetCertificateContextProperty, CryptMsgClose, CryptMsgGetParam, CryptQueryObject,
@@ -19,6 +19,7 @@ use windows_sys::Win32::Security::WinTrust::{
     WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT, WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE,
     WTD_STATEACTION_VERIFY, WTD_UI_NONE,
 };
+use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, OPEN_EXISTING};
 use windows_sys::Win32::System::Threading::QueryFullProcessImageNameW;
 
 pub fn query_process_image(process: &OwnedHandle) -> Result<PathBuf> {
@@ -58,18 +59,25 @@ pub fn authorize_maintenance_image(
     roots: &[String],
     publisher_thumbprints: &[String],
 ) -> Result<()> {
+    let held_image = open_image_for_trust(image)?;
+    authorize_maintenance_image_handle(image, &held_image, roots, publisher_thumbprints)
+}
+
+pub fn authorize_maintenance_image_handle(
+    image: &Path,
+    held_image: &OwnedHandle,
+    roots: &[String],
+    publisher_thumbprints: &[String],
+) -> Result<()> {
     require_absolute_image(image)?;
     if roots.is_empty() || publisher_thumbprints.is_empty() {
         bail!("maintenance image policy is not configured");
     }
-    if !roots
-        .iter()
-        .any(|root| is_within(image, Path::new(root)))
-    {
+    if !roots.iter().any(|root| is_within(image, Path::new(root))) {
         bail!("client image is outside configured maintenance roots");
     }
 
-    verify_authenticode(image)?;
+    verify_authenticode(image, held_image)?;
     let signer = signer_thumbprints(image)?;
     if !publisher_thumbprints.iter().any(|allowed| {
         signer
@@ -79,6 +87,29 @@ pub fn authorize_maintenance_image(
         bail!("client image signer is not in the publisher allowlist");
     }
     Ok(())
+}
+
+pub fn open_image_for_trust(image: &Path) -> Result<OwnedHandle> {
+    require_absolute_image(image)?;
+    let wide = wide_path(image)?;
+    let raw = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ,
+            ptr::null(),
+            OPEN_EXISTING,
+            0,
+            ptr::null_mut(),
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE {
+        bail!(
+            "open client image without write/delete sharing failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(unsafe { OwnedHandle::from_raw_handle(raw as _) })
 }
 
 fn is_within(path: &Path, root: &Path) -> bool {
@@ -108,12 +139,12 @@ fn wide_path(path: &Path) -> Result<Vec<u16>> {
     Ok(wide)
 }
 
-fn verify_authenticode(image: &Path) -> Result<()> {
+fn verify_authenticode(image: &Path, held_image: &OwnedHandle) -> Result<()> {
     let wide = wide_path(image)?;
     let mut file = WINTRUST_FILE_INFO {
         cbStruct: std::mem::size_of::<WINTRUST_FILE_INFO>() as u32,
         pcwszFilePath: wide.as_ptr(),
-        hFile: ptr::null_mut(),
+        hFile: held_image.as_raw_handle() as HANDLE,
         pgKnownSubject: ptr::null_mut(),
     };
     let mut data = WINTRUST_DATA {

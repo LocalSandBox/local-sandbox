@@ -24,7 +24,10 @@ use windows_sys::Win32::System::Threading::{
 use crate::session::ClientIdentityKey;
 
 use super::access::authorize_interactive_client;
-use super::client_image::{query_process_image, require_absolute_image};
+use super::client_image::{
+    authorize_maintenance_image_handle, open_image_for_trust, query_process_image,
+    require_absolute_image,
+};
 use super::impersonation::ImpersonationGuard;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +50,7 @@ pub struct ClientIdentity {
     pub administrator: bool,
     pub process_image: std::path::PathBuf,
     _process: OwnedHandle,
+    process_image_handle: OwnedHandle,
     _impersonation_token: OwnedHandle,
 }
 
@@ -94,6 +98,7 @@ impl ClientIdentity {
 
         let process_image = query_process_image(&process)?;
         require_absolute_image(&process_image)?;
+        let process_image_handle = open_image_for_trust(&process_image)?;
         Ok(Self {
             key: ClientIdentityKey {
                 user_sid: pipe_snapshot.user_sid,
@@ -107,6 +112,7 @@ impl ClientIdentity {
             administrator: pipe_snapshot.administrator,
             process_image,
             _process: process,
+            process_image_handle,
             _impersonation_token: duplicated_token,
         })
     }
@@ -117,6 +123,19 @@ impl ClientIdentity {
 
     pub fn duplicate_process_handle(&self) -> std::io::Result<OwnedHandle> {
         self._process.try_clone()
+    }
+
+    pub fn authorize_process_image(
+        &self,
+        roots: &[String],
+        publisher_thumbprints: &[String],
+    ) -> Result<()> {
+        authorize_maintenance_image_handle(
+            &self.process_image,
+            &self.process_image_handle,
+            roots,
+            publisher_thumbprints,
+        )
     }
 }
 

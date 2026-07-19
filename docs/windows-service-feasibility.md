@@ -44,7 +44,7 @@ cargo run -p lsb-service-spike --features windows-session0-spike -- --schema
 
 ## Current evidence
 
-No real SCM run has been completed in this repository yet. The current Codex shell is a non-administrator Windows token, so it cannot register the service or create the disposable users required by the full matrix.
+No real SCM run has been completed in this repository yet. On 2026-07-20 the effective tool token was rechecked with `whoami /all`: it is a medium-integrity standard-user token in `BUILTIN\\Users`, not Administrators, and has only `SeChangeNotifyPrivilege` enabled. The surrounding PowerShell session's elevation is therefore not evidence for the tool process, and no SCM registration, LocalSystem, disposable-user, SMB/LSA, WFP, installer, destructive-lifecycle, or reboot test was attempted without a separate explicit elevation approval.
 
 The following decisions unblock implementation without claiming evidence that does not exist:
 

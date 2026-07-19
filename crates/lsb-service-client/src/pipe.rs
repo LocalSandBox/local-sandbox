@@ -1,24 +1,38 @@
 use std::ffi::{OsStr, OsString};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::ptr;
 
 use tokio::net::windows::named_pipe::NamedPipeClient;
-use windows_service::service::{ServiceAccess, ServiceState, ServiceType};
+use windows_service::service::{ServiceAccess, ServiceSidType, ServiceState, ServiceType};
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
-use windows_sys::Win32::Foundation::{GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{GENERIC_READ, HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT};
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_FLAG_OVERLAPPED, FILE_WRITE_DATA, OPEN_EXISTING, SECURITY_IMPERSONATION,
+    CreateFileW, FileIdInfo, GetFileInformationByHandleEx, FILE_FLAG_OVERLAPPED, FILE_ID_INFO,
+    FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_WRITE_DATA, OPEN_EXISTING, SECURITY_IMPERSONATION,
     SECURITY_SQOS_PRESENT, SYNCHRONIZE,
 };
 use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
+use windows_sys::Win32::System::Threading::{
+    OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 
 use crate::{ClientError, PIPE_NAME, SERVICE_NAME};
 
 const DESIRED_ACCESS: u32 = GENERIC_READ | FILE_WRITE_DATA | SYNCHRONIZE;
 
-pub fn open_verified() -> Result<NamedPipeClient, ClientError> {
+pub(crate) struct VerifiedPipe {
+    pub(crate) client: NamedPipeClient,
+    pub(crate) identity: ServerIdentityHandles,
+}
+
+pub(crate) struct ServerIdentityHandles {
+    _process: OwnedHandle,
+    _image: OwnedHandle,
+}
+
+pub fn open_verified() -> Result<VerifiedPipe, ClientError> {
     let wide = std::ffi::OsStr::new(PIPE_NAME)
         .encode_wide()
         .chain(Some(0))
@@ -40,11 +54,11 @@ pub fn open_verified() -> Result<NamedPipeClient, ClientError> {
         ));
     }
     let client = unsafe { NamedPipeClient::from_raw_handle(handle as _) }?;
-    verify_server(&client)?;
-    Ok(client)
+    let identity = verify_server(&client)?;
+    Ok(VerifiedPipe { client, identity })
 }
 
-fn verify_server(client: &NamedPipeClient) -> Result<(), ClientError> {
+fn verify_server(client: &NamedPipeClient) -> Result<ServerIdentityHandles, ClientError> {
     let first_pid = pipe_server_pid(client)?;
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(|error| ClientError::ServerNotTrusted(error.to_string()))?;
@@ -72,24 +86,144 @@ fn verify_server(client: &NamedPipeClient) -> Result<(), ClientError> {
         .account_name
         .as_deref()
         .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("LocalSystem"));
+    let Some(configured_executable) =
+        configured_service_executable(config.executable_path.as_os_str())
+    else {
+        return Err(ClientError::ServerNotTrusted(
+            "service command is not the exact packaged service command".to_string(),
+        ));
+    };
+    let service_sid_type = service
+        .get_config_service_sid_info()
+        .map_err(|error| ClientError::ServerNotTrusted(error.to_string()))?;
     if config.service_type != ServiceType::OWN_PROCESS
         || !local_system
-        || configured_service_executable(config.executable_path.as_os_str()).is_none()
+        || service_sid_type != ServiceSidType::Unrestricted
     {
         return Err(ClientError::ServerNotTrusted(
-            "service configuration is not the packaged LocalSystem own-process command".to_string(),
+            "service configuration is not LocalSystem own-process with an unrestricted service SID"
+                .to_string(),
+        ));
+    }
+
+    // Hold both the process and the exact configured image for the connection. The
+    // executable handle intentionally omits FILE_SHARE_WRITE and FILE_SHARE_DELETE,
+    // preventing replacement or mutation after its identity has been accepted.
+    let process = open_server_process(first_pid)?;
+    let configured_image = open_image_for_identity(&configured_executable)?;
+    let process_image_path = query_process_image(&process)?;
+    let process_image = open_image_for_identity(&process_image_path)?;
+    if file_identity(&configured_image)? != file_identity(&process_image)? {
+        return Err(ClientError::ServerNotTrusted(
+            "running service image does not match the configured executable identity".to_string(),
         ));
     }
     let second_pid = pipe_server_pid(client)?;
     let second_status = service
         .query_status()
         .map_err(|error| ClientError::ServerNotTrusted(error.to_string()))?;
-    if second_pid != first_pid || second_status.process_id != Some(first_pid) {
+    if second_pid != first_pid
+        || second_status.current_state != ServiceState::Running
+        || second_status.process_id != Some(first_pid)
+        || process_has_exited(&process)?
+    {
         return Err(ClientError::ServerNotTrusted(
             "service identity changed during verification".to_string(),
         ));
     }
-    Ok(())
+    Ok(ServerIdentityHandles {
+        _process: process,
+        _image: configured_image,
+    })
+}
+
+fn open_server_process(pid: u32) -> Result<OwnedHandle, ClientError> {
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return Err(ClientError::ServerNotTrusted(format!(
+            "open service process: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(unsafe { OwnedHandle::from_raw_handle(handle as _) })
+}
+
+fn query_process_image(process: &OwnedHandle) -> Result<PathBuf, ClientError> {
+    let mut buffer = vec![0u16; 32_768];
+    let mut length = buffer.len() as u32;
+    if unsafe {
+        QueryFullProcessImageNameW(
+            process.as_raw_handle() as HANDLE,
+            0,
+            buffer.as_mut_ptr(),
+            &mut length,
+        )
+    } == 0
+        || length == 0
+    {
+        return Err(ClientError::ServerNotTrusted(format!(
+            "query service process image: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    buffer.truncate(length as usize);
+    Ok(PathBuf::from(OsString::from_wide(&buffer)))
+}
+
+fn open_image_for_identity(path: &Path) -> Result<OwnedHandle, ClientError> {
+    let wide = path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ,
+            ptr::null(),
+            OPEN_EXISTING,
+            0,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(ClientError::ServerNotTrusted(format!(
+            "open service image identity: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(unsafe { OwnedHandle::from_raw_handle(handle as _) })
+}
+
+fn file_identity(file: &OwnedHandle) -> Result<(u64, [u8; 16]), ClientError> {
+    let mut info = FILE_ID_INFO::default();
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle() as HANDLE,
+            FileIdInfo,
+            (&mut info as *mut FILE_ID_INFO).cast(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(ClientError::ServerNotTrusted(format!(
+            "query service image identity: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok((info.VolumeSerialNumber, info.FileId.Identifier))
+}
+
+fn process_has_exited(process: &OwnedHandle) -> Result<bool, ClientError> {
+    match unsafe { WaitForSingleObject(process.as_raw_handle() as HANDLE, 0) } {
+        WAIT_TIMEOUT => Ok(false),
+        0 => Ok(true),
+        value => Err(ClientError::ServerNotTrusted(format!(
+            "query service process lifetime returned {value}: {}",
+            std::io::Error::last_os_error()
+        ))),
+    }
 }
 
 fn configured_service_executable(command: &OsStr) -> Option<PathBuf> {
