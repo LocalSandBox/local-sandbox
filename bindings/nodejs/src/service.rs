@@ -47,6 +47,8 @@ pub struct SeaWorkStartOptions {
 pub struct SeaWorkExecOptions {
   pub cwd: Option<String>,
   pub env: Option<HashMap<String, String>>,
+  /// Shell used when the command is a string. Defaults to `sh`.
+  pub shell: Option<String>,
 }
 
 #[allow(non_snake_case)]
@@ -469,11 +471,11 @@ impl SeaWorkSandbox {
       let opts = opts.unwrap_or(SeaWorkExecOptions {
         cwd: None,
         env: None,
+        shell: None,
       });
-      let command = match command {
-        Either::A(shell) => lsb_service_client::RemoteCommand::Shell(shell),
-        Either::B(argv) => lsb_service_client::RemoteCommand::Argv(argv),
-      };
+      let command = lsb_service_client::RemoteCommand::Argv(crate::config::build_command_argv(
+        command, opts.shell,
+      ));
       let result = self
         .client
         .exec(
@@ -515,11 +517,11 @@ impl SeaWorkSandbox {
       let opts = opts.unwrap_or(SeaWorkExecOptions {
         cwd: None,
         env: None,
+        shell: None,
       });
-      let command = match command {
-        Either::A(shell) => lsb_service_client::RemoteCommand::Shell(shell),
-        Either::B(argv) => lsb_service_client::RemoteCommand::Argv(argv),
-      };
+      let command = lsb_service_client::RemoteCommand::Argv(crate::config::build_command_argv(
+        command, opts.shell,
+      ));
       let operation = self
         .client
         .begin_exec(
@@ -559,11 +561,11 @@ impl SeaWorkSandbox {
       let opts = opts.unwrap_or(SeaWorkExecOptions {
         cwd: None,
         env: None,
+        shell: None,
       });
-      let command = match command {
-        Either::A(shell) => lsb_service_client::RemoteCommand::Shell(shell),
-        Either::B(argv) => lsb_service_client::RemoteCommand::Argv(argv),
-      };
+      let command = lsb_service_client::RemoteCommand::Argv(crate::config::build_command_argv(
+        command, opts.shell,
+      ));
       let process = self
         .client
         .spawn(

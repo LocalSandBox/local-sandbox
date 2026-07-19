@@ -321,6 +321,25 @@ mod tests {
   use crate::types::{HostScopeConfig, NetworkConfig, RequestHeaderConfig};
 
   #[test]
+  fn command_argv_preserves_direct_and_service_shell_semantics() {
+    assert_eq!(
+      build_command_argv(Either::A("printf ok".into()), None),
+      vec!["sh", "-c", "printf ok"],
+    );
+    assert_eq!(
+      build_command_argv(Either::A("printf ok".into()), Some("bash".into())),
+      vec!["bash", "-c", "printf ok"],
+    );
+    assert_eq!(
+      build_command_argv(
+        Either::B(vec!["printf".into(), "ok".into()]),
+        Some("ignored-for-argv".into()),
+      ),
+      vec!["printf", "ok"],
+    );
+  }
+
+  #[test]
   fn converts_structured_https_interception_to_sdk_config() {
     let options = StartOptions {
       network: Some(NetworkConfig {

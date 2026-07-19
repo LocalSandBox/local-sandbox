@@ -149,5 +149,5 @@ test('SeaWork service declarations expose only remote sandbox inputs', (t) => {
     /export interface SeaWorkExecOptions \{(?<body>[\s\S]*?)\n\}/,
   )?.groups?.body
   t.truthy(execOptions)
-  t.false((execOptions ?? '').includes('shell'), 'remote exec uses the fixed guest shell contract')
+  t.regex(execOptions ?? '', /shell\?: string/)
 })

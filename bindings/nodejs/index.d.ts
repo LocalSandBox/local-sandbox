@@ -447,6 +447,8 @@ export interface SeaWorkCapabilities {
 export interface SeaWorkExecOptions {
   cwd?: string
   env?: Record<string, string>
+  /** Shell used when the command is a string. Defaults to `sh`. */
+  shell?: string
 }
 
 export interface SeaWorkHealth {
