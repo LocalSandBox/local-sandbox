@@ -63,7 +63,15 @@ const info = await service.getServiceInfo()
 const health = await service.healthCheck()
 if (!health.ready) throw new Error(health.stableCode)
 
-const sandbox = await service.startSandbox({ cpus: 2, memoryMb: 2048, diskSizeMb: 4096 })
+const sandbox = await service.startSandbox({
+  cpus: 2,
+  memoryMb: 2048,
+  diskSizeMb: 4096,
+  network: {
+    allow: ['api.example.com'],
+    secrets: { API_TOKEN: { value: 'secret', hosts: ['api.example.com'] } },
+  },
+})
 const result = await sandbox.exec(['sh', '-lc', 'echo service-ready'])
 await sandbox.mkdir('/workspace/out', { recursive: true })
 await sandbox.stop()

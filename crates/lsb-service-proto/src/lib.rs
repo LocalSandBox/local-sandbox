@@ -11,7 +11,12 @@ pub use frame::{
 pub use message::{
     parse_control, ArgvCommand, Cancel, CapabilityHealth, Close, CloseCode, Event, Health,
     HealthState, Hello, HelloReply, Request, RequestOp, Response, ResponseValue, SelectedMount,
-    ServiceCommand, ServiceDirEntry, ServiceFileStat, ServiceInfo, ServiceMountSpec,
-    ServiceNetworkSpec, ServicePortSpec, ShellCommand, WatchChange, WindowUpdate,
+    ServiceCommand, ServiceDirEntry, ServiceFileStat, ServiceHostScope,
+    ServiceHttpsInterceptionSpec, ServiceInfo, ServiceMountSpec, ServiceNetworkSpec,
+    ServicePortSpec, ServiceRequestHeaderSpec, ServiceSecretSpec, ShellCommand, WatchChange,
+    WindowUpdate,
 };
-pub use version::{negotiate, HexU64, ProtocolRange, ProtocolVersion, CURRENT, SUPPORTED};
+pub use version::{
+    negotiate, HexU64, ProtocolRange, ProtocolVersion, CLIENT_FEATURE_BITS, CURRENT,
+    FEATURE_HTTPS_INTERCEPTION, FEATURE_NETWORK_EGRESS, FEATURE_NETWORK_SECRETS, SUPPORTED,
+};

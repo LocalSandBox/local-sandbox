@@ -20,6 +20,7 @@ use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
+use zeroize::Zeroize;
 
 use crate::ipc::connection::{
     ConnectionState, RateLimiter, RequestDeadline, DEFAULT_BOOT_DEADLINE,
@@ -38,6 +39,7 @@ use crate::{engine::ServiceEngineConfig, rpc};
 use crate::{LEDGER_SCHEMA_VERSION, PIPE_NAME, PIPE_SDDL};
 
 const OUTPUT_BACKPRESSURE_TIMEOUT: Duration = Duration::from_secs(30);
+const SERVICE_FEATURE_BITS: u64 = 0;
 #[cfg(test)]
 static TEST_HEALTH_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -465,7 +467,7 @@ impl HealthContext {
                 min_minor: 0,
                 max_minor: 0,
             },
-            feature_bits_hex: HexU64(0),
+            feature_bits_hex: HexU64(SERVICE_FEATURE_BITS),
             capabilities: self.capabilities(),
         }
     }
@@ -699,6 +701,7 @@ where
     let hello: Hello = parse_control(&hello_frame.payload)?;
     hello.validate()?;
     let selected = negotiate(SUPPORTED, hello.range(hello_frame.header.protocol.major))?;
+    let selected_feature_bits = hello.feature_bits_hex.0 & SERVICE_FEATURE_BITS;
     let epoch = random_epoch()?;
     let events = EventSequence::new(epoch);
     let streams = StreamRegistry::default();
@@ -708,7 +711,7 @@ where
         service_version: env!("CARGO_PKG_VERSION").to_string(),
         bundle_version: env!("CARGO_PKG_VERSION").to_string(),
         ledger_schema: context.service_info().ledger_schema,
-        selected_feature_bits_hex: HexU64(0),
+        selected_feature_bits_hex: HexU64(selected_feature_bits),
         health: context.health(),
     };
     write_control(
@@ -732,7 +735,7 @@ where
             .as_ref()
             .map(|upload| upload.deadline.remaining(Instant::now()))
             .unwrap_or(MAX_REQUEST_DEADLINE);
-        let frame = match tokio::select! {
+        let mut frame = match tokio::select! {
             biased;
             exited = &mut process_exit => {
                 exited?;
@@ -909,7 +912,9 @@ where
             .await?;
             continue;
         }
-        let request: Request = parse_control(&frame.payload)?;
+        let parsed_request = parse_control(&frame.payload);
+        frame.payload.zeroize();
+        let request: Request = parsed_request?;
         if request.validate().is_err() {
             write_error(
                 writer,
@@ -919,6 +924,23 @@ where
             )
             .await?;
             continue;
+        }
+        if let RequestOp::StartSandbox {
+            network: Some(network),
+            ..
+        } = &request.op
+        {
+            let required = network.required_feature_bits();
+            if selected_feature_bits & required != required {
+                write_error(
+                    writer,
+                    selected,
+                    frame.header.correlation,
+                    ErrorCode::IncompatibleProtocol,
+                )
+                .await?;
+                continue;
+            }
         }
         if matches!(request.op, RequestOp::CloseSession {}) {
             connection

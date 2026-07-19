@@ -4,12 +4,18 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::ProtocolError;
 
-pub const CURRENT: ProtocolVersion = ProtocolVersion { major: 1, minor: 2 };
+pub const CURRENT: ProtocolVersion = ProtocolVersion { major: 1, minor: 3 };
 pub const SUPPORTED: ProtocolRange = ProtocolRange {
     major: 1,
     min_minor: 0,
-    max_minor: 2,
+    max_minor: 3,
 };
+
+pub const FEATURE_NETWORK_EGRESS: u64 = 1 << 0;
+pub const FEATURE_NETWORK_SECRETS: u64 = 1 << 1;
+pub const FEATURE_HTTPS_INTERCEPTION: u64 = 1 << 2;
+pub const CLIENT_FEATURE_BITS: u64 =
+    FEATURE_NETWORK_EGRESS | FEATURE_NETWORK_SECRETS | FEATURE_HTTPS_INTERCEPTION;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

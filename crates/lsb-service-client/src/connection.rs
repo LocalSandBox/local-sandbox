@@ -8,11 +8,12 @@ use lsb_service_proto::limits::HEADER_LEN;
 use lsb_service_proto::{
     decode_stream_payload, parse_control, Cancel, Correlation, ErrorEnvelope, Event, FrameHeader,
     FrameKind, Health, Hello, HelloReply, HexU64, ProtocolVersion, Request, RequestOp, Response,
-    ResponseValue, ServiceInfo, WindowUpdate, CURRENT, SUPPORTED,
+    ResponseValue, ServiceInfo, WindowUpdate, CLIENT_FEATURE_BITS, CURRENT, SUPPORTED,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::windows::named_pipe::NamedPipeClient;
 use tokio::sync::{mpsc, oneshot, watch, Mutex, Semaphore};
+use zeroize::Zeroizing;
 
 use crate::pipe::open_verified;
 use crate::{ClientError, ConnectOptions};
@@ -29,6 +30,7 @@ struct ConnectionCore {
     writer: Mutex<tokio::io::WriteHalf<NamedPipeClient>>,
     upload: Mutex<()>,
     protocol: ProtocolVersion,
+    feature_bits: u64,
     epoch: u64,
     next_sequence: AtomicU64,
     pending: Mutex<HashMap<u64, PendingRequest>>,
@@ -92,7 +94,7 @@ impl ServiceClient {
             min_minor: SUPPORTED.min_minor,
             max_minor: SUPPORTED.max_minor,
             client_version: env!("CARGO_PKG_VERSION").to_string(),
-            feature_bits_hex: HexU64(0),
+            feature_bits_hex: HexU64(CLIENT_FEATURE_BITS),
         };
         write_control(
             &mut pipe,
@@ -114,6 +116,7 @@ impl ServiceClient {
         let epoch = frame.header.correlation.high;
         if reply.connection_epoch_hex.0 != epoch
             || reply.selected_minor != frame.header.protocol.minor
+            || reply.selected_feature_bits_hex.0 & !CLIENT_FEATURE_BITS != 0
         {
             return Err(ClientError::Protocol(
                 "Hello reply epoch/version mismatch".to_string(),
@@ -129,6 +132,7 @@ impl ServiceClient {
             writer: Mutex::new(writer),
             upload: Mutex::new(()),
             protocol,
+            feature_bits: reply.selected_feature_bits_hex.0,
             epoch,
             next_sequence: AtomicU64::new(1),
             pending: Mutex::new(HashMap::new()),
@@ -163,6 +167,10 @@ impl ServiceClient {
 
     pub fn negotiated_protocol(&self) -> ProtocolVersion {
         self.core.protocol
+    }
+
+    pub fn negotiated_feature_bits(&self) -> u64 {
+        self.core.feature_bits
     }
 
     pub async fn get_service_info(&self) -> Result<ServiceInfo, ClientError> {
@@ -245,6 +253,12 @@ impl ServiceClient {
             && (options.client_instance_id.is_some() || options.from.is_some())
         {
             return Err(ClientError::IncompatibleProtocol);
+        }
+        if let Some(network) = &options.network {
+            let required = network.required_feature_bits();
+            if self.core.protocol.minor < 3 || self.core.feature_bits & required != required {
+                return Err(ClientError::IncompatibleProtocol);
+            }
         }
         match self
             .request(RequestOp::StartSandbox {
@@ -1545,7 +1559,7 @@ async fn write_control<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    let payload = serde_json::to_vec(value)?;
+    let payload = Zeroizing::new(serde_json::to_vec(value)?);
     let header = FrameHeader {
         kind,
         flags: 0,

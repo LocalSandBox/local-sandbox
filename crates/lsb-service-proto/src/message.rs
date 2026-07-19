@@ -200,6 +200,29 @@ impl Request {
                     for host in &network.allowed_hosts {
                         validate_string(host)?;
                     }
+                    if network.secrets.len() > 64 {
+                        return Err(ProtocolError::InvalidJson);
+                    }
+                    for (name, secret) in &network.secrets {
+                        validate_string(name)?;
+                        validate_string(&secret.value)?;
+                        if name.is_empty() || secret.hosts.is_empty() || secret.hosts.len() > 64 {
+                            return Err(ProtocolError::InvalidJson);
+                        }
+                        for host in &secret.hosts {
+                            validate_string(host)?;
+                        }
+                    }
+                    if let Some(interception) = &network.https_interception {
+                        if interception.request_headers.len() > 64 {
+                            return Err(ProtocolError::InvalidJson);
+                        }
+                        for header in &interception.request_headers {
+                            validate_string(&header.name)?;
+                            validate_string(&header.value)?;
+                            validate_host_scope(&header.hosts)?;
+                        }
+                    }
                 }
             }
             RequestOp::StopSandbox { sandbox_id } => validate_resource_id(sandbox_id)?,
@@ -477,10 +500,94 @@ pub struct ServicePortSpec {
     pub host_port: Option<u16>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceNetworkSpec {
+    #[serde(default)]
     pub allowed_hosts: Vec<String>,
+    #[serde(default)]
+    pub secrets: BTreeMap<String, ServiceSecretSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub https_interception: Option<ServiceHttpsInterceptionSpec>,
+}
+
+impl ServiceNetworkSpec {
+    pub fn required_feature_bits(&self) -> u64 {
+        let mut required = crate::FEATURE_NETWORK_EGRESS;
+        if !self.secrets.is_empty() {
+            required |= crate::FEATURE_NETWORK_SECRETS;
+        }
+        if self.https_interception.is_some() {
+            required |= crate::FEATURE_HTTPS_INTERCEPTION;
+        }
+        required
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceSecretSpec {
+    pub value: String,
+    pub hosts: Vec<String>,
+}
+
+impl std::fmt::Debug for ServiceSecretSpec {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ServiceSecretSpec")
+            .field("value", &"<redacted>")
+            .field("hosts", &self.hosts)
+            .finish()
+    }
+}
+
+impl Drop for ServiceSecretSpec {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.value);
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceHttpsInterceptionSpec {
+    pub enabled: bool,
+    #[serde(default)]
+    pub request_headers: Vec<ServiceRequestHeaderSpec>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceRequestHeaderSpec {
+    pub name: String,
+    pub value: String,
+    #[serde(default)]
+    pub hosts: ServiceHostScope,
+}
+
+impl std::fmt::Debug for ServiceRequestHeaderSpec {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ServiceRequestHeaderSpec")
+            .field("name", &self.name)
+            .field("value", &"<redacted>")
+            .field("hosts", &self.hosts)
+            .finish()
+    }
+}
+
+impl Drop for ServiceRequestHeaderSpec {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.value);
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceHostScope {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deny: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -619,6 +726,18 @@ pub fn parse_control<T: DeserializeOwned>(payload: &[u8]) -> Result<T, ProtocolE
 fn validate_string(value: &str) -> Result<(), ProtocolError> {
     if value.len() > MAX_STRING_LEN {
         return Err(ProtocolError::MessageTooLarge);
+    }
+    Ok(())
+}
+
+fn validate_host_scope(scope: &ServiceHostScope) -> Result<(), ProtocolError> {
+    for patterns in [&scope.allow, &scope.deny].into_iter().flatten() {
+        if patterns.is_empty() || patterns.len() > 64 {
+            return Err(ProtocolError::InvalidJson);
+        }
+        for pattern in patterns {
+            validate_string(pattern)?;
+        }
     }
     Ok(())
 }
@@ -767,6 +886,54 @@ mod tests {
             op: RequestOp::HealthCheck {},
         };
         assert_eq!(deadline.validate(), Err(ProtocolError::InvalidJson));
+    }
+
+    #[test]
+    fn network_contract_is_bounded_feature_gated_and_redacted() {
+        let network = ServiceNetworkSpec {
+            allowed_hosts: vec!["api.example.test".to_string()],
+            secrets: BTreeMap::from([(
+                "API_TOKEN".to_string(),
+                ServiceSecretSpec {
+                    value: "never-log-secret".to_string(),
+                    hosts: vec!["api.example.test".to_string()],
+                },
+            )]),
+            https_interception: Some(ServiceHttpsInterceptionSpec {
+                enabled: true,
+                request_headers: vec![ServiceRequestHeaderSpec {
+                    name: "Authorization".to_string(),
+                    value: "never-log-header".to_string(),
+                    hosts: ServiceHostScope {
+                        allow: Some(vec!["api.example.test".to_string()]),
+                        deny: None,
+                    },
+                }],
+            }),
+        };
+        assert_eq!(network.required_feature_bits(), crate::CLIENT_FEATURE_BITS);
+        let request = Request {
+            deadline_ms: None,
+            op: RequestOp::StartSandbox {
+                client_instance_id: None,
+                from: None,
+                cpus: 2,
+                memory_mib: 2048,
+                disk_mib: 4096,
+                mounts: Vec::new(),
+                ports: Vec::new(),
+                network: Some(network),
+            },
+        };
+        request.validate().unwrap();
+        let debug = format!("{request:?}");
+        assert!(!debug.contains("never-log-secret"));
+        assert!(!debug.contains("never-log-header"));
+        assert!(debug.contains("<redacted>"));
+
+        let invalid = br#"{"op":{"type":"start_sandbox","cpus":2,"memory_mib":2048,"disk_mib":4096,"mounts":[],"ports":[],"network":{"allowed_hosts":[],"secrets":{"TOKEN":{"value":"secret","hosts":[]}}}}}"#;
+        let invalid: Request = parse_control(invalid).unwrap();
+        assert_eq!(invalid.validate(), Err(ProtocolError::InvalidJson));
     }
 
     #[test]

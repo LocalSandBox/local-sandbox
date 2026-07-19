@@ -494,6 +494,8 @@ export interface SeaWorkStartOptions {
   cpus?: number
   memoryMb?: number
   diskSizeMb?: number
+  /** Service-owned public egress, scoped secrets, and HTTPS interception policy. */
+  network?: NetworkConfig
 }
 
 export interface SeaWorkUninstallPreparation {

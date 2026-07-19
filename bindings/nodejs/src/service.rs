@@ -4,8 +4,8 @@ use napi::bindgen_prelude::{Buffer, Either, Result, Uint8Array};
 use napi_derive::napi;
 
 use crate::types::{
-  CopyOptions, DirEntry, ExecResult, FileChangeEvent, MkdirOptions, RemoveOptions, StatResult,
-  WatchOptions,
+  CopyOptions, DirEntry, ExecResult, FileChangeEvent, MkdirOptions, NetworkConfig, RemoveOptions,
+  StatResult, WatchOptions,
 };
 #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 use napi::Status;
@@ -38,6 +38,8 @@ pub struct SeaWorkStartOptions {
   pub cpus: Option<u32>,
   pub memoryMb: Option<u32>,
   pub diskSizeMb: Option<u32>,
+  /// Service-owned public egress, scoped secrets, and HTTPS interception policy.
+  pub network: Option<NetworkConfig>,
 }
 
 #[allow(non_snake_case)]
@@ -152,7 +154,11 @@ impl SeaWorkService {
       let client = &self.client;
       let info = client.get_service_info().await.map_err(service_error)?;
       let protocol = client.negotiated_protocol();
-      Ok(map_service_info(info, protocol))
+      Ok(map_service_info(
+        info,
+        protocol,
+        client.negotiated_feature_bits(),
+      ))
     }
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     Err(unsupported_platform_error())
@@ -170,7 +176,7 @@ impl SeaWorkService {
         ready: health.ready,
         admissionsOpen: health.admissions_open,
         stableCode: health.stable_code,
-        serviceInfo: map_service_info(info, protocol),
+        serviceInfo: map_service_info(info, protocol, client.negotiated_feature_bits()),
       })
     }
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
@@ -281,6 +287,7 @@ impl SeaWorkService {
         cpus: None,
         memoryMb: None,
         diskSizeMb: None,
+        network: None,
       });
       let start = lsb_service_client::StartSandboxOptions {
         client_instance_id: opts.instanceId,
@@ -289,6 +296,7 @@ impl SeaWorkService {
           .map_err(|_| napi::Error::from_reason("cpus is out of range"))?,
         memory_mib: opts.memoryMb.unwrap_or(2048),
         disk_mib: opts.diskSizeMb.unwrap_or(4096),
+        network: opts.network.map(map_service_network).transpose()?,
         ..lsb_service_client::StartSandboxOptions::default()
       };
       let sandbox = self
@@ -333,13 +341,14 @@ pub async fn connect_seawork_service(
 fn map_service_info(
   info: lsb_service_proto::ServiceInfo,
   protocol: lsb_service_proto::ProtocolVersion,
+  feature_bits: u64,
 ) -> SeaWorkServiceInfo {
   SeaWorkServiceInfo {
     serviceVersion: info.service_version,
     protocol: SeaWorkNegotiatedProtocol {
       major: u32::from(protocol.major),
       minor: u32::from(protocol.minor),
-      features: Vec::new(),
+      features: service_feature_names(feature_bits),
     },
     bundleVersion: info.bundle_version,
     capabilities: SeaWorkCapabilities {
@@ -349,6 +358,80 @@ fn map_service_info(
       ports: info.capabilities.ports,
     },
   }
+}
+
+#[allow(dead_code)]
+fn service_feature_names(bits: u64) -> Vec<String> {
+  [
+    (lsb_service_proto::FEATURE_NETWORK_EGRESS, "network-egress"),
+    (
+      lsb_service_proto::FEATURE_NETWORK_SECRETS,
+      "network-secrets",
+    ),
+    (
+      lsb_service_proto::FEATURE_HTTPS_INTERCEPTION,
+      "https-interception",
+    ),
+  ]
+  .into_iter()
+  .filter(|(feature, _)| bits & feature != 0)
+  .map(|(_, name)| name.to_string())
+  .collect()
+}
+
+#[allow(dead_code)]
+fn map_service_network(
+  mut network: NetworkConfig,
+) -> Result<lsb_service_proto::ServiceNetworkSpec> {
+  if network
+    .exposeHost
+    .as_ref()
+    .is_some_and(|mappings| !mappings.is_empty())
+  {
+    return Err(napi::Error::from_reason(
+      "network.exposeHost requires the unavailable owner-token relay capability",
+    ));
+  }
+  let secrets = network
+    .secrets
+    .take()
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(name, mut secret)| {
+      (
+        name,
+        lsb_service_proto::ServiceSecretSpec {
+          value: std::mem::take(&mut secret.value),
+          hosts: std::mem::take(&mut secret.hosts),
+        },
+      )
+    })
+    .collect();
+  let https_interception = network.httpsInterception.take().map(|mut interception| {
+    lsb_service_proto::ServiceHttpsInterceptionSpec {
+      enabled: interception.enabled,
+      request_headers: std::mem::take(&mut interception.requestHeaders)
+        .into_iter()
+        .map(|mut header| lsb_service_proto::ServiceRequestHeaderSpec {
+          name: std::mem::take(&mut header.name),
+          value: std::mem::take(&mut header.value),
+          hosts: header
+            .hosts
+            .take()
+            .map(|scope| lsb_service_proto::ServiceHostScope {
+              allow: scope.allow,
+              deny: scope.deny,
+            })
+            .unwrap_or_default(),
+        })
+        .collect(),
+    }
+  });
+  Ok(lsb_service_proto::ServiceNetworkSpec {
+    allowed_hosts: network.allow.take().unwrap_or_default(),
+    secrets,
+    https_interception,
+  })
 }
 
 #[napi]
