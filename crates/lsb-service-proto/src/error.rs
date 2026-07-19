@@ -29,10 +29,47 @@ pub enum ErrorCode {
     MountPathBecameUnsafe,
     MountConflict,
     MountUnavailable,
+    CheckpointUnsupported,
     NetworkPolicyDenied,
     PortIsolationUnavailable,
     BundleInvalid,
     InternalError,
+}
+
+impl ErrorCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AccessDenied => "ACCESS_DENIED",
+            Self::ClientNotTrusted => "CLIENT_NOT_TRUSTED",
+            Self::ServerNotTrusted => "SERVER_NOT_TRUSTED",
+            Self::ServiceUnavailable => "SERVICE_UNAVAILABLE",
+            Self::ServiceDraining => "SERVICE_DRAINING",
+            Self::IncompatibleProtocol => "INCOMPATIBLE_PROTOCOL",
+            Self::LedgerSchemaIncompatible => "LEDGER_SCHEMA_INCOMPATIBLE",
+            Self::ProtocolError => "PROTOCOL_ERROR",
+            Self::InvalidRequest => "INVALID_REQUEST",
+            Self::InvalidSequence => "INVALID_SEQUENCE",
+            Self::MessageTooLarge => "MESSAGE_TOO_LARGE",
+            Self::DuplicateRequest => "DUPLICATE_REQUEST",
+            Self::RequestNotActive => "REQUEST_NOT_ACTIVE",
+            Self::ResourceNotFound => "RESOURCE_NOT_FOUND",
+            Self::QuotaExceeded => "QUOTA_EXCEEDED",
+            Self::DeadlineExceeded => "DEADLINE_EXCEEDED",
+            Self::Cancelled => "CANCELLED",
+            Self::OutputLimit => "OUTPUT_LIMIT",
+            Self::OutputBackpressure => "OUTPUT_BACKPRESSURE",
+            Self::PathPolicyDenied => "PATH_POLICY_DENIED",
+            Self::PathChanged => "PATH_CHANGED",
+            Self::MountPathBecameUnsafe => "MOUNT_PATH_BECAME_UNSAFE",
+            Self::MountConflict => "MOUNT_CONFLICT",
+            Self::MountUnavailable => "MOUNT_UNAVAILABLE",
+            Self::CheckpointUnsupported => "CHECKPOINT_UNSUPPORTED",
+            Self::NetworkPolicyDenied => "NETWORK_POLICY_DENIED",
+            Self::PortIsolationUnavailable => "PORT_ISOLATION_UNAVAILABLE",
+            Self::BundleInvalid => "BUNDLE_INVALID",
+            Self::InternalError => "INTERNAL_ERROR",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +92,10 @@ impl ErrorEnvelope {
                 ("SeaWork and LocalSandbox require an update.", false)
             }
             ErrorCode::PortIsolationUnavailable => ("Isolated host ports are unavailable.", false),
+            ErrorCode::CheckpointUnsupported => (
+                "Sandbox checkpoints are not supported by the SeaWork service. Start a new sandbox without 'from'.",
+                false,
+            ),
             ErrorCode::AccessDenied | ErrorCode::ClientNotTrusted => ("Access was denied.", false),
             ErrorCode::InvalidRequest | ErrorCode::ProtocolError => {
                 ("The request was invalid.", false)
@@ -117,5 +158,14 @@ mod tests {
         assert!(!json.contains("password"));
         assert!(!json.contains("path"));
         assert_eq!(envelope.message, "The LocalSandbox operation failed.");
+    }
+
+    #[test]
+    fn unsupported_checkpoint_has_stable_migration_guidance() {
+        let envelope = ErrorEnvelope::safe(ErrorCode::CheckpointUnsupported, "correlation");
+        assert_eq!(envelope.code, ErrorCode::CheckpointUnsupported);
+        assert!(!envelope.retryable);
+        assert!(envelope.message.contains("without 'from'"));
+        assert_eq!(envelope.code.as_str(), "CHECKPOINT_UNSUPPORTED");
     }
 }

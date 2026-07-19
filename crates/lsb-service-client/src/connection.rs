@@ -241,8 +241,15 @@ impl ServiceClient {
         &self,
         options: StartSandboxOptions,
     ) -> Result<RemoteSandbox, ClientError> {
+        if self.core.protocol.minor < 2
+            && (options.client_instance_id.is_some() || options.from.is_some())
+        {
+            return Err(ClientError::IncompatibleProtocol);
+        }
         match self
             .request(RequestOp::StartSandbox {
+                client_instance_id: options.client_instance_id,
+                from: options.from,
                 cpus: options.cpus,
                 memory_mib: options.memory_mib,
                 disk_mib: options.disk_mib,
@@ -980,6 +987,10 @@ where
 
 #[derive(Debug, Clone)]
 pub struct StartSandboxOptions {
+    /// Correlation/cache hint only. It never selects a service path or resource id.
+    pub client_instance_id: Option<String>,
+    /// Legacy checkpoint selector. A non-empty value receives CHECKPOINT_UNSUPPORTED.
+    pub from: Option<String>,
     pub cpus: u16,
     pub memory_mib: u32,
     pub disk_mib: u32,
@@ -991,6 +1002,8 @@ pub struct StartSandboxOptions {
 impl Default for StartSandboxOptions {
     fn default() -> Self {
         Self {
+            client_instance_id: None,
+            from: None,
             cpus: 2,
             memory_mib: 2048,
             disk_mib: 4096,

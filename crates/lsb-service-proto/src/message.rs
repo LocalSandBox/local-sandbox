@@ -161,6 +161,8 @@ impl Request {
                 validate_resource_id(update_id)?;
             }
             RequestOp::StartSandbox {
+                client_instance_id,
+                from,
                 cpus,
                 memory_mib,
                 disk_mib,
@@ -168,6 +170,12 @@ impl Request {
                 ports,
                 network,
             } => {
+                if let Some(value) = client_instance_id {
+                    validate_legacy_start_hint(value)?;
+                }
+                if let Some(value) = from {
+                    validate_legacy_start_hint(value)?;
+                }
                 if !(1..=8).contains(cpus)
                     || !(512..=8 * 1024).contains(memory_mib)
                     || !(1024..=32 * 1024).contains(disk_mib)
@@ -328,6 +336,12 @@ pub enum RequestOp {
     GetServiceInfo {},
     HealthCheck {},
     StartSandbox {
+        /// Caller correlation/cache hint. The service never derives a path or resource id from it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_instance_id: Option<String>,
+        /// Legacy checkpoint selector, accepted only to return CHECKPOINT_UNSUPPORTED.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
         cpus: u16,
         memory_mib: u32,
         disk_mib: u32,
@@ -609,6 +623,18 @@ fn validate_string(value: &str) -> Result<(), ProtocolError> {
     Ok(())
 }
 
+fn validate_legacy_start_hint(value: &str) -> Result<(), ProtocolError> {
+    validate_string(value)?;
+    if value.is_empty()
+        || value.len() > 128
+        || value.chars().any(char::is_control)
+        || value.trim() != value
+    {
+        return Err(ProtocolError::InvalidJson);
+    }
+    Ok(())
+}
+
 fn validate_resource_id(value: &str) -> Result<(), ProtocolError> {
     if value.len() != 32
         || !value
@@ -703,7 +729,7 @@ mod tests {
     fn request_surface_has_no_trusted_runtime_fields() {
         let info: Request = parse_control(br#"{"op":{"type":"get_service_info"}}"#).unwrap();
         assert!(matches!(info.op, RequestOp::GetServiceInfo {}));
-        let sandbox = br#"{"op":{"type":"start_sandbox","cpus":2,"memory_mib":2048,"disk_mib":4096,"mounts":[],"ports":[]}}"#;
+        let sandbox = br#"{"op":{"type":"start_sandbox","client_instance_id":"seawork-session","from":"legacy-checkpoint","cpus":2,"memory_mib":2048,"disk_mib":4096,"mounts":[],"ports":[]}}"#;
         let request: Request = parse_control(sandbox).unwrap();
         request.validate().unwrap();
         let forbidden = br#"{"op":{"type":"start_sandbox","cpus":2,"memory_mib":2048,"disk_mib":4096,"mounts":[],"ports":[],"data_dir":"C:\\caller"}}"#;
@@ -718,6 +744,8 @@ mod tests {
         let oversized = Request {
             deadline_ms: None,
             op: RequestOp::StartSandbox {
+                client_instance_id: None,
+                from: None,
                 cpus: 9,
                 memory_mib: 2048,
                 disk_mib: 4096,
@@ -739,6 +767,39 @@ mod tests {
             op: RequestOp::HealthCheck {},
         };
         assert_eq!(deadline.validate(), Err(ProtocolError::InvalidJson));
+    }
+
+    #[test]
+    fn legacy_start_hints_are_bounded_and_do_not_enable_runtime_paths() {
+        let valid = Request {
+            deadline_ms: None,
+            op: RequestOp::StartSandbox {
+                client_instance_id: Some("seawork-session-1".to_string()),
+                from: Some("checkpoint-name".to_string()),
+                cpus: 2,
+                memory_mib: 2048,
+                disk_mib: 4096,
+                mounts: Vec::new(),
+                ports: Vec::new(),
+                network: None,
+            },
+        };
+        valid.validate().unwrap();
+
+        let mut invalid = valid;
+        if let RequestOp::StartSandbox {
+            client_instance_id, ..
+        } = &mut invalid.op
+        {
+            *client_instance_id = Some("x".repeat(129));
+        }
+        assert_eq!(invalid.validate(), Err(ProtocolError::InvalidJson));
+
+        let forbidden = br#"{"op":{"type":"start_sandbox","cpus":2,"memory_mib":2048,"disk_mib":4096,"mounts":[],"ports":[],"data_dir":"C:\\caller"}}"#;
+        assert_eq!(
+            parse_control::<Request>(forbidden),
+            Err(ProtocolError::InvalidJson)
+        );
     }
 
     #[test]

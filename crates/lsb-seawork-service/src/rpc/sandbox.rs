@@ -24,6 +24,8 @@ pub async fn start(
     sessions: SessionManager,
     session_id: ResourceHandle,
     identity: ClientIdentityKey,
+    _client_instance_id: Option<String>,
+    from: Option<String>,
     cpus: u16,
     memory_mib: u32,
     disk_mib: u32,
@@ -32,6 +34,9 @@ pub async fn start(
     network: Option<ServiceNetworkSpec>,
     cancellation: CancellationToken,
 ) -> Result<ResponseValue, ErrorCode> {
+    if from.is_some() {
+        return Err(ErrorCode::CheckpointUnsupported);
+    }
     if !admissions_open {
         return Err(ErrorCode::ServiceUnavailable);
     }

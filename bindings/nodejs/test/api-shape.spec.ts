@@ -123,7 +123,9 @@ test('SeaWork service declarations expose only remote sandbox inputs', (t) => {
   t.regex(options ?? '', /cpus\?: number/)
   t.regex(options ?? '', /memoryMb\?: number/)
   t.regex(options ?? '', /diskSizeMb\?: number/)
-  for (const forbidden of ['dataDir', 'instanceId', 'baseVersion', 'from', 'qemu', 'identity']) {
+  t.regex(options ?? '', /instanceId\?: string/)
+  t.regex(options ?? '', /from\?: string/)
+  for (const forbidden of ['dataDir', 'baseVersion', 'qemu', 'identity']) {
     t.false((options ?? '').includes(forbidden), `forbidden service option: ${forbidden}`)
   }
 

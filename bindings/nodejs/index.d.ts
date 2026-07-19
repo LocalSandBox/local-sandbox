@@ -487,6 +487,10 @@ export interface SeaWorkServiceInfo {
 }
 
 export interface SeaWorkStartOptions {
+  /** Correlation/cache hint only; never a service path or caller-selected resource. */
+  instanceId?: string
+  /** Legacy checkpoint name. Non-empty values return CHECKPOINT_UNSUPPORTED. */
+  from?: string
   cpus?: number
   memoryMb?: number
   diskSizeMb?: number

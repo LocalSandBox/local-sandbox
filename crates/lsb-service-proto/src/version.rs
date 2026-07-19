@@ -4,11 +4,11 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::ProtocolError;
 
-pub const CURRENT: ProtocolVersion = ProtocolVersion { major: 1, minor: 1 };
+pub const CURRENT: ProtocolVersion = ProtocolVersion { major: 1, minor: 2 };
 pub const SUPPORTED: ProtocolRange = ProtocolRange {
     major: 1,
     min_minor: 0,
-    max_minor: 1,
+    max_minor: 2,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

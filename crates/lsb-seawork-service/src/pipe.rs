@@ -1212,6 +1212,8 @@ async fn dispatch_request(
             health: context.health(),
         },
         RequestOp::StartSandbox {
+            client_instance_id,
+            from,
             cpus,
             memory_mib,
             disk_mib,
@@ -1224,6 +1226,8 @@ async fn dispatch_request(
             context.sessions.clone(),
             session_id,
             identity.clone(),
+            client_instance_id,
+            from,
             cpus,
             memory_mib,
             disk_mib,
@@ -2016,6 +2020,8 @@ mod tests {
         assert!(is_health_or_maintenance(&RequestOp::HealthCheck {}));
         assert!(is_health_or_maintenance(&RequestOp::PrepareUninstall {}));
         assert!(!is_health_or_maintenance(&RequestOp::StartSandbox {
+            client_instance_id: None,
+            from: None,
             cpus: 1,
             memory_mib: 512,
             disk_mib: 1024,

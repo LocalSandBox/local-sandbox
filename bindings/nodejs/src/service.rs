@@ -1,17 +1,27 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use napi::bindgen_prelude::{Buffer, Either, Result, Uint8Array};
 use napi_derive::napi;
 
-#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
-use crate::error::unsupported_platform_error;
 use crate::types::{
   CopyOptions, DirEntry, ExecResult, FileChangeEvent, MkdirOptions, RemoveOptions, StatResult,
   WatchOptions,
 };
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+use napi::Status;
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use std::collections::BTreeMap;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use std::sync::Arc;
+
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+fn unsupported_platform_error() -> napi::Error {
+  napi::Error::new(
+    Status::GenericFailure,
+    "SeaWork service is supported only on Windows 11 x86-64".to_string(),
+  )
+}
 #[allow(non_snake_case)]
 #[napi(object)]
 pub struct SeaWorkServiceConnectOptions {
@@ -21,6 +31,10 @@ pub struct SeaWorkServiceConnectOptions {
 #[allow(non_snake_case)]
 #[napi(object)]
 pub struct SeaWorkStartOptions {
+  /// Correlation/cache hint only; never a service path or caller-selected resource.
+  pub instanceId: Option<String>,
+  /// Legacy checkpoint name. Non-empty values return CHECKPOINT_UNSUPPORTED.
+  pub from: Option<String>,
   pub cpus: Option<u32>,
   pub memoryMb: Option<u32>,
   pub diskSizeMb: Option<u32>,
@@ -262,11 +276,15 @@ impl SeaWorkService {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
       let opts = opts.unwrap_or(SeaWorkStartOptions {
+        instanceId: None,
+        from: None,
         cpus: None,
         memoryMb: None,
         diskSizeMb: None,
       });
       let start = lsb_service_client::StartSandboxOptions {
+        client_instance_id: opts.instanceId,
+        from: opts.from,
         cpus: u16::try_from(opts.cpus.unwrap_or(2))
           .map_err(|_| napi::Error::from_reason("cpus is out of range"))?,
         memory_mib: opts.memoryMb.unwrap_or(2048),
