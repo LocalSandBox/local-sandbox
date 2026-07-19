@@ -25,6 +25,7 @@ pub async fn start(
     session_id: ResourceHandle,
     identity: ClientIdentityKey,
     protected_egress_allow: Vec<String>,
+    product_ca_bundle_pem: Vec<u8>,
     _client_instance_id: Option<String>,
     from: Option<String>,
     cpus: u16,
@@ -39,7 +40,13 @@ pub async fn start(
         return Err(ErrorCode::CheckpointUnsupported);
     }
     let proxy_config = network
-        .map(|policy| crate::network_policy::build_proxy_config(policy, protected_egress_allow))
+        .map(|policy| {
+            crate::network_policy::build_proxy_config(
+                policy,
+                protected_egress_allow,
+                product_ca_bundle_pem,
+            )
+        })
         .transpose()
         .map_err(|_| ErrorCode::InvalidRequest)?;
     if !admissions_open {

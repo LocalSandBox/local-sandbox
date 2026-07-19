@@ -341,6 +341,7 @@ pub struct HealthContext {
     maintenance_roots: Vec<String>,
     publisher_thumbprints: Vec<String>,
     protected_egress_allow: Vec<String>,
+    product_ca_bundle_pem: Vec<u8>,
 }
 
 impl HealthContext {
@@ -356,6 +357,7 @@ impl HealthContext {
             maintenance_roots: Vec::new(),
             publisher_thumbprints: Vec::new(),
             protected_egress_allow: Vec::new(),
+            product_ca_bundle_pem: Vec::new(),
         }
     }
 
@@ -376,6 +378,7 @@ impl HealthContext {
         maintenance_roots: Vec<String>,
         publisher_thumbprints: Vec<String>,
         protected_egress_allow: Vec<String>,
+        product_ca_bundle_pem: Vec<u8>,
     ) -> Self {
         self.admissions_open = maintenance.admissions();
         self.maintenance = Some(maintenance);
@@ -383,6 +386,7 @@ impl HealthContext {
         self.maintenance_roots = maintenance_roots;
         self.publisher_thumbprints = publisher_thumbprints;
         self.protected_egress_allow = protected_egress_allow;
+        self.product_ca_bundle_pem = product_ca_bundle_pem;
         self
     }
 
@@ -1253,6 +1257,7 @@ async fn dispatch_request(
             session_id,
             identity.clone(),
             context.protected_egress_allow.clone(),
+            context.product_ca_bundle_pem.clone(),
             client_instance_id,
             from,
             cpus,

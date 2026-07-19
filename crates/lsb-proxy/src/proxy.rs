@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use boring::ssl::{SslConnector, SslConnectorBuilder, SslMethod};
+use boring::x509::X509;
 #[cfg(windows)]
 use boring::x509::X509;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -57,7 +58,7 @@ impl ProxyEngine {
         // doesn't reject our MITM connections based on JA3/JA4 fingerprint.
         let mut builder = SslConnector::builder(SslMethod::tls()).expect("SslConnector");
         builder.set_alpn_protos(b"\x08http/1.1").expect("ALPN");
-        configure_upstream_tls_roots(&mut builder)?;
+        configure_upstream_tls_roots(&mut builder, &config.product_ca_bundle_pem)?;
         let upstream_ssl = builder.build();
 
         Ok(ProxyEngine {
@@ -133,7 +134,10 @@ impl ProxyEngine {
     }
 }
 
-fn configure_upstream_tls_roots(builder: &mut SslConnectorBuilder) -> anyhow::Result<()> {
+fn configure_upstream_tls_roots(
+    builder: &mut SslConnectorBuilder,
+    product_ca_bundle_pem: &[u8],
+) -> anyhow::Result<()> {
     #[cfg(windows)]
     {
         let count = add_windows_system_roots(builder)?;
@@ -145,6 +149,17 @@ fn configure_upstream_tls_roots(builder: &mut SslConnectorBuilder) -> anyhow::Re
 
     #[cfg(not(windows))]
     let _ = builder;
+
+    if !product_ca_bundle_pem.is_empty() {
+        let certificates = X509::stack_from_pem(product_ca_bundle_pem)?;
+        if certificates.is_empty() {
+            anyhow::bail!("product CA bundle contains no certificates");
+        }
+        for certificate in certificates {
+            builder.cert_store_mut().add_cert(certificate)?;
+        }
+        debug!("loaded installer-protected product CA bundle for upstream TLS");
+    }
 
     Ok(())
 }

@@ -6,6 +6,7 @@ use lsb_service_proto::ServiceNetworkSpec;
 pub fn build_proxy_config(
     mut policy: ServiceNetworkSpec,
     protected_allow: Vec<String>,
+    product_ca_bundle_pem: Vec<u8>,
 ) -> Result<lsb_proxy::ProxyConfig> {
     let secrets = std::mem::take(&mut policy.secrets)
         .into_iter()
@@ -44,6 +45,7 @@ pub fn build_proxy_config(
         protected_network: lsb_proxy::config::NetworkConfig {
             allow: protected_allow,
         },
+        product_ca_bundle_pem,
         https_interception,
         ..Default::default()
     };
@@ -87,7 +89,8 @@ mod tests {
                 }],
             }),
         };
-        let config = build_proxy_config(policy, vec!["api.example.test".to_string()]).unwrap();
+        let config =
+            build_proxy_config(policy, vec!["api.example.test".to_string()], Vec::new()).unwrap();
         let debug = format!("{config:?}");
         assert!(!debug.contains("never-log-secret"));
         assert!(!debug.contains("never-log-header"));

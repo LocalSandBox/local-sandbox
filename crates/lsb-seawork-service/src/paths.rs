@@ -6,6 +6,7 @@ use anyhow::{bail, Context, Result};
 pub struct ServicePaths {
     pub root: PathBuf,
     pub config: PathBuf,
+    pub product_ca_bundle: PathBuf,
     pub ledger: PathBuf,
     pub pending_update: PathBuf,
     pub users: PathBuf,
@@ -26,6 +27,7 @@ impl ServicePaths {
         let root = program_data.join("LocalSandbox").join("SeaWork");
         Ok(Self {
             config: root.join("config").join("service.json"),
+            product_ca_bundle: root.join("config").join("product-ca.pem"),
             ledger: root.join("state").join("ledger"),
             pending_update: root.join("state").join("pending-update.json"),
             users: root.join("state").join("users"),
@@ -105,6 +107,7 @@ mod tests {
         let paths = ServicePaths::for_test(base.clone());
         assert_eq!(paths.root, base.join("LocalSandbox").join("SeaWork"));
         assert!(paths.config.starts_with(&paths.root));
+        assert!(paths.product_ca_bundle.starts_with(&paths.root));
         assert!(paths.ledger.starts_with(&paths.root));
         assert!(paths.pending_update.starts_with(&paths.root));
         assert!(paths.require_below_root(&base.join("elsewhere")).is_err());

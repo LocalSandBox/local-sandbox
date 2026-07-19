@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 const MAX_CONFIG_SIZE: u64 = 256 * 1024;
+const MAX_PRODUCT_CA_BUNDLE_SIZE: u64 = lsb_proxy::config::MAX_PRODUCT_CA_BUNDLE_BYTES as u64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -140,6 +141,29 @@ impl ServiceConfig {
     }
 }
 
+pub fn load_product_ca_bundle(path: &Path) -> Result<Vec<u8>> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("read product CA metadata {}", path.display()))
+        }
+    };
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_PRODUCT_CA_BUNDLE_SIZE {
+        bail!("product CA bundle must be a non-empty regular file no larger than {MAX_PRODUCT_CA_BUNDLE_SIZE} bytes");
+    }
+    let bundle = std::fs::read(path)
+        .with_context(|| format!("read product CA bundle {}", path.display()))?;
+    lsb_proxy::ProxyConfig {
+        product_ca_bundle_pem: bundle.clone(),
+        ..Default::default()
+    }
+    .validate()
+    .context("product CA bundle is invalid")?;
+    Ok(bundle)
+}
+
 fn validate_roots(roots: &[String], policy: &str) -> Result<()> {
     if roots.len() > 8
         || roots.iter().any(|value| {
@@ -202,5 +226,16 @@ mod tests {
         assert!(config.validate().is_err());
         config.egress_allow = vec!["api.example.com".to_string(); 257];
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn optional_product_ca_bundle_is_bounded_and_validated() {
+        let path =
+            std::env::temp_dir().join(format!("lsbsw-product-ca-{}.pem", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        assert!(load_product_ca_bundle(&path).unwrap().is_empty());
+        std::fs::write(&path, b"not a certificate").unwrap();
+        assert!(load_product_ca_bundle(&path).is_err());
+        std::fs::remove_file(path).unwrap();
     }
 }

@@ -3,6 +3,8 @@ use std::fmt;
 use std::net::Ipv4Addr;
 
 use anyhow::{bail, Result};
+#[cfg(any(unix, windows))]
+use boring::x509::X509;
 
 use crate::policy::{domain_matches, is_wpad_name, normalize_domain};
 
@@ -13,6 +15,7 @@ pub const MAX_REQUEST_HEADER_RULES: usize = 64;
 pub const MAX_REQUEST_HEADER_NAME_BYTES: usize = 128;
 pub const MAX_REQUEST_HEADER_VALUE_BYTES: usize = 8 * 1024;
 pub const MAX_REQUEST_HEADER_TOTAL_BYTES: usize = 64 * 1024;
+pub const MAX_PRODUCT_CA_BUNDLE_BYTES: usize = 256 * 1024;
 
 const FORBIDDEN_REQUEST_HEADERS: &[&str] = &[
     "host",
@@ -64,7 +67,7 @@ impl ProxyMode {
 }
 
 /// Configuration for the proxy engine.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ProxyConfig {
     /// Traffic mode for the proxy.
     pub mode: ProxyMode,
@@ -77,10 +80,29 @@ pub struct ProxyConfig {
     /// Installer-protected product egress rules intersected with caller policy.
     /// Empty means the product policy permits any otherwise-safe public host.
     pub protected_network: NetworkConfig,
+    /// Optional installer-protected PEM CA bundle for upstream TLS.
+    pub product_ca_bundle_pem: Vec<u8>,
     /// Opt-in HTTPS request interception and mutation.
     pub https_interception: HttpsInterceptionConfig,
     /// Host ports exposed to the guest via host.lsb.internal.
     pub expose_host: Vec<ExposeHostMapping>,
+}
+
+impl fmt::Debug for ProxyConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProxyConfig")
+            .field("mode", &self.mode)
+            .field("secrets", &self.secrets)
+            .field("network", &self.network)
+            .field("protected_network", &self.protected_network)
+            .field(
+                "product_ca_bundle_pem",
+                &format_args!("<{} bytes>", self.product_ca_bundle_pem.len()),
+            )
+            .field("https_interception", &self.https_interception)
+            .field("expose_host", &self.expose_host)
+            .finish()
+    }
 }
 
 /// HTTPS request interception configuration.
@@ -193,6 +215,7 @@ impl ProxyConfig {
     pub fn validate(&self) -> Result<()> {
         validate_host_patterns(&self.network.allow)?;
         validate_host_patterns(&self.protected_network.allow)?;
+        validate_product_ca_bundle(&self.product_ca_bundle_pem)?;
         for (name, secret) in &self.secrets {
             if !valid_environment_name(name) {
                 bail!("secret name must be a valid environment variable name");
@@ -366,6 +389,25 @@ impl ProxyConfig {
     }
 }
 
+fn validate_product_ca_bundle(bundle: &[u8]) -> Result<()> {
+    if bundle.is_empty() {
+        return Ok(());
+    }
+    if bundle.len() > MAX_PRODUCT_CA_BUNDLE_BYTES {
+        bail!("product CA bundle exceeds {MAX_PRODUCT_CA_BUNDLE_BYTES} bytes");
+    }
+    #[cfg(any(unix, windows))]
+    {
+        let certificates = X509::stack_from_pem(bundle)?;
+        if certificates.is_empty() {
+            bail!("product CA bundle contains no certificates");
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    bail!("product CA bundles are unsupported on this platform");
+    Ok(())
+}
+
 fn validate_host_patterns(patterns: &[String]) -> Result<()> {
     for pattern in patterns {
         let name = pattern.strip_prefix("*.").unwrap_or(pattern);
@@ -491,6 +533,30 @@ mod tests {
         assert!(!config.is_domain_allowed("cdn.example.com"));
         assert!(!config.is_domain_allowed("api.other.test"));
         assert!(config.has_domain_allowlist());
+    }
+
+    #[test]
+    fn validation_rejects_malformed_or_oversized_product_ca_bundle() {
+        let valid = ProxyConfig {
+            product_ca_bundle_pem: crate::tls::CertificateAuthority::new()
+                .unwrap()
+                .ca_cert_pem(),
+            ..Default::default()
+        };
+        valid.validate().unwrap();
+
+        let malformed = ProxyConfig {
+            product_ca_bundle_pem: b"not a PEM certificate".to_vec(),
+            ..Default::default()
+        };
+        assert!(malformed.validate().is_err());
+
+        let oversized = ProxyConfig {
+            product_ca_bundle_pem: vec![b'x'; MAX_PRODUCT_CA_BUNDLE_BYTES + 1],
+            ..Default::default()
+        };
+        assert!(oversized.validate().is_err());
+        assert!(!format!("{oversized:?}").contains(&"x".repeat(128)));
     }
 
     #[test]

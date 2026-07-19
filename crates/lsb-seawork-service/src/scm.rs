@@ -69,6 +69,7 @@ fn run_registered(
     logger.write(1, "startup", "START_PENDING")?;
     advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
     let config = ServiceConfig::load_or_default(&paths.config)?;
+    let product_ca_bundle_pem = crate::config::load_product_ca_bundle(&paths.product_ca_bundle)?;
     let reconciliation = ledger::reconcile(&paths.ledger, &paths.quarantine)?;
     if !reconciliation.admissions_open {
         logger.write(3, "reconcile", "HEALTH_ONLY_QUARANTINE")?;
@@ -139,6 +140,7 @@ fn run_registered(
         config.maintenance_roots.clone(),
         config.publisher_thumbprints.clone(),
         config.egress_allow.clone(),
+        product_ca_bundle_pem,
     );
     advance_startup_checkpoint(
         status_handle,

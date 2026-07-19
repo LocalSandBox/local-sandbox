@@ -154,6 +154,11 @@ elevated installer/repair entry points. Every accepted binary must have a valid
 Authenticode chain whose embedded signer matches `publisher_thumbprints`.
 `egress_allow` is the installer-protected product host policy. Empty permits all
 otherwise-safe public hosts; a non-empty list is intersected with every caller allowlist.
+An optional product CA bundle must be installed at
+`%ProgramData%\LocalSandbox\SeaWork\config\product-ca.pem`. The service reads this
+fixed, installer-protected path once at startup, accepts only a bounded PEM certificate
+bundle, and adds it to LocalMachine trust for proxy upstream TLS without trusting a
+caller-supplied path.
 Empty roots or publishers intentionally keep normal admissions closed; an
 empty maintenance root denies all maintenance calls. Host ports remain
 compiled fail-closed, so setting `ports_enabled` to `true` is rejected.
