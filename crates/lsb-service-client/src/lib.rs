@@ -2,6 +2,8 @@ mod error;
 mod stream;
 
 #[cfg(windows)]
+mod authenticode;
+#[cfg(windows)]
 mod connection;
 #[cfg(windows)]
 mod pipe;

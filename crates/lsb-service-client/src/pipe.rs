@@ -23,6 +23,7 @@ use windows_sys::Win32::System::Threading::{
 };
 use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath};
 
+use crate::authenticode::verify_publisher;
 use crate::{ClientError, PIPE_NAME, SERVICE_NAME};
 
 const DESIRED_ACCESS: u32 = GENERIC_READ | FILE_WRITE_DATA | SYNCHRONIZE;
@@ -118,6 +119,7 @@ fn verify_server(client: &NamedPipeClient) -> Result<ServerIdentityHandles, Clie
     let process = open_server_process(first_pid)?;
     let configured_image = open_image_for_identity(&configured_executable)?;
     require_regular_non_reparse_image(&configured_image)?;
+    verify_publisher(&configured_executable, &configured_image)?;
     let ancestors = pin_packaged_ancestors(&configured_executable)?;
     let process_image_path = query_process_image(&process)?;
     let process_image = open_image_for_identity(&process_image_path)?;
@@ -206,7 +208,7 @@ fn open_image_for_identity(path: &Path) -> Result<OwnedHandle, ClientError> {
     let handle = unsafe {
         CreateFileW(
             wide.as_ptr(),
-            FILE_READ_ATTRIBUTES,
+            GENERIC_READ,
             FILE_SHARE_READ,
             ptr::null(),
             OPEN_EXISTING,

@@ -35,6 +35,8 @@ jobs:
             target: x86_64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+    env:
+      SEAWORK_PUBLISHER_SHA256: ${{ vars.SEAWORK_PUBLISHER_SHA256 }}
     defaults:
       run:
         working-directory: bindings/nodejs
@@ -49,6 +51,13 @@ jobs:
           targets: ${{ matrix.target }}
       - run: cmake --version
       - run: yarn install --immutable
+      - name: Validate Windows service publisher policy
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          if ($env:SEAWORK_PUBLISHER_SHA256 -notmatch '^[0-9A-Fa-f]{64}$') {
+            throw 'SEAWORK_PUBLISHER_SHA256 must be one SHA-256 certificate thumbprint'
+          }
       - run: yarn napi build --target ${{ matrix.target }} --platform --release --js index.js --dts index.d.ts
       - run: yarn patch-loader
       - name: Validate Windows service API
