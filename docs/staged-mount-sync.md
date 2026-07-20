@@ -31,16 +31,22 @@ validated component with `NtCreateFile` relative to the previously pinned direct
 handle. Relative handles omit delete sharing, use open-reparse-point semantics, and are
 revalidated by volume/file identity when a second rights-specific open is required.
 Current-token tests prove the component chain resolves to the same identity as a direct
-handle and exercise relative recursive copying. Authorization now pins every system,
+handle and exercise relative recursive copying. Caller-token writeback now consumes a
+retained read-write `AuthorizedMountRoot` plus a bounded relative path; it rejects a
+read-only capability, and no absolute caller destination crosses the path-worker
+boundary. Every existing or newly created destination directory is opened with
+`NtCreateFile` relative to the preceding pin, without delete sharing and without
+following a reparse point. Authorization now pins every system,
 service, ProfileList, profiles-directory, and caller-profile root without delete
 sharing and compares its 64-bit volume serial plus 128-bit file ID against every pinned
 mount ancestor and the mount root. This rejects protected-root drive-letter, short-name,
 and other textual aliases while preserving only the caller-profile identity; an
 identity collision never removes a system/service root. Unreadable, missing, reparse,
 or non-directory protected roots fail authorization. Active monitoring, periodic/final
-synchronization, caller-token writeback, and privileged alias/path-swap timing evidence
-remain incomplete; mount requests therefore stay `MOUNT_UNAVAILABLE` until service/SMB
-lifecycle integration and the NTFS/ReFS acceptance matrix are complete.
+synchronization, conflict publication, integration of caller-token writeback with a
+protected staged tree, and privileged alias/path-swap timing evidence remain incomplete;
+mount requests therefore stay `MOUNT_UNAVAILABLE` until service/SMB lifecycle integration
+and the NTFS/ReFS acceptance matrix are complete.
 
 Protected-profile policy no longer relies only on the default profiles directory. The
 path worker reads the protected 64-bit-machine `ProfileList` view with `KEY_READ`, caps
@@ -53,14 +59,20 @@ The canonical comparison described above now backs this string policy and canoni
 excludes a ProfileList alias of the caller only from the profile-derived deny identities.
 Real alternate-name and path-swap fixtures remain pending.
 
-The caller-token export primitive now bounds reads to the authorized source length plus
-one byte, requires the same open source handle to retain its length and last-write time
-through the copy, flushes the random create-new sibling, and uses write-through atomic
-replacement instead of deleting the destination first. Failure cleanup targets only
-its own sibling; an oversized or concurrently changed protected source publishes nothing.
-This does not yet authorize a writeback destination: binding the destination to an
-`AuthorizedMountRoot`, creating/traversing it handle-relatively, and integrating the
-periodic/final staged-sync loop remain required before mount activation.
+The caller-token export primitive bounds reads to the authorized source length plus one
+byte and requires the same open source handle to retain its length and last-write time
+through the copy. Under impersonation it traverses or creates each parent from the held
+mount-root handle, creates a random sibling with create-new semantics, flushes it, and
+commits that exact handle with `FileRenameInformationEx` relative to the pinned final
+parent. The final component is a validated single name, so prefixes, traversal, path
+separators, NUL, and ADS syntax cannot enter the rename record. Non-overwrite collision
+leaves the existing destination intact; best-effort failure cleanup marks only the exact
+temporary handle for deletion. A standard-token regression covers replacement,
+collision, missing parents, over-length copy failure, traversal/absolute/ADS rejection,
+and temporary cleanup. The primitive is still source-only integration groundwork: the
+ordered periodic/final staged-sync loop, conflict publication, protected-source
+capability/ledger binding, and retained-stage teardown remain required before mount
+activation.
 
 ## Reconciliation
 

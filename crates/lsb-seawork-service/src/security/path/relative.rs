@@ -5,12 +5,13 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use anyhow::{bail, Result};
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
-    NtCreateFile, FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
-    FILE_SYNCHRONOUS_IO_NONALERT,
+    NtCreateFile, FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
+    FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
 };
 use windows_sys::Win32::Foundation::{
     HANDLE, INVALID_HANDLE_VALUE, OBJ_CASE_INSENSITIVE, STATUS_NO_SUCH_FILE,
-    STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND, UNICODE_STRING,
+    STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND,
+    UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_SHARE_DELETE, FILE_SHARE_READ,
@@ -22,6 +23,7 @@ use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 pub(crate) enum RelativeKind {
     Any,
     Directory,
+    File,
 }
 
 pub(crate) fn open_relative(
@@ -30,14 +32,23 @@ pub(crate) fn open_relative(
     access: u32,
     kind: RelativeKind,
 ) -> Result<(OwnedHandle, BY_HANDLE_FILE_INFORMATION)> {
+    open_relative_optional(parent, name, access, kind)?
+        .ok_or_else(|| anyhow::anyhow!("handle-relative mount entry is absent"))
+}
+
+pub(crate) fn open_relative_optional(
+    parent: &OwnedHandle,
+    name: &OsStr,
+    access: u32,
+    kind: RelativeKind,
+) -> Result<Option<(OwnedHandle, BY_HANDLE_FILE_INFORMATION)>> {
     open_relative_if_exists(
         parent,
         name,
         access,
         kind,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
-    )?
-    .ok_or_else(|| anyhow::anyhow!("handle-relative mount entry is absent"))
+    )
 }
 
 pub(crate) fn open_relative_for_cleanup(
@@ -61,6 +72,37 @@ fn open_relative_if_exists(
     access: u32,
     kind: RelativeKind,
     share_mode: u32,
+) -> Result<Option<(OwnedHandle, BY_HANDLE_FILE_INFORMATION)>> {
+    create_or_open_relative(parent, name, access, kind, share_mode, FILE_OPEN)
+}
+
+pub(crate) fn create_relative(
+    parent: &OwnedHandle,
+    name: &OsStr,
+    access: u32,
+    kind: RelativeKind,
+) -> Result<Option<(OwnedHandle, BY_HANDLE_FILE_INFORMATION)>> {
+    create_or_open_relative(
+        parent,
+        name,
+        access,
+        kind,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        FILE_CREATE,
+    )
+}
+
+pub(crate) fn validate_relative_component(name: &OsStr) -> Result<()> {
+    validate_component(&name.encode_wide().collect::<Vec<_>>())
+}
+
+fn create_or_open_relative(
+    parent: &OwnedHandle,
+    name: &OsStr,
+    access: u32,
+    kind: RelativeKind,
+    share_mode: u32,
+    disposition: u32,
 ) -> Result<Option<(OwnedHandle, BY_HANDLE_FILE_INFORMATION)>> {
     let mut name = name.encode_wide().collect::<Vec<_>>();
     validate_component(&name)?;
@@ -89,6 +131,7 @@ fn open_relative_if_exists(
         | match kind {
             RelativeKind::Any => 0,
             RelativeKind::Directory => FILE_DIRECTORY_FILE,
+            RelativeKind::File => FILE_NON_DIRECTORY_FILE,
         };
     let status = unsafe {
         NtCreateFile(
@@ -99,7 +142,7 @@ fn open_relative_if_exists(
             std::ptr::null(),
             0,
             share_mode,
-            FILE_OPEN,
+            disposition,
             options,
             std::ptr::null(),
             0,
@@ -109,6 +152,9 @@ fn open_relative_if_exists(
         status,
         STATUS_NO_SUCH_FILE | STATUS_OBJECT_NAME_NOT_FOUND | STATUS_OBJECT_PATH_NOT_FOUND
     ) {
+        return Ok(None);
+    }
+    if disposition == FILE_CREATE && status == STATUS_OBJECT_NAME_COLLISION {
         return Ok(None);
     }
     if status < 0 || raw.is_null() || raw == INVALID_HANDLE_VALUE {
