@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 
@@ -47,6 +47,260 @@ pub enum ChangeBatch {
 pub struct ChangeQueue {
     paths: BTreeSet<PathBuf>,
     full_rescan: bool,
+}
+
+pub const DIRTY_RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
+pub const IDLE_RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
+pub const FINAL_FLUSH_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SyncDirection {
+    ImportHost,
+    ExportGuest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncOperation {
+    pub direction: SyncDirection,
+    pub relative: PathBuf,
+    pub desired: Option<EntryFingerprint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconcileTrigger {
+    Dirty,
+    Periodic,
+    Final,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconcileState {
+    Active,
+    Finalizing,
+    Complete,
+    Failed,
+}
+
+#[derive(Debug)]
+pub struct ReconciliationPlan {
+    controller_id: [u8; 16],
+    epoch: u64,
+    generation: u64,
+    trigger: ReconcileTrigger,
+    operations: Vec<SyncOperation>,
+    next_baseline: TreeSnapshot,
+}
+
+impl ReconciliationPlan {
+    pub fn trigger(&self) -> ReconcileTrigger {
+        self.trigger
+    }
+
+    pub fn operations(&self) -> &[SyncOperation] {
+        &self.operations
+    }
+}
+
+#[derive(Debug)]
+pub struct StagedReconciler {
+    controller_id: [u8; 16],
+    baseline: TreeSnapshot,
+    changes: ChangeQueue,
+    generation: u64,
+    next_epoch: u64,
+    pending: Option<(u64, u64, ReconcileTrigger)>,
+    dirty_since: Option<Duration>,
+    last_completed: Duration,
+    last_observed: Duration,
+    final_deadline: Option<Duration>,
+    state: ReconcileState,
+}
+
+impl StagedReconciler {
+    pub fn new(baseline: TreeSnapshot, now: Duration) -> Result<Self> {
+        let mut controller_id = [0u8; 16];
+        getrandom::fill(&mut controller_id).map_err(|error| {
+            anyhow::anyhow!("OS random source failed for staged reconciliation: {error}")
+        })?;
+        Ok(Self {
+            controller_id,
+            baseline,
+            changes: ChangeQueue::default(),
+            generation: 0,
+            next_epoch: 1,
+            pending: None,
+            dirty_since: None,
+            last_completed: now,
+            last_observed: now,
+            final_deadline: None,
+            state: ReconcileState::Active,
+        })
+    }
+
+    pub fn baseline(&self) -> &TreeSnapshot {
+        &self.baseline
+    }
+
+    pub fn state(&self) -> ReconcileState {
+        self.state
+    }
+
+    pub fn notify_change(&mut self, relative: PathBuf, now: Duration) -> Result<()> {
+        self.observe(now)?;
+        if !matches!(
+            self.state,
+            ReconcileState::Active | ReconcileState::Finalizing
+        ) {
+            bail!("staged reconciliation is no longer accepting changes");
+        }
+        self.changes.push(relative)?;
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .context("staged reconciliation generation overflow")?;
+        self.dirty_since.get_or_insert(now);
+        Ok(())
+    }
+
+    pub fn begin_final_flush(&mut self, now: Duration) -> Result<Duration> {
+        self.observe(now)?;
+        if self.state != ReconcileState::Active || self.pending.is_some() {
+            bail!("staged reconciliation cannot begin final flush in its current state");
+        }
+        let deadline = now
+            .checked_add(FINAL_FLUSH_TIMEOUT)
+            .context("staged final-flush deadline overflow")?;
+        self.final_deadline = Some(deadline);
+        self.state = ReconcileState::Finalizing;
+        Ok(deadline)
+    }
+
+    pub fn due(&mut self, now: Duration) -> Result<Option<ReconcileTrigger>> {
+        self.observe(now)?;
+        if self.pending.is_some()
+            || matches!(
+                self.state,
+                ReconcileState::Complete | ReconcileState::Failed
+            )
+        {
+            return Ok(None);
+        }
+        if self.state == ReconcileState::Finalizing {
+            if self.final_deadline.is_some_and(|deadline| now > deadline) {
+                self.state = ReconcileState::Failed;
+                bail!("staged mount final flush exceeded its 30-second deadline");
+            }
+            return Ok(Some(ReconcileTrigger::Final));
+        }
+        if self
+            .dirty_since
+            .is_some_and(|dirty| now.saturating_sub(dirty) >= DIRTY_RECONCILE_INTERVAL)
+        {
+            return Ok(Some(ReconcileTrigger::Dirty));
+        }
+        if now.saturating_sub(self.last_completed) >= IDLE_RECONCILE_INTERVAL {
+            return Ok(Some(ReconcileTrigger::Periodic));
+        }
+        Ok(None)
+    }
+
+    pub fn plan_due(
+        &mut self,
+        host: &TreeSnapshot,
+        guest: &TreeSnapshot,
+        now: Duration,
+    ) -> Result<Option<ReconciliationPlan>> {
+        let Some(trigger) = self.due(now)? else {
+            return Ok(None);
+        };
+        if let Err(error) = validate_snapshot(&self.baseline)
+            .and_then(|_| validate_snapshot(host))
+            .and_then(|_| validate_snapshot(guest))
+        {
+            self.state = ReconcileState::Failed;
+            return Err(error);
+        }
+        let (operations, next_baseline) =
+            match build_reconciliation_plan(&self.baseline, host, guest) {
+                Ok(plan) => plan,
+                Err(conflict) => {
+                    self.state = ReconcileState::Failed;
+                    return Err(conflict.into());
+                }
+            };
+        let epoch = self.next_epoch;
+        self.next_epoch = self
+            .next_epoch
+            .checked_add(1)
+            .context("staged reconciliation epoch overflow")?;
+        self.pending = Some((epoch, self.generation, trigger));
+        Ok(Some(ReconciliationPlan {
+            controller_id: self.controller_id,
+            epoch,
+            generation: self.generation,
+            trigger,
+            operations,
+            next_baseline,
+        }))
+    }
+
+    pub fn complete_cycle(&mut self, plan: ReconciliationPlan, now: Duration) -> Result<()> {
+        self.observe(now)?;
+        self.require_pending(&plan)?;
+        if plan.trigger == ReconcileTrigger::Final {
+            if let Err(error) = self.require_before_final_deadline(now) {
+                self.pending = None;
+                self.state = ReconcileState::Failed;
+                return Err(error);
+            }
+        }
+        self.baseline = plan.next_baseline;
+        self.last_completed = now;
+        self.pending = None;
+        let caught_up = self.generation == plan.generation;
+        if caught_up {
+            let _ = self.changes.drain();
+            self.dirty_since = None;
+        } else {
+            self.dirty_since = Some(now);
+        }
+        if plan.trigger == ReconcileTrigger::Final && caught_up {
+            self.state = ReconcileState::Complete;
+        }
+        Ok(())
+    }
+
+    pub fn fail_cycle(&mut self, plan: ReconciliationPlan, now: Duration) -> Result<()> {
+        self.observe(now)?;
+        self.require_pending(&plan)?;
+        self.pending = None;
+        self.state = ReconcileState::Failed;
+        Ok(())
+    }
+
+    fn observe(&mut self, now: Duration) -> Result<()> {
+        if now < self.last_observed {
+            bail!("staged reconciliation clock moved backwards");
+        }
+        self.last_observed = now;
+        Ok(())
+    }
+
+    fn require_before_final_deadline(&self, now: Duration) -> Result<()> {
+        if self.final_deadline.is_some_and(|deadline| now > deadline) {
+            bail!("staged mount final flush exceeded its 30-second deadline");
+        }
+        Ok(())
+    }
+
+    fn require_pending(&self, plan: &ReconciliationPlan) -> Result<()> {
+        if plan.controller_id != self.controller_id
+            || self.pending != Some((plan.epoch, plan.generation, plan.trigger))
+        {
+            bail!("staged reconciliation plan is stale or belongs to another cycle");
+        }
+        Ok(())
+    }
 }
 
 impl ChangeQueue {
@@ -161,6 +415,39 @@ pub(crate) fn validate_relative_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn validate_snapshot(snapshot: &TreeSnapshot) -> Result<()> {
+    if snapshot.entries.len() > MAX_MOUNT_ENTRIES {
+        bail!("staged snapshot exceeds entry limit");
+    }
+    let mut total_bytes = 0u64;
+    for (relative, entry) in &snapshot.entries {
+        validate_relative_path(relative)?;
+        if relative.as_os_str().is_empty()
+            || relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            bail!("staged snapshot contains an unsafe relative path");
+        }
+        if entry.directory != entry.content_hash.is_none() {
+            bail!("staged snapshot fingerprint has an invalid type/hash shape");
+        }
+        if !entry.directory {
+            if entry.len > MAX_MOUNT_FILE_BYTES {
+                bail!("staged snapshot file exceeds per-file byte limit");
+            }
+            total_bytes = total_bytes
+                .checked_add(entry.len)
+                .context("staged snapshot byte overflow")?;
+            if total_bytes > MAX_MOUNT_TREE_BYTES {
+                bail!("staged snapshot exceeds byte limit");
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn detect_conflicts(
     baseline: &TreeSnapshot,
     host: &TreeSnapshot,
@@ -214,6 +501,84 @@ pub fn plan_changes(
             (decision != SyncDecision::Unchanged).then_some((path, decision))
         })
         .collect()
+}
+
+pub fn build_reconciliation_plan(
+    baseline: &TreeSnapshot,
+    host: &TreeSnapshot,
+    guest: &TreeSnapshot,
+) -> std::result::Result<(Vec<SyncOperation>, TreeSnapshot), MountConflict> {
+    let paths = baseline
+        .entries
+        .keys()
+        .chain(host.entries.keys())
+        .chain(guest.entries.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut conflicts = Vec::new();
+    let mut operations = Vec::new();
+    let mut next_baseline = TreeSnapshot::default();
+    for path in paths {
+        let host_entry = host.entries.get(&path);
+        let guest_entry = guest.entries.get(&path);
+        let decision = classify_change(baseline.entries.get(&path), host_entry, guest_entry);
+        let converged = match decision {
+            SyncDecision::Unchanged | SyncDecision::ImportHost | SyncDecision::Converged => {
+                host_entry
+            }
+            SyncDecision::ExportGuest => guest_entry,
+            SyncDecision::Conflict => {
+                conflicts.push(path);
+                continue;
+            }
+        };
+        if let Some(entry) = converged {
+            next_baseline.entries.insert(path.clone(), entry.clone());
+        }
+        let operation = match decision {
+            SyncDecision::ImportHost => Some((SyncDirection::ImportHost, host_entry)),
+            SyncDecision::ExportGuest => Some((SyncDirection::ExportGuest, guest_entry)),
+            SyncDecision::Unchanged | SyncDecision::Converged | SyncDecision::Conflict => None,
+        };
+        if let Some((direction, desired)) = operation {
+            operations.push(SyncOperation {
+                direction,
+                relative: path,
+                desired: desired.cloned(),
+            });
+        }
+    }
+    if !conflicts.is_empty() {
+        return Err(MountConflict {
+            relative_paths: conflicts,
+        });
+    }
+    operations.sort_by(|left, right| {
+        let left_depth = left.relative.components().count();
+        let right_depth = right.relative.components().count();
+        let left_group = operation_group(left);
+        let right_group = operation_group(right);
+        left_group
+            .cmp(&right_group)
+            .then_with(|| {
+                if left_group == 0 {
+                    right_depth.cmp(&left_depth)
+                } else {
+                    left_depth.cmp(&right_depth)
+                }
+            })
+            .then_with(|| left.relative.cmp(&right.relative))
+            .then_with(|| left.direction.cmp(&right.direction))
+    });
+    Ok((operations, next_baseline))
+}
+
+fn operation_group(operation: &SyncOperation) -> u8 {
+    match operation.desired.as_ref() {
+        None => 0,
+        Some(entry) if entry.directory => 1,
+        Some(_) => 2,
+    }
 }
 
 fn classify_change(
@@ -345,6 +710,15 @@ mod tests {
         }
     }
 
+    fn directory_fingerprint() -> EntryFingerprint {
+        EntryFingerprint {
+            directory: true,
+            len: 0,
+            modified_ns: 0,
+            content_hash: None,
+        }
+    }
+
     #[test]
     fn one_sided_change_is_not_a_conflict() {
         let path = PathBuf::from("file");
@@ -416,6 +790,203 @@ mod tests {
             ]
             .into()
         );
+    }
+
+    #[test]
+    fn reconciliation_preflights_conflicts_and_orders_namespace_dependencies() {
+        let directory = directory_fingerprint();
+        let baseline = TreeSnapshot {
+            entries: [
+                (PathBuf::from("d"), directory.clone()),
+                (PathBuf::from("d/old"), fingerprint(1)),
+                (PathBuf::from("g"), fingerprint(1)),
+                (PathBuf::from("gone"), directory.clone()),
+                (PathBuf::from("gone/child"), fingerprint(1)),
+            ]
+            .into(),
+        };
+        let host = TreeSnapshot {
+            entries: [
+                (PathBuf::from("d"), fingerprint(2)),
+                (PathBuf::from("g"), fingerprint(1)),
+                (PathBuf::from("gone"), directory.clone()),
+                (PathBuf::from("gone/child"), fingerprint(1)),
+                (PathBuf::from("newdir"), directory.clone()),
+                (PathBuf::from("newdir/file"), fingerprint(3)),
+            ]
+            .into(),
+        };
+        let guest = TreeSnapshot {
+            entries: [
+                (PathBuf::from("d"), directory),
+                (PathBuf::from("d/old"), fingerprint(1)),
+                (PathBuf::from("g"), fingerprint(4)),
+            ]
+            .into(),
+        };
+
+        let (operations, next) = build_reconciliation_plan(&baseline, &host, &guest).unwrap();
+        assert_eq!(
+            operations
+                .iter()
+                .map(|operation| (
+                    operation.direction,
+                    operation.relative.to_string_lossy().replace('\\', "/"),
+                    operation.desired.as_ref().map(|entry| entry.directory),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (SyncDirection::ImportHost, "d/old".to_string(), None),
+                (SyncDirection::ExportGuest, "gone/child".to_string(), None,),
+                (SyncDirection::ExportGuest, "gone".to_string(), None),
+                (SyncDirection::ImportHost, "newdir".to_string(), Some(true),),
+                (SyncDirection::ImportHost, "d".to_string(), Some(false),),
+                (SyncDirection::ExportGuest, "g".to_string(), Some(false),),
+                (
+                    SyncDirection::ImportHost,
+                    "newdir/file".to_string(),
+                    Some(false),
+                ),
+            ]
+        );
+        assert_eq!(next.entries.get(Path::new("g")), Some(&fingerprint(4)));
+        assert!(!next.entries.contains_key(Path::new("gone")));
+
+        let conflicting_host = TreeSnapshot {
+            entries: [(PathBuf::from("g"), fingerprint(5))].into(),
+        };
+        assert_eq!(
+            build_reconciliation_plan(&baseline, &conflicting_host, &guest)
+                .unwrap_err()
+                .relative_paths,
+            vec![PathBuf::from("g")]
+        );
+    }
+
+    #[test]
+    fn reconciler_preserves_inflight_dirt_and_enforces_final_deadline() {
+        let baseline = TreeSnapshot {
+            entries: [(PathBuf::from("file"), fingerprint(1))].into(),
+        };
+        let mut reconciler = StagedReconciler::new(baseline.clone(), Duration::ZERO).unwrap();
+        reconciler
+            .notify_change(PathBuf::from("file"), Duration::ZERO)
+            .unwrap();
+        assert_eq!(
+            reconciler
+                .due(DIRTY_RECONCILE_INTERVAL - Duration::from_millis(1))
+                .unwrap(),
+            None
+        );
+        let plan = reconciler
+            .plan_due(&baseline, &baseline, DIRTY_RECONCILE_INTERVAL)
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.trigger(), ReconcileTrigger::Dirty);
+        assert!(plan.operations().is_empty());
+        let during_cycle = DIRTY_RECONCILE_INTERVAL + Duration::from_millis(100);
+        reconciler
+            .notify_change(PathBuf::from("later"), during_cycle)
+            .unwrap();
+        let completed = during_cycle + Duration::from_millis(100);
+        reconciler.complete_cycle(plan, completed).unwrap();
+        assert_eq!(reconciler.state(), ReconcileState::Active);
+        assert_eq!(
+            reconciler
+                .due(completed + DIRTY_RECONCILE_INTERVAL - Duration::from_millis(1))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            reconciler
+                .due(completed + DIRTY_RECONCILE_INTERVAL)
+                .unwrap(),
+            Some(ReconcileTrigger::Dirty)
+        );
+
+        let mut first = StagedReconciler::new(baseline.clone(), Duration::ZERO).unwrap();
+        let mut second = StagedReconciler::new(baseline.clone(), Duration::ZERO).unwrap();
+        for controller in [&mut first, &mut second] {
+            controller
+                .notify_change(PathBuf::from("file"), Duration::ZERO)
+                .unwrap();
+        }
+        let foreign = first
+            .plan_due(&baseline, &baseline, DIRTY_RECONCILE_INTERVAL)
+            .unwrap()
+            .unwrap();
+        let _second_plan = second
+            .plan_due(&baseline, &baseline, DIRTY_RECONCILE_INTERVAL)
+            .unwrap()
+            .unwrap();
+        assert!(second
+            .complete_cycle(foreign, DIRTY_RECONCILE_INTERVAL)
+            .is_err());
+
+        let start = Duration::from_secs(50);
+        let mut finalizer = StagedReconciler::new(baseline.clone(), start).unwrap();
+        assert_eq!(
+            finalizer.due(start + IDLE_RECONCILE_INTERVAL).unwrap(),
+            Some(ReconcileTrigger::Periodic)
+        );
+        let deadline = finalizer
+            .begin_final_flush(start + IDLE_RECONCILE_INTERVAL)
+            .unwrap();
+        let final_plan = finalizer
+            .plan_due(&baseline, &baseline, start + IDLE_RECONCILE_INTERVAL)
+            .unwrap()
+            .unwrap();
+        assert_eq!(final_plan.trigger(), ReconcileTrigger::Final);
+        let final_change = start + IDLE_RECONCILE_INTERVAL + Duration::from_secs(1);
+        finalizer
+            .notify_change(PathBuf::from("final-change"), final_change)
+            .unwrap();
+        finalizer.complete_cycle(final_plan, final_change).unwrap();
+        assert_eq!(finalizer.state(), ReconcileState::Finalizing);
+        let catchup = finalizer
+            .plan_due(&baseline, &baseline, final_change)
+            .unwrap()
+            .unwrap();
+        assert_eq!(catchup.trigger(), ReconcileTrigger::Final);
+        finalizer.complete_cycle(catchup, deadline).unwrap();
+        assert_eq!(finalizer.state(), ReconcileState::Complete);
+
+        let mut timeout = StagedReconciler::new(baseline.clone(), Duration::ZERO).unwrap();
+        let deadline = timeout.begin_final_flush(Duration::ZERO).unwrap();
+        let plan = timeout
+            .plan_due(&baseline, &baseline, Duration::ZERO)
+            .unwrap()
+            .unwrap();
+        assert!(timeout
+            .complete_cycle(plan, deadline + Duration::from_nanos(1))
+            .is_err());
+        assert_eq!(timeout.state(), ReconcileState::Failed);
+
+        let mut failed = StagedReconciler::new(baseline.clone(), Duration::ZERO).unwrap();
+        failed
+            .notify_change(PathBuf::from("file"), Duration::ZERO)
+            .unwrap();
+        let plan = failed
+            .plan_due(&baseline, &baseline, DIRTY_RECONCILE_INTERVAL)
+            .unwrap()
+            .unwrap();
+        failed.fail_cycle(plan, DIRTY_RECONCILE_INTERVAL).unwrap();
+        assert_eq!(failed.state(), ReconcileState::Failed);
+        assert!(failed
+            .notify_change(PathBuf::from("file"), DIRTY_RECONCILE_INTERVAL)
+            .is_err());
+
+        let mut invalid = StagedReconciler::new(baseline.clone(), Duration::ZERO).unwrap();
+        invalid
+            .notify_change(PathBuf::from("file"), Duration::ZERO)
+            .unwrap();
+        let unsafe_host = TreeSnapshot {
+            entries: [(PathBuf::from("../escape"), fingerprint(1))].into(),
+        };
+        assert!(invalid
+            .plan_due(&unsafe_host, &baseline, DIRTY_RECONCILE_INTERVAL)
+            .is_err());
+        assert_eq!(invalid.state(), ReconcileState::Failed);
     }
 
     #[test]

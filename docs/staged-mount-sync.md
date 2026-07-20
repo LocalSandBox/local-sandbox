@@ -85,6 +85,26 @@ one deterministic decision:
 - divergent two-sided change: stop propagation and return `MOUNT_CONFLICT`; or
 - no change: perform no I/O.
 
+Each prepared `StagedMount` now owns the baseline through a fail-closed reconciliation
+controller. A dirty hint becomes due after at most one second, an apparently idle mount
+requires a full cycle every 30 seconds, and stop enters a mandatory final cycle with one
+30-second deadline. Before exposing any operation, the controller finds every conflict;
+one conflict fails the controller without returning a partial I/O plan. A conflict-free
+plan orders deletions deepest-first, then directories parent-first, then files, so type
+transitions cannot remove a parent before its children or create a child before its
+directory. The baseline advances only when the caller explicitly reports the entire
+plan complete. Any I/O ambiguity marks the controller failed. A random controller
+identity plus monotonic epochs rejects foreign or stale plans, and a watcher hint
+received during an in-flight cycle retains a newer dirty generation.
+In particular, a final cycle with such a hint remains `Finalizing` and must catch up
+within the original deadline rather than reporting successful teardown.
+
+This controller does not activate mounts or perform privileged I/O. Production still
+must obtain fresh host and protected-stage snapshots, execute each import/export through
+the pinned capabilities, publish conflict artifacts and durable recovery metadata, and
+bind the controller to VM stop/cleanup. Until that integration and its Windows evidence
+exist, the service continues to advertise no mount capability.
+
 Conflict names are exactly
 `<filename>.lsb-conflict-<128-bit-lowercase-hex-session-id>-<decimal-sequence>` and must
 fit both the component and full-path bounds. This function only constructs and validates

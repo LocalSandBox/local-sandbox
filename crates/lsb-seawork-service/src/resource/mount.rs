@@ -1,17 +1,18 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{bail, Result};
 
 use crate::ledger::schema::ResourceRecord;
 use crate::security::path::{AuthorizedMountRoot, MountBackend, PathWorker};
 
-use super::mount_sync::TreeSnapshot;
+use super::mount_sync::StagedReconciler;
 use super::transaction::ResourceTransaction;
 
 pub struct StagedMount {
     pub mount_id: String,
     pub staging_root: PathBuf,
-    pub baseline: TreeSnapshot,
+    pub reconciliation: StagedReconciler,
     pub backend: MountBackend,
 }
 
@@ -57,7 +58,7 @@ impl StagedMount {
         Ok(Self {
             mount_id: mount_id.to_string(),
             staging_root,
-            baseline,
+            reconciliation: StagedReconciler::new(baseline, Duration::ZERO)?,
             backend: MountBackend::StagedSync,
         })
     }
