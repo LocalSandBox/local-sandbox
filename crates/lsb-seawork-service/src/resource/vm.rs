@@ -485,6 +485,13 @@ fn run(
         .as_ref()
         .map(|handle| handle.placeholders.clone())
         .unwrap_or_default();
+    if let Err(error) = process_containment.check_notifications() {
+        let _ = process_containment.terminate(1);
+        let _ = sandbox.stop();
+        let _ = cleanup_instance(&engine, &spec);
+        let _ = ready.send(Err(error));
+        return;
+    }
     if let Err(error) = process_containment.set_transaction_state(LifecycleState::Running) {
         let _ = sandbox.stop();
         let _ = cleanup_instance(&engine, &spec);
@@ -501,6 +508,13 @@ fn run(
         return;
     }
     loop {
+        if let Err(error) = process_containment.check_notifications() {
+            eprintln!("authoritative QEMU Job monitor failed: {error}");
+            let _ = process_containment.terminate(1);
+            let _ = sandbox.stop();
+            let _ = cleanup_instance(&engine, &spec);
+            return;
+        }
         if session_cancellation.is_cancelled() {
             let _ = stop_and_cleanup(&sandbox, &engine, &spec, &process_containment);
             return;
