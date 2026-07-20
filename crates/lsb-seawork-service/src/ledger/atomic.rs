@@ -12,6 +12,28 @@ pub fn write(path: &Path, document: &LedgerDocument) -> Result<()> {
     write_value(path, document)
 }
 
+pub fn create(path: &Path, document: &LedgerDocument) -> Result<()> {
+    document.validate()?;
+    let _write_guard = WRITE_LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("protected state writer lock poisoned"))?;
+    let parent = path.parent().context("ledger path has no parent")?;
+    std::fs::create_dir_all(parent)?;
+    let bytes = serde_json::to_vec_pretty(document)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .context("reserve new protected ledger without replacement")?;
+    if let Err(error) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        return Err(error.into());
+    }
+    drop(file);
+    sync_parent(parent)
+}
+
 pub fn write_value(path: &Path, document: &impl serde::Serialize) -> Result<()> {
     let _write_guard = WRITE_LOCK
         .lock()
@@ -150,6 +172,20 @@ mod tests {
             std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
             1
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn create_never_replaces_an_existing_ledger() {
+        let root = std::env::temp_dir().join(format!("lsbsw-create-new-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let path = root.join("ledger").join("document.json");
+        let document = crate::ledger::schema::sample();
+
+        create(&path, &document).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        assert!(create(&path, &document).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
         let _ = std::fs::remove_dir_all(root);
     }
 

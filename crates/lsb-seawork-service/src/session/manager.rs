@@ -573,7 +573,14 @@ impl SessionManager {
             session.cancellation.clone()
         };
 
-        let started = ManagedVm::start(engine, spec, cancellation, startup_cancellation);
+        let started = ManagedVm::start(
+            engine,
+            handle,
+            identity,
+            spec,
+            cancellation,
+            startup_cancellation,
+        );
         let mut state = self
             .state
             .lock()

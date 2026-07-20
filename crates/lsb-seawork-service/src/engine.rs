@@ -19,6 +19,7 @@ pub struct ServiceEngineConfig {
     initrd_image: PathBuf,
     base_rootfs: PathBuf,
     resources_root: PathBuf,
+    ledger_root: PathBuf,
     operation_timeout: Duration,
     bundle_version: String,
 }
@@ -126,6 +127,7 @@ impl ServiceEngineConfig {
             initrd_image,
             base_rootfs,
             resources_root: service_paths.users.clone(),
+            ledger_root: service_paths.ledger.clone(),
             operation_timeout: Duration::from_secs(60),
             bundle_version,
         })
@@ -141,6 +143,19 @@ impl ServiceEngineConfig {
 
     pub fn resources_root(&self) -> &Path {
         &self.resources_root
+    }
+
+    pub fn ledger_root(&self) -> &Path {
+        &self.ledger_root
+    }
+
+    pub fn qemu_image_relative_path(&self) -> Result<String> {
+        self.qemu_executable
+            .strip_prefix(&self.bundle_root)
+            .context("QEMU image is not relative to verified bundle")?
+            .to_str()
+            .map(str::to_string)
+            .context("QEMU image path is not valid Unicode")
     }
 
     pub fn kernel_image(&self) -> &Path {

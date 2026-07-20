@@ -1,7 +1,8 @@
 use std::mem::size_of;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+use std::sync::Mutex;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JobObjectExtendedLimitInformation,
@@ -9,6 +10,17 @@ use windows_sys::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_JOB_MEMORY,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
+
+use crate::ledger::schema::{LifecycleState, ResourceRecord};
+use crate::resource::transaction::ResourceTransaction;
+
+struct QemuJournal {
+    transaction: ResourceTransaction,
+    image_relative_path: String,
+    job_id: String,
+    intent: Option<usize>,
+    finished: bool,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct JobLimits {
@@ -18,6 +30,7 @@ pub struct JobLimits {
 
 pub struct SandboxJob {
     handle: OwnedHandle,
+    journal: Option<Mutex<QemuJournal>>,
 }
 
 impl SandboxJob {
@@ -34,6 +47,7 @@ impl SandboxJob {
         }
         let job = Self {
             handle: unsafe { OwnedHandle::from_raw_handle(raw as _) },
+            journal: None,
         };
         let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -56,6 +70,92 @@ impl SandboxJob {
             );
         }
         Ok(job)
+    }
+
+    pub fn attach_journal(
+        &mut self,
+        transaction: ResourceTransaction,
+        image_relative_path: String,
+        job_id: String,
+    ) -> Result<()> {
+        if self.journal.is_some() {
+            bail!("QEMU Job already has a resource journal");
+        }
+        self.journal = Some(Mutex::new(QemuJournal {
+            transaction,
+            image_relative_path,
+            job_id,
+            intent: None,
+            finished: false,
+        }));
+        Ok(())
+    }
+
+    pub fn set_transaction_state(&self, state: LifecycleState) -> Result<()> {
+        if let Some(journal) = &self.journal {
+            journal
+                .lock()
+                .map_err(|_| anyhow::anyhow!("QEMU journal lock poisoned"))?
+                .transaction
+                .set_state(state)?;
+        }
+        Ok(())
+    }
+
+    pub fn finish_transaction(&self) -> Result<()> {
+        let Some(journal) = &self.journal else {
+            return Ok(());
+        };
+        let mut journal = journal
+            .lock()
+            .map_err(|_| anyhow::anyhow!("QEMU journal lock poisoned"))?;
+        if !journal.finished {
+            journal.transaction.finish()?;
+            journal.finished = true;
+        }
+        Ok(())
+    }
+
+    fn prepare_journal(&self) -> Result<()> {
+        let Some(journal) = &self.journal else {
+            return Ok(());
+        };
+        let mut journal = journal
+            .lock()
+            .map_err(|_| anyhow::anyhow!("QEMU journal lock poisoned"))?;
+        if journal.intent.is_some() {
+            bail!("QEMU creation intent was already persisted");
+        }
+        let resource = ResourceRecord::QemuProcess {
+            pid: 0,
+            creation_time: 0,
+            image_relative_path: journal.image_relative_path.clone(),
+            job_id: journal.job_id.clone(),
+            committed: false,
+        };
+        let intent = journal.transaction.intent(resource)?;
+        journal.intent = Some(intent);
+        Ok(())
+    }
+
+    fn commit_journal(&self, process: &std::process::Child) -> Result<()> {
+        let Some(journal) = &self.journal else {
+            return Ok(());
+        };
+        let creation_time =
+            crate::windows::process::process_creation_time(process.as_raw_handle())?;
+        let mut journal = journal
+            .lock()
+            .map_err(|_| anyhow::anyhow!("QEMU journal lock poisoned"))?;
+        let intent = journal.intent.context("QEMU creation intent is missing")?;
+        let resource = ResourceRecord::QemuProcess {
+            pid: process.id(),
+            creation_time,
+            image_relative_path: journal.image_relative_path.clone(),
+            job_id: journal.job_id.clone(),
+            committed: true,
+        };
+        journal.transaction.replace_and_commit(intent, resource)
     }
 
     pub fn assign_process(&self, process: RawHandle) -> Result<()> {
@@ -94,8 +194,13 @@ impl SandboxJob {
 }
 
 impl lsb_vm::PlatformProcessContainment for SandboxJob {
+    fn prepare_process(&self) -> Result<()> {
+        self.prepare_journal()
+    }
+
     fn assign_process(&self, process: &std::process::Child) -> Result<()> {
-        SandboxJob::assign_process(self, process.as_raw_handle())
+        SandboxJob::assign_process(self, process.as_raw_handle())?;
+        self.commit_journal(process)
     }
 
     fn terminate(&self) -> Result<()> {

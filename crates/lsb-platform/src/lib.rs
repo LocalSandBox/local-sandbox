@@ -317,6 +317,11 @@ pub struct PlatformVmConfig {
 /// Job when one is supplied.
 #[doc(hidden)]
 pub trait PlatformProcessContainment: std::fmt::Debug + Send + Sync {
+    /// Persist any service-owned creation intent before the child process exists.
+    fn prepare_process(&self) -> Result<()> {
+        Ok(())
+    }
+
     fn assign_process(&self, process: &Child) -> Result<()>;
     fn terminate(&self) -> Result<()>;
 }

@@ -63,6 +63,12 @@ pub fn reconcile(ledger_dir: &Path, quarantine_dir: &Path) -> Result<ReconcileSu
             quarantine_or_mark_unproven(&candidate.path, quarantine_dir, &mut summary);
         }
     }
+    // A valid document is still an outstanding cleanup obligation. Until the Windows
+    // exact-proof cleaner has converged it, admitting new work would lose fail-closed
+    // crash semantics even though the document itself is well formed.
+    if summary.valid_documents != 0 {
+        summary.admissions_open = false;
+    }
     Ok(summary)
 }
 
@@ -191,7 +197,7 @@ mod tests {
         assert_eq!(summary.valid_documents, 1);
         assert_eq!(summary.quarantined_documents, 0);
         assert_eq!(summary.unproven_documents, 0);
-        assert!(summary.admissions_open);
+        assert!(!summary.admissions_open);
         let _ = std::fs::remove_dir_all(root);
     }
 

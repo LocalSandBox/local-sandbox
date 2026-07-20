@@ -8,10 +8,12 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 
 use crate::engine::ServiceEngineConfig;
+use crate::ledger::schema::LifecycleState;
 use crate::resource::process::{ManagedProcess, ManagedProcessOutput};
+use crate::resource::transaction::ResourceTransaction;
 use crate::resource::watch::ManagedWatch;
 use crate::session::quota::SANDBOX_MEMORY_OVERHEAD_MIB;
-use crate::session::CancellationToken;
+use crate::session::{CancellationToken, ClientIdentityKey, ResourceHandle};
 use crate::windows::job::{JobLimits, SandboxJob};
 
 const MAX_QEMU_JOB_PROCESSES: u32 = 8;
@@ -190,12 +192,24 @@ impl std::fmt::Debug for ManagedVm {
 impl ManagedVm {
     pub fn start(
         engine: &ServiceEngineConfig,
+        sandbox_id: ResourceHandle,
+        owner: &ClientIdentityKey,
         spec: ManagedVmSpec,
         session_cancellation: CancellationToken,
         startup_cancellation: CancellationToken,
     ) -> Result<Self> {
         validate_spec(engine, &spec)?;
-        let containment = Arc::new(SandboxJob::create(job_limits(&spec)?)?);
+        let image_relative_path = engine.qemu_image_relative_path()?;
+        let mut containment = SandboxJob::create(job_limits(&spec)?)?;
+        let mut transaction =
+            ResourceTransaction::reserve(engine.ledger_root(), &sandbox_id.to_string(), owner)?;
+        transaction.set_state(LifecycleState::Preparing)?;
+        containment.attach_journal(
+            transaction,
+            image_relative_path,
+            ResourceHandle::random()?.to_string(),
+        )?;
+        let containment = Arc::new(containment);
         let thread_containment = containment.clone();
         let engine = engine.clone();
         let (commands, receiver) = mpsc::sync_channel(8);
@@ -461,7 +475,7 @@ fn run(
         let _ = ready.send(Err(anyhow::anyhow!("operation cancelled")));
         return;
     }
-    let result = build_and_start(&engine, &mut spec, process_containment);
+    let result = build_and_start(&engine, &mut spec, process_containment.clone());
     let Ok((sandbox, proxy_handle)) = result else {
         let _ = cleanup_instance(&engine, &spec);
         let _ = ready.send(result.map(|_| ()));
@@ -471,28 +485,29 @@ fn run(
         .as_ref()
         .map(|handle| handle.placeholders.clone())
         .unwrap_or_default();
-    if session_cancellation.is_cancelled() || startup_cancellation.is_cancelled() {
+    if let Err(error) = process_containment.set_transaction_state(LifecycleState::Running) {
         let _ = sandbox.stop();
         let _ = cleanup_instance(&engine, &spec);
+        let _ = ready.send(Err(error));
+        return;
+    }
+    if session_cancellation.is_cancelled() || startup_cancellation.is_cancelled() {
+        let _ = stop_and_cleanup(&sandbox, &engine, &spec, &process_containment);
         let _ = ready.send(Err(anyhow::anyhow!("operation cancelled")));
         return;
     }
     if ready.send(Ok(())).is_err() {
-        let _ = sandbox.stop();
-        let _ = cleanup_instance(&engine, &spec);
+        let _ = stop_and_cleanup(&sandbox, &engine, &spec, &process_containment);
         return;
     }
     loop {
         if session_cancellation.is_cancelled() {
-            let _ = sandbox.stop();
-            let _ = cleanup_instance(&engine, &spec);
+            let _ = stop_and_cleanup(&sandbox, &engine, &spec, &process_containment);
             return;
         }
         match commands.recv_timeout(Duration::from_millis(100)) {
             Ok(Command::Stop(reply)) => {
-                let result = sandbox
-                    .stop()
-                    .and_then(|()| cleanup_instance(&engine, &spec));
+                let result = stop_and_cleanup(&sandbox, &engine, &spec, &process_containment);
                 let _ = reply.send(result);
                 return;
             }
@@ -552,12 +567,22 @@ fn run(
             }
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let _ = sandbox.stop();
-                let _ = cleanup_instance(&engine, &spec);
+                let _ = stop_and_cleanup(&sandbox, &engine, &spec, &process_containment);
                 return;
             }
         }
     }
+}
+
+fn stop_and_cleanup(
+    sandbox: &lsb_vm::Sandbox,
+    engine: &ServiceEngineConfig,
+    spec: &ManagedVmSpec,
+    containment: &SandboxJob,
+) -> Result<()> {
+    sandbox.stop()?;
+    cleanup_instance(engine, spec)?;
+    containment.finish_transaction()
 }
 
 fn spawn(sandbox: &lsb_vm::Sandbox, spec: ManagedExecSpec) -> Result<ManagedProcess> {

@@ -498,6 +498,19 @@ impl QemuSupervisor {
         apply_environment(&mut command, &self.config.environment);
         apply_qemu_contained_creation_flags(&mut command);
 
+        if let Some(containment) = &self.config.process_containment {
+            if let Err(error) = containment.prepare_process() {
+                self.state = QemuProcessState::Failed;
+                let _ = self.write_status_artifact();
+                return Err(QemuProcessError::JobObjectAssignFailed {
+                    pid: 0,
+                    detail: format!(
+                        "external service Job could not persist pre-creation intent: {error}"
+                    ),
+                });
+            }
+        }
+
         let (mut child, suspended_primary_thread) = match spawn_suspended(&mut command) {
             Ok(child) => child,
             Err(err) => {

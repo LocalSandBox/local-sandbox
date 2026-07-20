@@ -1,7 +1,7 @@
 # Protected ledger reconciliation envelope
 
-Status: SEC-02 host-neutral persistence and admission envelope implemented; external
-Windows ownership re-query and cleanup executors pending.
+Status: SEC-02 persistence/admission envelope and production QEMU transaction wiring
+implemented; startup Windows ownership re-query and cleanup executors pending.
 
 ## Startup admission rules
 
@@ -36,6 +36,17 @@ future Windows cleanup executor must still re-query the named Job/process, accou
 right, share, ACE, staging identity, WFP object, port, or relay and compare every stable
 proof before mutation. Prefix similarity alone never authorizes deletion.
 
+A well-formed document is an outstanding cleanup obligation, not a clean-start signal.
+Startup therefore remains health-only whenever any valid document remains. The
+production QEMU path reserves its sandbox ledger with create-new semantics, so an ID
+collision cannot replace prior evidence. Immediately before the platform creates the
+suspended child, the service persists a QEMU intent containing only the verified bundle
+image path and random Job identity. After assignment to the authoritative service Job,
+it queries the suspended process handle for PID and creation time, commits that exact
+proof, and only then permits the primary thread to resume. Clean VM teardown persists
+`cleaning`, clears the proven record, checkpoints again, and removes the document.
+Ambiguous setup or teardown deliberately retains the document for startup recovery.
+
 The host-neutral recovery executor provides the ordering boundary for those Windows
 adapters. It validates the document and durably enters `cleaning` before the first
 external query, then processes resource records in reverse dependency order. An exact
@@ -55,13 +66,18 @@ or truncate one temporary. A failed write/replace removes only its own random te
 an interrupted leftover is quarantined at the next startup rather than silently
 discarded.
 
+Initial reservation is stricter than an update: it opens the final ledger with
+`create_new`, writes and flushes the complete initial document, and fails without
+altering an existing file. Subsequent state transitions use the atomic replacement path.
+
 ## Verification boundary
 
-macOS tests cover strict valid admission, corrupt/unknown/temp entries, symlinks without
+Host-neutral tests cover strict valid admission, corrupt/unknown/temp entries, symlinks without
 target access, duplicate ownership, bounded enumeration, forged markers, duplicate
 resources, intent/commit proof shapes, concurrent atomic writers, and failed-replace
 cleanup. Fault injection covers every cleanup boundary, retry from each durable
 checkpoint, identity mismatch, and the crash window between external removal and ledger
 checkpoint. Windows verification must add protected-directory ACL/tamper cases, file-ID
-re-query races, disk-full/power-cut snapshots, and idempotent resource-specific cleanup
-before SEC-02 can be considered implementation complete.
+re-query races, disk-full/power-cut snapshots, exact startup QEMU process/Job recovery,
+and idempotent cleanup for every remaining resource before SEC-02 can be considered
+implementation complete.

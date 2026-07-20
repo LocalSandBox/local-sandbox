@@ -1,6 +1,6 @@
 use std::ffi::{OsStr, OsString};
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::Path;
 use std::time::Duration;
 
@@ -102,24 +102,35 @@ impl ContainedProcess {
     }
 
     pub fn creation_time(&self) -> Result<u64> {
-        let mut creation = unsafe { std::mem::zeroed() };
-        let mut exit = unsafe { std::mem::zeroed() };
-        let mut kernel = unsafe { std::mem::zeroed() };
-        let mut user = unsafe { std::mem::zeroed() };
-        if unsafe { GetProcessTimes(self.raw(), &mut creation, &mut exit, &mut kernel, &mut user) }
-            == 0
-        {
-            bail!(
-                "GetProcessTimes failed: {}",
-                std::io::Error::last_os_error()
-            );
-        }
-        Ok(((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64)
+        process_creation_time(self.process.as_raw_handle())
     }
 
     fn raw(&self) -> HANDLE {
         self.process.as_raw_handle() as HANDLE
     }
+}
+
+pub(crate) fn process_creation_time(process: RawHandle) -> Result<u64> {
+    let mut creation = unsafe { std::mem::zeroed() };
+    let mut exit = unsafe { std::mem::zeroed() };
+    let mut kernel = unsafe { std::mem::zeroed() };
+    let mut user = unsafe { std::mem::zeroed() };
+    if unsafe {
+        GetProcessTimes(
+            process as HANDLE,
+            &mut creation,
+            &mut exit,
+            &mut kernel,
+            &mut user,
+        )
+    } == 0
+    {
+        bail!(
+            "GetProcessTimes failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64)
 }
 
 impl std::fmt::Debug for ContainedProcess {

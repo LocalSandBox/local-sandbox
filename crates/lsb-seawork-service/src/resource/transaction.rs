@@ -50,7 +50,7 @@ impl ResourceTransaction {
             path: ledger_root.join(format!("{sandbox_id}.json")),
             document,
         };
-        transaction.persist()?;
+        atomic::create(&transaction.path, &transaction.document)?;
         Ok(transaction)
     }
 
@@ -95,6 +95,15 @@ impl ResourceTransaction {
             .get_mut(index)
             .context("resource intent index is out of range")? = resource;
         self.touch_and_persist()
+    }
+
+    /// Remove a transaction only after the caller has proved every external resource absent.
+    pub fn finish(&mut self) -> Result<()> {
+        self.document.state = LifecycleState::Cleaning;
+        self.touch_and_persist()?;
+        self.document.resources.clear();
+        self.touch_and_persist()?;
+        atomic::remove_if_exists(&self.path).map(|_| ())
     }
 
     fn touch_and_persist(&mut self) -> Result<()> {
@@ -227,6 +236,8 @@ mod tests {
         assert!(transaction
             .ownership_marker()
             .starts_with(OWNERSHIP_MARKER_PREFIX));
+        transaction.finish().unwrap();
+        assert!(!root.join("0123456789abcdef0123456789abcdef.json").exists());
         let _ = std::fs::remove_dir_all(root);
     }
 
