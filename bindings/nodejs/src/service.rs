@@ -4,8 +4,8 @@ use napi::bindgen_prelude::{Buffer, Either, Result, Uint8Array};
 use napi_derive::napi;
 
 use crate::types::{
-  CopyOptions, DirEntry, ExecResult, FileChangeEvent, MkdirOptions, NetworkConfig, RemoveOptions,
-  StatResult, WatchOptions,
+  CopyOptions, DirEntry, ExecResult, FileChangeEvent, MkdirOptions, NetworkConfig,
+  PortMappingConfig, RemoveOptions, StatResult, WatchOptions,
 };
 #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 use napi::Status;
@@ -38,6 +38,8 @@ pub struct SeaWorkStartOptions {
   pub cpus: Option<u32>,
   pub memoryMb: Option<u32>,
   pub diskSizeMb: Option<u32>,
+  /// Exact host-to-guest TCP mappings. The service remains fail-closed until WFP isolation passes.
+  pub ports: Option<Vec<PortMappingConfig>>,
   /// Service-owned public egress, scoped secrets, and HTTPS interception policy.
   pub network: Option<NetworkConfig>,
 }
@@ -289,6 +291,7 @@ impl SeaWorkService {
         cpus: None,
         memoryMb: None,
         diskSizeMb: None,
+        ports: None,
         network: None,
       });
       let start = lsb_service_client::StartSandboxOptions {
@@ -298,6 +301,7 @@ impl SeaWorkService {
           .map_err(|_| napi::Error::from_reason("cpus is out of range"))?,
         memory_mib: opts.memoryMb.unwrap_or(2048),
         disk_mib: opts.diskSizeMb.unwrap_or(4096),
+        ports: map_service_ports(opts.ports)?,
         network: Some(
           opts
             .network
@@ -380,6 +384,10 @@ fn service_feature_names(bits: u64) -> Vec<String> {
       lsb_service_proto::FEATURE_HTTPS_INTERCEPTION,
       "https-interception",
     ),
+    (
+      lsb_service_proto::FEATURE_EXPOSE_HOST_RELAY,
+      "expose-host-relay",
+    ),
   ]
   .into_iter()
   .filter(|(feature, _)| bits & feature != 0)
@@ -391,15 +399,23 @@ fn service_feature_names(bits: u64) -> Vec<String> {
 fn map_service_network(
   mut network: NetworkConfig,
 ) -> Result<lsb_service_proto::ServiceNetworkSpec> {
-  if network
+  let expose_host = network
     .exposeHost
-    .as_ref()
-    .is_some_and(|mappings| !mappings.is_empty())
-  {
-    return Err(napi::Error::from_reason(
-      "network.exposeHost requires the unavailable owner-token relay capability",
-    ));
-  }
+    .take()
+    .unwrap_or_default()
+    .into_iter()
+    .map(|mapping| {
+      let host_port = service_port(mapping.host, "network.exposeHost host")?;
+      let guest_port = service_port(
+        mapping.guest.unwrap_or(mapping.host),
+        "network.exposeHost guest",
+      )?;
+      Ok(lsb_service_proto::ServiceExposeHostSpec {
+        host_port,
+        guest_port,
+      })
+    })
+    .collect::<Result<Vec<_>>>()?;
   let secrets = network
     .secrets
     .take()
@@ -439,7 +455,32 @@ fn map_service_network(
     allowed_hosts: network.allow.take().unwrap_or_default(),
     secrets,
     https_interception,
+    expose_host,
   })
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn map_service_ports(
+  ports: Option<Vec<PortMappingConfig>>,
+) -> Result<Vec<lsb_service_proto::ServicePortSpec>> {
+  ports
+    .unwrap_or_default()
+    .into_iter()
+    .map(|mapping| {
+      Ok(lsb_service_proto::ServicePortSpec {
+        host_port: Some(service_port(mapping.host, "ports host")?),
+        guest_port: service_port(mapping.guest, "ports guest")?,
+      })
+    })
+    .collect()
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn service_port(value: u32, label: &str) -> Result<u16> {
+  u16::try_from(value)
+    .ok()
+    .filter(|port| *port != 0)
+    .ok_or_else(|| napi::Error::from_reason(format!("{label} must be between 1 and 65535")))
 }
 
 #[napi]
@@ -995,6 +1036,54 @@ fn stable_service_error_reason(error: &lsb_service_proto::ErrorEnvelope) -> Stri
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+  #[test]
+  fn service_start_mappings_preserve_exact_ports_fail_closed() {
+    let ports = map_service_ports(Some(vec![PortMappingConfig {
+      host: 8080,
+      guest: 80,
+    }]))
+    .unwrap();
+    assert_eq!(ports[0].host_port, Some(8080));
+    assert_eq!(ports[0].guest_port, 80);
+
+    let network = map_service_network(NetworkConfig {
+      allow: None,
+      exposeHost: Some(vec![crate::types::ExposeHostConfig {
+        host: 3000,
+        guest: None,
+      }]),
+      secrets: None,
+      httpsInterception: None,
+    })
+    .unwrap();
+    assert_eq!(network.expose_host[0].host_port, 3000);
+    assert_eq!(network.expose_host[0].guest_port, 3000);
+    assert_ne!(
+      network.required_feature_bits() & lsb_service_proto::FEATURE_EXPOSE_HOST_RELAY,
+      0
+    );
+    assert!(map_service_ports(Some(vec![PortMappingConfig { host: 0, guest: 80 }])).is_err());
+    assert!(map_service_network(NetworkConfig {
+      allow: None,
+      exposeHost: Some(vec![crate::types::ExposeHostConfig {
+        host: 65_536,
+        guest: None,
+      }]),
+      secrets: None,
+      httpsInterception: None,
+    })
+    .is_err());
+  }
+
+  #[test]
+  fn unavailable_relay_feature_is_named_but_not_claimed_by_service() {
+    assert_eq!(
+      service_feature_names(lsb_service_proto::FEATURE_EXPOSE_HOST_RELAY),
+      vec!["expose-host-relay"]
+    );
+  }
 
   #[test]
   fn service_errors_preserve_stable_codes_for_adapter_recovery() {

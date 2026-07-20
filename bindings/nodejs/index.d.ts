@@ -496,6 +496,8 @@ export interface SeaWorkStartOptions {
   cpus?: number
   memoryMb?: number
   diskSizeMb?: number
+  /** Exact host-to-guest TCP mappings. The service remains fail-closed until WFP isolation passes. */
+  ports?: Array<PortMappingConfig>
   /** Service-owned public egress, scoped secrets, and HTTPS interception policy. */
   network?: NetworkConfig
 }

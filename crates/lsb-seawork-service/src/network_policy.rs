@@ -90,6 +90,7 @@ mod tests {
                     },
                 }],
             }),
+            expose_host: Vec::new(),
         };
         let config = build_proxy_config(
             policy,

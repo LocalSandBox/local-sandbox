@@ -12,8 +12,8 @@ use lsb_service_proto::{
     encode_stream_payload, negotiate, parse_control, Cancel, CapabilityHealth, Correlation,
     ErrorCode, ErrorEnvelope, Event, FrameHeader, FrameKind, Health, HealthState, Hello,
     HelloReply, HexU64, ProtocolRange, Request, RequestOp, Response, ResponseValue, ServiceInfo,
-    WindowUpdate, CANCELLATION_COMMIT_MIN_MINOR, CLIENT_FEATURE_BITS, CURRENT,
-    START_REPLAY_MIN_MINOR, SUPPORTED,
+    WindowUpdate, CANCELLATION_COMMIT_MIN_MINOR, CURRENT, FEATURE_HTTPS_INTERCEPTION,
+    FEATURE_NETWORK_EGRESS, FEATURE_NETWORK_SECRETS, START_REPLAY_MIN_MINOR, SUPPORTED,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 #[cfg(test)]
@@ -42,7 +42,10 @@ use crate::{engine::ServiceEngineConfig, rpc};
 use crate::{LEDGER_SCHEMA_VERSION, PIPE_NAME, PIPE_SDDL};
 
 const OUTPUT_BACKPRESSURE_TIMEOUT: Duration = Duration::from_secs(30);
-const SERVICE_FEATURE_BITS: u64 = CLIENT_FEATURE_BITS;
+// The client understands the owner-token relay contract, but the service must not
+// negotiate it until the relay implementation and Windows acceptance gates pass.
+const SERVICE_FEATURE_BITS: u64 =
+    FEATURE_NETWORK_EGRESS | FEATURE_NETWORK_SECRETS | FEATURE_HTTPS_INTERCEPTION;
 #[cfg(test)]
 static TEST_HEALTH_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 #[cfg(test)]
@@ -2762,4 +2765,15 @@ mod tests {
                 .unwrap();
         }
     }
+}
+#[test]
+fn owner_token_relay_feature_stays_unadvertised() {
+    assert_eq!(
+        SERVICE_FEATURE_BITS & lsb_service_proto::FEATURE_EXPOSE_HOST_RELAY,
+        0
+    );
+    assert_ne!(
+        lsb_service_proto::CLIENT_FEATURE_BITS & lsb_service_proto::FEATURE_EXPOSE_HOST_RELAY,
+        0
+    );
 }

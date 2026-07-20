@@ -14,10 +14,13 @@ pub const SUPPORTED: ProtocolRange = ProtocolRange {
 pub const FEATURE_NETWORK_EGRESS: u64 = 1 << 0;
 pub const FEATURE_NETWORK_SECRETS: u64 = 1 << 1;
 pub const FEATURE_HTTPS_INTERCEPTION: u64 = 1 << 2;
+pub const FEATURE_EXPOSE_HOST_RELAY: u64 = 1 << 3;
 pub const START_REPLAY_MIN_MINOR: u16 = 4;
 pub const CANCELLATION_COMMIT_MIN_MINOR: u16 = 5;
-pub const CLIENT_FEATURE_BITS: u64 =
-    FEATURE_NETWORK_EGRESS | FEATURE_NETWORK_SECRETS | FEATURE_HTTPS_INTERCEPTION;
+pub const CLIENT_FEATURE_BITS: u64 = FEATURE_NETWORK_EGRESS
+    | FEATURE_NETWORK_SECRETS
+    | FEATURE_HTTPS_INTERCEPTION
+    | FEATURE_EXPOSE_HOST_RELAY;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -188,12 +188,24 @@ impl Request {
                     validate_string(&mount.host_path)?;
                     validate_string(&mount.guest_path)?;
                 }
+                let mut host_ports = std::collections::BTreeSet::new();
                 for port in ports {
-                    if port.guest_port == 0 || port.host_port == Some(0) {
+                    if port.guest_port == 0
+                        || port
+                            .host_port
+                            .is_none_or(|host_port| !host_ports.insert(host_port))
+                    {
                         return Err(ProtocolError::InvalidJson);
                     }
                 }
                 if let Some(network) = network {
+                    if ports
+                        .len()
+                        .checked_add(network.expose_host.len())
+                        .is_none_or(|count| count > 32)
+                    {
+                        return Err(ProtocolError::InvalidJson);
+                    }
                     if network.allowed_hosts.len() > 256 {
                         return Err(ProtocolError::InvalidJson);
                     }
@@ -225,6 +237,15 @@ impl Request {
                             validate_string(&header.name)?;
                             validate_string(&header.value)?;
                             validate_host_scope(&header.hosts)?;
+                        }
+                    }
+                    let mut guest_ports = std::collections::BTreeSet::new();
+                    for mapping in &network.expose_host {
+                        if mapping.host_port == 0
+                            || mapping.guest_port == 0
+                            || !guest_ports.insert(mapping.guest_port)
+                        {
+                            return Err(ProtocolError::InvalidJson);
                         }
                     }
                 }
@@ -504,6 +525,13 @@ pub struct ServicePortSpec {
     pub host_port: Option<u16>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceExposeHostSpec {
+    pub host_port: u16,
+    pub guest_port: u16,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceNetworkSpec {
@@ -513,6 +541,8 @@ pub struct ServiceNetworkSpec {
     pub secrets: BTreeMap<String, ServiceSecretSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub https_interception: Option<ServiceHttpsInterceptionSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expose_host: Vec<ServiceExposeHostSpec>,
 }
 
 impl ServiceNetworkSpec {
@@ -523,6 +553,9 @@ impl ServiceNetworkSpec {
         }
         if self.https_interception.is_some() {
             required |= crate::FEATURE_HTTPS_INTERCEPTION;
+        }
+        if !self.expose_host.is_empty() {
+            required |= crate::FEATURE_EXPOSE_HOST_RELAY;
         }
         required
     }
@@ -922,6 +955,10 @@ mod tests {
                     },
                 }],
             }),
+            expose_host: vec![ServiceExposeHostSpec {
+                host_port: 3000,
+                guest_port: 3000,
+            }],
         };
         assert_eq!(network.required_feature_bits(), crate::CLIENT_FEATURE_BITS);
         let request = Request {
@@ -942,6 +979,13 @@ mod tests {
         assert!(!debug.contains("never-log-secret"));
         assert!(!debug.contains("never-log-header"));
         assert!(debug.contains("<redacted>"));
+
+        let duplicate_exposed_guest = br#"{"op":{"type":"start_sandbox","cpus":2,"memory_mib":2048,"disk_mib":4096,"mounts":[],"ports":[],"network":{"expose_host":[{"host_port":3000,"guest_port":8080},{"host_port":3001,"guest_port":8080}]}}}"#;
+        let duplicate_exposed_guest: Request = parse_control(duplicate_exposed_guest).unwrap();
+        assert_eq!(
+            duplicate_exposed_guest.validate(),
+            Err(ProtocolError::InvalidJson)
+        );
 
         let invalid = br#"{"op":{"type":"start_sandbox","cpus":2,"memory_mib":2048,"disk_mib":4096,"mounts":[],"ports":[],"network":{"allowed_hosts":[],"secrets":{"TOKEN":{"value":"secret","hosts":[]}}}}}"#;
         let invalid: Request = parse_control(invalid).unwrap();

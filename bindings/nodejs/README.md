@@ -83,6 +83,11 @@ filesystem metadata and byte transfer, and managed watches. Mounts and host port
 intentionally unavailable in the initial service scope. `SeaWorkService.connect()`, `health()`, and
 `start()` remain compatibility aliases. The existing `Sandbox` API remains the direct SDK path.
 
+The service start type preserves exact `ports` and `network.exposeHost` requests for the NET-02
+contract, but does not claim those capabilities yet. Host ports return
+`PORT_ISOLATION_UNAVAILABLE`, and expose-host relay requests fail feature negotiation until the
+owner-token relay and Windows WFP isolation gates are implemented and enabled.
+
 ### Start a sandbox and run commands
 
 ```ts
