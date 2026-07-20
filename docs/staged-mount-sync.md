@@ -53,6 +53,15 @@ The canonical comparison described above now backs this string policy and canoni
 excludes a ProfileList alias of the caller only from the profile-derived deny identities.
 Real alternate-name and path-swap fixtures remain pending.
 
+The caller-token export primitive now bounds reads to the authorized source length plus
+one byte, requires the same open source handle to retain its length and last-write time
+through the copy, flushes the random create-new sibling, and uses write-through atomic
+replacement instead of deleting the destination first. Failure cleanup targets only
+its own sibling; an oversized or concurrently changed protected source publishes nothing.
+This does not yet authorize a writeback destination: binding the destination to an
+`AuthorizedMountRoot`, creating/traversing it handle-relatively, and integrating the
+periodic/final staged-sync loop remain required before mount activation.
+
 ## Reconciliation
 
 For each relative path, the baseline, current host, and current guest snapshots produce

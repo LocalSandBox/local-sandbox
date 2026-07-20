@@ -168,15 +168,20 @@ fn export_once(
     user_destination: &std::path::Path,
     options: ExportOptions,
 ) -> Result<u64> {
-    let metadata = std::fs::symlink_metadata(protected_source)?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
+    let path_metadata = std::fs::symlink_metadata(protected_source)?;
+    if !path_metadata.is_file() || path_metadata.file_type().is_symlink() {
         anyhow::bail!("protected export source is not a regular file");
     }
     let mut source = std::fs::File::open(protected_source)?;
+    let metadata = source.metadata()?;
+    if !metadata.is_file() {
+        anyhow::bail!("opened protected export source is not a regular file");
+    }
     let guard = ImpersonationGuard::for_token(token)?;
     let result = super::export::export_open_file_under_client_token(
         &mut source,
         metadata.len(),
+        metadata.modified()?,
         user_destination,
         options,
     );
