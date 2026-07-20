@@ -103,8 +103,10 @@ fn run_registered(
     };
     advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
     let reconciliation = if let Some(engine) = &engine {
-        let mut cleaner =
-            ledger::windows_cleaner::WindowsResourceCleaner::new(engine.bundle_root());
+        let mut cleaner = ledger::windows_cleaner::WindowsResourceCleaner::new(
+            engine.bundle_root(),
+            engine.resources_root(),
+        );
         ledger::reconcile_and_recover(&paths.ledger, &paths.quarantine, &mut cleaner)?
     } else {
         ledger::reconcile(&paths.ledger, &paths.quarantine)?

@@ -2,7 +2,7 @@ mod export;
 mod identity;
 mod policy;
 mod profiles;
-mod relative;
+pub(crate) mod relative;
 mod walk;
 mod worker;
 

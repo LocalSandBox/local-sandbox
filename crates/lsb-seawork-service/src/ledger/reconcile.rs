@@ -229,7 +229,8 @@ mod tests {
     impl ExternalResourceCleaner for RemovingCleaner {
         fn remove_if_exact(
             &mut self,
-            _ownership_id: &str,
+            _ledger_id: &str,
+            _document: &crate::ledger::schema::LedgerDocument,
             _resource: &crate::ledger::schema::ResourceRecord,
         ) -> Result<crate::ledger::RecoveryProof> {
             Ok(crate::ledger::RecoveryProof::AlreadyAbsent)

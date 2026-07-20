@@ -102,8 +102,12 @@ before the sandbox-specific instance directory exists. Directory intent and exac
 volume/file identity are durable before rootfs copy/resize; preparation rollback and
 normal teardown require that same committed identity before removing the tree. A worker
 panic or identity/cleanup ambiguity preserves the ledger and tree for recovery rather
-than invoking a path-derived fallback. Crash-time handle-safe staging-tree recovery is
-still required before retained instance records can converge automatically.
+than invoking a path-derived fallback. Startup recovery binds a committed staging path
+to the authenticated owner's deterministic directory and the ledger filename's sandbox
+ID, opens every component relative to pinned no-follow handles, verifies the final
+volume/file identity, and deletes a bounded tree through handles without traversing
+reparse children. Intent-only directory ambiguity remains health-only; real crash,
+reboot, sharing, reparse, and hostile-tamper evidence is still required.
 
 Port mappings validate only nonzero/unique numbers and listen on `127.0.0.1` (`crates/lsb-vm/src/sandbox.rs:3971-3997`); any local user can normally connect. The listener is RAII-cleaned (`sandbox.rs:4029-4042`) but has no per-user authorization. File watches also observe host paths in the current process context, an assumption that changes in Session 0.
 

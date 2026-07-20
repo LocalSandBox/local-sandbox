@@ -385,17 +385,12 @@ fn copy_with_cancellation(
 }
 
 fn identity_hash(identity: &ClientIdentityKey) -> String {
-    let mut hasher = blake3::Hasher::new();
-    for value in [
-        identity.user_sid.as_bytes(),
-        identity.logon_sid.as_bytes(),
-        &identity.authentication_luid.to_le_bytes(),
-        &identity.session_id.to_le_bytes(),
-    ] {
-        hasher.update(value);
-        hasher.update(&[0]);
-    }
-    hasher.finalize().to_hex().to_string()
+    crate::ledger::schema::protected_owner_directory_id(
+        &identity.user_sid,
+        &identity.logon_sid,
+        identity.authentication_luid,
+        identity.session_id,
+    )
 }
 
 fn remove_prepared_instance(engine: &ServiceEngineConfig, path: &Path) -> Result<()> {

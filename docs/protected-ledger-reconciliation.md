@@ -86,9 +86,16 @@ directory, queries its volume/file identity, and commits that proof before writi
 resizing the rootfs. Preparation rollback and normal VM teardown both re-query the live
 directory and require one exact committed path/identity record before recursive removal;
 only then may the transaction be cleared. Worker panic, identity mismatch, or ambiguous
-cleanup no longer invokes a recomputed-path fallback deletion. The retained staging
-record keeps startup health-only because crash-time handle-safe tree deletion is not yet
-implemented; the QEMU cleaner does not claim coverage for it.
+cleanup no longer invokes a recomputed-path fallback deletion. On startup, a committed
+instance staging record is accepted only when its relative path exactly matches the
+authenticated owner's deterministic directory and the ledger filename's sandbox ID.
+The cleaner opens the protected users root without following a reparse point, traverses
+each component with root-relative `NtCreateFile`, verifies the retained directory
+handle's volume/file identity, and enumerates and deletes the bounded tree through
+pinned child handles. It never traverses a reparse child. Identity/path contradiction
+quarantines the ledger; open, enumeration, sharing, or delete ambiguity retains
+retry-required health-only state. An intent-only staging record remains unproven and is
+not removed automatically.
 
 ## Verification boundary
 

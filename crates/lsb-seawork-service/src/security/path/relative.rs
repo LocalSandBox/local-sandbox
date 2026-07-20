@@ -9,25 +9,59 @@ use windows_sys::Wdk::Storage::FileSystem::{
     FILE_SYNCHRONOUS_IO_NONALERT,
 };
 use windows_sys::Win32::Foundation::{
-    HANDLE, INVALID_HANDLE_VALUE, OBJ_CASE_INSENSITIVE, UNICODE_STRING,
+    HANDLE, INVALID_HANDLE_VALUE, OBJ_CASE_INSENSITIVE, STATUS_NO_SUCH_FILE,
+    STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
 #[derive(Clone, Copy)]
-pub(super) enum RelativeKind {
+pub(crate) enum RelativeKind {
     Any,
     Directory,
 }
 
-pub(super) fn open_relative(
+pub(crate) fn open_relative(
     parent: &OwnedHandle,
     name: &OsStr,
     access: u32,
     kind: RelativeKind,
 ) -> Result<(OwnedHandle, BY_HANDLE_FILE_INFORMATION)> {
+    open_relative_if_exists(
+        parent,
+        name,
+        access,
+        kind,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+    )?
+    .ok_or_else(|| anyhow::anyhow!("handle-relative mount entry is absent"))
+}
+
+pub(crate) fn open_relative_for_cleanup(
+    parent: &OwnedHandle,
+    name: &OsStr,
+    access: u32,
+    kind: RelativeKind,
+) -> Result<Option<(OwnedHandle, BY_HANDLE_FILE_INFORMATION)>> {
+    open_relative_if_exists(
+        parent,
+        name,
+        access,
+        kind,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    )
+}
+
+fn open_relative_if_exists(
+    parent: &OwnedHandle,
+    name: &OsStr,
+    access: u32,
+    kind: RelativeKind,
+    share_mode: u32,
+) -> Result<Option<(OwnedHandle, BY_HANDLE_FILE_INFORMATION)>> {
     let mut name = name.encode_wide().collect::<Vec<_>>();
     validate_component(&name)?;
     let byte_len = name
@@ -64,13 +98,19 @@ pub(super) fn open_relative(
             &mut io_status,
             std::ptr::null(),
             0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            share_mode,
             FILE_OPEN,
             options,
             std::ptr::null(),
             0,
         )
     };
+    if matches!(
+        status,
+        STATUS_NO_SUCH_FILE | STATUS_OBJECT_NAME_NOT_FOUND | STATUS_OBJECT_PATH_NOT_FOUND
+    ) {
+        return Ok(None);
+    }
     if status < 0 || raw.is_null() || raw == INVALID_HANDLE_VALUE {
         bail!("handle-relative mount open failed with NTSTATUS 0x{status:08x}");
     }
@@ -82,7 +122,7 @@ pub(super) fn open_relative(
             std::io::Error::last_os_error()
         );
     }
-    Ok((handle, info))
+    Ok(Some((handle, info)))
 }
 
 fn validate_component(name: &[u16]) -> Result<()> {

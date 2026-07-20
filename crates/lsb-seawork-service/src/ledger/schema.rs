@@ -27,6 +27,38 @@ pub struct OwnerIdentity {
     pub session_id: u32,
 }
 
+impl OwnerIdentity {
+    pub(crate) fn protected_directory_id(&self) -> Result<String> {
+        let authentication_luid = u64::from_str_radix(&self.authentication_luid, 16)
+            .map_err(|_| anyhow::anyhow!("ledger authentication LUID is invalid"))?;
+        Ok(protected_owner_directory_id(
+            &self.user_sid,
+            &self.logon_sid,
+            authentication_luid,
+            self.session_id,
+        ))
+    }
+}
+
+pub(crate) fn protected_owner_directory_id(
+    user_sid: &str,
+    logon_sid: &str,
+    authentication_luid: u64,
+    session_id: u32,
+) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for value in [
+        user_sid.as_bytes(),
+        logon_sid.as_bytes(),
+        &authentication_luid.to_le_bytes(),
+        &session_id.to_le_bytes(),
+    ] {
+        hasher.update(value);
+        hasher.update(&[0]);
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LifecycleState {

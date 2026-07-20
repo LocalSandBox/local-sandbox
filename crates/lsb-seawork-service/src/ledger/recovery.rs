@@ -26,7 +26,8 @@ pub enum RecoveryOutcome {
 pub trait ExternalResourceCleaner {
     fn remove_if_exact(
         &mut self,
-        ownership_id: &str,
+        ledger_id: &str,
+        document: &LedgerDocument,
         resource: &ResourceRecord,
     ) -> Result<RecoveryProof>;
 }
@@ -71,8 +72,13 @@ fn recover_with_store(
     touch(&mut document)?;
     store.persist(path, &document)?;
 
+    let ledger_id = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_string();
     while let Some(resource) = document.resources.last() {
-        match cleaner.remove_if_exact(&document.ownership_id, resource)? {
+        match cleaner.remove_if_exact(&ledger_id, &document, resource)? {
             RecoveryProof::Removed | RecoveryProof::AlreadyAbsent => {
                 document.resources.pop();
                 touch(&mut document)?;
@@ -146,7 +152,8 @@ mod tests {
     impl ExternalResourceCleaner for StatefulCleaner {
         fn remove_if_exact(
             &mut self,
-            _ownership_id: &str,
+            _ledger_id: &str,
+            _document: &LedgerDocument,
             resource: &ResourceRecord,
         ) -> Result<RecoveryProof> {
             let name = resource_name(resource);
@@ -162,10 +169,11 @@ mod tests {
     impl ExternalResourceCleaner for FakeCleaner {
         fn remove_if_exact(
             &mut self,
-            ownership_id: &str,
+            _ledger_id: &str,
+            document: &LedgerDocument,
             resource: &ResourceRecord,
         ) -> Result<RecoveryProof> {
-            assert_eq!(ownership_id, "0123456789abcdef0123456789abcdef");
+            assert_eq!(document.ownership_id, "0123456789abcdef0123456789abcdef");
             let call = self.calls.len();
             self.calls.push(resource_name(resource));
             if self.unavailable_at == Some(call) {
