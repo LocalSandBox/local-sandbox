@@ -255,6 +255,11 @@ Publisher rotation is an overlap, not an in-place pin bypass:
 - Session 0 WHPX/QEMU boot/exec/stop, crash/reboot reconciliation, and enterprise
   Defender/EDR/GPO/proxy/VPN policy evidence are signed off. Mounts and host
   ports remain disabled; SMB and WFP evidence is required before enabling them.
+- The exact signed payload ZIP has a complete `full` Windows evidence manifest under
+  the protected self-hosted runner root. The `seawork-service-production` environment
+  is approved only after that matrix finishes; CI rehashes the ZIP, validates and
+  retains the redacted evidence, and the publish job cannot run if the gate is skipped,
+  missing, incomplete, or bound to another commit/artifact.
 
 ## External release blockers
 
@@ -270,3 +275,8 @@ and `docs/windows-service-feasibility.md`:
   the currently unavailable mount capability.
 - Managed-fleet Defender/EDR, enterprise GPO, proxy/VPN, and certificate-policy
   review. Release is blocked on an incompatibility; controls are not bypassed.
+
+The repository variable `SEAWORK_WINDOWS_EVIDENCE_ROOT` must name a protected absolute
+path on runners labeled `self-hosted`, `Windows`, `X64`, and `seawork-service`. It is a
+location contract, not evidence: the exact `GITHUB_SHA` and downloaded payload digest
+select the only acceptable manifest below it.

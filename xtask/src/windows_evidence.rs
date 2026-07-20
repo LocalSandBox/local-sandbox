@@ -118,13 +118,31 @@ struct EvidenceFile {
 
 pub fn verify(args: &[String]) -> Result<()> {
     let mut manifest = None;
+    let mut artifact = None;
+    let mut required_profile = None;
     let mut require_complete = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
             "--manifest" => {
                 index += 1;
-                manifest = args.get(index).map(PathBuf::from);
+                manifest = Some(PathBuf::from(
+                    args.get(index).context("--manifest requires a path")?,
+                ));
+            }
+            "--artifact" => {
+                index += 1;
+                artifact = Some(PathBuf::from(
+                    args.get(index).context("--artifact requires a path")?,
+                ));
+            }
+            "--require-profile" => {
+                index += 1;
+                required_profile = Some(
+                    args.get(index)
+                        .context("--require-profile requires a profile")?
+                        .clone(),
+                );
             }
             "--require-complete" => require_complete = true,
             other => bail!("unknown verify-windows-evidence argument: {other}"),
@@ -132,12 +150,22 @@ pub fn verify(args: &[String]) -> Result<()> {
         index += 1;
     }
     let manifest = manifest.context("--manifest is required")?;
-    validate_manifest(&manifest, require_complete)?;
+    validate_manifest_with_requirements(
+        &manifest,
+        require_complete,
+        required_profile.as_deref(),
+        artifact.as_deref(),
+    )?;
     println!("verified Windows evidence manifest {}", manifest.display());
     Ok(())
 }
 
-fn validate_manifest(path: &Path, require_complete: bool) -> Result<()> {
+fn validate_manifest_with_requirements(
+    path: &Path,
+    require_complete: bool,
+    required_profile: Option<&str>,
+    artifact: Option<&Path>,
+) -> Result<()> {
     let metadata = std::fs::metadata(path)
         .with_context(|| format!("read evidence manifest metadata {}", path.display()))?;
     if !metadata.is_file() || metadata.len() > MAX_MANIFEST_BYTES {
@@ -145,6 +173,18 @@ fn validate_manifest(path: &Path, require_complete: bool) -> Result<()> {
     }
     let bytes = std::fs::read(path).context("read evidence manifest")?;
     let manifest: Manifest = serde_json::from_slice(&bytes).context("parse evidence manifest")?;
+    if required_profile.is_some_and(|profile| manifest.profile != profile) {
+        bail!("Windows evidence manifest does not use the required profile");
+    }
+    if let Some(artifact) = artifact {
+        let metadata = std::fs::metadata(artifact).context("read release artifact metadata")?;
+        if !metadata.is_file() || metadata.len() != manifest.artifact_size_bytes {
+            bail!("release artifact type/size does not match Windows evidence");
+        }
+        if sha256_file(artifact)? != manifest.artifact_sha256 {
+            bail!("release artifact digest does not match Windows evidence");
+        }
+    }
     validate_shape(path, &manifest, require_complete)
 }
 
@@ -344,14 +384,17 @@ mod tests {
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(1);
 
-    fn fixture(status: &str) -> (PathBuf, PathBuf) {
+    fn fixture(status: &str, profile: &str) -> (PathBuf, PathBuf, PathBuf) {
         let root = std::env::temp_dir().join(format!(
             "lsbsw-evidence-{}-{}",
             std::process::id(),
             NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
         ));
         let git_sha = "a".repeat(40);
-        let artifact_sha = "b".repeat(64);
+        let artifact_path = root.join("release.zip");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&artifact_path, b"release\n").unwrap();
+        let artifact_sha = sha256_file(&artifact_path).unwrap();
         let directory = root.join(&git_sha).join(&artifact_sha);
         std::fs::create_dir_all(&directory).unwrap();
         let evidence_path = directory.join("results.json");
@@ -362,7 +405,8 @@ mod tests {
         } else {
             json!("EXTERNAL_VERIFICATION_PENDING")
         };
-        let checks = SECURITY_CHECKS
+        let checks = profile_checks(profile)
+            .unwrap()
             .iter()
             .map(|id| {
                 json!({
@@ -378,8 +422,8 @@ mod tests {
             "schema_version": 1,
             "git_sha": git_sha,
             "artifact_sha256": artifact_sha,
-            "artifact_size_bytes": 1,
-            "profile": "security",
+            "artifact_size_bytes": 8,
+            "profile": profile,
             "generated_utc": "2026-07-20T00:00:00Z",
             "environment": {
                 "os_build": "26100.1",
@@ -404,33 +448,56 @@ mod tests {
             serde_json::to_vec_pretty(&manifest).unwrap(),
         )
         .unwrap();
-        (root, manifest_path)
+        (root, manifest_path, artifact_path)
     }
 
     #[test]
     fn accepts_digest_bound_redacted_security_evidence() {
-        let (root, manifest) = fixture("passed");
-        validate_manifest(&manifest, true).unwrap();
+        let (root, manifest, _) = fixture("passed", "security");
+        validate_manifest_with_requirements(&manifest, true, None, None).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn incomplete_profile_validates_shape_but_not_release_completeness() {
-        let (root, manifest) = fixture("blocked");
-        validate_manifest(&manifest, false).unwrap();
-        assert!(validate_manifest(&manifest, true).is_err());
+        let (root, manifest, _) = fixture("blocked", "security");
+        validate_manifest_with_requirements(&manifest, false, None, None).unwrap();
+        assert!(validate_manifest_with_requirements(&manifest, true, None, None).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn rejects_evidence_tamper_after_manifest_creation() {
-        let (root, manifest) = fixture("passed");
+        let (root, manifest, _) = fixture("passed", "security");
         std::fs::write(
             manifest.parent().unwrap().join("results.json"),
             b"tampered\n",
         )
         .unwrap();
-        assert!(validate_manifest(&manifest, false).is_err());
+        assert!(validate_manifest_with_requirements(&manifest, false, None, None).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn release_requirements_bind_the_full_profile_and_exact_artifact() {
+        let (root, manifest, artifact) = fixture("passed", "full");
+        validate_manifest_with_requirements(&manifest, true, Some("full"), Some(&artifact))
+            .unwrap();
+        assert!(validate_manifest_with_requirements(
+            &manifest,
+            true,
+            Some("security"),
+            Some(&artifact),
+        )
+        .is_err());
+        std::fs::write(&artifact, b"changed\n").unwrap();
+        assert!(validate_manifest_with_requirements(
+            &manifest,
+            true,
+            Some("full"),
+            Some(&artifact),
+        )
+        .is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

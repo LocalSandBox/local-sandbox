@@ -39,10 +39,27 @@ The standalone validation command is:
 ```powershell
 cargo run -p xtask --locked -- verify-windows-evidence `
   --manifest artifacts\windows-evidence\<git-sha>\<artifact-sha256>\manifest.json `
+  --artifact C:\protected\lsb-seawork-service-v0.4.6-windows-x86_64.zip `
+  --require-profile full `
   --require-complete
 ```
 
-This validator proves schema closure, artifact/commit layout binding, result coverage,
+`--artifact` rehashes the candidate and requires both its size and digest to equal the
+manifest. `--require-profile` prevents a complete subset profile from satisfying a
+broader production gate. Both are optional for incomplete handoff inspection and
+mandatory in the production workflow.
+
+The signed-service release uploads its candidate before publication, then waits on the
+protected `seawork-service-production` environment. An operator runs the full matrix on
+that exact ZIP and assembles complete evidence below the protected self-hosted runner
+root configured by `SEAWORK_WINDOWS_EVIDENCE_ROOT`. The gate derives only
+`<root>/<GITHUB_SHA>/<candidate-sha256>/manifest.json`, copies that closed redacted tree
+into its workspace, rehashes the downloaded ZIP, requires the `full` profile and every
+check to pass, and retains the validated copy for 90 days. The publish job depends on
+that gate. Missing, malformed, mismatched, incomplete, or subset evidence therefore
+prevents publication rather than becoming a warning.
+
+This validator proves schema closure, exact artifact/commit binding, result coverage,
 and retained-file integrity. It does not prove that the signed artifact actually ran,
-that a claimed pass is truthful, or that a runner is disposable/managed. CI must pair
-it with protected runner provenance and artifact attestations before publication.
+that a claimed pass is truthful, or that a runner is disposable/managed; those remain
+protected-runner and review responsibilities.

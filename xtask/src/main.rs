@@ -51,6 +51,6 @@ fn print_usage() {
         "  cargo run -p xtask -- verify-seawork-parity [--contract <path>] [--seawork-repo <path>]"
     );
     eprintln!(
-        "  cargo run -p xtask -- verify-windows-evidence --manifest <path> [--require-complete]"
+        "  cargo run -p xtask -- verify-windows-evidence --manifest <path> [--artifact <path>] [--require-profile win01|security|full] [--require-complete]"
     );
 }

@@ -380,10 +380,85 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  gate-seawork-service-windows:
+    name: Gate signed service on complete Windows evidence
+    if: ${{ vars.SEAWORK_SERVICE_SIGNING_ENABLED == 'true' }}
+    needs: [build-seawork-service]
+    runs-on: [self-hosted, Windows, X64, seawork-service]
+    timeout-minutes: 30
+    environment: seawork-service-production
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      SEAWORK_WINDOWS_EVIDENCE_ROOT: ${{ vars.SEAWORK_WINDOWS_EVIDENCE_ROOT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: seawork-service-release
+          path: target/release-candidate
+
+      - name: Validate exact-artifact full Windows evidence
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SEAWORK_WINDOWS_EVIDENCE_ROOT) -or
+              -not [IO.Path]::IsPathFullyQualified($env:SEAWORK_WINDOWS_EVIDENCE_ROOT)) {
+            throw 'SEAWORK_WINDOWS_EVIDENCE_ROOT must be a protected absolute runner path'
+          }
+          $payload = @(Get-ChildItem -LiteralPath 'target/release-candidate' -File -Filter 'lsb-seawork-service-v*-windows-x86_64.zip')
+          if ($payload.Count -ne 1) {
+            throw 'expected exactly one signed SeaWork service payload archive'
+          }
+          $artifactSha = (Get-FileHash -LiteralPath $payload[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $evidenceRoot = [IO.Path]::GetFullPath($env:SEAWORK_WINDOWS_EVIDENCE_ROOT)
+          $sourceDirectory = Join-Path (Join-Path $evidenceRoot $env:GITHUB_SHA) $artifactSha
+          $sourceManifest = Join-Path $sourceDirectory 'manifest.json'
+          $relative = [IO.Path]::GetRelativePath($evidenceRoot, $sourceManifest)
+          if ([IO.Path]::IsPathRooted($relative) -or $relative -eq '..' -or $relative.StartsWith("..$([IO.Path]::DirectorySeparatorChar)")) {
+            throw 'derived Windows evidence path escaped its protected root'
+          }
+          if (-not (Test-Path -LiteralPath $sourceManifest -PathType Leaf)) {
+            throw 'complete Windows evidence for this exact commit and artifact is unavailable'
+          }
+
+          $destinationParent = Join-Path (Join-Path 'target/release-gate-evidence' $env:GITHUB_SHA) $artifactSha
+          $destinationRoot = Split-Path -Parent $destinationParent
+          if (Test-Path -LiteralPath $destinationParent) {
+            throw 'Windows evidence validation destination already exists'
+          }
+          New-Item -ItemType Directory -Path $destinationRoot -Force | Out-Null
+          try {
+            Copy-Item -LiteralPath $sourceDirectory -Destination $destinationRoot -Recurse -ErrorAction Stop
+          } catch {
+            throw 'copying protected Windows evidence into the validation workspace failed'
+          }
+          $manifest = Join-Path $destinationParent 'manifest.json'
+          cargo run -p xtask --locked -- verify-windows-evidence `
+            --manifest $manifest `
+            --artifact $payload[0].FullName `
+            --require-profile full `
+            --require-complete
+          if ($LASTEXITCODE -ne 0) {
+            throw 'complete Windows evidence validation failed'
+          }
+
+      - name: Retain validated redacted Windows evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: seawork-service-windows-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/release-gate-evidence
+          if-no-files-found: error
+          retention-days: 90
+
   publish-seawork-service:
     name: Publish SeaWork Windows service
     if: ${{ vars.SEAWORK_SERVICE_SIGNING_ENABLED == 'true' }}
-    needs: [build-seawork-service]
+    needs: [build-seawork-service, gate-seawork-service-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
