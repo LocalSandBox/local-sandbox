@@ -28,6 +28,7 @@ pub mod windows;
 
 use anyhow::{bail, Result};
 use lsb_service_proto::{CURRENT, SUPPORTED};
+pub use lsb_service_proto::{PIPE_NAME, SERVICE_NAME};
 use serde::Serialize;
 
 #[cfg(windows)]
@@ -35,9 +36,7 @@ use windows_sys::Win32::System::LibraryLoader::{
     SetDefaultDllDirectories, LOAD_LIBRARY_SEARCH_SYSTEM32, LOAD_LIBRARY_SEARCH_USER_DIRS,
 };
 
-pub const SERVICE_NAME: &str = "LocalSandboxSeaWork";
 pub const DISPLAY_NAME: &str = "LocalSandbox for SeaWork";
-pub const PIPE_NAME: &str = r"\\.\pipe\LocalSandbox.SeaWork.v1";
 pub const PIPE_SDDL: &str =
     "O:SYG:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;IU)(A;;0x00000002;;;IU)S:(ML;;NW;;;ME)";
 pub const LEDGER_SCHEMA_VERSION: u32 = 1;

@@ -5,6 +5,9 @@ edition = "2021"
 publish = false
 build = "build.rs"
 
+[features]
+development-service = ["lsb-service-proto/development-service"]
+
 [dependencies]
 anyhow = "1"
 crossbeam-channel = "0.5"

@@ -105,6 +105,15 @@ state below `%ProgramData%\LocalSandbox\SeaWork`. It must not use a `current`
 junction or a user-writable path. The stable service name is
 `LocalSandboxSeaWork`; the pipe is `\\.\pipe\LocalSandbox.SeaWork.v1`.
 
+The non-default `development-service` Cargo feature is propagated through the
+protocol, service, client, and Node binding crates. It selects only
+`LocalSandboxSeaWorkDev`, `\\.\pipe\LocalSandbox.SeaWork.Dev.v1`, and
+`%ProgramData%\LocalSandbox\SeaWorkDev`; the production release workflow does
+not enable it, and a release service PE check confirms that these development
+strings are absent by default. The feature does not relax bundle,
+path, ACL, or Authenticode policy. Development bundle/install tooling and any
+explicit unsigned-client policy remain separate unfinished work.
+
 Initial installation is one elevated transaction:
 
 1. Verify and copy the immutable version, then apply the exact protected ACLs

@@ -11,6 +11,7 @@ mod package_acl;
 mod pipe;
 
 pub use error::ClientError;
+pub use lsb_service_proto::{PIPE_NAME, SERVICE_NAME};
 pub use stream::CreditWindow;
 
 #[cfg(windows)]
@@ -19,9 +20,6 @@ pub use connection::{
     RemoteSandbox, RemoteWatch, RemoteWatchEvent, ServiceClient, StartSandboxOptions,
     UninstallPreparation,
 };
-
-pub const SERVICE_NAME: &str = "LocalSandboxSeaWork";
-pub const PIPE_NAME: &str = r"\\.\pipe\LocalSandbox.SeaWork.v1";
 
 #[derive(Debug, Clone, Copy)]
 pub struct ConnectOptions {

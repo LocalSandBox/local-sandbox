@@ -7,6 +7,12 @@ description = "Native Node.js bindings for lsb microVM sandboxes"
 license = "Apache-2.0"
 repository = "https://github.com/LocalSandBox/local-sandbox.git"
 
+[features]
+development-service = [
+    "lsb-service-client/development-service",
+    "lsb-service-proto/development-service",
+]
+
 [lib]
 crate-type = ["cdylib"]
 

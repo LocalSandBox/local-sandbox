@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+use lsb_service_proto::STATE_DIRECTORY_NAME;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServicePaths {
@@ -24,7 +25,7 @@ impl ServicePaths {
         if !program_data.is_absolute() {
             bail!("ProgramData known-folder path is not absolute");
         }
-        let root = program_data.join("LocalSandbox").join("SeaWork");
+        let root = program_data.join("LocalSandbox").join(STATE_DIRECTORY_NAME);
         Ok(Self {
             config: root.join("config").join("service.json"),
             product_ca_bundle: root.join("config").join("product-ca.pem"),
@@ -105,7 +106,10 @@ mod tests {
     fn derives_only_fixed_paths() {
         let base = std::env::temp_dir().join("lsbsw-path-test");
         let paths = ServicePaths::for_test(base.clone());
-        assert_eq!(paths.root, base.join("LocalSandbox").join("SeaWork"));
+        assert_eq!(
+            paths.root,
+            base.join("LocalSandbox").join(STATE_DIRECTORY_NAME)
+        );
         assert!(paths.config.starts_with(&paths.root));
         assert!(paths.product_ca_bundle.starts_with(&paths.root));
         assert!(paths.ledger.starts_with(&paths.root));

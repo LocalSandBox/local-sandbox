@@ -5,6 +5,9 @@ edition = "2021"
 publish = false
 build = "build.rs"
 
+[features]
+development-service = ["lsb-service-proto/development-service"]
+
 [dependencies]
 getrandom = "0.3"
 lsb-service-proto = { path = "../lsb-service-proto" }
