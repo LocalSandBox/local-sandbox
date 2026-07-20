@@ -83,6 +83,7 @@ pub fn reconcile_and_recover(
         return Ok(summary);
     }
 
+    let expected_documents = summary.valid_documents;
     summary.valid_documents = 0;
     let Some(mut entries) = read_bounded_entries(ledger_dir, MAX_LEDGER_DOCUMENTS)? else {
         summary.unproven_documents += 1;
@@ -91,6 +92,7 @@ pub fn reconcile_and_recover(
     };
     entries.sort_by_key(DirEntry::file_name);
     let mut total = 0usize;
+    let mut candidates = Vec::with_capacity(expected_documents);
     for entry in entries {
         let path = entry.path();
         let document =
@@ -101,7 +103,27 @@ pub fn reconcile_and_recover(
                     continue;
                 }
             };
-        match recover_document(&path, document, cleaner)? {
+        candidates.push(Candidate { path, document });
+    }
+    if summary.quarantined_documents != 0 || summary.unproven_documents != 0 {
+        summary.admissions_open = false;
+        return Ok(summary);
+    }
+    let mut ownership_counts = HashMap::new();
+    for candidate in &candidates {
+        *ownership_counts
+            .entry(candidate.document.ownership_id.clone())
+            .or_insert(0usize) += 1;
+    }
+    if candidates.len() != expected_documents || ownership_counts.values().any(|count| *count != 1)
+    {
+        summary.unproven_documents += 1;
+        summary.admissions_open = false;
+        return Ok(summary);
+    }
+
+    for candidate in candidates {
+        match recover_document(&candidate.path, candidate.document, cleaner)? {
             RecoveryOutcome::Removed => {}
             RecoveryOutcome::Quarantined | RecoveryOutcome::RetryRequired => {
                 summary.valid_documents += 1;
