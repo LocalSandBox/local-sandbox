@@ -31,11 +31,16 @@ validated component with `NtCreateFile` relative to the previously pinned direct
 handle. Relative handles omit delete sharing, use open-reparse-point semantics, and are
 revalidated by volume/file identity when a second rights-specific open is required.
 Current-token tests prove the component chain resolves to the same identity as a direct
-handle and exercise relative recursive copying. Canonical protected-root alias proof,
-active monitoring, periodic/final synchronization, caller-token writeback, and
-privileged path-swap timing evidence remain incomplete; mount requests therefore stay
-`MOUNT_UNAVAILABLE` until service/SMB lifecycle integration and the NTFS/ReFS acceptance
-matrix are complete.
+handle and exercise relative recursive copying. Authorization now pins every system,
+service, ProfileList, profiles-directory, and caller-profile root without delete
+sharing and compares its 64-bit volume serial plus 128-bit file ID against every pinned
+mount ancestor and the mount root. This rejects protected-root drive-letter, short-name,
+and other textual aliases while preserving only the caller-profile identity; an
+identity collision never removes a system/service root. Unreadable, missing, reparse,
+or non-directory protected roots fail authorization. Active monitoring, periodic/final
+synchronization, caller-token writeback, and privileged alias/path-swap timing evidence
+remain incomplete; mount requests therefore stay `MOUNT_UNAVAILABLE` until service/SMB
+lifecycle integration and the NTFS/ReFS acceptance matrix are complete.
 
 Protected-profile policy no longer relies only on the default profiles directory. The
 path worker reads the protected 64-bit-machine `ProfileList` view with `KEY_READ`, caps
@@ -44,9 +49,9 @@ absolute local-drive path, and adds every discovered root except the authenticat
 caller's exact normalized profile to the deny set. Registry access, type/size/path, or
 enumeration errors reject mount authorization. Current-machine and pure relocated-root
 tests cover expansion, termination, caller exclusion, deduplication, and UNC rejection.
-Canonical volume/file-identity comparison for protected roots, including alias-resistant
-protection, remains separate backlog and is not claimed by this string normalization
-tranche.
+The canonical comparison described above now backs this string policy and canonically
+excludes a ProfileList alias of the caller only from the profile-derived deny identities.
+Real alternate-name and path-swap fixtures remain pending.
 
 ## Reconciliation
 

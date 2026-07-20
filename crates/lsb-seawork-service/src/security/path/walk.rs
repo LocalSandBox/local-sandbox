@@ -14,15 +14,16 @@ use windows_sys::Win32::Security::{
     OWNER_SECURITY_INFORMATION, PRIVILEGE_SET, PSECURITY_DESCRIPTOR,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, GetDriveTypeW, GetFileInformationByHandle, GetFinalPathNameByHandleW,
-    GetVolumeInformationW, GetVolumePathNameW, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ADD_FILE,
-    FILE_ADD_SUBDIRECTORY, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_ENCRYPTED,
-    FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_RECALL_ON_OPEN,
+    CreateFileW, FileIdInfo, GetDriveTypeW, GetFileInformationByHandle,
+    GetFileInformationByHandleEx, GetFinalPathNameByHandleW, GetVolumeInformationW,
+    GetVolumePathNameW, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY,
+    FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_ENCRYPTED, FILE_ATTRIBUTE_OFFLINE,
+    FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_RECALL_ON_OPEN,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
-    FILE_LIST_DIRECTORY, FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_READ_EA,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA,
-    OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE, VOLUME_NAME_DOS,
+    FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES, FILE_READ_DATA,
+    FILE_READ_EA, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
+    FILE_WRITE_EA, OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE, VOLUME_NAME_DOS,
 };
 use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::System::SystemInformation::GetWindowsDirectoryW;
@@ -38,6 +39,24 @@ use super::policy::{
     MAX_MOUNT_ENTRIES,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CanonicalFileIdentity {
+    volume_serial: u64,
+    file_id: [u8; 16],
+}
+
+struct ProtectedRootPin {
+    _handle: OwnedHandle,
+    identity: CanonicalFileIdentity,
+}
+
+struct ProtectedRootPaths {
+    denied: Vec<PathBuf>,
+    system_root_count: usize,
+    profiles_root: PathBuf,
+    caller_profile: Option<PathBuf>,
+}
+
 pub(super) fn authorize(
     token: &OwnedHandle,
     policy: &MountPolicy,
@@ -47,7 +66,16 @@ pub(super) fn authorize(
 ) -> Result<AuthorizedMountRoot> {
     validate_lexical(&path)?;
     validate_windows_path(&path)?;
+    let protected = protected_roots(token, policy)?;
+    let protected_pins = pin_protected_roots(&protected.denied)?;
+    let profiles_pin = pin_protected_root(&protected.profiles_root)?;
+    let caller_profile_pin = protected
+        .caller_profile
+        .as_deref()
+        .map(pin_protected_root)
+        .transpose()?;
     let mut ancestor_pins = Vec::new();
+    let mut mount_chain = Vec::new();
     let mut ancestors = path.ancestors().skip(1).collect::<Vec<_>>();
     ancestors.reverse();
     for ancestor in ancestors {
@@ -66,6 +94,7 @@ pub(super) fn authorize(
         };
         reject_attributes(info.dwFileAttributes, ancestor)?;
         require_access_check(token, &pin, ancestor_access(), ancestor)?;
+        mount_chain.push(canonical_identity(&pin)?);
         ancestor_pins.push(pin);
     }
 
@@ -87,13 +116,20 @@ pub(super) fn authorize(
     if root_info.nNumberOfLinks > 1 {
         bail!("mount root has multiple hard links");
     }
+    mount_chain.push(canonical_identity(&root)?);
+    require_outside_protected_identities(
+        &mount_chain,
+        &protected_pins,
+        protected.system_root_count,
+        Some(&profiles_pin),
+        caller_profile_pin.as_ref(),
+    )?;
     let final_path = final_path(&root)?;
-    let (protected, profiles, caller_profile) = protected_roots(token, policy)?;
     require_outside_protected_roots(
         &final_path,
-        &protected,
-        profiles.as_deref(),
-        caller_profile.as_deref(),
+        &protected.denied,
+        Some(&protected.profiles_root),
+        protected.caller_profile.as_deref(),
     )?;
     require_supported_volume(&final_path)?;
 
@@ -598,10 +634,7 @@ fn require_supported_volume(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn protected_roots(
-    token: &OwnedHandle,
-    policy: &MountPolicy,
-) -> Result<(Vec<PathBuf>, Option<PathBuf>, Option<PathBuf>)> {
+fn protected_roots(token: &OwnedHandle, policy: &MountPolicy) -> Result<ProtectedRootPaths> {
     let program_data = known_folder(&FOLDERID_ProgramData, std::ptr::null_mut())?;
     let program_files = known_folder(&FOLDERID_ProgramFiles, std::ptr::null_mut())?;
     let program_files_x86 = known_folder(&FOLDERID_ProgramFilesX86, std::ptr::null_mut())?;
@@ -615,12 +648,113 @@ fn protected_roots(
         windows,
         policy.service_root().to_path_buf(),
     ];
+    let system_root_count = protected.len();
     extend_profile_roots(
         &mut protected,
         super::profiles::profile_list_roots()?,
         caller_profile.as_deref(),
     );
-    Ok((protected, Some(profiles), caller_profile))
+    Ok(ProtectedRootPaths {
+        denied: protected,
+        system_root_count,
+        profiles_root: profiles,
+        caller_profile,
+    })
+}
+
+fn pin_protected_roots(paths: &[PathBuf]) -> Result<Vec<ProtectedRootPin>> {
+    let mut pins = Vec::with_capacity(paths.len());
+    for path in paths {
+        pins.push(pin_protected_root(path)?);
+    }
+    Ok(pins)
+}
+
+fn pin_protected_root(path: &Path) -> Result<ProtectedRootPin> {
+    let (handle, info) = open_checked(path, FILE_READ_ATTRIBUTES | SYNCHRONIZE, true)
+        .with_context(|| format!("pin protected root {}", path.display()))?;
+    require_directory(&info, path)?;
+    Ok(ProtectedRootPin {
+        identity: canonical_identity(&handle)?,
+        _handle: handle,
+    })
+}
+
+fn canonical_identity(handle: &OwnedHandle) -> Result<CanonicalFileIdentity> {
+    let mut info = FILE_ID_INFO::default();
+    if unsafe {
+        GetFileInformationByHandleEx(
+            handle.as_raw_handle() as HANDLE,
+            FileIdInfo,
+            (&mut info as *mut FILE_ID_INFO).cast(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    } == 0
+    {
+        bail!(
+            "query canonical mount identity: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(CanonicalFileIdentity {
+        volume_serial: info.VolumeSerialNumber,
+        file_id: info.FileId.Identifier,
+    })
+}
+
+fn require_outside_protected_identities(
+    mount_chain: &[CanonicalFileIdentity],
+    protected: &[ProtectedRootPin],
+    system_root_count: usize,
+    profiles: Option<&ProtectedRootPin>,
+    caller_profile: Option<&ProtectedRootPin>,
+) -> Result<()> {
+    let protected_identities = protected.iter().map(|pin| pin.identity).collect::<Vec<_>>();
+    let denied = denied_protected_identities(
+        &protected_identities,
+        system_root_count,
+        caller_profile.map(|pin| pin.identity),
+    );
+    require_identity_policy(
+        mount_chain,
+        &denied,
+        profiles.map(|pin| pin.identity),
+        caller_profile.map(|pin| pin.identity),
+    )
+}
+
+fn denied_protected_identities(
+    protected: &[CanonicalFileIdentity],
+    system_root_count: usize,
+    caller_profile: Option<CanonicalFileIdentity>,
+) -> Vec<CanonicalFileIdentity> {
+    protected
+        .iter()
+        .enumerate()
+        .filter_map(|(index, identity)| {
+            (index < system_root_count || Some(*identity) != caller_profile).then_some(*identity)
+        })
+        .collect()
+}
+
+fn require_identity_policy(
+    mount_chain: &[CanonicalFileIdentity],
+    protected: &[CanonicalFileIdentity],
+    profiles: Option<CanonicalFileIdentity>,
+    caller_profile: Option<CanonicalFileIdentity>,
+) -> Result<()> {
+    if mount_chain
+        .iter()
+        .any(|identity| protected.contains(identity))
+    {
+        bail!("mount identity is below a protected system or service root");
+    }
+    if profiles.is_some_and(|identity| mount_chain.contains(&identity))
+        && caller_profile.is_none_or(|identity| !mount_chain.contains(&identity))
+    {
+        bail!("mount identity is below another user profile");
+    }
+    Ok(())
 }
 
 fn extend_profile_roots(
@@ -801,6 +935,57 @@ mod tests {
     }
 
     #[test]
+    fn canonical_identity_policy_rejects_aliases_and_preserves_caller_profile() {
+        let identity = |marker| CanonicalFileIdentity {
+            volume_serial: 7,
+            file_id: [marker; 16],
+        };
+        let volume = identity(1);
+        let protected = identity(2);
+        let profiles = identity(3);
+        let caller = identity(4);
+        let work = identity(5);
+
+        assert_eq!(
+            denied_protected_identities(&[protected, caller], 1, Some(caller)),
+            [protected]
+        );
+        assert_eq!(
+            denied_protected_identities(&[caller], 1, Some(caller)),
+            [caller]
+        );
+
+        assert!(require_identity_policy(
+            &[volume, protected, work],
+            &[protected],
+            Some(profiles),
+            Some(caller),
+        )
+        .is_err());
+        assert!(require_identity_policy(
+            &[volume, profiles, work],
+            &[protected],
+            Some(profiles),
+            Some(caller),
+        )
+        .is_err());
+        require_identity_policy(
+            &[volume, profiles, caller, work],
+            &[protected],
+            Some(profiles),
+            Some(caller),
+        )
+        .unwrap();
+        require_identity_policy(
+            &[volume, caller, work],
+            &[protected],
+            Some(profiles),
+            Some(caller),
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn current_token_opens_mount_component_chain_relative_to_pins() {
         let root = unique_temp_path("relative-root");
         let _ = std::fs::remove_dir_all(&root);
@@ -834,6 +1019,10 @@ mod tests {
         assert_eq!(
             identity(&relative.1, final_path(&relative.0).unwrap()),
             identity(&direct.1, final_path(&direct.0).unwrap())
+        );
+        assert_eq!(
+            canonical_identity(&relative.0).unwrap(),
+            canonical_identity(&direct.0).unwrap()
         );
 
         drop(relative);
