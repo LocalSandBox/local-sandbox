@@ -13,8 +13,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     GetFinalPathNameByHandleW, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
     FILE_FLAG_OVERLAPPED, FILE_ID_INFO, FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES,
-    FILE_SHARE_READ, FILE_WRITE_DATA, OPEN_EXISTING, SECURITY_IMPERSONATION, SECURITY_SQOS_PRESENT,
-    SYNCHRONIZE, VOLUME_NAME_DOS,
+    FILE_SHARE_READ, FILE_WRITE_DATA, OPEN_EXISTING, READ_CONTROL, SECURITY_IMPERSONATION,
+    SECURITY_SQOS_PRESENT, SYNCHRONIZE, VOLUME_NAME_DOS,
 };
 use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
@@ -24,6 +24,7 @@ use windows_sys::Win32::System::Threading::{
 use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath};
 
 use crate::authenticode::verify_publisher;
+use crate::package_acl::require_protected_package_object;
 use crate::{ClientError, PIPE_NAME, SERVICE_NAME};
 
 const DESIRED_ACCESS: u32 = GENERIC_READ | FILE_WRITE_DATA | SYNCHRONIZE;
@@ -119,6 +120,7 @@ fn verify_server(client: &NamedPipeClient) -> Result<ServerIdentityHandles, Clie
     let process = open_server_process(first_pid)?;
     let configured_image = open_image_for_identity(&configured_executable)?;
     require_regular_non_reparse_image(&configured_image)?;
+    require_protected_package_object(&configured_image)?;
     verify_publisher(&configured_executable, &configured_image)?;
     let ancestors = pin_packaged_ancestors(&configured_executable)?;
     let process_image_path = query_process_image(&process)?;
@@ -267,7 +269,7 @@ fn pin_packaged_ancestors(executable: &Path) -> Result<Vec<OwnedHandle>, ClientE
         let raw = unsafe {
             CreateFileW(
                 wide.as_ptr(),
-                FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
                 FILE_SHARE_READ,
                 ptr::null(),
                 OPEN_EXISTING,
@@ -296,6 +298,7 @@ fn pin_packaged_ancestors(executable: &Path) -> Result<Vec<OwnedHandle>, ClientE
                 "service package ancestor is not a non-reparse directory".to_string(),
             ));
         }
+        require_protected_package_object(&pin)?;
         let final_path = final_path(&pin)?;
         if !windows_path_eq(&final_path, ancestor) {
             return Err(ClientError::ServerNotTrusted(

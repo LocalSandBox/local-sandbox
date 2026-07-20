@@ -6,6 +6,8 @@ mod authenticode;
 #[cfg(windows)]
 mod connection;
 #[cfg(windows)]
+mod package_acl;
+#[cfg(windows)]
 mod pipe;
 
 pub use error::ClientError;
