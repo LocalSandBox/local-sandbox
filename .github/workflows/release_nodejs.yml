@@ -37,6 +37,7 @@ jobs:
             target: x86_64-pc-windows-msvc
     env:
       SEAWORK_PUBLISHER_SHA256: ${{ vars.SEAWORK_PUBLISHER_SHA256 }}
+      SEAWORK_PUBLISHER_SHA256_PREVIOUS: ${{ vars.SEAWORK_PUBLISHER_SHA256_PREVIOUS }}
     defaults:
       run:
         working-directory: bindings/nodejs
@@ -57,6 +58,15 @@ jobs:
         run: |
           if ($env:SEAWORK_PUBLISHER_SHA256 -notmatch '^[0-9A-Fa-f]{64}$') {
             throw 'SEAWORK_PUBLISHER_SHA256 must be one SHA-256 certificate thumbprint'
+          }
+          $previous = $env:SEAWORK_PUBLISHER_SHA256_PREVIOUS
+          if (-not [string]::IsNullOrWhiteSpace($previous)) {
+            if ($previous -notmatch '^[0-9A-Fa-f]{64}$') {
+              throw 'SEAWORK_PUBLISHER_SHA256_PREVIOUS must be one SHA-256 certificate thumbprint'
+            }
+            if ($previous -ieq $env:SEAWORK_PUBLISHER_SHA256) {
+              throw 'current and previous SeaWork publisher thumbprints must differ'
+            }
           }
       - run: yarn napi build --target ${{ matrix.target }} --platform --release --js index.js --dts index.d.ts
       - run: yarn patch-loader

@@ -223,15 +223,20 @@ never delete the cleanup authority first.
 
 Publisher rotation is an overlap, not an in-place pin bypass:
 
-1. Ship a signed SeaWork installer/client that trusts both old and new publisher
-   thumbprints and updates the protected maintenance allowlist.
+1. Set the Node release's required `SEAWORK_PUBLISHER_SHA256` repository
+   variable to the new current identity and its optional
+   `SEAWORK_PUBLISHER_SHA256_PREVIOUS` variable to the old identity. The
+   workflow and client build reject malformed, duplicate, empty-current, or
+   more-than-two policies; only the client trust allowlist consumes the previous
+   value. Ship a signed SeaWork installer/client that trusts both identities and
+   updates the protected maintenance allowlist.
 2. Publish a release signed and timestamped by the new identity; its manifest
    names only that exact publisher.
 3. Upgrade and health-verify the service using the normal update transaction.
-4. Remove the old pin only after all supported rollback targets and deployed
-   clients no longer require it. A compromised identity is handled by a new
-   trusted installer release and explicit fleet remediation, never by disabling
-   signature checks.
+4. Clear `SEAWORK_PUBLISHER_SHA256_PREVIOUS` only after all supported rollback
+   targets and deployed clients no longer require it. A compromised identity is
+   handled by a new trusted installer release and explicit fleet remediation,
+   never by disabling signature checks.
 
 ## Release checklist
 

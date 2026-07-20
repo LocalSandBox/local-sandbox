@@ -21,15 +21,20 @@ use windows_sys::Win32::Security::WinTrust::{
 
 use crate::ClientError;
 
-const COMPILED_PUBLISHER_SHA256: &str = env!("LSB_COMPILED_SEAWORK_PUBLISHER_SHA256");
+const COMPILED_PUBLISHERS_SHA256: &str = env!("LSB_COMPILED_SEAWORK_PUBLISHERS_SHA256");
 
 pub(crate) fn verify_publisher(image: &Path, held_image: &OwnedHandle) -> Result<(), ClientError> {
-    if !valid_sha256_thumbprint(COMPILED_PUBLISHER_SHA256) {
-        return Err(untrusted("service publisher policy is not compiled in"));
-    }
+    let publishers = parse_publisher_policy(COMPILED_PUBLISHERS_SHA256)
+        .ok_or_else(|| untrusted("service publisher policy is not compiled in"))?;
     verify_authenticode(image, held_image)?;
-    if !signer_sha256_thumbprint(image)?.eq_ignore_ascii_case(COMPILED_PUBLISHER_SHA256) {
-        return Err(untrusted("service signer is not the compiled publisher"));
+    let signer = signer_sha256_thumbprint(image)?;
+    if !publishers
+        .iter()
+        .any(|publisher| signer.eq_ignore_ascii_case(publisher))
+    {
+        return Err(untrusted(
+            "service signer is not in the compiled publisher allowlist",
+        ));
     }
     Ok(())
 }
@@ -202,6 +207,22 @@ fn valid_sha256_thumbprint(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+fn parse_publisher_policy(value: &str) -> Option<Vec<&str>> {
+    if value.is_empty() {
+        return None;
+    }
+    let publishers = value.split(',').collect::<Vec<_>>();
+    if publishers.len() > 2
+        || publishers
+            .iter()
+            .any(|publisher| !valid_sha256_thumbprint(publisher))
+        || (publishers.len() == 2 && publishers[0].eq_ignore_ascii_case(publishers[1]))
+    {
+        return None;
+    }
+    Some(publishers)
+}
+
 fn untrusted(message: impl Into<String>) -> ClientError {
     ClientError::ServerNotTrusted(message.into())
 }
@@ -237,9 +258,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn publisher_policy_requires_one_sha256_thumbprint() {
+    fn publisher_policy_accepts_current_and_one_distinct_overlap() {
         assert!(valid_sha256_thumbprint(&"aB".repeat(32)));
         assert!(!valid_sha256_thumbprint(&"a".repeat(40)));
         assert!(!valid_sha256_thumbprint(&"z".repeat(64)));
+
+        let current = "ab".repeat(32);
+        let previous = "cd".repeat(32);
+        assert_eq!(
+            parse_publisher_policy(&current).unwrap(),
+            [current.as_str()]
+        );
+        assert_eq!(
+            parse_publisher_policy(&format!("{current},{previous}")).unwrap(),
+            [current.as_str(), previous.as_str()]
+        );
+        assert!(parse_publisher_policy("").is_none());
+        assert!(parse_publisher_policy(&format!("{current},{current}")).is_none());
+        assert!(parse_publisher_policy(&format!("{current},{previous},{current}")).is_none());
+        assert!(parse_publisher_policy(&format!("{current},")).is_none());
     }
 }
