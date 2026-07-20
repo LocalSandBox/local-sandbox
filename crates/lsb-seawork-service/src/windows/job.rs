@@ -250,6 +250,18 @@ impl SandboxJob {
         Ok(())
     }
 
+    pub fn require_staging_identity(&self, relative_path: &str, file_id: &str) -> Result<()> {
+        let journal = self
+            .journal
+            .as_ref()
+            .context("QEMU Job has no resource journal")?
+            .lock()
+            .map_err(|_| anyhow::anyhow!("QEMU journal lock poisoned"))?;
+        journal
+            .transaction
+            .require_staging_identity(relative_path, file_id)
+    }
+
     fn prepare_journal(&self) -> Result<()> {
         let Some(journal) = &self.journal else {
             return Ok(());

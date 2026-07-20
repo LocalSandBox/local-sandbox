@@ -97,6 +97,14 @@ The Windows QEMU backend constructs q35/WHPX arguments, Westmere CPU, memory/vCP
 
 Guest-control operations share a mutex rather than a multiplexed, cancellable transport (`crates/lsb-vm/src/sandbox.rs:2503-2535`). SDK process stdout/stderr channels and the N-API process wrapper are unbounded (`crates/lsb-sdk/src/process.rs:67-71`, `bindings/nodejs/src/process.rs:20-23`). Those would turn a stable service into a local memory-DoS surface unless bounded below the RPC layer.
 
+The production service transaction begins immediately after sandbox quota admission,
+before the sandbox-specific instance directory exists. Directory intent and exact
+volume/file identity are durable before rootfs copy/resize; preparation rollback and
+normal teardown require that same committed identity before removing the tree. A worker
+panic or identity/cleanup ambiguity preserves the ledger and tree for recovery rather
+than invoking a path-derived fallback. Crash-time handle-safe staging-tree recovery is
+still required before retained instance records can converge automatically.
+
 Port mappings validate only nonzero/unique numbers and listen on `127.0.0.1` (`crates/lsb-vm/src/sandbox.rs:3971-3997`); any local user can normally connect. The listener is RAII-cleaned (`sandbox.rs:4029-4042`) but has no per-user authorization. File watches also observe host paths in the current process context, an assumption that changes in Session 0.
 
 ### Direct SMB mounts and persisted cleanup

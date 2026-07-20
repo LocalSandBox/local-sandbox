@@ -10,10 +10,9 @@ use anyhow::{bail, Context, Result};
 use crate::engine::ServiceEngineConfig;
 use crate::ledger::schema::LifecycleState;
 use crate::resource::process::{ManagedProcess, ManagedProcessOutput};
-use crate::resource::transaction::ResourceTransaction;
 use crate::resource::watch::ManagedWatch;
 use crate::session::quota::SANDBOX_MEMORY_OVERHEAD_MIB;
-use crate::session::{CancellationToken, ClientIdentityKey, ResourceHandle};
+use crate::session::{CancellationToken, ResourceHandle};
 use crate::windows::job::{JobLimits, SandboxJob};
 
 const MAX_QEMU_JOB_PROCESSES: u32 = 8;
@@ -192,8 +191,7 @@ impl std::fmt::Debug for ManagedVm {
 impl ManagedVm {
     pub fn start(
         engine: &ServiceEngineConfig,
-        sandbox_id: ResourceHandle,
-        owner: &ClientIdentityKey,
+        mut transaction: crate::resource::transaction::ResourceTransaction,
         spec: ManagedVmSpec,
         session_cancellation: CancellationToken,
         startup_cancellation: CancellationToken,
@@ -201,8 +199,6 @@ impl ManagedVm {
         validate_spec(engine, &spec)?;
         let image_relative_path = engine.qemu_image_relative_path()?;
         let mut containment = SandboxJob::create(job_limits(&spec)?)?;
-        let mut transaction =
-            ResourceTransaction::reserve(engine.ledger_root(), &sandbox_id.to_string(), owner)?;
         transaction.set_state(LifecycleState::Preparing)?;
         containment.attach_journal(
             transaction,
@@ -595,6 +591,14 @@ fn stop_and_cleanup(
     containment: &SandboxJob,
 ) -> Result<()> {
     sandbox.stop()?;
+    let relative_path = spec
+        .instance_dir
+        .strip_prefix(engine.resources_root())
+        .context("protected instance is not relative to resources root")?
+        .display()
+        .to_string();
+    let file_id = crate::resource::mount::protected_identity(&spec.instance_dir)?;
+    containment.require_staging_identity(&relative_path, &file_id)?;
     cleanup_instance(engine, spec)?;
     containment.finish_transaction()
 }

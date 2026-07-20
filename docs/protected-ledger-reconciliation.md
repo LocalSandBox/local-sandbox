@@ -80,6 +80,16 @@ Initial reservation is stricter than an update: it opens the final ledger with
 `create_new`, writes and flushes the complete initial document, and fails without
 altering an existing file. Subsequent state transitions use the atomic replacement path.
 
+Sandbox preparation uses that reservation immediately after quota admission and before
+creating the sandbox-specific directory. It persists a staging-root intent, creates the
+directory, queries its volume/file identity, and commits that proof before writing or
+resizing the rootfs. Preparation rollback and normal VM teardown both re-query the live
+directory and require one exact committed path/identity record before recursive removal;
+only then may the transaction be cleared. Worker panic, identity mismatch, or ambiguous
+cleanup no longer invokes a recomputed-path fallback deletion. The retained staging
+record keeps startup health-only because crash-time handle-safe tree deletion is not yet
+implemented; the QEMU cleaner does not claim coverage for it.
+
 ## Verification boundary
 
 Host-neutral tests cover strict valid admission, corrupt/unknown/temp entries, symlinks without

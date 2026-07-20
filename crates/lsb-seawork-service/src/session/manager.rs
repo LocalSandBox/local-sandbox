@@ -554,6 +554,7 @@ impl SessionManager {
         identity: &ClientIdentityKey,
         handle: ResourceHandle,
         engine: &ServiceEngineConfig,
+        transaction: crate::resource::transaction::ResourceTransaction,
         spec: ManagedVmSpec,
         startup_cancellation: CancellationToken,
     ) -> Result<ResourceHandle> {
@@ -575,8 +576,7 @@ impl SessionManager {
 
         let started = ManagedVm::start(
             engine,
-            handle,
-            identity,
+            transaction,
             spec,
             cancellation,
             startup_cancellation,

@@ -106,6 +106,23 @@ impl ResourceTransaction {
         atomic::remove_if_exists(&self.path).map(|_| ())
     }
 
+    pub fn require_staging_identity(&self, relative_path: &str, file_id: &str) -> Result<()> {
+        let matches = self.document.resources.iter().filter(|resource| {
+            matches!(
+                resource,
+                ResourceRecord::StagingRoot {
+                    relative_path: expected_path,
+                    file_id: expected_id,
+                    committed: true,
+                } if expected_path == relative_path && expected_id == file_id
+            )
+        });
+        if matches.count() != 1 {
+            bail!("protected staging identity does not match its committed ledger proof");
+        }
+        Ok(())
+    }
+
     fn touch_and_persist(&mut self) -> Result<()> {
         self.document.updated_unix_ms = now_unix_ms()?;
         self.persist()
@@ -252,6 +269,42 @@ mod tests {
         assert!(account[ACCOUNT_PREFIX.len()..]
             .bytes()
             .all(|value| value.is_ascii_lowercase() || (b'2'..=b'7').contains(&value)));
+    }
+
+    #[test]
+    fn staging_cleanup_requires_one_exact_committed_ledger_identity() {
+        let root =
+            std::env::temp_dir().join(format!("lsbsw-staging-transaction-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut transaction =
+            ResourceTransaction::reserve(&root, "0123456789abcdef0123456789abcdef", &owner())
+                .unwrap();
+        let intent = transaction
+            .intent(ResourceRecord::StagingRoot {
+                relative_path: "owner/instances/id".to_string(),
+                file_id: "pending".to_string(),
+                committed: false,
+            })
+            .unwrap();
+        transaction
+            .replace_and_commit(
+                intent,
+                ResourceRecord::StagingRoot {
+                    relative_path: "owner/instances/id".to_string(),
+                    file_id: "12345678:0123456789abcdef".to_string(),
+                    committed: true,
+                },
+            )
+            .unwrap();
+
+        transaction
+            .require_staging_identity("owner/instances/id", "12345678:0123456789abcdef")
+            .unwrap();
+        assert!(transaction
+            .require_staging_identity("owner/instances/id", "12345678:fedcba9876543210")
+            .is_err());
+        transaction.finish().unwrap();
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

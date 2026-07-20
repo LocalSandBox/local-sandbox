@@ -11,6 +11,8 @@ use lsb_service_proto::{
 use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 
 use crate::engine::ServiceEngineConfig;
+use crate::ledger::schema::ResourceRecord;
+use crate::resource::transaction::ResourceTransaction;
 use crate::resource::vm::ManagedVmSpec;
 use crate::session::{
     CancellationToken, ClientIdentityKey, QuotaError, ResourceHandle, SandboxResources,
@@ -111,15 +113,26 @@ pub async fn start(
             }
         }
     };
+    let mut transaction = match ResourceTransaction::reserve(
+        engine.ledger_root(),
+        &sandbox_id.to_string(),
+        &identity,
+    ) {
+        Ok(transaction) => transaction,
+        Err(_) => {
+            let _ = sessions.cancel_managed_vm_reservation(session_id, &identity, sandbox_id);
+            abandon_start_replay(
+                &sessions,
+                session_id,
+                &identity,
+                client_instance_id.as_deref(),
+            );
+            return Err(ErrorCode::ServiceUnavailable);
+        }
+    };
     let cleanup_sessions = sessions.clone();
     let cleanup_identity = identity.clone();
     let cleanup_client_instance_id = client_instance_id.clone();
-    let cleanup_engine = engine.clone();
-    let cleanup_instance_dir = engine
-        .resources_root()
-        .join(identity_hash(&identity))
-        .join("instances")
-        .join(sandbox_id.to_string());
     let result = tokio::task::spawn_blocking(move || {
         let spec = match prepare_instance(
             &engine,
@@ -130,6 +143,7 @@ pub async fn start(
             disk_mib,
             proxy_config,
             &cancellation,
+            &mut transaction,
         ) {
             Ok(spec) => spec,
             Err(error) => {
@@ -147,12 +161,12 @@ pub async fn start(
                 });
             }
         };
-        let instance_dir = spec.instance_dir.clone();
         let started = sessions.start_reserved_managed_vm(
             session_id,
             &identity,
             sandbox_id,
             &engine,
+            transaction,
             spec,
             cancellation,
         );
@@ -175,7 +189,6 @@ pub async fn start(
                 Ok(sandbox_started(handle))
             }
             Err(error) => {
-                let _ = remove_prepared_instance(&engine, &instance_dir);
                 abandon_start_replay(
                     &sessions,
                     session_id,
@@ -200,12 +213,13 @@ pub async fn start(
                 &cleanup_identity,
                 cleanup_client_instance_id.as_deref(),
             );
-            if cleanup_sessions
-                .cancel_managed_vm_reservation(session_id, &cleanup_identity, sandbox_id)
-                .unwrap_or(false)
-            {
-                let _ = remove_prepared_instance(&cleanup_engine, &cleanup_instance_dir);
-            }
+            // The worker owned the durable transaction. A panic makes its last
+            // filesystem boundary ambiguous, so startup recovery must decide it.
+            let _ = cleanup_sessions.cancel_managed_vm_reservation(
+                session_id,
+                &cleanup_identity,
+                sandbox_id,
+            );
             Err(ErrorCode::InternalError)
         }
     }
@@ -289,6 +303,7 @@ fn prepare_instance(
     disk_mib: u32,
     proxy_config: Option<lsb_proxy::ProxyConfig>,
     cancellation: &CancellationToken,
+    transaction: &mut ResourceTransaction,
 ) -> Result<ManagedVmSpec> {
     cancellation.check()?;
     let identity_dir = engine.resources_root().join(identity_hash(identity));
@@ -297,7 +312,26 @@ fn prepare_instance(
     std::fs::create_dir_all(&instances).context("create protected identity instances root")?;
     let instance_dir = instances.join(sandbox_id.to_string());
     engine.require_resource_path(&instance_dir)?;
+    let relative_path = instance_dir
+        .strip_prefix(engine.resources_root())
+        .context("protected instance is not relative to resources root")?
+        .display()
+        .to_string();
+    let instance_intent = transaction.intent(ResourceRecord::StagingRoot {
+        relative_path: relative_path.clone(),
+        file_id: "pending".to_string(),
+        committed: false,
+    })?;
     std::fs::create_dir(&instance_dir).context("create protected VM instance")?;
+    let instance_file_id = crate::resource::mount::protected_identity(&instance_dir)?;
+    transaction.replace_and_commit(
+        instance_intent,
+        ResourceRecord::StagingRoot {
+            relative_path: relative_path.clone(),
+            file_id: instance_file_id.clone(),
+            committed: true,
+        },
+    )?;
     let rootfs_image = instance_dir.join("rootfs.ext4");
     let result = (|| {
         copy_with_cancellation(engine.base_rootfs(), &rootfs_image, cancellation)
@@ -320,8 +354,13 @@ fn prepare_instance(
             proxy_config,
         })
     })();
-    if result.is_err() {
-        let _ = remove_prepared_instance(engine, &instance_dir);
+    if result.is_err()
+        && transaction
+            .require_staging_identity(&relative_path, &instance_file_id)
+            .and_then(|()| remove_prepared_instance(engine, &instance_dir))
+            .is_ok()
+    {
+        let _ = transaction.finish();
     }
     result
 }
@@ -370,6 +409,7 @@ fn remove_prepared_instance(engine: &ServiceEngineConfig, path: &Path) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::paths::ServicePaths;
 
     #[test]
     fn identity_directory_is_stable_and_logon_bound() {
@@ -392,6 +432,59 @@ mod tests {
         cancellation.cancel();
         assert!(copy_with_cancellation(&source, &destination, &cancellation).is_err());
         assert_eq!(std::fs::metadata(&destination).unwrap().len(), 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preparation_is_journaled_before_rootfs_side_effects() {
+        let root = std::env::temp_dir().join(format!("lsbsw-preparation-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = ServicePaths::for_test(root.join("programdata"));
+        let bundle = root.join("bundle");
+        let qemu = bundle.join("tools/qemu/qemu-system-x86_64.exe");
+        let kernel = bundle.join("runtime/Image");
+        let initrd = bundle.join("runtime/initramfs.cpio.gz");
+        let base = bundle.join("runtime/rootfs.ext4");
+        std::fs::create_dir_all(base.parent().unwrap()).unwrap();
+        std::fs::write(&base, b"verified-rootfs").unwrap();
+        let engine =
+            ServiceEngineConfig::from_verified_bundle(bundle, qemu, kernel, initrd, base, &paths)
+                .unwrap();
+        let identity = ClientIdentityKey::for_test("S-1-5-21-owner", "S-1-5-5-1-1", 1);
+        let sandbox_id = ResourceHandle::random().unwrap();
+        let mut transaction =
+            ResourceTransaction::reserve(engine.ledger_root(), &sandbox_id.to_string(), &identity)
+                .unwrap();
+
+        let spec = prepare_instance(
+            &engine,
+            &identity,
+            sandbox_id,
+            2,
+            1024,
+            1,
+            None,
+            &CancellationToken::default(),
+            &mut transaction,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::metadata(&spec.rootfs_image).unwrap().len(),
+            1024 * 1024
+        );
+        let relative = spec
+            .instance_dir
+            .strip_prefix(engine.resources_root())
+            .unwrap()
+            .display()
+            .to_string();
+        let identity = crate::resource::mount::protected_identity(&spec.instance_dir).unwrap();
+        transaction
+            .require_staging_identity(&relative, &identity)
+            .unwrap();
+        remove_prepared_instance(&engine, &spec.instance_dir).unwrap();
+        transaction.finish().unwrap();
+        assert!(!spec.instance_dir.exists());
         let _ = std::fs::remove_dir_all(root);
     }
 }
