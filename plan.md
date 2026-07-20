@@ -106,8 +106,9 @@ than invoking a path-derived fallback. Startup recovery binds a committed stagin
 to the authenticated owner's deterministic directory and the ledger filename's sandbox
 ID, opens every component relative to pinned no-follow handles, verifies the final
 volume/file identity, and deletes a bounded tree through handles without traversing
-reparse children. Intent-only directory ambiguity remains health-only; real crash,
-reboot, sharing, reparse, and hostile-tamper evidence is still required.
+reparse children. An intent-only record converges when its exact owner-bound path is
+absent, but an existing uncommitted directory remains untouched and health-only. Real
+crash, reboot, sharing, reparse, and hostile-tamper evidence is still required.
 
 Port mappings validate only nonzero/unique numbers and listen on `127.0.0.1` (`crates/lsb-vm/src/sandbox.rs:3971-3997`); any local user can normally connect. The listener is RAII-cleaned (`sandbox.rs:4029-4042`) but has no per-user authorization. File watches also observe host paths in the current process context, an assumption that changes in Session 0.
 

@@ -120,9 +120,6 @@ impl WindowsResourceCleaner {
             Ok(components) => components,
             Err(_) => return Ok(RecoveryProof::IdentityMismatch),
         };
-        if !committed {
-            return Ok(RecoveryProof::TemporarilyUnavailable);
-        }
         let (mut current, root_info) = match open_absolute_directory(&self.resources_root) {
             Ok(value) => value,
             Err(_) => return Ok(RecoveryProof::TemporarilyUnavailable),
@@ -147,6 +144,9 @@ impl WindowsResourceCleaner {
                 return Ok(RecoveryProof::IdentityMismatch);
             }
             current = next;
+        }
+        if !committed {
+            return Ok(RecoveryProof::TemporarilyUnavailable);
         }
         let actual_file_id = match file_id(&current) {
             Ok(value) => value,
@@ -530,6 +530,44 @@ mod tests {
             RecoveryProof::Removed
         );
         assert!(!staging.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn uncommitted_staging_converges_only_when_absent() {
+        let root =
+            std::env::temp_dir().join(format!("lsbsw-cleaner-intent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let cleaner = WindowsResourceCleaner::new(Path::new(r"C:\bundle"), &root);
+
+        assert_eq!(
+            cleaner
+                .remove_staging_root(
+                    SANDBOX_ID,
+                    OWNER_DIRECTORY,
+                    STAGING_RELATIVE,
+                    "pending",
+                    false,
+                )
+                .unwrap(),
+            RecoveryProof::AlreadyAbsent
+        );
+        let staging = root.join(STAGING_RELATIVE);
+        std::fs::create_dir_all(&staging).unwrap();
+        assert_eq!(
+            cleaner
+                .remove_staging_root(
+                    SANDBOX_ID,
+                    OWNER_DIRECTORY,
+                    STAGING_RELATIVE,
+                    "pending",
+                    false,
+                )
+                .unwrap(),
+            RecoveryProof::TemporarilyUnavailable
+        );
+        assert!(staging.exists());
         let _ = std::fs::remove_dir_all(root);
     }
 }

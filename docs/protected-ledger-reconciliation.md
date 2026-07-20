@@ -94,8 +94,9 @@ each component with root-relative `NtCreateFile`, verifies the retained director
 handle's volume/file identity, and enumerates and deletes the bounded tree through
 pinned child handles. It never traverses a reparse child. Identity/path contradiction
 quarantines the ledger; open, enumeration, sharing, or delete ambiguity retains
-retry-required health-only state. An intent-only staging record remains unproven and is
-not removed automatically.
+retry-required health-only state. An intent-only staging record converges only when the
+owner-bound path is handle-proven absent; if that directory exists, it remains unproven,
+untouched, and health-only.
 
 ## Verification boundary
 
