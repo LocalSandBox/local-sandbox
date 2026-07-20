@@ -23,6 +23,8 @@ lsb-vm = { path = "../lsb-vm" }
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 windows-service = "0.8.1"
 windows-sys = { version = "0.61.2", features = [
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",

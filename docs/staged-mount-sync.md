@@ -25,11 +25,17 @@ entry. Snapshot staging repeats the per-entry check, enforces the entry, per-fil
 tree-byte limits during the actual copy, caps each read at the authorized length plus
 one byte, and re-queries volume/file identity, size, and last-write time on the held
 source handle before accepting the copy. A current-token Windows regression exercises
-the checked walk and staged snapshot. This is only a fail-closed authorization and
-copying tranche: traversal is not yet handle-relative, active monitoring and
-periodic/final synchronization are not wired, caller-token writeback is absent, and
-mount requests remain `MOUNT_UNAVAILABLE` until service/SMB lifecycle integration and
-the privileged NTFS/ReFS acceptance matrix are complete.
+the checked walk and staged snapshot. After one absolute local-volume bootstrap, every
+ancestor, root, recursively walked entry, and staged-copy source is opened as one
+validated component with `NtCreateFile` relative to the previously pinned directory
+handle. Relative handles omit delete sharing, use open-reparse-point semantics, and are
+revalidated by volume/file identity when a second rights-specific open is required.
+Current-token tests prove the component chain resolves to the same identity as a direct
+handle and exercise relative recursive copying. Canonical protected-root alias proof,
+active monitoring, periodic/final synchronization, caller-token writeback, and
+privileged path-swap timing evidence remain incomplete; mount requests therefore stay
+`MOUNT_UNAVAILABLE` until service/SMB lifecycle integration and the NTFS/ReFS acceptance
+matrix are complete.
 
 Protected-profile policy no longer relies only on the default profiles directory. The
 path worker reads the protected 64-bit-machine `ProfileList` view with `KEY_READ`, caps
@@ -38,9 +44,9 @@ absolute local-drive path, and adds every discovered root except the authenticat
 caller's exact normalized profile to the deny set. Registry access, type/size/path, or
 enumeration errors reject mount authorization. Current-machine and pure relocated-root
 tests cover expansion, termination, caller exclusion, deduplication, and UNC rejection.
-Canonical volume/file-identity comparison (including alias-resistant protection) is
-still part of the handle-relative traversal backlog and is not claimed by this string
-normalization tranche.
+Canonical volume/file-identity comparison for protected roots, including alias-resistant
+protection, remains separate backlog and is not claimed by this string normalization
+tranche.
 
 ## Reconciliation
 

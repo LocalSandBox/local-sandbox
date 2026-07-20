@@ -51,12 +51,36 @@ pub(super) fn authorize(
     let mut ancestors = path.ancestors().skip(1).collect::<Vec<_>>();
     ancestors.reverse();
     for ancestor in ancestors {
-        let (pin, _) = open_checked(ancestor, ancestor_access(), true)?;
+        let (pin, info) = if let Some(parent) = ancestor_pins.last() {
+            let name = ancestor
+                .file_name()
+                .context("mount ancestor lacks a relative component")?;
+            super::relative::open_relative(
+                parent,
+                name,
+                ancestor_access(),
+                super::relative::RelativeKind::Directory,
+            )?
+        } else {
+            open_checked(ancestor, ancestor_access(), true)?
+        };
+        reject_attributes(info.dwFileAttributes, ancestor)?;
         require_access_check(token, &pin, ancestor_access(), ancestor)?;
         ancestor_pins.push(pin);
     }
 
-    let (root, root_info) = open_checked(&path, root_access(access), true)?;
+    let root_parent = ancestor_pins
+        .last()
+        .context("mount root lacks a pinned parent")?;
+    let root_name = path
+        .file_name()
+        .context("mount root lacks a relative component")?;
+    let (root, root_info) = super::relative::open_relative(
+        root_parent,
+        root_name,
+        root_access(access),
+        super::relative::RelativeKind::Directory,
+    )?;
     require_access_check(token, &root, root_access(access), &path)?;
     require_directory(&root_info, &path)?;
     reject_attributes(root_info.dwFileAttributes, &path)?;
@@ -76,6 +100,7 @@ pub(super) fn authorize(
     let identity = identity(&root_info, final_path.clone());
     let summary = inspect_tree(
         token,
+        root.try_clone()?,
         &path,
         &final_path,
         access,
@@ -94,6 +119,7 @@ pub(super) fn authorize(
 
 fn inspect_tree(
     token: &OwnedHandle,
+    root_handle: OwnedHandle,
     root: &Path,
     final_root: &Path,
     access: MountAccess,
@@ -101,8 +127,8 @@ fn inspect_tree(
 ) -> Result<WalkSummary> {
     let mut entries = 1u32;
     let mut file_bytes = 0u64;
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
+    let mut pending = vec![(root.to_path_buf(), root_handle)];
+    while let Some((directory, directory_handle)) = pending.pop() {
         for child in std::fs::read_dir(&directory)
             .with_context(|| format!("enumerate authorized mount {}", directory.display()))?
         {
@@ -119,8 +145,30 @@ fn inspect_tree(
                 .strip_prefix(root)
                 .context("authorized mount entry escaped its lexical root")?;
             crate::resource::mount_sync::validate_relative_path(relative)?;
-            let desired_access = entry_access(access, child.file_type()?.is_dir());
-            let (handle, info) = open_checked(&path, desired_access, true)?;
+            let name = child.file_name();
+            let probe_access = entry_access(access, false);
+            let (probe, probe_info) = super::relative::open_relative(
+                &directory_handle,
+                &name,
+                probe_access,
+                super::relative::RelativeKind::Any,
+            )?;
+            let is_directory = probe_info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0;
+            let desired_access = entry_access(access, is_directory);
+            let (handle, info) = if desired_access == probe_access {
+                (probe, probe_info)
+            } else {
+                let reopened = super::relative::open_relative(
+                    &directory_handle,
+                    &name,
+                    desired_access,
+                    super::relative::RelativeKind::Directory,
+                )?;
+                if file_version(&reopened.1) != file_version(&probe_info) {
+                    bail!("mount entry changed identity while rights were authorized");
+                }
+                reopened
+            };
             require_access_check(token, &handle, desired_access, &path)?;
             access_checks = access_checks
                 .checked_add(1)
@@ -130,9 +178,8 @@ fn inspect_tree(
             if !is_below(&child_final, final_root) {
                 bail!("mount entry resolves outside the authorized root");
             }
-            let is_directory = info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0;
             if is_directory {
-                pending.push(path);
+                pending.push((path, handle));
             } else {
                 if info.nNumberOfLinks > 1 {
                     bail!("mount contains a regular file with multiple hard links");
@@ -243,7 +290,7 @@ fn validate_windows_path(path: &Path) -> Result<()> {
 
 pub(super) fn stage_snapshot(
     token: &OwnedHandle,
-    _root_pin: OwnedHandle,
+    root_pin: OwnedHandle,
     source: &Path,
     final_root: &Path,
     destination: &Path,
@@ -256,9 +303,14 @@ pub(super) fn stage_snapshot(
         entries: 1,
         file_bytes: 0,
     };
-    if let Err(error) =
-        copy_directory_under_token(token, source, final_root, destination, &mut bounds)
-    {
+    if let Err(error) = copy_directory_under_token(
+        token,
+        &root_pin,
+        source,
+        final_root,
+        destination,
+        &mut bounds,
+    ) {
         let _ = std::fs::remove_dir_all(destination);
         return Err(error);
     }
@@ -267,6 +319,7 @@ pub(super) fn stage_snapshot(
 
 fn copy_directory_under_token(
     token: &OwnedHandle,
+    source_handle: &OwnedHandle,
     source: &Path,
     final_root: &Path,
     destination: &Path,
@@ -291,7 +344,12 @@ fn copy_directory_under_token(
         let guard = crate::security::impersonation::ImpersonationGuard::for_token(token)?;
         let desired_access =
             FILE_READ_DATA | FILE_READ_ATTRIBUTES | FILE_READ_EA | READ_CONTROL | SYNCHRONIZE;
-        let (handle, info) = open_checked(&source_child, desired_access, true)?;
+        let (handle, info) = super::relative::open_relative(
+            source_handle,
+            &name,
+            desired_access,
+            super::relative::RelativeKind::Any,
+        )?;
         require_access_check(token, &handle, desired_access, &source_child)?;
         let child_final = final_path(&handle)?;
         if !is_below(&child_final, final_root) {
@@ -307,6 +365,7 @@ fn copy_directory_under_token(
             std::fs::create_dir(&destination_child)?;
             copy_directory_under_token(
                 token,
+                &handle,
                 &source_child,
                 final_root,
                 &destination_child,
@@ -644,6 +703,7 @@ fn wide(value: &OsStr) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::relative;
     use super::*;
     use std::os::windows::io::FromRawHandle;
     use windows_sys::Win32::Security::{
@@ -684,6 +744,7 @@ mod tests {
         let final_root = final_path(&root).unwrap();
         let summary = inspect_tree(
             &impersonation,
+            root.try_clone().unwrap(),
             &source,
             &final_root,
             MountAccess::ReadOnly,
@@ -737,6 +798,48 @@ mod tests {
                 PathBuf::from(r"D:\Profiles\bob")
             ]
         );
+    }
+
+    #[test]
+    fn current_token_opens_mount_component_chain_relative_to_pins() {
+        let root = unique_temp_path("relative-root");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut pins = Vec::new();
+        let mut ancestors = root.ancestors().skip(1).collect::<Vec<_>>();
+        ancestors.reverse();
+        for ancestor in ancestors {
+            let pin = if let Some(parent) = pins.last() {
+                relative::open_relative(
+                    parent,
+                    ancestor.file_name().unwrap(),
+                    ancestor_access(),
+                    relative::RelativeKind::Directory,
+                )
+                .unwrap()
+                .0
+            } else {
+                open_checked(ancestor, ancestor_access(), true).unwrap().0
+            };
+            pins.push(pin);
+        }
+        let relative = relative::open_relative(
+            pins.last().unwrap(),
+            root.file_name().unwrap(),
+            root_access(MountAccess::ReadOnly),
+            relative::RelativeKind::Directory,
+        )
+        .unwrap();
+        let direct = open_checked(&root, root_access(MountAccess::ReadOnly), true).unwrap();
+        assert_eq!(
+            identity(&relative.1, final_path(&relative.0).unwrap()),
+            identity(&direct.1, final_path(&direct.0).unwrap())
+        );
+
+        drop(relative);
+        drop(direct);
+        drop(pins);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn current_impersonation_token() -> OwnedHandle {
