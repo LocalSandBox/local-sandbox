@@ -43,6 +43,8 @@ const OUTPUT_BACKPRESSURE_TIMEOUT: Duration = Duration::from_secs(30);
 const SERVICE_FEATURE_BITS: u64 = CLIENT_FEATURE_BITS;
 #[cfg(test)]
 static TEST_HEALTH_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static TEST_HEALTH_DELAY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct OutboundFrame {
     bytes: Vec<u8>,
@@ -1982,6 +1984,24 @@ fn random_epoch() -> Result<u64> {
 mod tests {
     use super::*;
 
+    struct TestHealthDelay {
+        _guard: tokio::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TestHealthDelay {
+        async fn set(milliseconds: u64) -> Self {
+            let guard = TEST_HEALTH_DELAY_LOCK.lock().await;
+            TEST_HEALTH_DELAY_MS.store(milliseconds, std::sync::atomic::Ordering::Release);
+            Self { _guard: guard }
+        }
+    }
+
+    impl Drop for TestHealthDelay {
+        fn drop(&mut self) {
+            TEST_HEALTH_DELAY_MS.store(0, std::sync::atomic::Ordering::Release);
+        }
+    }
+
     async fn send_test_control<W: AsyncWrite + Unpin>(
         writer: &mut W,
         kind: FrameKind,
@@ -2369,7 +2389,7 @@ mod tests {
 
     #[tokio::test]
     async fn requests_complete_out_of_order_and_cancel_by_correlation() {
-        TEST_HEALTH_DELAY_MS.store(10_000, std::sync::atomic::Ordering::Release);
+        let _delay = TestHealthDelay::set(10_000).await;
         let (mut client, server) = tokio::io::duplex(1024 * 1024);
         let context = HealthContext::new(true, QuotaLimits::default());
         let server_task = start_test_server(server, context);
@@ -2481,6 +2501,198 @@ mod tests {
         let close = read_frame(&mut client).await.unwrap();
         assert_eq!(close.header.correlation.low, 4);
         server_task.await.unwrap().unwrap();
-        TEST_HEALTH_DELAY_MS.store(0, std::sync::atomic::Ordering::Release);
+    }
+
+    #[tokio::test]
+    async fn global_request_quota_rejects_then_recovers_one_exact_slot() {
+        let _delay = TestHealthDelay::set(10_000).await;
+        let limits = QuotaLimits {
+            connections_per_user: 5,
+            ..QuotaLimits::default()
+        };
+        let context = HealthContext::new(true, limits);
+        let mut connections = Vec::new();
+
+        for _ in 0..5 {
+            let (mut client, server) = tokio::io::duplex(1024 * 1024);
+            let server_task = start_test_server(server, context.clone());
+            send_test_control(
+                &mut client,
+                FrameKind::Hello,
+                CURRENT,
+                Correlation::default(),
+                &Hello {
+                    min_minor: SUPPORTED.min_minor,
+                    max_minor: SUPPORTED.max_minor,
+                    client_version: "test".to_string(),
+                    feature_bits_hex: HexU64(0),
+                },
+            )
+            .await;
+            let hello = read_frame(&mut client).await.unwrap();
+            connections.push((
+                client,
+                server_task,
+                hello.header.correlation.high,
+                hello.header.protocol,
+            ));
+        }
+
+        for (client, _, epoch, protocol) in connections.iter_mut().take(4) {
+            for sequence in 1..=crate::ipc::pipe::MAX_REQUESTS_PER_CONNECTION as u64 {
+                send_test_control(
+                    client,
+                    FrameKind::Request,
+                    *protocol,
+                    Correlation {
+                        high: *epoch,
+                        low: sequence,
+                    },
+                    &Request {
+                        deadline_ms: None,
+                        op: RequestOp::HealthCheck {},
+                    },
+                )
+                .await;
+            }
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while context.requests.available_permits() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("global request quota did not saturate");
+
+        let (fifth, _, fifth_epoch, fifth_protocol) = &mut connections[4];
+        send_test_control(
+            fifth,
+            FrameKind::Request,
+            *fifth_protocol,
+            Correlation {
+                high: *fifth_epoch,
+                low: 1,
+            },
+            &Request {
+                deadline_ms: None,
+                op: RequestOp::HealthCheck {},
+            },
+        )
+        .await;
+        let rejected = read_frame(fifth).await.unwrap();
+        assert!(matches!(
+            parse_control::<Response>(&rejected.payload).unwrap(),
+            Response::Err {
+                error: ErrorEnvelope {
+                    code: ErrorCode::QuotaExceeded,
+                    ..
+                }
+            }
+        ));
+
+        let (first, _, first_epoch, first_protocol) = &mut connections[0];
+        send_test_control(
+            first,
+            FrameKind::Cancel,
+            *first_protocol,
+            Correlation {
+                high: *first_epoch,
+                low: 17,
+            },
+            &Cancel {
+                request_id: format!("{first_epoch:016x}{:016x}", 1),
+            },
+        )
+        .await;
+        for _ in 0..2 {
+            read_frame(first).await.unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while context.requests.available_permits() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled request did not release its global permit");
+
+        let (fifth, _, fifth_epoch, fifth_protocol) = &mut connections[4];
+        send_test_control(
+            fifth,
+            FrameKind::Request,
+            *fifth_protocol,
+            Correlation {
+                high: *fifth_epoch,
+                low: 2,
+            },
+            &Request {
+                deadline_ms: None,
+                op: RequestOp::HealthCheck {},
+            },
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while context.requests.available_permits() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("released global request permit was not reusable");
+        send_test_control(
+            fifth,
+            FrameKind::Cancel,
+            *fifth_protocol,
+            Correlation {
+                high: *fifth_epoch,
+                low: 3,
+            },
+            &Cancel {
+                request_id: format!("{fifth_epoch:016x}{:016x}", 2),
+            },
+        )
+        .await;
+        for _ in 0..2 {
+            read_frame(fifth).await.unwrap();
+        }
+
+        for (index, (client, _, epoch, protocol)) in connections.iter_mut().enumerate() {
+            let close_sequence = match index {
+                0 => 18,
+                4 => 4,
+                _ => 17,
+            };
+            send_test_control(
+                client,
+                FrameKind::Request,
+                *protocol,
+                Correlation {
+                    high: *epoch,
+                    low: close_sequence,
+                },
+                &Request {
+                    deadline_ms: None,
+                    op: RequestOp::CloseSession {},
+                },
+            )
+            .await;
+        }
+        for (index, (client, _, _, _)) in connections.iter_mut().enumerate() {
+            let close_sequence = match index {
+                0 => 18,
+                4 => 4,
+                _ => 17,
+            };
+            loop {
+                if read_frame(client).await.unwrap().header.correlation.low == close_sequence {
+                    break;
+                }
+            }
+        }
+        for (_, server_task, _, _) in connections {
+            tokio::time::timeout(Duration::from_secs(1), server_task)
+                .await
+                .expect("test server did not drain")
+                .unwrap()
+                .unwrap();
+        }
     }
 }
