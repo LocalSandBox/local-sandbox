@@ -21,6 +21,32 @@ const SERVICE_CONFIGURATION_REVISION: u32 = 1;
 const LEDGER_SCHEMA_VERSION: u32 = 1;
 const MAX_BUNDLE_FILES: usize = 10_000;
 const MAX_BUNDLE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+const MAX_SERVICE_BINARY_BYTES: u64 = 256 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ServiceProfile {
+    Production,
+    Development,
+}
+
+impl ServiceProfile {
+    fn parse(args: &[String]) -> Result<Self> {
+        match flag_value(args, "--service-profile").unwrap_or("production") {
+            "production" => Ok(Self::Production),
+            "development" => Ok(Self::Development),
+            value => bail!("unsupported SeaWork service profile: {value}"),
+        }
+    }
+
+    fn artifact_stem(self, version: &str) -> String {
+        match self {
+            Self::Production => format!("lsb-seawork-service-v{version}-windows-x86_64"),
+            Self::Development => {
+                format!("lsb-seawork-service-dev-v{version}-windows-x86_64")
+            }
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -159,6 +185,7 @@ pub fn stage_bundle(
     if platform.id != "windows-x86_64" {
         bail!("the SeaWork service artifact supports only windows-x86_64");
     }
+    let profile = ServiceProfile::parse(args)?;
     let version = normalize_version(raw_version)?;
     let service_binary = input_file(args, "--service-binary", workspace_root)?;
     if service_binary.file_name().and_then(|name| name.to_str())
@@ -166,6 +193,7 @@ pub fn stage_bundle(
     {
         bail!("--service-binary must name localsandbox-seawork-service.exe");
     }
+    require_service_profile_binary(&service_binary, profile)?;
     let runtime_dir = input_directory(args, "--runtime-dir", workspace_root)?;
     let qemu_dir = input_directory(args, "--qemu-dir", workspace_root)?;
     let sbom = input_file(args, "--sbom", workspace_root)?;
@@ -190,9 +218,7 @@ pub fn stage_bundle(
     let stage_dir = if let Some(path) = flag_value(args, "--stage-dir") {
         resolve_input(workspace_root, path)
     } else {
-        output_dir.join(format!(
-            "lsb-seawork-service-v{version}-windows-x86_64-stage"
-        ))
+        output_dir.join(format!("{}-stage", profile.artifact_stem(&version)))
     };
     if stage_dir.exists() {
         bail!(
@@ -224,7 +250,7 @@ pub fn stage_bundle(
     )?;
     copy_tree(&licenses, &bundle_root.join("licenses"))?;
 
-    let contract = service_contract();
+    let contract = service_contract(profile);
     write_json(
         &bundle_root.join("manifests/service-contract.json"),
         &contract,
@@ -273,6 +299,7 @@ fn archive_bundle(
     if platform.id != "windows-x86_64" {
         bail!("the SeaWork service artifact supports only windows-x86_64");
     }
+    let profile = ServiceProfile::parse(args)?;
     let version = normalize_version(raw_version)?;
     let stage_dir = input_directory(args, "--stage-dir", workspace_root)?;
     let catalog = input_file(args, "--catalog", workspace_root)?;
@@ -286,12 +313,13 @@ fn archive_bundle(
         &catalog,
         &bundle_root.join("manifests/LocalSandboxSeaWork.cat"),
     )?;
-    verify_staged_bundle(&bundle_root, &version)?;
+    verify_staged_bundle(&bundle_root, &version, profile)?;
     serde_json::from_slice::<serde_json::Value>(&fs::read(&source_map)?)
         .context("source map must be valid JSON")?;
 
-    let archive_name = format!("lsb-seawork-service-v{version}-windows-x86_64.zip");
-    let symbols_name = format!("lsb-seawork-service-v{version}-windows-x86_64-symbols.zip");
+    let artifact_stem = profile.artifact_stem(&version);
+    let archive_name = format!("{artifact_stem}.zip");
+    let symbols_name = format!("{artifact_stem}-symbols.zip");
     let archive = output_dir.join(&archive_name);
     let symbols = output_dir.join(&symbols_name);
     let payload_entries = zip_entries(&stage_dir)?;
@@ -352,7 +380,11 @@ fn install_catalog(source: &Path, destination: &Path) -> Result<()> {
     copy_file(source, destination)
 }
 
-fn verify_staged_bundle(bundle_root: &Path, expected_version: &str) -> Result<()> {
+fn verify_staged_bundle(
+    bundle_root: &Path,
+    expected_version: &str,
+    profile: ServiceProfile,
+) -> Result<()> {
     let manifest_path = bundle_root.join("manifests/bundle.json");
     let bytes = fs::read(&manifest_path)?;
     if bytes.is_empty() || bytes.len() > 1024 * 1024 {
@@ -399,14 +431,16 @@ fn verify_staged_bundle(bundle_root: &Path, expected_version: &str) -> Result<()
     let contract: serde_json::Value = serde_json::from_slice(&fs::read(
         bundle_root.join("manifests/service-contract.json"),
     )?)?;
-    if contract != serde_json::to_value(service_contract())? {
+    if contract != serde_json::to_value(service_contract(profile))? {
         bail!("service contract differs from the packager contract");
     }
     let runtime_version = fs::read_to_string(bundle_root.join("runtime/VERSION"))?;
     if runtime_version.trim() != expected_version {
         bail!("runtime VERSION does not match the bundle version");
     }
-    require_amd64_pe(&bundle_root.join("bin/localsandbox-seawork-service.exe"))?;
+    let service_binary = bundle_root.join("bin/localsandbox-seawork-service.exe");
+    require_amd64_pe(&service_binary)?;
+    require_service_profile_binary(&service_binary, profile)?;
     require_regular_file(&bundle_root.join("manifests/LocalSandboxSeaWork.cat"))?;
     validate_json_file(
         &bundle_root.join("manifests/runtime-dependencies.json"),
@@ -619,12 +653,26 @@ fn write_u32(writer: &mut impl Write, value: u32) -> Result<()> {
     Ok(())
 }
 
-fn service_contract() -> ServiceContract {
+fn service_contract(profile: ServiceProfile) -> ServiceContract {
+    let (name, event_source, pipe_name, state_root) = match profile {
+        ServiceProfile::Production => (
+            "LocalSandboxSeaWork",
+            "LocalSandboxSeaWork",
+            r"\\.\pipe\LocalSandbox.SeaWork.v1",
+            "%ProgramData%\\LocalSandbox\\SeaWork",
+        ),
+        ServiceProfile::Development => (
+            "LocalSandboxSeaWorkDev",
+            "LocalSandboxSeaWorkDev",
+            r"\\.\pipe\LocalSandbox.SeaWork.Dev.v1",
+            "%ProgramData%\\LocalSandbox\\SeaWorkDev",
+        ),
+    };
     ServiceContract {
         schema_version: SERVICE_CONTRACT_SCHEMA_VERSION,
         revision: SERVICE_CONFIGURATION_REVISION,
         service: ServiceConfiguration {
-            name: "LocalSandboxSeaWork",
+            name,
             display_name: "LocalSandbox for SeaWork",
             description:
                 "Runs LocalSandbox virtual machines for locally signed SeaWork desktop clients.",
@@ -641,17 +689,17 @@ fn service_contract() -> ServiceContract {
             failure_restart_delays_ms: vec![5_000, 30_000, 120_000],
             failure_reset_period_seconds: 86_400,
             failure_actions_on_non_crash_failures: true,
-            event_source: "LocalSandboxSeaWork",
+            event_source,
         },
         ipc: IpcConfiguration {
-            pipe_name: r"\\.\pipe\LocalSandbox.SeaWork.v1",
+            pipe_name,
             pipe_sddl: "O:SYG:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;IU)(A;;0x00000002;;;IU)S:(ML;;NW;;;ME)",
             remote_clients_allowed: false,
             protocol: protocol_contract(),
         },
         filesystem: FilesystemConfiguration {
             version_root_template: "%ProgramFiles%\\SeaWork\\LocalSandbox\\versions\\<version>",
-            state_root: "%ProgramData%\\LocalSandbox\\SeaWork",
+            state_root,
             program_files_sddl: "O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FRFX;;;<SERVICE_SID>)(A;OICI;FRFX;;;BU)",
             program_data_sddl: "O:SYG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;<SERVICE_SID>)",
         },
@@ -670,6 +718,37 @@ fn service_contract() -> ServiceContract {
         },
         install_state_schema: 1,
     }
+}
+
+fn require_service_profile_binary(path: &Path, profile: ServiceProfile) -> Result<()> {
+    let size = fs::metadata(path)?.len();
+    if size == 0 || size > MAX_SERVICE_BINARY_BYTES {
+        bail!("service binary size is outside the supported range");
+    }
+    let bytes = fs::read(path)?;
+    let contains = |needle: &[u8]| bytes.windows(needle.len()).any(|window| window == needle);
+    let (required_name, required_pipe, forbidden_name, forbidden_pipe) = match profile {
+        ServiceProfile::Production => (
+            b"LocalSandboxSeaWork".as_slice(),
+            br"\\.\pipe\LocalSandbox.SeaWork.v1".as_slice(),
+            b"LocalSandboxSeaWorkDev".as_slice(),
+            br"\\.\pipe\LocalSandbox.SeaWork.Dev.v1".as_slice(),
+        ),
+        ServiceProfile::Development => (
+            b"LocalSandboxSeaWorkDev".as_slice(),
+            br"\\.\pipe\LocalSandbox.SeaWork.Dev.v1".as_slice(),
+            b"".as_slice(),
+            br"\\.\pipe\LocalSandbox.SeaWork.v1".as_slice(),
+        ),
+    };
+    if !contains(required_name)
+        || !contains(required_pipe)
+        || (!forbidden_name.is_empty() && contains(forbidden_name))
+        || contains(forbidden_pipe)
+    {
+        bail!("service binary does not match the selected service profile");
+    }
+    Ok(())
 }
 
 fn protocol_contract() -> ProtocolContract {
@@ -944,9 +1023,80 @@ mod tests {
     #[test]
     fn service_contract_quotes_the_exact_service_command() {
         assert_eq!(
-            service_contract().service.binary_path_template,
+            service_contract(ServiceProfile::Production)
+                .service
+                .binary_path_template,
             r#""%ProgramFiles%\SeaWork\LocalSandbox\versions\<version>\bin\localsandbox-seawork-service.exe" --service"#
         );
+    }
+
+    #[test]
+    fn service_profiles_are_explicit_and_isolated() {
+        assert_eq!(
+            ServiceProfile::parse(&[]).unwrap(),
+            ServiceProfile::Production
+        );
+        let development = vec!["--service-profile".into(), "development".into()];
+        assert_eq!(
+            ServiceProfile::parse(&development).unwrap(),
+            ServiceProfile::Development
+        );
+        let invalid = vec!["--service-profile".into(), "preview".into()];
+        assert!(ServiceProfile::parse(&invalid).is_err());
+
+        let production =
+            serde_json::to_value(service_contract(ServiceProfile::Production)).unwrap();
+        let development =
+            serde_json::to_value(service_contract(ServiceProfile::Development)).unwrap();
+        assert_eq!(production["service"]["name"], "LocalSandboxSeaWork");
+        assert_eq!(development["service"]["name"], "LocalSandboxSeaWorkDev");
+        assert_eq!(
+            development["ipc"]["pipe_name"],
+            r"\\.\pipe\LocalSandbox.SeaWork.Dev.v1"
+        );
+        assert_eq!(
+            development["filesystem"]["state_root"],
+            r"%ProgramData%\LocalSandbox\SeaWorkDev"
+        );
+        assert_eq!(
+            production["filesystem"]["program_files_sddl"],
+            development["filesystem"]["program_files_sddl"]
+        );
+        assert_eq!(
+            production["filesystem"]["program_data_sddl"],
+            development["filesystem"]["program_data_sddl"]
+        );
+
+        let root = test_root();
+        fs::create_dir_all(&root).unwrap();
+        let production_binary = root.join("production.exe");
+        let development_binary = root.join("development.exe");
+        fs::write(
+            &production_binary,
+            fake_amd64_pe(ServiceProfile::Production),
+        )
+        .unwrap();
+        fs::write(
+            &development_binary,
+            fake_amd64_pe(ServiceProfile::Development),
+        )
+        .unwrap();
+        assert!(
+            require_service_profile_binary(&production_binary, ServiceProfile::Production).is_ok()
+        );
+        assert!(
+            require_service_profile_binary(&development_binary, ServiceProfile::Development)
+                .is_ok()
+        );
+        assert!(
+            require_service_profile_binary(&production_binary, ServiceProfile::Development)
+                .is_err()
+        );
+        assert!(
+            require_service_profile_binary(&development_binary, ServiceProfile::Production)
+                .is_err()
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -976,7 +1126,7 @@ mod tests {
         }
         fs::write(
             inputs.join("localsandbox-seawork-service.exe"),
-            fake_amd64_pe(),
+            fake_amd64_pe(ServiceProfile::Production),
         )
         .unwrap();
         let output = root.join("output");
@@ -1052,16 +1202,34 @@ mod tests {
         assert_eq!(fs::read(&symbols).unwrap(), first_symbols);
 
         fs::write(stage.join("LocalSandbox/runtime/Image"), b"tampered").unwrap();
-        assert!(verify_staged_bundle(&stage.join("LocalSandbox"), "0.4.6").is_err());
+        assert!(verify_staged_bundle(
+            &stage.join("LocalSandbox"),
+            "0.4.6",
+            ServiceProfile::Production
+        )
+        .is_err());
         fs::remove_dir_all(root).unwrap();
     }
 
-    fn fake_amd64_pe() -> Vec<u8> {
+    fn fake_amd64_pe(profile: ServiceProfile) -> Vec<u8> {
         let mut bytes = vec![0u8; 0x80];
         bytes[..2].copy_from_slice(b"MZ");
         bytes[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
         bytes[0x40..0x44].copy_from_slice(b"PE\0\0");
         bytes[0x44..0x46].copy_from_slice(&0x8664u16.to_le_bytes());
+        let identities: &[&[u8]] = match profile {
+            ServiceProfile::Production => {
+                &[b"LocalSandboxSeaWork", br"\\.\pipe\LocalSandbox.SeaWork.v1"]
+            }
+            ServiceProfile::Development => &[
+                b"LocalSandboxSeaWorkDev",
+                br"\\.\pipe\LocalSandbox.SeaWork.Dev.v1",
+            ],
+        };
+        for identity in identities {
+            bytes.extend_from_slice(identity);
+            bytes.push(0);
+        }
         bytes
     }
 

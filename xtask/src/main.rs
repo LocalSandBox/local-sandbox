@@ -46,7 +46,7 @@ fn print_usage() {
     eprintln!("  cargo run -p xtask -- build-guest [--platform <id>]");
     eprintln!("  cargo run -p xtask -- build-kernel [--platform <id>]");
     eprintln!("  cargo run -p xtask -- prepare-rootfs [--platform <id>]");
-    eprintln!("  cargo run -p xtask -- package-release --artifact <cli|os-image|seawork-service> --version <v> [--platform <id>] [--output-dir <dir>] [--mode stage|archive]");
+    eprintln!("  cargo run -p xtask -- package-release --artifact <cli|os-image|seawork-service> --version <v> [--platform <id>] [--output-dir <dir>] [--mode stage|archive] [--service-profile production|development]");
     eprintln!(
         "  cargo run -p xtask -- verify-seawork-parity [--contract <path>] [--seawork-repo <path>]"
     );

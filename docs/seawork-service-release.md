@@ -111,8 +111,15 @@ protocol, service, client, and Node binding crates. It selects only
 `%ProgramData%\LocalSandbox\SeaWorkDev`; the production release workflow does
 not enable it, and a release service PE check confirms that these development
 strings are absent by default. The feature does not relax bundle,
-path, ACL, or Authenticode policy. Development bundle/install tooling and any
-explicit unsigned-client policy remain separate unfinished work.
+path, ACL, or Authenticode policy. The deterministic packager accepts an
+explicit `--service-profile development` for binaries built with that feature.
+It emits `lsb-seawork-service-dev-*` stage/archive names and a matching
+development SCM/pipe/state contract, and both staging and archival reject a PE
+whose compiled endpoint identities do not match the selected profile. Omitting
+the option is production-only. Development packages still require an explicit
+publisher, the closed manifest, signed catalog, protected ACL contract, and the
+same verification gates as production. Elevated development installation and
+any explicit unsigned-client policy remain separate unfinished work.
 
 Initial installation is one elevated transaction:
 
