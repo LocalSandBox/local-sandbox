@@ -24,10 +24,7 @@ use windows_sys::Win32::System::Threading::{
 use crate::session::ClientIdentityKey;
 
 use super::access::authorize_interactive_client;
-use super::client_image::{
-    authorize_maintenance_image_handle, open_image_for_trust, query_process_image,
-    require_absolute_image,
-};
+use super::client_image::{authorize_maintenance_image_handle, pin_process_image};
 use super::impersonation::ImpersonationGuard;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,9 +93,7 @@ impl ClientIdentity {
             bail!("pipe and process token identities do not match");
         }
 
-        let process_image = query_process_image(&process)?;
-        require_absolute_image(&process_image)?;
-        let process_image_handle = open_image_for_trust(&process_image)?;
+        let (process_image, process_image_handle) = pin_process_image(&process)?;
         Ok(Self {
             key: ClientIdentityKey {
                 user_sid: pipe_snapshot.user_sid,

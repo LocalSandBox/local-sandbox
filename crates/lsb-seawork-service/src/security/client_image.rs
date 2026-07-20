@@ -19,7 +19,11 @@ use windows_sys::Win32::Security::WinTrust::{
     WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT, WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE,
     WTD_STATEACTION_VERIFY, WTD_UI_NONE,
 };
-use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, OPEN_EXISTING};
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, GetFileInformationByHandle, GetFinalPathNameByHandleW, BY_HANDLE_FILE_INFORMATION,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_NAME_NORMALIZED, FILE_SHARE_READ, OPEN_EXISTING, VOLUME_NAME_DOS,
+};
 use windows_sys::Win32::System::Threading::QueryFullProcessImageNameW;
 
 pub fn query_process_image(process: &OwnedHandle) -> Result<PathBuf> {
@@ -52,6 +56,17 @@ pub fn require_absolute_image(image: &Path) -> Result<()> {
         bail!("client image path is not an absolute normalized path");
     }
     Ok(())
+}
+
+pub fn pin_process_image(process: &OwnedHandle) -> Result<(PathBuf, OwnedHandle)> {
+    let first_path = query_process_image(process)?;
+    require_absolute_image(&first_path)?;
+    let held_image = open_image_for_trust(&first_path)?;
+    let second_path = query_process_image(process)?;
+    if !windows_path_eq(&first_path, &second_path) {
+        bail!("client process image path changed while it was being pinned");
+    }
+    Ok((second_path, held_image))
 }
 
 pub fn authorize_maintenance_image(
@@ -99,7 +114,7 @@ pub fn open_image_for_trust(image: &Path) -> Result<OwnedHandle> {
             FILE_SHARE_READ,
             ptr::null(),
             OPEN_EXISTING,
-            0,
+            FILE_FLAG_OPEN_REPARSE_POINT,
             ptr::null_mut(),
         )
     };
@@ -109,7 +124,53 @@ pub fn open_image_for_trust(image: &Path) -> Result<OwnedHandle> {
             std::io::Error::last_os_error()
         );
     }
-    Ok(unsafe { OwnedHandle::from_raw_handle(raw as _) })
+    let held = unsafe { OwnedHandle::from_raw_handle(raw as _) };
+    require_regular_non_reparse_image(&held)?;
+    let final_path = final_path(&held)?;
+    if !windows_path_eq(&final_path, image) {
+        bail!("client image handle final path does not match the process image path");
+    }
+    Ok(held)
+}
+
+fn require_regular_non_reparse_image(image: &OwnedHandle) -> Result<()> {
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(image.as_raw_handle() as HANDLE, &mut info) } == 0 {
+        bail!(
+            "inspect client image handle failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    if info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) != 0
+        || info.nNumberOfLinks != 1
+    {
+        bail!("client image is not a single-link regular non-reparse file");
+    }
+    Ok(())
+}
+
+fn final_path(handle: &OwnedHandle) -> Result<PathBuf> {
+    let raw = handle.as_raw_handle() as HANDLE;
+    let flags = FILE_NAME_NORMALIZED | VOLUME_NAME_DOS;
+    let required = unsafe { GetFinalPathNameByHandleW(raw, ptr::null_mut(), 0, flags) };
+    if required == 0 {
+        bail!(
+            "query client image final path size failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    let mut buffer = vec![0u16; required as usize + 1];
+    let length =
+        unsafe { GetFinalPathNameByHandleW(raw, buffer.as_mut_ptr(), buffer.len() as u32, flags) };
+    if length == 0 || length as usize >= buffer.len() {
+        bail!(
+            "query client image final path failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(PathBuf::from(std::ffi::OsString::from_wide(
+        &buffer[..length as usize],
+    )))
 }
 
 fn is_within(path: &Path, root: &Path) -> bool {
@@ -124,10 +185,17 @@ fn is_within(path: &Path, root: &Path) -> bool {
 }
 
 fn normalized_windows_path(path: &Path) -> String {
-    path.as_os_str()
-        .to_string_lossy()
-        .replace('/', "\\")
-        .to_lowercase()
+    let mut path = path.as_os_str().to_string_lossy().replace('/', "\\");
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        path = format!(r"\\{rest}");
+    } else if let Some(rest) = path.strip_prefix(r"\\?\") {
+        path = rest.to_string();
+    }
+    path.trim_end_matches('\\').to_lowercase()
+}
+
+fn windows_path_eq(left: &Path, right: &Path) -> bool {
+    normalized_windows_path(left) == normalized_windows_path(right)
 }
 
 fn wide_path(path: &Path) -> Result<Vec<u16>> {
@@ -322,6 +390,9 @@ impl Drop for Certificate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
 
     #[test]
     fn maintenance_roots_are_case_insensitive_and_component_aware() {
@@ -333,6 +404,29 @@ mod tests {
             Path::new(r"C:\Program Files\LocalSandbox-Evil\maintenance.exe"),
             Path::new(r"C:\Program Files\LocalSandbox")
         ));
+    }
+
+    #[test]
+    fn handle_and_process_paths_compare_in_normalized_form() {
+        assert!(windows_path_eq(
+            Path::new(r"\\?\C:\Program Files\SeaWork\client.exe"),
+            Path::new(r"c:/program files/seawork/client.exe")
+        ));
+        assert!(windows_path_eq(
+            Path::new(r"\\?\UNC\server\share\client.exe"),
+            Path::new(r"\\server\share\client.exe")
+        ));
+    }
+
+    #[test]
+    fn current_process_image_is_pinned_to_its_final_path() {
+        let raw =
+            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, GetCurrentProcessId()) };
+        assert!(!raw.is_null(), "open current process");
+        let process = unsafe { OwnedHandle::from_raw_handle(raw as _) };
+        let (reported_path, held_image) = pin_process_image(&process).expect("pin current image");
+        let held_path = final_path(&held_image).expect("query held image path");
+        assert!(windows_path_eq(&reported_path, &held_path));
     }
 
     #[test]
