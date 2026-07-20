@@ -1,7 +1,8 @@
 # Protected ledger reconciliation envelope
 
-Status: SEC-02 persistence/admission envelope and production QEMU transaction wiring
-implemented; startup Windows ownership re-query and cleanup executors pending.
+Status: SEC-02 persistence/admission envelope, production QEMU transaction wiring,
+and exact startup QEMU process recovery implemented; other Windows resource cleanup
+executors and real crash/reboot evidence pending.
 
 ## Startup admission rules
 
@@ -31,10 +32,10 @@ Valid documents require:
 - intent/commit-specific staging and QEMU proof values (pending/zero before commit,
   externally queryable identity after commit).
 
-These checks make protected bytes necessary but not sufficient cleanup authority. A
-future Windows cleanup executor must still re-query the named Job/process, account,
-right, share, ACE, staging identity, WFP object, port, or relay and compare every stable
-proof before mutation. Prefix similarity alone never authorizes deletion.
+These checks make protected bytes necessary but not sufficient cleanup authority. Each
+Windows cleanup executor must still re-query the process, account, right, share, ACE,
+staging identity, WFP object, port, or relay and compare every stable proof before
+mutation. Prefix similarity alone never authorizes deletion.
 
 A well-formed document is an outstanding cleanup obligation, not a clean-start signal.
 Startup therefore remains health-only whenever any valid document remains. The
@@ -46,6 +47,15 @@ it queries the suspended process handle for PID and creation time, commits that 
 proof, and only then permits the primary thread to resume. Clean VM teardown persists
 `cleaning`, clears the proven record, checkpoints again, and removes the document.
 Ambiguous setup or teardown deliberately retains the document for startup recovery.
+After verifying the adjacent bundle, startup reopens a committed QEMU PID once with
+query, synchronize, and terminate rights; the retained handle must report the ledger's
+creation time and exact verified-bundle image before termination. PID reuse or image
+mismatch quarantines without mutation. An absent process is idempotent success, while
+access, query, termination, or bounded-wait ambiguity retains the record for retry.
+Intent-only records select no PID: the suspended child could not resume before commit
+and the authoritative kill-on-close Job cannot survive the old service process. Any
+non-QEMU record remains retry-required, so partial adapter coverage never reopens
+admissions.
 
 The host-neutral recovery executor provides the ordering boundary for those Windows
 adapters. It validates the document and durably enters `cleaning` before the first
@@ -78,6 +88,6 @@ resources, intent/commit proof shapes, concurrent atomic writers, and failed-rep
 cleanup. Fault injection covers every cleanup boundary, retry from each durable
 checkpoint, identity mismatch, and the crash window between external removal and ledger
 checkpoint. Windows verification must add protected-directory ACL/tamper cases, file-ID
-re-query races, disk-full/power-cut snapshots, exact startup QEMU process/Job recovery,
+re-query races, disk-full/power-cut snapshots, real service-crash/reboot QEMU convergence,
 and idempotent cleanup for every remaining resource before SEC-02 can be considered
 implementation complete.

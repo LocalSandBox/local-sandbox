@@ -70,14 +70,6 @@ fn run_registered(
     advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
     let config = ServiceConfig::load_or_default(&paths.config)?;
     let product_ca_bundle_pem = crate::config::load_product_ca_bundle(&paths.product_ca_bundle)?;
-    let reconciliation = ledger::reconcile(&paths.ledger, &paths.quarantine)?;
-    if !reconciliation.admissions_open {
-        logger.write(
-            EventId::LedgerQuarantined,
-            "reconcile",
-            "HEALTH_ONLY_QUARANTINE",
-        )?;
-    }
     advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
     let engine = match run_startup_operation(
         &mut startup_checkpoint,
@@ -109,6 +101,22 @@ fn run_registered(
             None
         }
     };
+    advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
+    let reconciliation = if let Some(engine) = &engine {
+        let mut cleaner =
+            ledger::windows_cleaner::WindowsResourceCleaner::new(engine.bundle_root());
+        ledger::reconcile_and_recover(&paths.ledger, &paths.quarantine, &mut cleaner)?
+    } else {
+        ledger::reconcile(&paths.ledger, &paths.quarantine)?
+    };
+    if !reconciliation.admissions_open {
+        let stable_code = if reconciliation.valid_documents == 0 {
+            "HEALTH_ONLY_QUARANTINE"
+        } else {
+            "HEALTH_ONLY_LEDGER_RECOVERY"
+        };
+        logger.write(EventId::LedgerQuarantined, "reconcile", stable_code)?;
+    }
     advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()

@@ -10,6 +10,7 @@ use lsb_service_proto::limits::{
 };
 
 use super::schema::LedgerDocument;
+use super::{recover_document, ExternalResourceCleaner, RecoveryOutcome};
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ReconcileSummary {
@@ -69,6 +70,47 @@ pub fn reconcile(ledger_dir: &Path, quarantine_dir: &Path) -> Result<ReconcileSu
     if summary.valid_documents != 0 {
         summary.admissions_open = false;
     }
+    Ok(summary)
+}
+
+pub fn reconcile_and_recover(
+    ledger_dir: &Path,
+    quarantine_dir: &Path,
+    cleaner: &mut impl ExternalResourceCleaner,
+) -> Result<ReconcileSummary> {
+    let mut summary = reconcile(ledger_dir, quarantine_dir)?;
+    if summary.valid_documents == 0 {
+        return Ok(summary);
+    }
+
+    summary.valid_documents = 0;
+    let Some(mut entries) = read_bounded_entries(ledger_dir, MAX_LEDGER_DOCUMENTS)? else {
+        summary.unproven_documents += 1;
+        summary.admissions_open = false;
+        return Ok(summary);
+    };
+    entries.sort_by_key(DirEntry::file_name);
+    let mut total = 0usize;
+    for entry in entries {
+        let path = entry.path();
+        let document =
+            match validate_entry(&entry, &mut total).and_then(|()| read_document_bounded(&path)) {
+                Ok(document) => document,
+                Err(_) => {
+                    quarantine_or_mark_unproven(&path, quarantine_dir, &mut summary);
+                    continue;
+                }
+            };
+        match recover_document(&path, document, cleaner)? {
+            RecoveryOutcome::Removed => {}
+            RecoveryOutcome::Quarantined | RecoveryOutcome::RetryRequired => {
+                summary.valid_documents += 1;
+            }
+        }
+    }
+    summary.admissions_open = summary.valid_documents == 0
+        && summary.quarantined_documents == 0
+        && summary.unproven_documents == 0;
     Ok(summary)
 }
 
@@ -160,6 +202,18 @@ mod tests {
         std::fs::write(path, serde_json::to_vec(&document).unwrap()).unwrap();
     }
 
+    struct RemovingCleaner;
+
+    impl ExternalResourceCleaner for RemovingCleaner {
+        fn remove_if_exact(
+            &mut self,
+            _ownership_id: &str,
+            _resource: &crate::ledger::schema::ResourceRecord,
+        ) -> Result<crate::ledger::RecoveryProof> {
+            Ok(crate::ledger::RecoveryProof::AlreadyAbsent)
+        }
+    }
+
     #[test]
     fn quarantines_corruption_without_interpreting_it() {
         let root = root("corrupt");
@@ -198,6 +252,25 @@ mod tests {
         assert_eq!(summary.quarantined_documents, 0);
         assert_eq!(summary.unproven_documents, 0);
         assert!(!summary.admissions_open);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn exact_recovery_removes_valid_obligations_before_opening_admissions() {
+        let root = root("recover-valid");
+        let _ = std::fs::remove_dir_all(&root);
+        let ledger = root.join("ledger");
+        let quarantine = root.join("quarantine");
+        std::fs::create_dir_all(&ledger).unwrap();
+        write_valid(
+            &ledger.join("0123456789abcdef0123456789abcdef.json"),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+
+        let summary = reconcile_and_recover(&ledger, &quarantine, &mut RemovingCleaner).unwrap();
+        assert_eq!(summary.valid_documents, 0);
+        assert!(summary.admissions_open);
+        assert!(std::fs::read_dir(&ledger).unwrap().next().is_none());
         let _ = std::fs::remove_dir_all(root);
     }
 

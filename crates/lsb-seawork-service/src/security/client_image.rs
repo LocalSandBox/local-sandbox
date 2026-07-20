@@ -194,7 +194,7 @@ fn normalized_windows_path(path: &Path) -> String {
     path.trim_end_matches('\\').to_lowercase()
 }
 
-fn windows_path_eq(left: &Path, right: &Path) -> bool {
+pub(crate) fn windows_path_eq(left: &Path, right: &Path) -> bool {
     normalized_windows_path(left) == normalized_windows_path(right)
 }
 
