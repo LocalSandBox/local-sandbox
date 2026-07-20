@@ -4,6 +4,7 @@ use std::sync::mpsc;
 
 use anyhow::{Context, Result};
 
+use crate::resource::mount::ProtectedStagingRoot;
 use crate::security::impersonation::ImpersonationGuard;
 
 use super::identity::{AuthorizedMountRoot, MountAccess};
@@ -27,7 +28,8 @@ enum Command {
     },
     ExportFile {
         root_pin: OwnedHandle,
-        protected_source: PathBuf,
+        staging_root_pin: OwnedHandle,
+        relative_source: PathBuf,
         relative_destination: PathBuf,
         options: ExportOptions,
         reply: mpsc::SyncSender<Result<u64>>,
@@ -92,7 +94,8 @@ impl PathWorker {
     pub fn export_file(
         &self,
         authorized: &AuthorizedMountRoot,
-        protected_source: PathBuf,
+        protected: &ProtectedStagingRoot,
+        relative_source: PathBuf,
         relative_destination: PathBuf,
         options: ExportOptions,
     ) -> Result<u64> {
@@ -103,7 +106,8 @@ impl PathWorker {
         self.commands
             .send(Command::ExportFile {
                 root_pin: authorized.duplicate_root_handle()?,
-                protected_source,
+                staging_root_pin: protected.duplicate_root_handle()?,
+                relative_source,
                 relative_destination,
                 options,
                 reply,
@@ -156,7 +160,8 @@ fn run(token: OwnedHandle, policy: MountPolicy, commands: mpsc::Receiver<Command
             }
             Command::ExportFile {
                 root_pin,
-                protected_source,
+                staging_root_pin,
+                relative_source,
                 relative_destination,
                 options,
                 reply,
@@ -164,7 +169,8 @@ fn run(token: OwnedHandle, policy: MountPolicy, commands: mpsc::Receiver<Command
                 let result = export_once(
                     &token,
                     &root_pin,
-                    &protected_source,
+                    &staging_root_pin,
+                    &relative_source,
                     &relative_destination,
                     options,
                 );
@@ -178,15 +184,12 @@ fn run(token: OwnedHandle, policy: MountPolicy, commands: mpsc::Receiver<Command
 fn export_once(
     token: &OwnedHandle,
     root_pin: &OwnedHandle,
-    protected_source: &std::path::Path,
+    staging_root_pin: &OwnedHandle,
+    relative_source: &std::path::Path,
     relative_destination: &std::path::Path,
     options: ExportOptions,
 ) -> Result<u64> {
-    let path_metadata = std::fs::symlink_metadata(protected_source)?;
-    if !path_metadata.is_file() || path_metadata.file_type().is_symlink() {
-        anyhow::bail!("protected export source is not a regular file");
-    }
-    let mut source = std::fs::File::open(protected_source)?;
+    let mut source = super::export::open_protected_source(staging_root_pin, relative_source)?;
     let metadata = source.metadata()?;
     if !metadata.is_file() {
         anyhow::bail!("opened protected export source is not a regular file");
@@ -224,4 +227,5 @@ fn require_send<T: Send>() {}
 fn worker_commands_and_capability_are_send() {
     require_send::<Command>();
     require_send::<AuthorizedMountRoot>();
+    require_send::<ProtectedStagingRoot>();
 }

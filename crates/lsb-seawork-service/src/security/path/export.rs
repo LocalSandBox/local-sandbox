@@ -15,7 +15,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_ENCRYPTED, FILE_ATTRIBUTE_OFFLINE,
     FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_RECALL_ON_OPEN,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
-    FILE_WRITE_DATA, SYNCHRONIZE,
+    FILE_READ_DATA, FILE_WRITE_DATA, SYNCHRONIZE,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
@@ -25,6 +25,30 @@ use super::relative::{self, RelativeKind};
 pub struct ExportOptions {
     pub overwrite: bool,
     pub max_bytes: u64,
+}
+
+pub(super) fn open_protected_source(
+    staging_root: &OwnedHandle,
+    relative_source: &Path,
+) -> Result<std::fs::File> {
+    crate::resource::mount_sync::validate_relative_path(relative_source)?;
+    let mut components = relative_components(relative_source)?;
+    let leaf = components
+        .pop()
+        .ok_or_else(|| anyhow::anyhow!("protected export source is empty"))?;
+    let mut parent = staging_root.try_clone()?;
+    let parent_access = FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+    for component in components {
+        let (child, info) =
+            relative::open_relative(&parent, &component, parent_access, RelativeKind::Directory)?;
+        require_safe_entry(&info, true)?;
+        parent = child;
+    }
+    let source_access = FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+    let (source, info) =
+        relative::open_relative(&parent, &leaf, source_access, RelativeKind::File)?;
+    require_safe_entry(&info, false)?;
+    Ok(source.into())
 }
 
 pub(super) fn export_open_file_under_client_token(
@@ -234,7 +258,7 @@ mod tests {
         std::fs::write(&destination, b"old-value").unwrap();
         let root_handle = open_root(&root);
 
-        let mut source = std::fs::File::open(&source_path).unwrap();
+        let mut source = open_protected_source(&root_handle, Path::new("source")).unwrap();
         let metadata = source.metadata().unwrap();
         assert_eq!(
             export_open_file_under_client_token(
@@ -252,8 +276,9 @@ mod tests {
             9
         );
         assert_eq!(std::fs::read(&destination).unwrap(), b"new-value");
+        drop(source);
 
-        let mut source = std::fs::File::open(&source_path).unwrap();
+        let mut source = open_protected_source(&root_handle, Path::new("source")).unwrap();
         let metadata = source.metadata().unwrap();
         assert!(export_open_file_under_client_token(
             &mut source,
@@ -268,8 +293,9 @@ mod tests {
         )
         .is_err());
         assert_eq!(std::fs::read(&destination).unwrap(), b"new-value");
+        drop(source);
 
-        let mut source = std::fs::File::open(&source_path).unwrap();
+        let mut source = open_protected_source(&root_handle, Path::new("source")).unwrap();
         let metadata = source.metadata().unwrap();
         export_open_file_under_client_token(
             &mut source,
@@ -287,8 +313,9 @@ mod tests {
             std::fs::read(root.join("created").join("child").join("file")).unwrap(),
             b"new-value"
         );
+        drop(source);
 
-        let mut source = std::fs::File::open(&source_path).unwrap();
+        let mut source = open_protected_source(&root_handle, Path::new("source")).unwrap();
         let metadata = source.metadata().unwrap();
         assert!(export_open_file_under_client_token(
             &mut source,
@@ -303,6 +330,16 @@ mod tests {
         )
         .is_err());
         assert!(!root.join("should-not-exist").exists());
+        drop(source);
+
+        for invalid_source in [
+            Path::new(r"..\source"),
+            Path::new(r"C:\source"),
+            Path::new("source:stream"),
+            Path::new(""),
+        ] {
+            assert!(open_protected_source(&root_handle, invalid_source).is_err());
+        }
 
         for invalid in [
             Path::new(r"..\escape"),
@@ -310,7 +347,7 @@ mod tests {
             Path::new("stream:name"),
             Path::new(""),
         ] {
-            let mut source = std::fs::File::open(&source_path).unwrap();
+            let mut source = open_protected_source(&root_handle, Path::new("source")).unwrap();
             let metadata = source.metadata().unwrap();
             assert!(export_open_file_under_client_token(
                 &mut source,
@@ -345,7 +382,7 @@ mod tests {
         let raw = unsafe {
             CreateFileW(
                 path.as_ptr(),
-                GENERIC_READ | GENERIC_WRITE | DELETE,
+                GENERIC_READ | GENERIC_WRITE | DELETE | FILE_DELETE_CHILD,
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 std::ptr::null(),
                 OPEN_EXISTING,
@@ -379,7 +416,10 @@ mod tests {
     }
 
     fn unique_temp_path() -> std::path::PathBuf {
-        std::env::current_dir()
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
             .unwrap()
             .join("target")
             .join(format!(

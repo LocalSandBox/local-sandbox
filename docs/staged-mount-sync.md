@@ -69,10 +69,18 @@ separators, NUL, and ADS syntax cannot enter the rename record. Non-overwrite co
 leaves the existing destination intact; best-effort failure cleanup marks only the exact
 temporary handle for deletion. A standard-token regression covers replacement,
 collision, missing parents, over-length copy failure, traversal/absolute/ADS rejection,
-and temporary cleanup. The primitive is still source-only integration groundwork: the
-ordered periodic/final staged-sync loop, conflict publication, protected-source
-capability/ledger binding, and retained-stage teardown remain required before mount
-activation.
+and temporary cleanup. After the initial snapshot, `StagedMount` now opens the exact
+service staging directory without following a reparse point, rejects unsafe attributes,
+retains that no-delete-sharing handle, and commits the handle's identity to the protected
+ledger before returning. Writeback accepts this unforgeable `ProtectedStagingRoot` plus
+a bounded relative source; before impersonation, it opens every source component
+handle-relatively without delete sharing and requires a regular non-reparse final file.
+Thus neither side of the export worker boundary accepts a naked path. Standard-token
+tests prove the staging directory stays pinned, its retained and ledger identities
+match, and traversal, absolute, ADS, or empty protected-source names fail closed. The
+ordered controller still lacks capability-bound snapshot/operation execution, conflict
+publication, VM lifecycle wiring, and retained-stage teardown, so mount activation
+remains unavailable.
 
 ## Reconciliation
 
