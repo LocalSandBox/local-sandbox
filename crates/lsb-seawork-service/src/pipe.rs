@@ -16,6 +16,8 @@ use lsb_service_proto::{
     START_REPLAY_MIN_MINOR, SUPPORTED,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+#[cfg(test)]
+use tokio::net::windows::named_pipe::ClientOptions;
 use tokio::net::windows::named_pipe::{NamedPipeServer, PipeMode, ServerOptions};
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
@@ -2181,6 +2183,71 @@ mod tests {
             reader.frames.capacity(),
             crate::ipc::pipe::MAX_DISPATCH_FRAMES
         );
+    }
+
+    #[tokio::test]
+    async fn reader_task_backpressures_over_a_real_windows_named_pipe() {
+        let frame_count = crate::ipc::pipe::MAX_DISPATCH_FRAMES + 2;
+        let pipe_name = format!(
+            r"\\.\pipe\LocalSandbox.SeaWork.Test.{}.{}",
+            std::process::id(),
+            random_epoch().unwrap()
+        );
+        let server = ServerOptions::new()
+            .pipe_mode(PipeMode::Byte)
+            .first_pipe_instance(true)
+            .reject_remote_clients(true)
+            .max_instances(1)
+            .in_buffer_size((2 * HEADER_LEN) as u32)
+            .out_buffer_size((2 * HEADER_LEN) as u32)
+            .create(&pipe_name)
+            .unwrap();
+        let mut client = ClientOptions::new().open(&pipe_name).unwrap();
+        server.connect().await.unwrap();
+        let mut reader = FrameReader::start(server);
+        let writer = tokio::spawn(async move {
+            for low in 1..=frame_count {
+                let header = FrameHeader {
+                    kind: FrameKind::Request,
+                    flags: 0,
+                    protocol: CURRENT,
+                    payload_len: 0,
+                    correlation: Correlation {
+                        high: 1,
+                        low: low as u64,
+                    },
+                }
+                .encode()
+                .unwrap();
+                client.write_all(&header).await.unwrap();
+            }
+            client.flush().await.unwrap();
+            client
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while reader.frames.capacity() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("named-pipe dispatch queue did not saturate");
+        for low in 1..=frame_count {
+            let frame = tokio::time::timeout(Duration::from_secs(1), reader.recv())
+                .await
+                .expect("named-pipe reader stalled after capacity was released")
+                .unwrap();
+            assert_eq!(frame.header.correlation.low, low as u64);
+        }
+        let client = tokio::time::timeout(Duration::from_secs(1), writer)
+            .await
+            .expect("named-pipe writer remained blocked")
+            .unwrap();
+        assert_eq!(
+            reader.frames.capacity(),
+            crate::ipc::pipe::MAX_DISPATCH_FRAMES
+        );
+        drop(client);
     }
 
     #[tokio::test]
