@@ -2120,14 +2120,80 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reader_task_uses_the_bounded_dispatch_queue() {
-        let (_client, server) = tokio::io::duplex(1024);
-        let reader = FrameReader::start(server);
+    async fn reader_task_backpressures_at_capacity_and_recovers_in_order() {
+        let frame_count = crate::ipc::pipe::MAX_DISPATCH_FRAMES + 2;
+        let (mut client, server) = tokio::io::duplex(frame_count * HEADER_LEN);
+        let mut reader = FrameReader::start(server);
 
+        for low in 1..=frame_count {
+            let header = FrameHeader {
+                kind: FrameKind::Request,
+                flags: 0,
+                protocol: CURRENT,
+                payload_len: 0,
+                correlation: Correlation {
+                    high: 1,
+                    low: low as u64,
+                },
+            }
+            .encode()
+            .unwrap();
+            client.write_all(&header).await.unwrap();
+        }
+        client.flush().await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while reader.frames.capacity() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("dispatch queue did not saturate");
+
+        for low in 1..=frame_count {
+            let frame = tokio::time::timeout(Duration::from_secs(1), reader.recv())
+                .await
+                .expect("reader stalled after dispatch capacity was released")
+                .unwrap();
+            assert_eq!(frame.header.correlation.low, low as u64);
+        }
         assert_eq!(
             reader.frames.capacity(),
             crate::ipc::pipe::MAX_DISPATCH_FRAMES
         );
+    }
+
+    #[tokio::test]
+    async fn reader_task_reports_one_malformed_frame_then_stops() {
+        let (mut client, server) = tokio::io::duplex(2 * HEADER_LEN);
+        let mut reader = FrameReader::start(server);
+        let mut malformed_header = [0u8; HEADER_LEN];
+        malformed_header[4] = HEADER_VERSION;
+        client.write_all(&malformed_header).await.unwrap();
+        let valid = FrameHeader {
+            kind: FrameKind::Request,
+            flags: 0,
+            protocol: CURRENT,
+            payload_len: 0,
+            correlation: Correlation { high: 1, low: 1 },
+        }
+        .encode()
+        .unwrap();
+        client.write_all(&valid).await.unwrap();
+        client.flush().await.unwrap();
+
+        let malformed = tokio::time::timeout(Duration::from_secs(1), reader.recv())
+            .await
+            .expect("malformed frame was not reported");
+        let error = match malformed {
+            Ok(_) => panic!("malformed frame was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.to_string(), "invalid frame magic");
+        let stopped = tokio::time::timeout(Duration::from_secs(1), reader.recv())
+            .await
+            .expect("reader did not stop after reporting a malformed frame");
+        assert!(stopped.is_err());
     }
 
     #[tokio::test]
