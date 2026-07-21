@@ -254,6 +254,50 @@ function Get-BundleFiles {
     return @($result | Sort-Object Relative)
 }
 
+function Get-TemporaryCatalogDrive {
+    $driveLetter = @('Z', 'Y', 'X', 'W', 'V') |
+        Where-Object { -not (Test-Path -LiteralPath "${_}:\") } |
+        Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace($driveLetter)) {
+        throw 'no temporary drive letter is available for bounded catalog paths'
+    }
+    return "${driveLetter}:"
+}
+
+function Assert-FileCatalogClosure {
+    param(
+        [string]$Root,
+        [string]$Catalog,
+        [object[]]$ExpectedFiles,
+        [switch]$CatalogInsideRoot
+    )
+
+    $arguments = @{
+        Path = $Root
+        CatalogFilePath = $Catalog
+        Detailed = $true
+        ErrorAction = 'Stop'
+    }
+    if ($CatalogInsideRoot) {
+        $arguments.FilesToSkip = 'manifests\LocalSandboxSeaWork.cat'
+    }
+    $validation = Test-FileCatalog @arguments
+    if ($validation.Status.ToString() -cne 'Valid') {
+        throw "file catalog validation failed with status $($validation.Status)"
+    }
+    if ($validation.HashAlgorithm.ToString() -cne 'SHA256') {
+        throw "file catalog uses unexpected hash algorithm $($validation.HashAlgorithm)"
+    }
+    $expected = @($ExpectedFiles | ForEach-Object { $_.Relative.Replace('\', '/') } | Sort-Object)
+    $observed = @($validation.PathItems.Keys | ForEach-Object {
+        ([string]$_).Replace('\', '/')
+    } | Sort-Object)
+    $differences = @(Compare-Object -ReferenceObject $expected -DifferenceObject $observed -CaseSensitive)
+    if ($differences.Count -ne 0 -or $observed.Count -ne $expected.Count) {
+        throw 'file catalog membership does not match the closed bundle file set'
+    }
+}
+
 function New-BundleCatalog {
     $root = Resolve-ExistingDirectory $BundleRoot 'BundleRoot'
     if ((Split-Path -Leaf $root) -cne 'LocalSandbox') {
@@ -265,48 +309,25 @@ function New-BundleCatalog {
         throw 'bundle already contains a catalog'
     }
     $files = Get-BundleFiles $root -ExcludeCatalog
-    $cdf = Join-Path $work 'LocalSandboxSeaWork.cdf'
     $catalog = Join-Path $work 'LocalSandboxSeaWork.cat'
-    if ((Test-Path -LiteralPath $cdf) -or (Test-Path -LiteralPath $catalog)) {
+    if (Test-Path -LiteralPath $catalog) {
         throw 'catalog work directory is not clean'
     }
-    $driveLetter = @('Z', 'Y', 'X', 'W', 'V') |
-        Where-Object { -not (Test-Path -LiteralPath "${_}:\") } |
-        Select-Object -First 1
-    if ([string]::IsNullOrWhiteSpace($driveLetter)) {
-        throw 'no temporary drive letter is available for bounded catalog paths'
-    }
-    $drive = "${driveLetter}:"
+    $drive = Get-TemporaryCatalogDrive
     Invoke-Native subst.exe @($drive, $root) 'map temporary bundle catalog drive'
     try {
         $mappedRoot = "$drive\"
         if (-not (Test-Path -LiteralPath $mappedRoot -PathType Container)) {
             throw 'temporary bundle catalog drive did not resolve'
         }
-        $lines = [Collections.Generic.List[string]]::new()
-        $lines.Add('[CatalogHeader]')
-        $lines.Add('Name=LocalSandboxSeaWork.cat')
-        $lines.Add('ResultDir=.')
-        $lines.Add('PublicVersion=0x00000001')
-        $lines.Add('CatalogVersion=2')
-        $lines.Add('EncodingType=0x00010001')
-        $lines.Add('HashAlgorithms=SHA256')
-        $lines.Add('')
-        $lines.Add('[CatalogFiles]')
-        for ($index = 0; $index -lt $files.Count; $index++) {
-            $member = Join-Path $mappedRoot $files[$index].Relative
-            $lines.Add(('<HASH>member{0:D5}={1}' -f $index, $member))
-        }
-        [IO.File]::WriteAllText($cdf, ($lines -join "`r`n") + "`r`n", [Text.Encoding]::ASCII)
-        $makeCat = Resolve-SdkTool 'makecat.exe'
-        Push-Location $work
-        try {
-            Invoke-Native $makeCat @('-r', '-v', $cdf) 'generate bundle catalog'
-        } finally {
-            Pop-Location
-        }
+        New-FileCatalog `
+            -Path $mappedRoot `
+            -CatalogFilePath $catalog `
+            -CatalogVersion 2.0 `
+            -ErrorAction Stop | Out-Null
         $catalog = Resolve-ExistingFile $catalog 'generated catalog'
         Invoke-Sign $catalog | Out-Null
+        Assert-FileCatalogClosure -Root $mappedRoot -Catalog $catalog -ExpectedFiles $files
         Copy-Item -LiteralPath $catalog -Destination $catalogDestination
         Verify-BundleSignatures $mappedRoot
     }
@@ -318,16 +339,55 @@ function New-BundleCatalog {
 function Verify-BundleSignatures {
     param([string]$Root)
     $root = Resolve-ExistingDirectory $Root 'BundleRoot'
-    $catalog = Resolve-ExistingFile (Join-Path $root 'manifests\LocalSandboxSeaWork.cat') 'catalog'
-    $service = Resolve-ExistingFile (Join-Path $root 'bin\localsandbox-seawork-service.exe') 'service binary'
-    Assert-Signer $service -RequireTimestamp:(-not $SkipTimestamp) | Out-Null
-    Assert-Signer $catalog -RequireTimestamp:(-not $SkipTimestamp) | Out-Null
-    if ($AllowUntrustedTestCertificate) {
-        return
+    $mapped = $false
+    $drive = $null
+    if ($root.Length -gt 3) {
+        $drive = Get-TemporaryCatalogDrive
+        Invoke-Native subst.exe @($drive, $root) 'map temporary bundle verification drive'
+        $root = "$drive\"
+        $mapped = $true
     }
-    $signTool = Resolve-SdkTool 'signtool.exe'
-    foreach ($file in Get-BundleFiles $root -ExcludeCatalog) {
-        Invoke-Native $signTool @('verify', '/v', '/pa', '/c', $catalog, $file.FullName) "verify catalog member $($file.Relative)"
+    try {
+        $catalog = Resolve-ExistingFile (Join-Path $root 'manifests\LocalSandboxSeaWork.cat') 'catalog'
+        $service = Resolve-ExistingFile (Join-Path $root 'bin\localsandbox-seawork-service.exe') 'service binary'
+        $files = Get-BundleFiles $root -ExcludeCatalog
+        Assert-Signer $service -RequireTimestamp:(-not $SkipTimestamp) | Out-Null
+        Assert-Signer $catalog -RequireTimestamp:(-not $SkipTimestamp) | Out-Null
+        Assert-FileCatalogClosure `
+            -Root $root `
+            -Catalog $catalog `
+            -ExpectedFiles $files `
+            -CatalogInsideRoot
+        if (-not $AllowUntrustedTestCertificate) {
+            $signTool = Resolve-SdkTool 'signtool.exe'
+            $zeroMemberRelative = 'tools/qemu/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache'
+            $zeroMember = @($files | Where-Object { $_.Relative -ceq $zeroMemberRelative })
+            if ($zeroMember.Count -ne 1) {
+                throw "expected exactly one zero-byte catalog member at $zeroMemberRelative"
+            }
+            if ((Get-Item -LiteralPath $zeroMember[0].FullName -Force).Length -ne 0) {
+                throw 'representative QEMU cache file is no longer zero bytes'
+            }
+            $representativeMembers = @(
+                'bin/localsandbox-seawork-service.exe'
+                'manifests/bundle.json'
+                'tools/qemu/qemu-system-x86_64.exe'
+            )
+            foreach ($relative in $representativeMembers) {
+                $file = @($files | Where-Object { $_.Relative -ceq $relative })
+                if ($file.Count -ne 1) {
+                    throw "expected exactly one representative catalog member at $relative"
+                }
+                Invoke-Native $signTool @(
+                    'verify', '/v', '/pa', '/c', $catalog, $file[0].FullName
+                ) "verify representative catalog member $relative"
+            }
+        }
+    }
+    finally {
+        if ($mapped) {
+            Invoke-Native subst.exe @($drive, '/d') 'remove temporary bundle verification drive'
+        }
     }
 }
 
