@@ -266,21 +266,21 @@ unresolved in-scope feature marked unavailable.
 
 ### TR-1 — Implement the direct-mount compatibility bridge
 
-- [ ] Add mounts to the Node service start shape and generated declarations. Accept
+- [x] Add mounts to the Node service start shape and generated declarations. Accept
   legacy mount objects, but map only `type: "direct"` with integer flags `0` or `1` to
   `ServiceMountSpec { host_path, guest_path, read_only }`.
-- [ ] Return stable errors for overlay, invalid flags, empty paths, non-directory
+- [x] Return stable errors for overlay, invalid flags, empty paths, non-directory
   sources, duplicate guest paths, and unsupported counts. Do not silently drop mounts.
-- [ ] Remove the blanket service rejection for supported mounts. Carry the normalized
+- [x] Remove the blanket service rejection for supported mounts. Carry the normalized
   list through start admission, `ManagedVmSpec`, VM startup, and the start response.
-- [ ] Construct `lsb_vm::MountConfig::Direct` entries and enable
+- [x] Construct `lsb_vm::MountConfig::Direct` entries and enable
   `ProxyConfig::with_smb_mount_relay()` when public networking is present or
   `ProxyConfig::mount_only_smb()` when mounts are the only network need.
-- [ ] Advertise `directMount: true` and backend `compat-smb-direct` only when the build
+- [x] Advertise `directMount: true` and backend `compat-smb-direct` only when the build
   can actually execute this path. Keep ports false.
-- [ ] Ensure partial start and normal stop invoke the existing SMB lifecycle cleanup.
+- [x] Ensure partial start and normal stop invoke the existing SMB lifecycle cleanup.
   Do not connect this compatibility path to the unfinished staged-mount controller.
-- [ ] Add protocol/client/Node/service/VM tests for mapping, capability reporting,
+- [x] Add protocol/client/Node/service/VM tests for mapping, capability reporting,
   combined proxy+SMB mode, nested workspace/output selection, rejection cases, partial
   failure cleanup, and selected-mount responses.
 

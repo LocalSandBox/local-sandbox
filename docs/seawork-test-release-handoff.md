@@ -285,3 +285,39 @@ Status: **LocalSandbox TR-0 contract gate complete; implementation artifacts pen
   status.
 - Verification command:
   `cargo run -p xtask --locked -- verify-seawork-parity --contract contracts/seawork-test-release-v1.json --seawork-repo /Users/SG3937/code/seawork`.
+
+## 2026-07-21 — Direct-mount bridge and Windows harness foundation
+
+Status: **source complete; signed installed runtime evidence blocked on explicit signing-asset transfer approval**
+
+- LocalSandbox direct-mount source commit:
+  `f6b2c472588e652b7a9489766c8569fb0c99e3b4`.
+- LocalSandbox Windows harness commit:
+  `6120d680ac1a26e52bcb0131d96adf379196a20c`.
+- SeaWork remained read-only at `f9c6cd8ff339688a669451e36078d6cbbc91c1b2`.
+- The service Node API now accepts legacy direct mounts with flags `0`/`1`, rejects
+  overlay and invalid shapes with stable categories, maps direct mounts through the
+  existing Windows SMB lifecycle, reports selected backend `compat-smb-direct`, and
+  preserves the original selected-mount response across same-session start replay.
+- Production service capabilities advertise direct mounts only with a verified engine;
+  ports remain unavailable. Public-network and mount-only starts select the combined or
+  SMB-only proxy modes respectively.
+- Windows source evidence:
+  - service suite `20260721t080700z-68536-a5bb3530b531`: 150 passed, one intentional
+    helper ignore;
+  - scoped Clippy `20260721t080507z-67641-951aaf250404`: passed with only the four
+    documented baseline lint classes allowed; the raw strict run contained only those
+    four unchanged findings; and
+  - `service-fast` `20260721t083424z-79176-6fe4821c2f3a`: Rust/protocol/proxy/VM tests,
+    scoped Clippy, Windows Node build, declaration typecheck, and ten Node API/package/
+    startup tests passed.
+- The harness adds protected signing provisioning, temporary certificate-store signing
+  without a SignTool password argument, allowlisted hash-checked artifact fetch, signed
+  candidate construction, an owned production-identity install transaction, a
+  same-publisher-signed Node executable under `Program Files`, temporary standard-user
+  execution, mount-free/direct-mount smoke, cleanup proof, and reboot continuation.
+- No signing file was transferred. The security approval layer rejected moving the PFX
+  and password from the macOS private directory to the dedicated Windows protected asset
+  root. Retrying requires explicit user authorization. Consequently there is no signed
+  artifact tuple, installed-service runtime claim, publisher value, or TR-1 Windows
+  direct-mount runtime proof in this entry.
