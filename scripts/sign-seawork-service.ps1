@@ -89,6 +89,24 @@ function Invoke-Native {
     }
 }
 
+function Invoke-SignTool {
+    param([string]$Executable, [string[]]$Arguments, [string]$Action)
+    $attempts = if ($SkipTimestamp) { 1 } else { 3 }
+    for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+        & $Executable @Arguments
+        if ($LASTEXITCODE -eq 0) {
+            return
+        }
+        $exitCode = $LASTEXITCODE
+        if ($attempt -lt $attempts) {
+            Write-Warning "$Action failed on attempt $attempt of $attempts; retrying timestamped signing."
+            Start-Sleep -Seconds 5
+            continue
+        }
+        throw "$Action failed after $attempts attempts with exit code $exitCode"
+    }
+}
+
 function Get-PfxPassword {
     $path = Resolve-ExistingFile $PasswordFile 'PasswordFile'
     $password = (Get-Content -LiteralPath $path -Raw).TrimEnd("`r", "`n")
@@ -203,7 +221,7 @@ function Invoke-Sign {
             $arguments += @('/tr', $TimestampUrl, '/td', 'SHA256')
         }
         $arguments += $Path
-        Invoke-Native $signTool $arguments "sign $Path" | Out-Host
+        Invoke-SignTool $signTool $arguments "sign $Path" | Out-Host
         Assert-Signer $Path -RequireTimestamp:(-not $SkipTimestamp)
     }
     finally {
