@@ -1,0 +1,52 @@
+scripts/win-test
+  s_8e356ad97c2683::t_83c0cd924d8c7f 1-6,10-34,38-55,74,81-88,92-93,96,98,111,117,123-133,147-172,174-233
+  s_8e356ad97c2683::t_45adbbb8af1612 56-73,76-80
+  s_8e356ad97c2683::t_2b26f6db8aac02 8-9,90-91
+  s_8e356ad97c2683::t_f5dd5471b15dd1 75
+  s_8e356ad97c2683::t_d398b12cd62a79 7,35-37,89,94-95,97,99-110,112-115,118-119,122
+  s_8e356ad97c2683::t_eb0c5574d3555c 120-121
+  s_8e356ad97c2683::t_27259ec66bdff0 134-146
+  s_8e356ad97c2683::t_4e5a16c8ddc67c 116,173
+scripts/setup-windows-test-host.ps1
+  s_8e356ad97c2683::t_59ab4f6811fd34 115-136,138-142,144-147,183-184,211-218,247-248,281,349
+  s_8e356ad97c2683::t_cebe506e827747 57,59-81,279-280
+  s_8e356ad97c2683::t_ba9b5a0bb65dea 137,143
+  s_8e356ad97c2683::t_fad57430bc13b3 153
+  s_8e356ad97c2683::t_83c0cd924d8c7f 1-56,58,82-114,148-152,154-167,180-182,185-197,201-202,205-210,219-246,249-256,258-278,282-348,350
+  s_8e356ad97c2683::t_271f99ee118a18 168-179,198-200,257
+  s_8e356ad97c2683::t_2b26f6db8aac02 203-204
+docs/windows-agent-testing.md
+  s_8e356ad97c2683::t_c7d245dbc724d8 124-128
+  s_8e356ad97c2683::t_83c0cd924d8c7f 1-48,54-103,107-123,129-145
+  s_8e356ad97c2683::t_59ab4f6811fd34 104-106
+  s_8e356ad97c2683::t_eb0c5574d3555c 49-53
+scripts/windows-dev-test.ps1
+  s_8e356ad97c2683::t_bc790331af3cf5 139,141-144
+  s_8e356ad97c2683::t_83c0cd924d8c7f 1-61,74-78,80-87,90,93-107,109-138,140,145-194
+  s_8e356ad97c2683::t_2b26f6db8aac02 91-92
+  s_8e356ad97c2683::t_271f99ee118a18 62-73,79,88-89,108
+scripts/windows-test-bootstrap.ps1
+  s_8e356ad97c2683::t_cebe506e827747 183-186
+  s_8e356ad97c2683::t_83c0cd924d8c7f 1-33,35-182,187-192
+  s_8e356ad97c2683::t_fad57430bc13b3 34
+scripts/windows-test-suites/reboot-smoke.ps1
+  s_8e356ad97c2683::t_59ab4f6811fd34 1-50,52-66,70-71
+  s_8e356ad97c2683::t_c72f87ebe901c8 51
+  s_8e356ad97c2683::t_cebe506e827747 67-69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "12d0d4e496ea276b08d03a7fdcaa51574ccb3f8b",
+  "prompts": {},
+  "sessions": {
+    "s_8e356ad97c2683": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f833f-ca19-7d22-a5ec-caead4758e3f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}
