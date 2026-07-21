@@ -69,6 +69,7 @@ function Resolve-SdkTool {
         throw "$Name was not found; install the Windows SDK signing tools"
     }
     $candidate = Get-ChildItem -LiteralPath $kit -Directory |
+        Where-Object { $_.Name -match '^\d+(?:\.\d+){1,3}$' } |
         Sort-Object { [version]$_.Name } -Descending |
         ForEach-Object { Join-Path $_.FullName "x64\$Name" } |
         Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
@@ -269,31 +270,49 @@ function New-BundleCatalog {
     if ((Test-Path -LiteralPath $cdf) -or (Test-Path -LiteralPath $catalog)) {
         throw 'catalog work directory is not clean'
     }
-    $lines = [Collections.Generic.List[string]]::new()
-    $lines.Add('[CatalogHeader]')
-    $lines.Add('Name=LocalSandboxSeaWork.cat')
-    $lines.Add('ResultDir=.')
-    $lines.Add('PublicVersion=0x00000001')
-    $lines.Add('CatalogVersion=2')
-    $lines.Add('EncodingType=0x00010001')
-    $lines.Add('HashAlgorithms=SHA256')
-    $lines.Add('')
-    $lines.Add('[CatalogFiles]')
-    for ($index = 0; $index -lt $files.Count; $index++) {
-        $lines.Add(('<HASH>member{0:D5}={1}' -f $index, $files[$index].FullName))
+    $driveLetter = @('Z', 'Y', 'X', 'W', 'V') |
+        Where-Object { -not (Test-Path -LiteralPath "${_}:\") } |
+        Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace($driveLetter)) {
+        throw 'no temporary drive letter is available for bounded catalog paths'
     }
-    [IO.File]::WriteAllText($cdf, ($lines -join "`r`n") + "`r`n", [Text.Encoding]::ASCII)
-    $makeCat = Resolve-SdkTool 'makecat.exe'
-    Push-Location $work
+    $drive = "${driveLetter}:"
+    Invoke-Native subst.exe @($drive, $root) 'map temporary bundle catalog drive'
     try {
-        Invoke-Native $makeCat @('-r', '-v', $cdf) 'generate bundle catalog'
-    } finally {
-        Pop-Location
+        $mappedRoot = "$drive\"
+        if (-not (Test-Path -LiteralPath $mappedRoot -PathType Container)) {
+            throw 'temporary bundle catalog drive did not resolve'
+        }
+        $lines = [Collections.Generic.List[string]]::new()
+        $lines.Add('[CatalogHeader]')
+        $lines.Add('Name=LocalSandboxSeaWork.cat')
+        $lines.Add('ResultDir=.')
+        $lines.Add('PublicVersion=0x00000001')
+        $lines.Add('CatalogVersion=2')
+        $lines.Add('EncodingType=0x00010001')
+        $lines.Add('HashAlgorithms=SHA256')
+        $lines.Add('')
+        $lines.Add('[CatalogFiles]')
+        for ($index = 0; $index -lt $files.Count; $index++) {
+            $member = Join-Path $mappedRoot $files[$index].Relative
+            $lines.Add(('<HASH>member{0:D5}={1}' -f $index, $member))
+        }
+        [IO.File]::WriteAllText($cdf, ($lines -join "`r`n") + "`r`n", [Text.Encoding]::ASCII)
+        $makeCat = Resolve-SdkTool 'makecat.exe'
+        Push-Location $work
+        try {
+            Invoke-Native $makeCat @('-r', '-v', $cdf) 'generate bundle catalog'
+        } finally {
+            Pop-Location
+        }
+        $catalog = Resolve-ExistingFile $catalog 'generated catalog'
+        Invoke-Sign $catalog | Out-Null
+        Copy-Item -LiteralPath $catalog -Destination $catalogDestination
+        Verify-BundleSignatures $mappedRoot
     }
-    $catalog = Resolve-ExistingFile $catalog 'generated catalog'
-    Invoke-Sign $catalog | Out-Null
-    Copy-Item -LiteralPath $catalog -Destination $catalogDestination
-    Verify-BundleSignatures $root
+    finally {
+        Invoke-Native subst.exe @($drive, '/d') 'remove temporary bundle catalog drive'
+    }
 }
 
 function Verify-BundleSignatures {

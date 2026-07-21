@@ -24,4 +24,5 @@ panic = "abort"
 strip = true
 
 [profile.release.package.lsb-seawork-service]
+debug = 1
 strip = false

@@ -4,6 +4,7 @@ param(
     [string] $StateRoot = (Join-Path $env:ProgramData 'LocalSandbox\DevTest'),
     [string] $BootstrapSource = (Join-Path $PSScriptRoot 'windows-test-bootstrap.ps1'),
     [string] $SigningAssetsSource = (Join-Path $PSScriptRoot 'windows-test-signing-assets.ps1'),
+    [string] $RuntimeAssetsSource = (Join-Path $PSScriptRoot 'windows-test-runtime-assets.ps1'),
     [string] $ArtifactFetchSource = (Join-Path $PSScriptRoot 'windows-test-artifacts.ps1'),
     [switch] $VerifyOnly
 )
@@ -229,6 +230,7 @@ function Test-HostConfiguration {
         (Join-Path $RootPath 'repo'),
         (Join-Path $RootPath 'bootstrap.ps1'),
         (Join-Path $RootPath 'windows-test-signing-assets.ps1'),
+        (Join-Path $RootPath 'windows-test-runtime-assets.ps1'),
         (Join-Path $RootPath 'windows-test-artifacts.ps1'),
         (Join-Path $RootPath 'setup-windows-test-host.ps1'),
         $StatePath,
@@ -327,9 +329,11 @@ else {
 
 $resolvedBootstrap = (Resolve-Path -LiteralPath $BootstrapSource).Path
 $resolvedSigningAssets = (Resolve-Path -LiteralPath $SigningAssetsSource).Path
+$resolvedRuntimeAssets = (Resolve-Path -LiteralPath $RuntimeAssetsSource).Path
 $resolvedArtifactFetch = (Resolve-Path -LiteralPath $ArtifactFetchSource).Path
 $installedBootstrap = Join-Path $rootPath 'bootstrap.ps1'
 $installedSigningAssets = Join-Path $rootPath 'windows-test-signing-assets.ps1'
+$installedRuntimeAssets = Join-Path $rootPath 'windows-test-runtime-assets.ps1'
 $installedArtifactFetch = Join-Path $rootPath 'windows-test-artifacts.ps1'
 $installedSetup = Join-Path $rootPath 'setup-windows-test-host.ps1'
 if (-not [IO.Path]::GetFullPath($resolvedBootstrap).Equals(
@@ -343,6 +347,12 @@ if (-not [IO.Path]::GetFullPath($resolvedSigningAssets).Equals(
     [StringComparison]::OrdinalIgnoreCase
 )) {
     Copy-Item -LiteralPath $resolvedSigningAssets -Destination $installedSigningAssets -Force
+}
+if (-not [IO.Path]::GetFullPath($resolvedRuntimeAssets).Equals(
+    [IO.Path]::GetFullPath($installedRuntimeAssets),
+    [StringComparison]::OrdinalIgnoreCase
+)) {
+    Copy-Item -LiteralPath $resolvedRuntimeAssets -Destination $installedRuntimeAssets -Force
 }
 if (-not [IO.Path]::GetFullPath($resolvedArtifactFetch).Equals(
     [IO.Path]::GetFullPath($installedArtifactFetch),

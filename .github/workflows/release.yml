@@ -332,7 +332,7 @@ jobs:
       - name: Generate source map and final archives
         run: |
           $service = Resolve-Path '.\target\x86_64-pc-windows-msvc\release\localsandbox-seawork-service.exe'
-          $pdb = Resolve-Path '.\target\x86_64-pc-windows-msvc\release\localsandbox-seawork-service.pdb'
+          $pdb = Resolve-Path '.\target\x86_64-pc-windows-msvc\release\localsandbox_seawork_service.pdb'
           $sourceMap = [ordered]@{
             schema_version = 1
             version = $env:LSB_SEAWORK_VERSION

@@ -321,3 +321,48 @@ Status: **source complete; signed installed runtime evidence blocked on explicit
   root. Retrying requires explicit user authorization. Consequently there is no signed
   artifact tuple, installed-service runtime claim, publisher value, or TR-1 Windows
   direct-mount runtime proof in this entry.
+
+## 2026-07-21 — Windows runtime assets and artifact-fetch evidence
+
+Status: **non-secret harness prerequisites ready; signing assets discovered locally on Windows**
+
+- The Windows asset root now contains source-built guest runtime files and the repository-
+  pinned managed QEMU package. Provisioning uses a closed three-file archive, rejects
+  unexpected archive paths, verifies the QEMU package SHA-256 before extraction, refuses
+  existing destinations, and commits or removes its owned staging transaction as a unit.
+- Runtime verification reported SHA-256 values:
+  - `Image`: `e44735304690d49e4949bfd20577681972bc47f10402c912149a7dfc8809a513`;
+  - `initramfs.cpio.gz`: `7f5b60b198830572e563bbda424470b9b39ac40332885dec3e30708b3dd0aab9`;
+  - `rootfs.ext4`: `c99f4685591d22c210b8d69114fa4c8937dc318a8e8af4584d50467dfff887ef`;
+    and
+  - QEMU archive: `49021ed8481ad8bc3e2d71ab3d088e60414ec2bb78654c96f6da33b2dd0c6251`.
+- `artifact-fetch-smoke` run `20260721t085613z-88664-655ee9d44324`, snapshot
+  `655ee9d44324b3e3d5209c7ff3b96522dc4ca021`, passed. Its allowlisted evidence was fetched
+  back to macOS through the normal command and independently matched the manifest hash
+  and size; no protected asset path was exposed.
+- SeaWork remained read-only. After the earlier transfer refusal, the user identified
+  the same PFX/password pair already present under a Windows-local private directory.
+  The harness will copy those files locally into its protected asset transaction; no
+  signing secret needs to cross SSH.
+
+## 2026-07-21 — Signing identity verified; empty-file catalog decision required
+
+Status: **trusted PE signing passes; closed bundle construction remains incomplete**
+
+- The Windows-local PFX/password pair was copied into the protected test asset
+  transaction without crossing SSH. Directory and individual-file ACL verification
+  permits only SYSTEM, Administrators, and the dedicated test owner.
+- Public identity verification reports subject `CN=SeaWork, O=Sea` and certificate
+  SHA-256 thumbprint
+  `a036eabbb783a31846eb340a725717d741fd330d9c78c2e3bd35dc1c59dc40d7`.
+- Release-candidate run `20260721t092307z-2849-0bb79dcee94c` built the production
+  service with static CRT, PDB, and all 16 Event Log messages; its SeaWork Authenticode
+  signature and DigiCert RFC 3161 timestamp verified with zero warnings or errors.
+- The staged bundle reached catalog construction after dependency, SBOM, license, and
+  bundle-manifest generation. A temporary owned drive mapping resolved MakeCat's legacy
+  long-path failure, but MakeCat then rejected a regular zero-byte QEMU `loaders.cache`.
+  A minimal raw-file SIP probe reproduced the rejection. The pinned QEMU tree contains
+  50 zero-byte cache/icon placeholder files.
+- No incomplete artifact is a candidate. Finishing the closed catalog requires an
+  explicit decision between newline-normalizing those inert empty staged files (keeping
+  every path cataloged) and implementing a custom WinTrust catalog writer.

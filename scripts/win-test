@@ -5,6 +5,7 @@ host="${WIN_TEST_HOST:-win-test}"
 windows_root='C:/dev/local-sandbox-agent'
 snapshot_index=''
 snapshot_objects=''
+runtime_assets_temp=''
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 
@@ -14,7 +15,10 @@ Usage:
   scripts/win-test setup
   scripts/win-test verify
   scripts/win-test provision-signing
+  scripts/win-test provision-signing-windows
   scripts/win-test verify-signing
+  scripts/win-test provision-runtime
+  scripts/win-test verify-runtime
   scripts/win-test preflight
   scripts/win-test run -- <executable> [arguments...]
   scripts/win-test suite <suite-name>
@@ -37,6 +41,9 @@ cleanup() {
     fi
     if [[ -n "$snapshot_objects" && -d "$snapshot_objects" ]]; then
         rm -rf -- "$snapshot_objects"
+    fi
+    if [[ -n "$runtime_assets_temp" && -d "$runtime_assets_temp" ]]; then
+        rm -rf -- "$runtime_assets_temp"
     fi
 }
 trap cleanup EXIT
@@ -65,12 +72,14 @@ setup_host() {
             "$script_dir/setup-windows-test-host.ps1" \
             "$script_dir/windows-test-bootstrap.ps1" \
             "$script_dir/windows-test-signing-assets.ps1" \
+            "$script_dir/windows-test-runtime-assets.ps1" \
             "$script_dir/windows-test-artifacts.ps1" \
             "${host}:${staging}/" && \
         ssh_windows pwsh -NoProfile -NonInteractive -File \
             "${staging}/setup-windows-test-host.ps1" \
             -BootstrapSource "${staging}/windows-test-bootstrap.ps1" \
             -SigningAssetsSource "${staging}/windows-test-signing-assets.ps1" \
+            -RuntimeAssetsSource "${staging}/windows-test-runtime-assets.ps1" \
             -ArtifactFetchSource "${staging}/windows-test-artifacts.ps1" && \
         ssh_windows pwsh -NoProfile -NonInteractive -File \
             "${windows_root}/setup-windows-test-host.ps1" -VerifyOnly; then
@@ -117,6 +126,52 @@ provision_signing() {
 verify_signing() {
     ssh_windows pwsh -NoProfile -NonInteractive -File \
         "${windows_root}/windows-test-signing-assets.ps1" -Mode Verify
+}
+
+provision_signing_windows() {
+    local source_root="${SEAWORK_WINDOWS_SIGNING_SOURCE_ROOT:-C:/Users/Public/code/private}"
+    local stage_name="$(date -u '+%Y%m%dt%H%M%Sz')-$$"
+    ssh_windows pwsh -NoProfile -NonInteractive -File \
+        "${windows_root}/windows-test-signing-assets.ps1" \
+        -Mode ImportLocal -StageName "$stage_name" -SourceRoot "$source_root"
+}
+
+provision_runtime() {
+    local runtime_root="${LSB_WINDOWS_RUNTIME_ROOT:-}"
+    local stage_name="$(date -u '+%Y%m%dt%H%M%Sz')-$$"
+    local remote_stage="C:/ProgramData/LocalSandbox/DevTest/assets/.runtime-stage-$stage_name"
+    local archive_dir archive_path
+    [[ -n "$runtime_root" && -d "$runtime_root" ]] || \
+        fail 'LSB_WINDOWS_RUNTIME_ROOT must name the local runtime asset directory'
+    for asset_name in Image initramfs.cpio.gz rootfs.ext4; do
+        [[ -f "$runtime_root/$asset_name" ]] || fail "runtime asset is missing: $asset_name"
+    done
+    archive_dir="$(mktemp -d "${TMPDIR:-/tmp}/local-sandbox-runtime-assets.XXXXXX")"
+    runtime_assets_temp="$archive_dir"
+    archive_path="$archive_dir/runtime-assets.tar.gz"
+    COPYFILE_DISABLE=1 tar -czf "$archive_path" -C "$runtime_root" \
+        Image initramfs.cpio.gz rootfs.ext4
+    ssh_windows pwsh -NoProfile -NonInteractive -File \
+        "${windows_root}/windows-test-runtime-assets.ps1" -Mode Prepare -StageName "$stage_name"
+    local provision_status=0
+    if scp -q -o BatchMode=yes -o ConnectTimeout=8 \
+        "$archive_path" "${host}:${remote_stage}/runtime-assets.tar.gz" && \
+        ssh_windows pwsh -NoProfile -NonInteractive -File \
+            "${windows_root}/windows-test-runtime-assets.ps1" -Mode Commit -StageName "$stage_name"; then
+        provision_status=0
+    else
+        provision_status=$?
+        ssh_windows pwsh -NoProfile -NonInteractive -File \
+            "${windows_root}/windows-test-runtime-assets.ps1" -Mode Abort -StageName "$stage_name" || true
+    fi
+    rm -rf -- "$archive_dir"
+    runtime_assets_temp=''
+    return "$provision_status"
+}
+
+verify_runtime() {
+    ssh_windows pwsh -NoProfile -NonInteractive -File \
+        "${windows_root}/windows-test-runtime-assets.ps1" -Mode Verify
 }
 
 fetch_artifacts() {
@@ -256,9 +311,21 @@ case "$action" in
         [[ "$#" -eq 0 ]] || fail 'provision-signing takes no arguments'
         provision_signing
         ;;
+    provision-signing-windows)
+        [[ "$#" -eq 0 ]] || fail 'provision-signing-windows takes no arguments'
+        provision_signing_windows
+        ;;
     verify-signing)
         [[ "$#" -eq 0 ]] || fail 'verify-signing takes no arguments'
         verify_signing
+        ;;
+    provision-runtime)
+        [[ "$#" -eq 0 ]] || fail 'provision-runtime takes no arguments'
+        provision_runtime
+        ;;
+    verify-runtime)
+        [[ "$#" -eq 0 ]] || fail 'verify-runtime takes no arguments'
+        verify_runtime
         ;;
     preflight)
         [[ "$#" -eq 0 ]] || fail 'preflight takes no arguments'

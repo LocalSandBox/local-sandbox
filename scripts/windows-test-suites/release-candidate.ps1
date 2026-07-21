@@ -25,7 +25,12 @@ function Invoke-Native {
         [Parameter(Mandatory = $true)][string] $Label
     )
 
-    & $Executable @Arguments
+    if ([IO.Path]::GetExtension($Executable) -ieq '.ps1') {
+        & pwsh.exe -NoProfile -NonInteractive -File $Executable @Arguments
+    }
+    else {
+        & $Executable @Arguments
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "$Label failed with exit code $LASTEXITCODE"
     }
@@ -51,6 +56,27 @@ function Resolve-RegularDirectory {
         throw "$Label must be a regular non-reparse directory"
     }
     return $resolved.Path.TrimEnd('\')
+}
+
+function Resolve-EventMessageTools {
+    $roots = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots'
+    if ([string]::IsNullOrWhiteSpace([string]$roots.KitsRoot10)) {
+        throw 'Windows SDK KitsRoot10 is unavailable.'
+    }
+    $toolset = Get-ChildItem -LiteralPath (Join-Path $roots.KitsRoot10 'bin') -Directory |
+        Sort-Object Name -Descending |
+        Where-Object {
+            (Test-Path -LiteralPath (Join-Path $_.FullName 'x64\mc.exe') -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $_.FullName 'x64\rc.exe') -PathType Leaf)
+        } |
+        Select-Object -First 1
+    if ($null -eq $toolset) {
+        throw 'No complete x64 Windows SDK mc.exe/rc.exe toolset was found.'
+    }
+    return [pscustomobject]@{
+        Mc = Join-Path $toolset.FullName 'x64\mc.exe'
+        Rc = Join-Path $toolset.FullName 'x64\rc.exe'
+    }
 }
 
 function Write-FetchManifest {
@@ -121,10 +147,23 @@ else {
     [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
 }
 $service = Join-Path $targetRoot 'x86_64-pc-windows-msvc\release\localsandbox-seawork-service.exe'
-$pdb = Join-Path $targetRoot 'x86_64-pc-windows-msvc\release\localsandbox-seawork-service.pdb'
+$pdb = Join-Path $targetRoot 'x86_64-pc-windows-msvc\release\localsandbox_seawork_service.pdb'
+$eventTools = Resolve-EventMessageTools
 $priorRustFlags = $env:RUSTFLAGS
+$priorCompileEventMessages = $env:LSB_COMPILE_EVENT_MESSAGES
+$priorMcPath = $env:LSB_WINDOWS_MC_PATH
+$priorRcPath = $env:LSB_WINDOWS_RC_PATH
 try {
+    foreach ($outputPath in @($service, $pdb)) {
+        if (Test-Path -LiteralPath $outputPath) {
+            Resolve-RegularFile $outputPath 'cached release output' | Out-Null
+            Remove-Item -LiteralPath $outputPath -Force
+        }
+    }
     $env:RUSTFLAGS = '-C target-feature=+crt-static'
+    $env:LSB_COMPILE_EVENT_MESSAGES = '1'
+    $env:LSB_WINDOWS_MC_PATH = $eventTools.Mc
+    $env:LSB_WINDOWS_RC_PATH = $eventTools.Rc
     Invoke-Native cargo @(
         'build', '-p', 'lsb-seawork-service', '--locked', '--release',
         '--target', 'x86_64-pc-windows-msvc'
@@ -132,6 +171,9 @@ try {
 }
 finally {
     $env:RUSTFLAGS = $priorRustFlags
+    $env:LSB_COMPILE_EVENT_MESSAGES = $priorCompileEventMessages
+    $env:LSB_WINDOWS_MC_PATH = $priorMcPath
+    $env:LSB_WINDOWS_RC_PATH = $priorRcPath
 }
 Resolve-RegularFile $service 'release service PE' | Out-Null
 Resolve-RegularFile $pdb 'release service PDB' | Out-Null

@@ -290,17 +290,17 @@ read-only input, writes nested output, and leaves no compatibility resource afte
 
 ### TR-2 — Build a safe native Windows release harness
 
-- [ ] Extend the Windows-agent flow with explicit signing-asset provisioning into
+- [x] Extend the Windows-agent flow with explicit signing-asset provisioning into
   `C:\ProgramData\LocalSandbox\DevTest\assets\signing`. Transfer directly over SSH;
   never add the files to the Git snapshot. Refuse unsafe roots, reparse points, loose
   ACLs, missing files, or an existing unowned destination.
-- [ ] Make provisioning and verification print only certificate subject/thumbprint,
+- [x] Make provisioning and verification print only certificate subject/thumbprint,
   file presence, and ACL status. Never print the password, PFX bytes, command-line
   password, or process environment.
 - [ ] Add focused suites for fast service tests, signed release-candidate construction,
   installed production-identity smoke, and reboot continuation. Every suite writes
   bounded machine-readable results under the existing run root.
-- [ ] Add a safe artifact-fetch command that retrieves only an allowlisted run manifest,
+- [x] Add a safe artifact-fetch command that retrieves only an allowlisted run manifest,
   checksums, signed service ZIP/symbols, Node package artifacts, and redacted evidence.
   It must never fetch the protected signing asset directory.
 - [ ] The install smoke harness is test infrastructure, not a replacement installer.

@@ -36,8 +36,18 @@ scripts/win-test suite service-fast
 # Provision the two external signing inputs without adding them to a snapshot.
 SEAWORK_WINDOWS_PFX_PATH=/absolute/private/SeaWork-CodeSign.pfx \
 SEAWORK_WINDOWS_PFX_PASSWORD_FILE=/absolute/private/win_csc_key_password.txt \
-  scripts/win-test provision-signing
+scripts/win-test provision-signing
 scripts/win-test verify-signing
+
+# If the same two files already exist on the Windows test host, copy them locally into
+# the protected asset transaction instead of transferring them over SSH.
+SEAWORK_WINDOWS_SIGNING_SOURCE_ROOT='C:/Users/Public/code/private' \
+  scripts/win-test provision-signing-windows
+scripts/win-test verify-signing
+
+# Provision source-built guest assets plus the pinned, hash-verified QEMU package.
+LSB_WINDOWS_RUNTIME_ROOT=/absolute/path/to/runtime scripts/win-test provision-runtime
+scripts/win-test verify-runtime
 
 # Build a signed candidate, or build/install/exercise/uninstall it in one bounded run.
 scripts/win-test suite release-candidate
@@ -59,6 +69,11 @@ unowned roots. Output contains only presence/ACL status plus the public certific
 subject and SHA-256 thumbprint. The signing path temporarily imports the certificate
 into the invoking user's certificate store so the password is never placed on the
 SignTool command line, then removes the imported certificate and private key.
+
+Runtime provisioning is independent of signing. It transfers only `Image`,
+`initramfs.cpio.gz`, and `rootfs.ext4`, downloads the repository-pinned managed QEMU
+archive on Windows, verifies its SHA-256, and installs the closed runtime/QEMU roots
+under the protected test asset directory. It refuses existing or unowned destinations.
 
 Artifact fetch reads `fetch-manifest.json` from one exact run and accepts only the
 release manifest/checksums, service ZIPs, Node package tarballs, and redacted JSON
