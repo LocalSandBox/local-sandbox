@@ -81,7 +81,6 @@ install:
     mkdir -p ~/.local/bin; \
     cp "target/release/$binary_name" "$HOME/.local/bin/$binary_name"
 
-# Tag and push a release (triggers GitHub Actions)
-release version:
-    git tag -a "v{{ version }}" -m "Release v{{ version }}"
-    git push origin "v{{ version }}"
+# Dispatch the gated release workflow. Accepts patch, minor, major, or X.Y.Z.
+release version="patch":
+    gh workflow run release.yml --ref main -f version="{{ version }}"

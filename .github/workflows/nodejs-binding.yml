@@ -1,6 +1,12 @@
 name: Node.js Binding
 
 on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Commit to validate and build"
+        required: false
+        type: string
   push:
     branches: [main]
     paths:
@@ -38,6 +44,8 @@ jobs:
         working-directory: bindings/nodejs
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -67,6 +75,8 @@ jobs:
         working-directory: bindings/nodejs
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: 22

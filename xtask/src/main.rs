@@ -25,6 +25,7 @@ fn main() -> Result<()> {
         "build-kernel" => kernel::build_kernel(&rest),
         "prepare-rootfs" => rootfs::prepare_rootfs(&rest),
         "package-release" => release::package_release(&rest),
+        "release" => release::release(&rest),
         _ => {
             print_usage();
             bail!("unknown xtask command: {command}");
@@ -42,4 +43,7 @@ fn print_usage() {
     eprintln!("  cargo run -p xtask -- build-kernel [--platform <id>]");
     eprintln!("  cargo run -p xtask -- prepare-rootfs [--platform <id>]");
     eprintln!("  cargo run -p xtask -- package-release --artifact <cli|os-image> --version <v> [--platform <id>] [--output-dir <dir>]");
+    eprintln!("  cargo run -p xtask -- release current");
+    eprintln!("  cargo run -p xtask -- release prepare <patch|minor|major|X.Y.Z>");
+    eprintln!("  cargo run -p xtask -- release verify [--version <X.Y.Z>]");
 }
