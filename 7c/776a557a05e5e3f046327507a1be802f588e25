@@ -1,0 +1,40 @@
+xtask/src/seawork_parity.rs
+  s_d92cdce887f5bb::t_6f60dd438a772a 259
+  s_d92cdce887f5bb::t_4b8beaa372b168 283,732-767,770-774,779-783,786,788-789,845-859
+  s_d92cdce887f5bb::t_3f2fdf3a7a134f 190,278
+  s_d92cdce887f5bb::t_3e61e8d284665c 420-426,498-501,507
+  s_d92cdce887f5bb::t_bc2a94feb88b57 189,274
+  s_d92cdce887f5bb::t_af8041c081fa1e 86-188,191-192,198-218,221,224-226,231,267-273,275-277,279-282
+  s_d92cdce887f5bb::t_d791c7b54d92fc 14-16,381-383
+  s_d92cdce887f5bb::t_36f02a8cb4969c 377-380,384-419,427-497,502-506,508-620
+  s_d92cdce887f5bb::t_2583e0ef112bbe 284
+  s_d92cdce887f5bb::t_d10e2b269292aa 860
+state.md
+  s_d92cdce887f5bb::t_6f60dd438a772a 4-9
+plan.md
+  s_d92cdce887f5bb::t_caf5a2446ed26f 247,249,252,256,259,262
+docs/seawork-parity-contract.md
+  s_d92cdce887f5bb::t_6f60dd438a772a 9-14
+contracts/seawork-test-release-v1.json
+  s_d92cdce887f5bb::t_1c5f643ff32fd4 1-128
+docs/seawork-test-release-handoff.md
+  s_d92cdce887f5bb::t_6f60dd438a772a 261-287
+docs/seawork-service-release.md
+  s_d92cdce887f5bb::t_6f60dd438a772a 8-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "7c776a557a05e5e3f046327507a1be802f588e25",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
