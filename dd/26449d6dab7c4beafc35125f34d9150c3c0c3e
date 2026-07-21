@@ -1,0 +1,21 @@
+state.md
+  s_d92cdce887f5bb::t_a54ad809466025 5
+docs/seawork-test-release-handoff.md
+  s_d92cdce887f5bb::t_a54ad809466025 383-397
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "dd26449d6dab7c4beafc35125f34d9150c3c0c3e",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
