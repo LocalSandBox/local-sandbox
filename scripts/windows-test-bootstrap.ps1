@@ -141,6 +141,9 @@ try {
     $env:CARGO_INCREMENTAL = '1'
     $env:RUST_BACKTRACE = '1'
     $env:LSB_WINDOWS_TEST_RUN_ROOT = $runPath
+    $env:LSB_WINDOWS_TEST_ASSETS_ROOT = Join-Path $statePath 'assets'
+    $env:SEAWORK_WINDOWS_PFX_PATH = Join-Path $statePath 'assets\signing\SeaWork-CodeSign.pfx'
+    $env:SEAWORK_WINDOWS_PFX_PASSWORD_FILE = Join-Path $statePath 'assets\signing\win_csc_key_password.txt'
 
     $phase = switch ($Mode) {
         'Run' { 'Normal' }

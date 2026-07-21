@@ -13,11 +13,14 @@ usage() {
 Usage:
   scripts/win-test setup
   scripts/win-test verify
+  scripts/win-test provision-signing
+  scripts/win-test verify-signing
   scripts/win-test preflight
   scripts/win-test run -- <executable> [arguments...]
   scripts/win-test suite <suite-name>
   scripts/win-test reboot <suite-name>
   scripts/win-test resume <run-id>
+  scripts/win-test fetch <run-id> <new-local-directory>
 
 WIN_TEST_HOST overrides the default SSH alias "win-test".
 EOF
@@ -61,10 +64,14 @@ setup_host() {
             -o ConnectTimeout=8 \
             "$script_dir/setup-windows-test-host.ps1" \
             "$script_dir/windows-test-bootstrap.ps1" \
+            "$script_dir/windows-test-signing-assets.ps1" \
+            "$script_dir/windows-test-artifacts.ps1" \
             "${host}:${staging}/" && \
         ssh_windows pwsh -NoProfile -NonInteractive -File \
             "${staging}/setup-windows-test-host.ps1" \
-            -BootstrapSource "${staging}/windows-test-bootstrap.ps1" && \
+            -BootstrapSource "${staging}/windows-test-bootstrap.ps1" \
+            -SigningAssetsSource "${staging}/windows-test-signing-assets.ps1" \
+            -ArtifactFetchSource "${staging}/windows-test-artifacts.ps1" && \
         ssh_windows pwsh -NoProfile -NonInteractive -File \
             "${windows_root}/setup-windows-test-host.ps1" -VerifyOnly; then
         setup_status=0
@@ -78,6 +85,62 @@ setup_host() {
         return "$setup_status"
     fi
     return "$cleanup_status"
+}
+
+provision_signing() {
+    local pfx_path="${SEAWORK_WINDOWS_PFX_PATH:-}"
+    local password_path="${SEAWORK_WINDOWS_PFX_PASSWORD_FILE:-}"
+    local stage_name="$(date -u '+%Y%m%dt%H%M%Sz')-$$"
+    local remote_stage="C:/ProgramData/LocalSandbox/DevTest/assets/.signing-stage-$stage_name"
+    [[ -n "$pfx_path" && -f "$pfx_path" ]] || \
+        fail 'SEAWORK_WINDOWS_PFX_PATH must name the local PFX file'
+    [[ -n "$password_path" && -f "$password_path" ]] || \
+        fail 'SEAWORK_WINDOWS_PFX_PASSWORD_FILE must name the local password file'
+    ssh_windows pwsh -NoProfile -NonInteractive -File \
+        "${windows_root}/windows-test-signing-assets.ps1" -Mode Prepare -StageName "$stage_name"
+    local provision_status=0
+    if scp -q -o BatchMode=yes -o ConnectTimeout=8 \
+        "$pfx_path" "${host}:${remote_stage}/SeaWork-CodeSign.pfx" && \
+        scp -q -o BatchMode=yes -o ConnectTimeout=8 \
+        "$password_path" "${host}:${remote_stage}/win_csc_key_password.txt" && \
+        ssh_windows pwsh -NoProfile -NonInteractive -File \
+            "${windows_root}/windows-test-signing-assets.ps1" -Mode Commit -StageName "$stage_name"; then
+        provision_status=0
+    else
+        provision_status=$?
+        ssh_windows pwsh -NoProfile -NonInteractive -File \
+            "${windows_root}/windows-test-signing-assets.ps1" -Mode Abort -StageName "$stage_name" || true
+    fi
+    return "$provision_status"
+}
+
+verify_signing() {
+    ssh_windows pwsh -NoProfile -NonInteractive -File \
+        "${windows_root}/windows-test-signing-assets.ps1" -Mode Verify
+}
+
+fetch_artifacts() {
+    local fetch_run_id="$1" destination="$2" listing name expected_sha expected_size observed_sha
+    [[ "$fetch_run_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$ ]] || fail 'invalid run ID'
+    [[ ! -e "$destination" ]] || fail "fetch destination already exists: $destination"
+    mkdir -p -- "$destination"
+    listing="$(ssh_windows pwsh -NoProfile -NonInteractive -File \
+        "${windows_root}/windows-test-artifacts.ps1" -RunId "$fetch_run_id")"
+    while IFS=$'\t' read -r name expected_sha expected_size; do
+        name="${name//$'\r'/}"
+        expected_sha="${expected_sha//$'\r'/}"
+        expected_size="${expected_size//$'\r'/}"
+        [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,159}$ ]] || fail 'remote artifact name is unsafe'
+        [[ "$expected_sha" =~ ^[0-9a-f]{64}$ ]] || fail "remote artifact hash is invalid: $name"
+        [[ "$expected_size" =~ ^[0-9]+$ ]] || fail "remote artifact size is invalid: $name"
+        scp -q -o BatchMode=yes -o ConnectTimeout=8 \
+            "${host}:C:/ProgramData/LocalSandbox/DevTest/runs/${fetch_run_id}/${name}" \
+            "$destination/$name"
+        [[ "$(wc -c < "$destination/$name" | tr -d ' ')" == "$expected_size" ]] || \
+            fail "downloaded artifact size mismatch: $name"
+        observed_sha="$(shasum -a 256 "$destination/$name" | awk '{print $1}')"
+        [[ "$observed_sha" == "$expected_sha" ]] || fail "downloaded artifact hash mismatch: $name"
+    done <<< "$listing"
 }
 
 verify_host() {
@@ -189,6 +252,14 @@ case "$action" in
         [[ "$#" -eq 0 ]] || fail 'verify takes no arguments'
         verify_host
         ;;
+    provision-signing)
+        [[ "$#" -eq 0 ]] || fail 'provision-signing takes no arguments'
+        provision_signing
+        ;;
+    verify-signing)
+        [[ "$#" -eq 0 ]] || fail 'verify-signing takes no arguments'
+        verify_signing
+        ;;
     preflight)
         [[ "$#" -eq 0 ]] || fail 'preflight takes no arguments'
         create_snapshot
@@ -222,6 +293,10 @@ case "$action" in
     resume)
         [[ "$#" -eq 1 ]] || fail 'resume requires exactly one run ID'
         resume_run "$1"
+        ;;
+    fetch)
+        [[ "$#" -eq 2 ]] || fail 'fetch requires a run ID and a new local destination directory'
+        fetch_artifacts "$1" "$2"
         ;;
     -h|--help|help)
         usage

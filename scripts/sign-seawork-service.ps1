@@ -1,10 +1,11 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('SignPe', 'Catalog', 'Verify')]
+    [ValidateSet('SignPe', 'SignTestNode', 'Catalog', 'Verify')]
     [string]$Mode,
 
     [string]$ServiceBinary,
+    [string]$ClientBinary,
     [string]$BundleRoot,
     [string]$PfxPath,
     [string]$PasswordFile,
@@ -146,21 +147,68 @@ function Invoke-Sign {
     $signTool = Resolve-SdkTool 'signtool.exe'
     $pfx = Resolve-ExistingFile $PfxPath 'PfxPath'
     $password = Get-PfxPassword
-    $arguments = @('sign', '/fd', 'SHA256', '/f', $pfx, '/p', $password)
-    if (-not $SkipTimestamp) {
-        if ([string]::IsNullOrWhiteSpace($TimestampUrl)) {
-            throw 'TimestampUrl is required unless SkipTimestamp is explicitly set'
-        }
-        $arguments += @('/tr', $TimestampUrl, '/td', 'SHA256')
-    }
-    $arguments += $Path
+    $securePassword = $null
+    $collection = @()
+    $arguments = @()
+    $importedThumbprints = [Collections.Generic.List[string]]::new()
     try {
+        $collection = [Security.Cryptography.X509Certificates.X509Certificate2Collection]::new()
+        $collection.Import(
+            $pfx,
+            $password,
+            [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+        )
+        $signers = @($collection | Where-Object { $_.HasPrivateKey })
+        if ($signers.Count -ne 1) {
+            throw 'PFX must contain exactly one certificate with a private key'
+        }
+        $signerThumbprint = $signers[0].Thumbprint
+        if ($signerThumbprint -notmatch '^[0-9A-Fa-f]{40}$') {
+            throw 'PFX signer has an invalid SHA-1 certificate identifier'
+        }
+        foreach ($certificate in $collection) {
+            $certificatePath = "Cert:\CurrentUser\My\$($certificate.Thumbprint)"
+            if (Test-Path -LiteralPath $certificatePath) {
+                throw 'Refusing to replace a certificate already present in the signing user store'
+            }
+        }
+        $securePassword = ConvertTo-SecureString -String $password -AsPlainText -Force
+        $imported = @(Import-PfxCertificate `
+            -FilePath $pfx `
+            -CertStoreLocation 'Cert:\CurrentUser\My' `
+            -Password $securePassword `
+            -Exportable:$false)
+        foreach ($certificate in $imported) {
+            $importedThumbprints.Add($certificate.Thumbprint)
+        }
+        if ($importedThumbprints -notcontains $signerThumbprint) {
+            throw 'The imported certificate set did not contain the PFX signer'
+        }
+        $arguments = @('sign', '/fd', 'SHA256', '/s', 'My', '/sha1', $signerThumbprint)
+        if (-not $SkipTimestamp) {
+            if ([string]::IsNullOrWhiteSpace($TimestampUrl)) {
+                throw 'TimestampUrl is required unless SkipTimestamp is explicitly set'
+            }
+            $arguments += @('/tr', $TimestampUrl, '/td', 'SHA256')
+        }
+        $arguments += $Path
         Invoke-Native $signTool $arguments "sign $Path" | Out-Host
-    } finally {
+        Assert-Signer $Path -RequireTimestamp:(-not $SkipTimestamp)
+    }
+    finally {
+        foreach ($thumbprint in $importedThumbprints) {
+            $certificatePath = "Cert:\CurrentUser\My\$thumbprint"
+            if (Test-Path -LiteralPath $certificatePath) {
+                Remove-Item -Path $certificatePath -DeleteKey -Force
+            }
+        }
+        foreach ($certificate in $collection) {
+            $certificate.Dispose()
+        }
+        $securePassword = $null
         $password = $null
         $arguments = $null
     }
-    Assert-Signer $Path -RequireTimestamp:(-not $SkipTimestamp)
 }
 
 function Get-BundleFiles {
@@ -271,6 +319,43 @@ switch ($Mode) {
             throw 'ServiceBinary has an unexpected filename'
         }
         $result = Invoke-Sign $service
+        $result | ConvertTo-Json -Compress
+    }
+    'SignTestNode' {
+        $client = Resolve-ExistingFile $ClientBinary 'ClientBinary'
+        if ((Split-Path -Leaf $client) -cne 'node.exe') {
+            throw 'ClientBinary must name node.exe'
+        }
+        $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+        $allowedRoot = Join-Path $programFiles 'SeaWork\LocalSandboxTestHarness'
+        $allowedPrefix = [IO.Path]::GetFullPath($allowedRoot).TrimEnd('\') + '\'
+        if (-not [IO.Path]::GetFullPath($client).StartsWith(
+            $allowedPrefix,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+            throw 'ClientBinary must be below the protected LocalSandbox test-harness root'
+        }
+        $clientItem = Get-Item -LiteralPath $client -Force
+        if ($clientItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw 'ClientBinary must not be a reparse point'
+        }
+        $cursor = $clientItem.Directory
+        while ($true) {
+            if ($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw 'ClientBinary and its test-harness ancestors must not be reparse points'
+            }
+            if ($cursor.FullName.Equals(
+                $allowedRoot,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+                break
+            }
+            $cursor = $cursor.Parent
+            if ($null -eq $cursor) {
+                throw 'ClientBinary did not resolve below the test-harness root'
+            }
+        }
+        $result = Invoke-Sign $client
         $result | ConvertTo-Json -Compress
     }
     'Catalog' {

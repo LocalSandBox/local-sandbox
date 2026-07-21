@@ -32,11 +32,39 @@ scripts/win-test run -- cargo check -p lsb-seawork-service --locked
 
 # Run a named repository suite.
 scripts/win-test suite service-fast
+
+# Provision the two external signing inputs without adding them to a snapshot.
+SEAWORK_WINDOWS_PFX_PATH=/absolute/private/SeaWork-CodeSign.pfx \
+SEAWORK_WINDOWS_PFX_PASSWORD_FILE=/absolute/private/win_csc_key_password.txt \
+  scripts/win-test provision-signing
+scripts/win-test verify-signing
+
+# Build a signed candidate, or build/install/exercise/uninstall it in one bounded run.
+scripts/win-test suite release-candidate
+scripts/win-test suite installed-service-smoke
+
+# Fetch only manifest-listed release artifacts and redacted JSON evidence.
+scripts/win-test fetch <run-id> <new-local-directory>
 ```
 
 Set `WIN_TEST_HOST` to use an SSH alias other than `win-test`. Commands and arguments are
 transported as a base64-encoded, NUL-delimited argument vector; they are never evaluated
 as a PowerShell expression.
+
+Signing provisioning creates a unique protected staging directory below
+`C:\ProgramData\LocalSandbox\DevTest\assets`, transfers the PFX and password directly
+over SSH, validates their bounded shape and certificate, and atomically installs them at
+`assets\signing`. It refuses reparse points, loose ACLs, an existing destination, and
+unowned roots. Output contains only presence/ACL status plus the public certificate
+subject and SHA-256 thumbprint. The signing path temporarily imports the certificate
+into the invoking user's certificate store so the password is never placed on the
+SignTool command line, then removes the imported certificate and private key.
+
+Artifact fetch reads `fetch-manifest.json` from one exact run and accepts only the
+release manifest/checksums, service ZIPs, Node package tarballs, and redacted JSON
+evidence named by its closed filename allowlist. Every file is size- and SHA-256-checked
+after transfer. Logs, arbitrary run files, and the persistent asset tree are not
+fetchable through this command.
 
 ## Source synchronization
 
@@ -91,6 +119,22 @@ if ($LASTEXITCODE -ne 0) {
 
 Run it with `scripts/win-test suite <suite-name>`. Suite scripts must throw when a
 PowerShell operation fails and must explicitly check native process exit codes.
+
+The test-release suites are:
+
+- `service-fast`: focused Rust tests, scoped Clippy, Node compilation, API-shape tests,
+  and declaration typechecking;
+- `release-candidate`: production-profile static-CRT build, trusted timestamped PE and
+  catalog signing, closed archives, and a fetch manifest;
+- `installed-service-smoke`: candidate construction plus an owned production-identity
+  install, signed Node binding execution as a temporary standard user, mount-free and
+  four-mount smoke, compatibility-resource proof, and uninstall; and
+- `service-reboot`: the same owned install before reboot, delayed automatic startup and
+  a post-reboot signed standard-user smoke, followed by uninstall.
+
+The install harness refuses an existing service, Event Log source, install/state/client
+root, test user, or scheduled task that it cannot prove belongs to its exact run. It is
+dedicated-laptop test infrastructure, not a replacement for SeaWork's NSIS transaction.
 
 ## Reboot-spanning suites
 

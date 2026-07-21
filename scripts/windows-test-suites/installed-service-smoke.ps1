@@ -1,0 +1,45 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)]
+    [ValidateSet('Normal', 'BeforeReboot', 'AfterReboot')]
+    [string] $Phase,
+    [Parameter(Mandatory = $true)][string] $RunRoot,
+    [Parameter(Mandatory = $true)][string] $SnapshotSha
+)
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+if ($Phase -ne 'Normal') { throw 'The installed-service-smoke suite does not support reboot phases.' }
+
+$releaseSuite = Join-Path $PSScriptRoot 'release-candidate.ps1'
+$harness = Join-Path (Split-Path -Parent $PSScriptRoot) 'windows-test-service-harness.ps1'
+& $releaseSuite -Phase Normal -RunRoot $RunRoot -SnapshotSha $SnapshotSha
+try {
+    & $harness -Mode InstallAndSmoke -RunRoot $RunRoot -SnapshotSha $SnapshotSha
+}
+finally {
+    if (Test-Path -LiteralPath (Join-Path $RunRoot 'installed-service-state.json')) {
+        & $harness -Mode Uninstall -RunRoot $RunRoot -SnapshotSha $SnapshotSha
+        [ordered]@{ schema_version = 1; status = 'passed'; owned_resources_removed = $true } |
+            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $RunRoot 'evidence-uninstall.json') -Encoding utf8NoBOM
+    }
+}
+
+$manifestPath = Join-Path $RunRoot 'fetch-manifest.json'
+$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+foreach ($name in @(
+    'evidence-installed-smoke.json',
+    'evidence-node-mount-free.json',
+    'evidence-node-direct-mounts.json',
+    'evidence-uninstall.json'
+)) {
+    $path = Join-Path $RunRoot $name
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        $manifest.artifacts += [pscustomobject]@{
+            name = $name
+            sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            size = (Get-Item -LiteralPath $path).Length
+        }
+    }
+}
+$manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
