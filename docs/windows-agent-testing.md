@@ -156,13 +156,21 @@ scripts/win-test reboot service-reboot \
   --reuse-candidate <source-run-id>
 ```
 
+The same option is available for a non-reboot installed-service retry:
+
+```bash
+scripts/win-test suite installed-service-smoke \
+  --reuse-candidate <source-run-id>
+```
+
 Reuse is fail-closed. The Windows runner checks the source and destination run owners,
 rejects reparse points, verifies every source fetch-manifest hash and required staged
 manifest, re-runs trusted PE/catalog closure and installed-layout verification, copies
 the candidate into the new owned run, and repeats those checks there. The new evidence
 records the source run/snapshot/tree and keeps all runtime smoke and reboot checks in
-the new run. A source candidate from a different tree, base commit, version, or signer
-is rejected.
+the new run. A later runtime failure does not discard a candidate whose release
+evidence, hashes, signatures, catalog, and installed layout all pass re-verification.
+A source candidate from a different tree, base commit, version, or signer is rejected.
 
 The install harness refuses an existing service, Event Log source, install/state/client
 root, test user, or scheduled task that it cannot prove belongs to its exact run. It is

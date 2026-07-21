@@ -4,7 +4,9 @@ param(
     [ValidateSet('Normal', 'BeforeReboot', 'AfterReboot')]
     [string] $Phase,
     [Parameter(Mandatory = $true)][string] $RunRoot,
-    [Parameter(Mandatory = $true)][string] $SnapshotSha
+    [Parameter(Mandatory = $true)][string] $SnapshotSha,
+    [ValidatePattern('^$|^[a-z0-9][a-z0-9._-]{0,95}$')]
+    [string] $ReuseRunId = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,8 +14,18 @@ Set-StrictMode -Version Latest
 if ($Phase -ne 'Normal') { throw 'The installed-service-smoke suite does not support reboot phases.' }
 
 $releaseSuite = Join-Path $PSScriptRoot 'release-candidate.ps1'
+$reuseCandidate = Join-Path (Split-Path -Parent $PSScriptRoot) `
+    'windows-test-reuse-candidate.ps1'
 $harness = Join-Path (Split-Path -Parent $PSScriptRoot) 'windows-test-service-harness.ps1'
-& $releaseSuite -Phase Normal -RunRoot $RunRoot -SnapshotSha $SnapshotSha
+if ([string]::IsNullOrWhiteSpace($ReuseRunId)) {
+    & $releaseSuite -Phase Normal -RunRoot $RunRoot -SnapshotSha $SnapshotSha
+}
+else {
+    & $reuseCandidate `
+        -RunRoot $RunRoot `
+        -SnapshotSha $SnapshotSha `
+        -SourceRunId $ReuseRunId
+}
 try {
     & $harness -Mode InstallAndSmoke -RunRoot $RunRoot -SnapshotSha $SnapshotSha
 }

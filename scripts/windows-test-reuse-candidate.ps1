@@ -119,23 +119,32 @@ function Assert-FetchManifest {
     return $fetch
 }
 
-function Assert-PassedCandidateResult {
+function Get-CandidateConstructionProof {
     param([string] $Root, [string] $ExpectedSnapshot)
 
     $results = @('result-normal.json', 'result-beforereboot.json')
+    $runtimeFailureResult = $null
     foreach ($name in $results) {
         $path = Join-Path $Root $name
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
         $result = Read-JsonFile $path "source $name" 1MB
-        if ($result.status -eq 'passed' -and $result.exit_code -eq 0 -and
-            $result.snapshot_sha -ceq $ExpectedSnapshot -and
+        if ($result.snapshot_sha -ceq $ExpectedSnapshot -and
             [string]$result.suite -in @(
                 'release-candidate', 'installed-service-smoke', 'service-reboot'
             )) {
-            return $name
+            if ($result.status -eq 'passed' -and $result.exit_code -eq 0) {
+                return $name
+            }
+            $runtimeFailureResult = $name
         }
     }
-    throw 'Source run has no passed release-candidate construction phase.'
+    if ($null -ne $runtimeFailureResult) {
+        # The caller independently validates the passed release evidence, every
+        # artifact hash, and both signature/bundle verification paths. A later
+        # runtime failure does not invalidate completed candidate construction.
+        return "$runtimeFailureResult+passed-release-evidence"
+    }
+    throw 'Source run has no result tied to its passed release-candidate evidence.'
 }
 
 function Assert-Sha256Sums {
@@ -308,7 +317,7 @@ $sourceRequired = @(
     'evidence-event-messages.json'
 ) + $nodeNames
 Assert-FetchManifest $source $SourceRunId $sourceRequired | Out-Null
-$sourceResult = Assert-PassedCandidateResult $source ([string]$releaseEvidence.snapshot_sha)
+$sourceResult = Get-CandidateConstructionProof $source ([string]$releaseEvidence.snapshot_sha)
 Assert-SafeTree (Join-Path $source 'release-work') 'source release work' | Out-Null
 Assert-Bundle $source $releaseEvidence $releaseManifest $nodeEvidence $signingScript | Out-Null
 

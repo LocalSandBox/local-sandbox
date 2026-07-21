@@ -21,7 +21,7 @@ Usage:
   scripts/win-test verify-runtime
   scripts/win-test preflight
   scripts/win-test run -- <executable> [arguments...]
-  scripts/win-test suite <suite-name>
+  scripts/win-test suite <suite-name> [--reuse-candidate <run-id>]
   scripts/win-test reboot <suite-name> [--reuse-candidate <run-id>]
   scripts/win-test resume <run-id>
   scripts/win-test fetch <run-id> <new-local-directory>
@@ -361,10 +361,18 @@ case "$action" in
         invoke_bootstrap Run command "$command_spec_base64"
         ;;
     suite)
-        [[ "$#" -eq 1 ]] || fail 'suite requires exactly one suite name'
+        [[ "$#" -eq 1 || "$#" -eq 3 ]] || \
+            fail 'suite syntax is: scripts/win-test suite <suite-name> [--reuse-candidate <run-id>]'
         [[ "$1" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || fail 'invalid suite name'
+        suite_name="$1"
+        reuse_run_id=''
+        if [[ "$#" -eq 3 ]]; then
+            [[ "$2" == '--reuse-candidate' ]] || fail 'unknown suite option'
+            [[ "$3" =~ ^[a-z0-9][a-z0-9._-]{0,95}$ ]] || fail 'invalid reuse candidate run ID'
+            reuse_run_id="$3"
+        fi
         create_snapshot
-        invoke_bootstrap Run "$1"
+        invoke_bootstrap Run "$suite_name" '' "$reuse_run_id"
         ;;
     reboot)
         [[ "$#" -eq 1 || "$#" -eq 3 ]] || \

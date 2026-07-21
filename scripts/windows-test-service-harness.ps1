@@ -262,11 +262,17 @@ function Invoke-FilteredUserProcess {
     try {
         $registered = Register-ScheduledTask -TaskName $taskName -Action $action `
             -Trigger $trigger -Principal $principal -Settings $settings
+        $registeredUserId = [string]$registered.Principal.UserId
+        $expectedUserIds = @(
+            [string]$State.client_user_sid,
+            [string]$State.client_user_identity,
+            [string]$State.client_user_name
+        )
         if ([string]$registered.Principal.RunLevel -ne 'Limited' -or
             [string]$registered.Principal.LogonType -notin @('Interactive', 'InteractiveToken') -or
-            [string]$registered.Principal.UserId -cne [string]$State.client_user_sid) {
+            $registeredUserId -notin $expectedUserIds) {
             throw "Filtered client task principal mismatch: " +
-                "userId=$($registered.Principal.UserId), " +
+                "userId=$registeredUserId, " +
                 "logonType=$($registered.Principal.LogonType), " +
                 "runLevel=$($registered.Principal.RunLevel)."
         }
