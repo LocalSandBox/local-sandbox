@@ -1,0 +1,66 @@
+scripts/windows-test-service-harness.ps1
+  s_d92cdce887f5bb::t_51059e1c3c3879 244-246
+  s_d92cdce887f5bb::t_a0c05dfd757216 205,210,213,216,219,263-267
+  s_d92cdce887f5bb::t_1913cf96d8444e 463-467,469-470,474-476,496-498,500-502
+  s_d92cdce887f5bb::t_b8b5a59b3d0e16 212,215,218,222
+  s_d92cdce887f5bb::t_cd9ca9026c7fd4 183,185,187,191
+  s_d92cdce887f5bb::t_45c9ce412bb1ba 483-484
+  s_d92cdce887f5bb::t_50f1d5ca461ba1 575,578-579,583-586,594,598
+  s_d92cdce887f5bb::t_ae2dc72d9bf500 406-407
+  s_d92cdce887f5bb::t_b5d42e67eea484 347-360,399-405,408-409,431,438-460,506-516,530-531,668-669
+  s_d92cdce887f5bb::t_7b2e2b34eb48b9 626
+  s_d92cdce887f5bb::t_102a279e9a013e 206,223,225,270-271,274-280,307,319,477-482,485-488
+  s_d92cdce887f5bb::t_7c58b5020d3c28 728-730
+  s_d92cdce887f5bb::t_092ff5cb0655a0 230-238,240
+  s_d92cdce887f5bb::t_8a39d9cfd936e0 243
+  s_d92cdce887f5bb::t_e1f4abf618f30e 412,436,462,471-473,490,493-495,499,503-505,525-526
+  s_d92cdce887f5bb::t_50ae516fecefb3 195-196,202-204,207-209,211,214,217,220-221,224,226-228,269,272,281-306,308-309,311-313,320
+  s_d92cdce887f5bb::t_6bfd9343d15e11 182,321
+  s_d92cdce887f5bb::t_94c6489c86c16c 322,362,370-385,574,576-577,580-582,593,595-597,599,661,671-685,695-705,716,721,736-740
+  s_d92cdce887f5bb::t_a38e590fddbd32 361,743-749
+  s_d92cdce887f5bb::t_d952ffbca4fc0c 184,186,188-190,192-194,197-201,229,239,241-242,247-262,268,273,310,314-318
+  s_d92cdce887f5bb::t_bd4671e64bca27 323
+  s_d92cdce887f5bb::t_058145bd4cc243 363
+  s_d92cdce887f5bb::t_1bb9ca50f36c1c 461
+scripts/windows-test-suites/filtered-client-token.ps1
+  s_d92cdce887f5bb::t_956ce7c1276d14 31-32
+  s_d92cdce887f5bb::t_a38e590fddbd32 1-16,27,41-46,50,54-60
+  s_d92cdce887f5bb::t_9730c446014833 17-26,28-30,33-40,47-49,51-53
+scripts/windows-test-suites/installed-service-smoke.ps1
+  s_d92cdce887f5bb::t_1a2194824bf5cf 48-50
+  s_d92cdce887f5bb::t_b5d42e67eea484 34-35
+crates/lsb-seawork-service/src/security/mod.rs
+  s_d92cdce887f5bb::t_84ae69133f396f 6
+scripts/write-seawork-test-release-manifest.ps1
+  s_d92cdce887f5bb::t_41ef1ae0276040 62-73,153-156,189,211-214
+scripts/windows-test-suites/service-acceptance.mjs
+  s_d92cdce887f5bb::t_95bc7880f36d34 2,29,31-32
+  s_d92cdce887f5bb::t_3970de4325f123 26,47-48,50-55,57-61,63-75,77,79,81-86,89-95,97-103,105-120,122-127,129-133,135-142,144-149,151-155,157-171,173-178,180-190,192-209,211-212,220
+  s_d92cdce887f5bb::t_b5d42e67eea484 128
+  s_d92cdce887f5bb::t_3c9af50195037b 30
+  s_d92cdce887f5bb::t_cf20e531f910b2 237-241
+  s_d92cdce887f5bb::t_6aec2b23d994a4 27,33,35,37,49,56,62,76,80,88,96,104,121,134,143,150,156,172,179,191,210,215,236
+crates/lsb-seawork-service/src/security/process.rs
+  s_d92cdce887f5bb::t_079e221ea3f411 10,16
+  s_d92cdce887f5bb::t_84ae69133f396f 1-9,11-15,17-101
+crates/lsb-seawork-service/src/scm.rs
+  s_d92cdce887f5bb::t_84ae69133f396f 65-66
+scripts/windows-test-suites/service-reboot.ps1
+  s_d92cdce887f5bb::t_b5d42e67eea484 32-41,50-52
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "f57f96369022d3a61c09627ef3e1ffbcc467faf7",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
