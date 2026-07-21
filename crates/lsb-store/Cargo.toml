@@ -1,6 +1,6 @@
 [package]
 name = "lsb-store"
-version = "0.4.6"
+version = "0.4.7-test.1"
 edition = "2021"
 description = "NBD-backed storage layer for lsb microVMs"
 license = "Apache-2.0"
@@ -10,7 +10,7 @@ repository = "https://github.com/LocalSandBox/local-sandbox.git"
 tempfile = "3"
 
 [dependencies]
-lsb-platform = { version = "0.4.6", path = "../lsb-platform" }
+lsb-platform = { version = "0.4.7-test.1", path = "../lsb-platform" }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync"] }
 anyhow = "1"
 tracing = "0.1"
