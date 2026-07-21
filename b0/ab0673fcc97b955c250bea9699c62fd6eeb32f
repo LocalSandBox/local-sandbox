@@ -1,0 +1,22 @@
+crates/lsb-seawork-service/src/security/token.rs
+  s_d92cdce887f5bb::t_ed13797814d430 276-277
+  s_d92cdce887f5bb::t_02288aa476d1a0 361,363
+  s_d92cdce887f5bb::t_be67490532473f 158,232-250,359-360,365,371-387
+  s_d92cdce887f5bb::t_463ff8e00a598f 364
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "b0ab0673fcc97b955c250bea9699c62fd6eeb32f",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
