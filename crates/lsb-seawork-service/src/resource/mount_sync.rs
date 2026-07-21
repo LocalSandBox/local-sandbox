@@ -114,6 +114,7 @@ pub struct StagedReconciler {
     last_observed: Duration,
     final_deadline: Option<Duration>,
     state: ReconcileState,
+    conflict: Option<MountConflict>,
 }
 
 impl StagedReconciler {
@@ -134,6 +135,7 @@ impl StagedReconciler {
             last_observed: now,
             final_deadline: None,
             state: ReconcileState::Active,
+            conflict: None,
         })
     }
 
@@ -143,6 +145,10 @@ impl StagedReconciler {
 
     pub fn state(&self) -> ReconcileState {
         self.state
+    }
+
+    pub fn conflict(&self) -> Option<&MountConflict> {
+        self.conflict.as_ref()
     }
 
     pub fn notify_change(&mut self, relative: PathBuf, now: Duration) -> Result<()> {
@@ -224,6 +230,7 @@ impl StagedReconciler {
             match build_reconciliation_plan(&self.baseline, host, guest) {
                 Ok(plan) => plan,
                 Err(conflict) => {
+                    self.conflict = Some(conflict.clone());
                     self.state = ReconcileState::Failed;
                     return Err(conflict.into());
                 }
@@ -1064,6 +1071,22 @@ mod tests {
             .complete_verified_cycle(plan, &changed, &baseline, DIRTY_RECONCILE_INTERVAL)
             .is_err());
         assert_eq!(drifted.state(), ReconcileState::Failed);
+
+        let divergent = TreeSnapshot {
+            entries: [(PathBuf::from("file"), fingerprint(3))].into(),
+        };
+        let mut conflicted = StagedReconciler::new(baseline.clone(), Duration::ZERO).unwrap();
+        conflicted
+            .notify_change(PathBuf::from("file"), Duration::ZERO)
+            .unwrap();
+        assert!(conflicted
+            .plan_due(&changed, &divergent, DIRTY_RECONCILE_INTERVAL)
+            .is_err());
+        assert_eq!(
+            conflicted.conflict().unwrap().relative_paths,
+            vec![PathBuf::from("file")]
+        );
+        assert_eq!(conflicted.state(), ReconcileState::Failed);
 
         let mut invalid = StagedReconciler::new(baseline.clone(), Duration::ZERO).unwrap();
         invalid

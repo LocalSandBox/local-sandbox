@@ -146,10 +146,14 @@ dispatches every preordered import/export operation through the path worker, the
 both fresh snapshots. The controller compares both trees semantically with the plan's
 expected baseline and advances only on an exact match; mutation, snapshot, or outcome
 drift clears the pending cycle and fails terminally. Production still must publish
-conflict artifacts and durable recovery metadata, connect watcher/periodic/final timing
-to VM stop/cleanup, and implement retained-stage user export and SMB lifecycle. Until
-that integration and its Windows evidence exist, the service continues to advertise no
-mount capability.
+conflict artifacts and durable recovery metadata. Divergent paths are now retained in
+the terminal controller and exposed by the owning mount alongside its still-pinned
+protected stage; they no longer survive only inside a transient error. `StagedMount`
+also forwards bounded change notifications and final-flush initiation while keeping the
+controller private. A Windows host monitor, guest-event bridge, periodic scheduler, and
+VM stop/cleanup driver must call those controls, and retained-stage user export plus SMB
+lifecycle remain incomplete. Until that integration and its Windows evidence exist, the
+service continues to advertise no mount capability.
 
 Conflict names are exactly
 `<filename>.lsb-conflict-<128-bit-lowercase-hex-session-id>-<decimal-sequence>` and must

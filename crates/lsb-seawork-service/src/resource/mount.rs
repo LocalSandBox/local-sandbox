@@ -7,7 +7,9 @@ use anyhow::{bail, Context, Result};
 use crate::ledger::schema::ResourceRecord;
 use crate::security::path::{AuthorizedMountRoot, MountAccess, MountBackend, PathWorker};
 
-use super::mount_sync::{ReconciliationPlan, StagedReconciler, SyncDirection};
+use super::mount_sync::{
+    MountConflict, ReconcileState, ReconciliationPlan, StagedReconciler, SyncDirection,
+};
 use super::transaction::ResourceTransaction;
 
 pub struct StagedMount {
@@ -76,6 +78,22 @@ impl StagedMount {
 
     pub fn protected_root(&self) -> &ProtectedStagingRoot {
         &self.protected_root
+    }
+
+    pub fn notify_change(&mut self, relative: PathBuf, now: Duration) -> Result<()> {
+        self.reconciliation.notify_change(relative, now)
+    }
+
+    pub fn begin_final_flush(&mut self, now: Duration) -> Result<Duration> {
+        self.reconciliation.begin_final_flush(now)
+    }
+
+    pub fn reconciliation_state(&self) -> ReconcileState {
+        self.reconciliation.state()
+    }
+
+    pub fn conflict(&self) -> Option<&MountConflict> {
+        self.reconciliation.conflict()
     }
 
     pub fn plan_due(
