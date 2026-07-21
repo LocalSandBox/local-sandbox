@@ -314,27 +314,25 @@ jobs:
           pattern: cli-binary-*
           merge-multiple: true
           path: artifacts/
-      - name: Inspect existing release
-        id: release-state
+      - name: Create or update draft release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
+          set -euo pipefail
           if is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null)"; then
-            echo "stage=${is_draft}" >> "$GITHUB_OUTPUT"
+            if [[ "$is_draft" == "true" ]]; then
+              gh release upload "$RELEASE_TAG" artifacts/* --clobber
+            else
+              echo "${RELEASE_TAG} is already public"
+            fi
           else
-            echo "stage=true" >> "$GITHUB_OUTPUT"
+            gh release create "$RELEASE_TAG" artifacts/* \
+              --target "$RELEASE_SHA" \
+              --draft \
+              --generate-notes
           fi
-      - name: Create or update draft release
-        if: steps.release-state.outputs.stage == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.prepare.outputs.tag }}
-          target_commitish: ${{ needs.prepare.outputs.sha }}
-          draft: true
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: artifacts/*
 
   publish-crates:
     name: Optionally publish crates.io packages
