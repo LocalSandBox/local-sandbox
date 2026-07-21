@@ -1,0 +1,34 @@
+plan.md
+  s_e2495888cae35f::t_069eb059b1bcae 73-74,77-78
+  s_e2495888cae35f::t_35a8f280c1f972 259-261,381-399,440,442-444
+  s_e2495888cae35f::t_2da25f6882c841 1-10,16-70,80-84,86,88,90-91,93-98,100-102,104-106,108,110-112,114,116-258,262-380,400-414,417,419-424,427,429-434,437-438
+  s_e2495888cae35f::t_da3e8a30c6c995 11-15
+docs/archive/pre-test-release-sprint-2026-07-21/README.md
+  s_e2495888cae35f::t_2da25f6882c841 1-13
+docs/archive/pre-test-release-sprint-2026-07-21/plan.md
+  s_e2495888cae35f::t_2fe7fc3e57dc7d 1-826
+docs/archive/pre-test-release-sprint-2026-07-21/state.md
+  s_e2495888cae35f::t_2fe7fc3e57dc7d 1-132
+docs/seawork-test-release-handoff.md
+  s_e2495888cae35f::t_2da25f6882c841 1-62,67-93,96,99-260
+  s_e2495888cae35f::t_069eb059b1bcae 94-95,97-98
+  s_e2495888cae35f::t_e2e89129e7bfb0 63-66
+state.md
+  s_e2495888cae35f::t_2da25f6882c841 1-17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "0470b57be237d181b04dbd558cec4eb2fddebd5c",
+  "prompts": {},
+  "sessions": {
+    "s_e2495888cae35f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f82bd-2af6-76d1-ac0e-f1ec7ac5b83c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
