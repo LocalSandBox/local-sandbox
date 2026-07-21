@@ -395,3 +395,37 @@ Status: **no downstream LocalSandbox/installer contract drift**
   changed.
 - The frozen contract verifier still passes all eight pinned source assertions. No
   SeaWork file was modified.
+
+## 2026-07-21 — Native zero-byte catalog and signed candidate construction
+
+Status: **signed archive gate passed; installed production-identity runtime gate pending**
+
+- This entry supersedes the catalog-decision blocker recorded in “Signing identity
+  verified; empty-file catalog decision required.” No QEMU payload byte was changed.
+  Commit `8209b4d0449c4c036555b02c154e08c7dd12fd8f` replaces MakeCat CDF generation with
+  Windows `New-FileCatalog` using catalog version 2.0, then requires signed
+  `Test-FileCatalog` validation with SHA-256 and exact closed-set membership.
+- The catalog retains the pinned QEMU tree's zero-byte placeholders. The verifier
+  explicitly preserves a representative zero-byte `loaders.cache`; SignTool membership
+  checks remain bounded to non-empty service, manifest, and QEMU representatives because
+  SignTool refuses to memory-map any zero-length file before catalog lookup. The native
+  catalog validator remains authoritative for every member.
+- Release-candidate run `20260721t100654z-31135-44e86e10c29a` passed against snapshot
+  `44e86e10c29a5ea151a803ff7aea6de7458840d7`, based on
+  `dd26449d6dab7c4beafc35125f34d9150c3c0c3e`. That validated source tree was then
+  committed as `8209b4d0449c4c036555b02c154e08c7dd12fd8f`; an exact-commit rerun remains the next
+  gate before the tuple is final.
+- The run built production-profile `0.4.7-test.1` with static CRT, PDB, and Event Log
+  message IDs 1–16. The service PE and catalog carried trusted SeaWork signatures and
+  DigiCert RFC 3161 timestamps. Structural verification covered 3,742 closed bundle
+  files.
+- Public publisher identity remained `CN=SeaWork, O=Sea` with certificate SHA-256
+  `a036eabbb783a31846eb340a725717d741fd330d9c78c2e3bd35dc1c59dc40d7`.
+- Fetched artifacts independently matched the run manifest:
+  - `lsb-seawork-service-v0.4.7-test.1-windows-x86_64.zip`:
+    `1b333a041cd9b76b0490622abccf21df1da464a0f8ed9ed0c79991c0f5315ef6`;
+  - `lsb-seawork-service-v0.4.7-test.1-windows-x86_64-symbols.zip`:
+    `7a210b350df56698ed4cd4701ec394ac6514831fde25c087cb1863e068aae2ce`.
+- These hashes are evidence for the passing construction run, not yet the final SeaWork
+  pin. Installed-service smoke, reboot/runtime acceptance, Node package artifacts, and
+  the final combined release manifest remain open.
