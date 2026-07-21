@@ -1,0 +1,24 @@
+plan.md
+  s_d92cdce887f5bb::t_bd6cd5cf425196 269,272,274,276,279,281,283
+state.md
+  s_d92cdce887f5bb::t_bd6cd5cf425196 7-9,12-13
+docs/seawork-test-release-handoff.md
+  s_d92cdce887f5bb::t_42899a9a134243 296
+  s_d92cdce887f5bb::t_eaa7cdb979fca7 288-295,297-323
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "c3c6ea8238479969c3ad7cc1ab8808df0d3ee7b3",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
