@@ -93,7 +93,7 @@ jobs:
             if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
               echo "${package_name}@${package_version} is already published"
             else
-              npm publish "$package_dir" --access public --provenance --ignore-scripts
+              npm publish "./$package_dir" --access public --provenance --ignore-scripts
             fi
           done
 
