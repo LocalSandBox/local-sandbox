@@ -429,3 +429,177 @@ Status: **signed archive gate passed; installed production-identity runtime gate
 - These hashes are evidence for the passing construction run, not yet the final SeaWork
   pin. Installed-service smoke, reboot/runtime acceptance, Node package artifacts, and
   the final combined release manifest remain open.
+
+## 2026-07-22 — Final LocalSandbox non-reboot candidate and SeaWork drift
+
+Status: **LocalSandbox candidate complete for the explicitly authorized non-reboot
+scope; SeaWork TR-6 and reboot evidence remain open**
+
+This entry supersedes every earlier provisional artifact hash and “runtime pending”
+statement. It does not supersede the downstream architecture, installer transaction,
+adapter mapping, or acceptance matrix in the initial entry.
+
+### Pinned LocalSandbox tuple
+
+- Candidate source commit:
+  `7d87dcb4fc2efa3a55f9e754ee79c0684249be3d` on
+  `feat/lsb-win-service`.
+- Candidate construction/installed-service snapshot:
+  `34b3bad4e66452360e2f432149d340640d9f31eb` in Windows run
+  `20260721t205247z-36771-34b3bad4e664`.
+- Version: `0.4.7-test.1`; Windows target: `windows-x86_64`; production service
+  profile with static CRT and Event Log message IDs 1–16.
+- Service ZIP `lsb-seawork-service-v0.4.7-test.1-windows-x86_64.zip`:
+  SHA-256 `7764c7d398c0ae1fd083ef501613c0dcdc7c1ffd0cbf81a3361fa0780d64f39f`,
+  371,936,405 bytes.
+- Symbols ZIP `lsb-seawork-service-v0.4.7-test.1-windows-x86_64-symbols.zip`:
+  SHA-256 `4bc045b5108917be41a0cb068bc8f2806d25df455e079e6f45a5028ad178f8a5`,
+  2,438,406 bytes.
+- `SHA256SUMS`: SHA-256
+  `4bb2da28b7413313dff12ea496f76b196a0014cbbf187468eb3a4bdc2d762673`.
+- Node main package `@local-sandbox/lsb-nodejs@0.4.7-test.1`, file
+  `local-sandbox-lsb-nodejs-0.4.7-test.1.tgz`: SHA-256
+  `30c6f063d823476284f3749d10dc8440037e4947b2976406d091d14c360c102b`,
+  17,852 bytes.
+- Node platform package `@local-sandbox/lsb-nodejs-win32-x64-msvc@0.4.7-test.1`,
+  file `local-sandbox-lsb-nodejs-win32-x64-msvc-0.4.7-test.1.tgz`: SHA-256
+  `139ae4bd380c45c4ac8315d13a7bee2cee85c2fe216b28c2bad869098350a4f9`,
+  5,370,093 bytes.
+- Final source-run test-release manifest: SHA-256
+  `d49fb555925c911c777ccbeb4e7342ae5bc1747a477c83c07f51b7287005bd81`.
+  Its `status` is intentionally `incomplete` only because
+  `reboot-continuation` is pending; every non-reboot case is `passed`.
+- Publisher subject: `CN=SeaWork, O=Sea`; publisher certificate SHA-256:
+  `a036eabbb783a31846eb340a725717d741fd330d9c78c2e3bd35dc1c59dc40d7`.
+  The service PE and closed catalog have trusted company chains and DigiCert RFC 3161
+  timestamps. No development identity or untrusted-certificate bypass was used.
+- Protocol major 1, current minor 5, supported minors 0–5. Production identities remain
+  `LocalSandboxSeaWork`, `\\.\pipe\LocalSandbox.SeaWork.v1`, `LocalSystem`, and
+  `%ProgramData%\LocalSandbox\SeaWork`.
+- Required operations are connect, info/health, start/stop, exec, spawn/stream/kill,
+  read/write/mkdir, and cancellation cleanup. Direct mounts use
+  `compat-smb-direct`. Public DNS/HTTP/HTTPS, package download, scoped secrets, and
+  private/link-local denial are enabled. Ports, checkpoints, and overlay mounts remain
+  unavailable in this candidate.
+
+The service ZIP embeds these independently checked records:
+
+- `manifests/bundle.json`:
+  `61552572a500203c62d6f867e2b9d28882434d561beed70ee96c56bdecfd1427`;
+- `manifests/service-contract.json`:
+  `e3eb319d33e308f34d7065bbe262091692d35d0bdb293c8bfd364c3692d715af`;
+- `manifests/runtime-dependencies.json`:
+  `6d1357b6cb991493f0a407315d4c4b895066502abeba51be00383aebf99e5ed3`;
+- `manifests/sbom.spdx.json`:
+  `fd83dde3f0118ec14ec88f5ee9841f051666575108faaa83f8a8adfeda2b2024`;
+  and
+- `licenses/THIRD-PARTY-NOTICES.json`:
+  `412df2fd996fc475d7e257caefd4fe809530fc5753bca31e73e2c008e385642a`.
+
+The source-built Windows x86_64 guest runtime used by the candidate has SHA-256 values
+`c1bacf126150dfeb77edf7a86d74e443781f7511ed1aabf23b3aad318fc8f746`
+for `Image`,
+`62c23700673a85e0b45984315df0f0106b00f8d8d3f48c36adb86eea66ace843`
+for `initramfs.cpio.gz`, and
+`5c9e4b01364aa010c408c44c66d5668e493b5eef207b802f2df6410e98c950a8`
+for `rootfs.ext4`. These supersede the earlier wrong-architecture runtime hashes.
+
+### Validation evidence and limits
+
+- Installed-service run `20260721t205247z-36771-34b3bad4e664` passed signed install,
+  health, mount-free lifecycle, four direct mounts, exec/files, spawn/stream/kill,
+  cancellation, public network/package/scoped-secret checks, private-target denial, ten
+  sequential effects, normal cleanup, and owned uninstall. The service was deleted at
+  the end of the run.
+- Standard-user validation used the existing interactive user's filtered,
+  medium-integrity, non-admin token. It proves privilege behavior only: integrity RID
+  8192, not elevated, Administrators deny-only, exact saved-user SID at execution, and
+  no UAC after the elevated install. It does **not** validate a separate account or
+  separate user profile; no such claim may be inferred downstream.
+- Exact-archive acceptance run `20260721t211858z-46201-825090ca54cd`, validation
+  snapshot `825090ca54cd1a497248f9c0c635ea5249708ba9`, safely expanded the exact service
+  ZIP, re-ran trusted PE/catalog closure and the 3,742-file installed-layout verifier,
+  and matched the embedded manifest hashes. The same ZIP was fetched to macOS through
+  the allowlisted fetch command, matched its fetch-manifest size/hash, passed a complete
+  ZIP CRC test, and produced the same embedded hashes when streamed from the fetched
+  archive.
+- Current-harness Windows `service-fast` run
+  `20260721t212415z-48692-2930615cef09`, snapshot
+  `2930615cef093f36b4d8ebafa0b904e35fed664c`, passed the Windows Rust/service/protocol/
+  proxy/VM matrix, scoped Clippy, native Node build, declaration checks, and ten Node
+  tests.
+- Final macOS gates passed formatting, 29 protocol tests, one client test, 65 service
+  tests, 77 proxy tests, scoped Clippy with the documented Windows-gated dead-code/
+  `unused_mut` and two existing Clippy-class allowances, Node build/API/type checks,
+  and all eight frozen SeaWork parity assertions. The raw macOS `-D warnings` invocation
+  fails only on Windows-gated code being unused on the non-Windows target; it is not
+  reported as a strict pass.
+
+Reboot validation is explicitly deferred by user direction and was not run after the
+final candidate. Pending evidence is delayed automatic service start, post-reboot
+health, one post-reboot filtered-token sandbox, normal stop, and owned cleanup. This
+pending test does not block the currently authorized LocalSandbox non-reboot scope, but
+must remain visible and must not be described as passed. When reboot tests are
+re-authorized, use a clean worktree at the candidate commit and run:
+
+```bash
+scripts/win-test reboot service-reboot \
+  --reuse-candidate 20260721t205247z-36771-34b3bad4e664
+```
+
+After Windows restarts, the existing user must sign in so the filtered-token proof can
+run. The harness registers the task by saved SID to avoid domain-name resolution during
+registration; the execution proof still requires the exact SID. This remains a current-
+user privilege test, not separate-account validation.
+
+### Verified artifact reuse
+
+Commit `7d87dcb4fc2efa3a55f9e754ee79c0684249be3d` adds a fail-closed candidate reuse
+path. Reuse requires an exact snapshot tree, base commit, candidate version, protected
+publisher, matching owned run roots, non-reparse content, valid source fetch hashes,
+and passed release evidence. It re-runs source manifest hashes, trusted signature/catalog
+closure, and installed-layout verification; copies into the new owned run; repeats copy
+hash, signature/catalog, and layout verification; then records source provenance before
+running the full runtime matrix.
+
+Non-reboot reuse run `20260721t212708z-49738-a8194f6f31fb`, snapshot
+`a8194f6f31fb4703d443e10e357799795bed4a0a`, passed against the exact source tree and
+base. Its reuse evidence SHA-256 is
+`142bed27fe3fd172463ab2abb72efa859536418ae6197a362f9c2ff1756836f3`.
+It skipped compilation and the roughly 13-minute archive writer, reached production
+service startup after about two minutes of complete adoption verification/copying, and
+then passed the same non-reboot installed-service matrix and uninstall. Use
+`scripts/win-test suite installed-service-smoke --reuse-candidate <run-id>` for a same-
+tree non-reboot retry. A source from a different tree/base/version/signer is rejected.
+
+### Current read-only SeaWork drift
+
+SeaWork was rechecked clean and read-only on 2026-07-22 at `main`/`v1.3.2`, commit
+`be189da04a5dbdcb8641e12c997ae5567311d879`. This supersedes the earlier clean `dev`
+inspection at `773e15b2a06e8339f236db124c824a07457b901d`.
+
+- Commit `5829704c` already changes SeaWork's optional main Node dependency from 0.4.6
+  to stable `@local-sandbox/lsb-nodejs` `0.4.7`. TR-6 must replace that with the exact
+  `0.4.7-test.1` main/platform package files and hashes above for this test release; a
+  registry range or local rebuild is not the pinned tuple.
+- Commit `19a8ff74` adds `appVersion` and, whenever scoped secrets exist, emits
+  `network.httpsInterception` with a `User-Agent: SeaWork/<appVersion>` request-header
+  rule limited to the union of secret hosts. The candidate Node declarations and
+  service transport support the exact host-scope/interception/header shapes, and the
+  Windows fast gate covers their validation/redaction mapping. TR-6's packaged service-
+  only test must exercise this current SeaWork path end to end with a scoped host and
+  prove both the header value and secret remain absent from logs.
+- Commit `8085ddfa` changes cancellation test timing only. Existing service cancellation
+  semantics remain compatible.
+- The generated/frozen verifier still passes its eight assertions at contract baseline
+  `f9c6cd8ff339688a669451e36078d6cbbc91c1b2`. The three current drift files are
+  `apps/electron/src/main/ingress-server.ts`,
+  `packages/local-sandbox-tools/src/runtime-options.ts`, and
+  `packages/local-sandbox-tools/src/shared.ts`; no SeaWork file was modified here.
+
+The original NSIS transaction, service-only/service-preferred routing, lazy helper
+fallback, adapter operation mapping, update/repair/uninstall rules, diagnostics policy,
+and downstream non-reboot acceptance matrix remain the required TR-6 implementation.
+The SeaWork owner alone may append that evidence and mark the overall test release
+ready. Every reboot-dependent row remains recorded as pending, is deferred until the
+user re-authorizes reboot testing, and is not a current blocker.
