@@ -22,7 +22,12 @@ $clientHarnessSddl = 'O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;
 
 function Invoke-Native {
     param([string] $Executable, [string[]] $Arguments, [string] $Label)
-    & $Executable @Arguments
+    if ([IO.Path]::GetExtension($Executable) -ieq '.ps1') {
+        & pwsh.exe -NoProfile -NonInteractive -File $Executable @Arguments
+    }
+    else {
+        & $Executable @Arguments
+    }
     if ($LASTEXITCODE -ne 0) { throw "$Label failed with exit code $LASTEXITCODE" }
 }
 
@@ -83,6 +88,95 @@ function Set-Sddl {
     $acl = [Security.AccessControl.DirectorySecurity]::new()
     $acl.SetSecurityDescriptorBinaryForm($bytes)
     Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
+function Set-ServicePreshutdownTimeout {
+    param([string] $Name, [uint32] $Milliseconds)
+    if ($null -eq ('LocalSandbox.Agent.ServiceConfigNative' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+namespace LocalSandbox.Agent
+{
+public static class ServiceConfigNative
+{
+    private const uint SC_MANAGER_CONNECT = 0x0001;
+    private const uint SERVICE_CHANGE_CONFIG = 0x0002;
+    private const uint SERVICE_CONFIG_PRESHUTDOWN_INFO = 7;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SERVICE_PRESHUTDOWN_INFO
+    {
+        public uint TimeoutMilliseconds;
+    }
+
+    [DllImport("advapi32.dll", EntryPoint = "OpenSCManagerW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr OpenSCManager(
+        string machineName,
+        string databaseName,
+        uint desiredAccess);
+
+    [DllImport("advapi32.dll", EntryPoint = "OpenServiceW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr OpenService(
+        IntPtr serviceManager,
+        string serviceName,
+        uint desiredAccess);
+
+    [DllImport("advapi32.dll", EntryPoint = "ChangeServiceConfig2W", SetLastError = true)]
+    private static extern bool ChangeServiceConfig2(
+        IntPtr service,
+        uint infoLevel,
+        ref SERVICE_PRESHUTDOWN_INFO info);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool CloseServiceHandle(IntPtr handle);
+
+    public static void SetPreshutdownTimeout(string serviceName, uint milliseconds)
+    {
+        IntPtr manager = OpenSCManager(null, null, SC_MANAGER_CONNECT);
+        if (manager == IntPtr.Zero)
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "OpenSCManager failed");
+        }
+        try
+        {
+            IntPtr service = OpenService(manager, serviceName, SERVICE_CHANGE_CONFIG);
+            if (service == IntPtr.Zero)
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "OpenService failed");
+            }
+            try
+            {
+                var info = new SERVICE_PRESHUTDOWN_INFO { TimeoutMilliseconds = milliseconds };
+                if (!ChangeServiceConfig2(service, SERVICE_CONFIG_PRESHUTDOWN_INFO, ref info))
+                {
+                    throw new Win32Exception(
+                        Marshal.GetLastWin32Error(),
+                        "ChangeServiceConfig2 preshutdown configuration failed");
+                }
+            }
+            finally
+            {
+                CloseServiceHandle(service);
+            }
+        }
+        finally
+        {
+            CloseServiceHandle(manager);
+        }
+    }
+}
+}
+'@
+    }
+    [LocalSandbox.Agent.ServiceConfigNative]::SetPreshutdownTimeout($Name, $Milliseconds)
+    $serviceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\$Name"
+    $observed = Get-ItemPropertyValue -LiteralPath $serviceKey -Name PreshutdownTimeout
+    if ([uint32]$observed -ne $Milliseconds) {
+        throw 'SCM preshutdown timeout verification failed'
+    }
 }
 
 function Get-CompatibilityResources {
@@ -283,7 +377,7 @@ function Install-And-Smoke {
     Invoke-Native sc.exe @('sidtype', $serviceName, 'unrestricted') 'service SID configuration'
     Invoke-Native sc.exe @('failure', $serviceName, 'reset=', '86400', 'actions=', 'restart/5000/restart/30000/restart/120000') 'service failure actions'
     Invoke-Native sc.exe @('failureflag', $serviceName, '1') 'service failure flag'
-    Invoke-Native sc.exe @('preshutdown', $serviceName, '60000') 'service preshutdown timeout'
+    Set-ServicePreshutdownTimeout $serviceName 60000
     Invoke-Native sc.exe @('sdset', $serviceName, 'O:SYG:SYD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00000005;;;IU)') 'service object ACL'
     Invoke-Native sc.exe @('config', $serviceName, 'start=', 'delayed-auto') 'delayed automatic start'
     $serviceSid = ([Security.Principal.NTAccount]::new("NT SERVICE\$serviceName")).Translate([Security.Principal.SecurityIdentifier]).Value
