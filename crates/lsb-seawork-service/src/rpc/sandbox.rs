@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::windows::ffi::OsStrExt;
@@ -6,14 +7,14 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use lsb_service_proto::{
-    ErrorCode, ResponseValue, ServiceMountSpec, ServiceNetworkSpec, ServicePortSpec,
+    ErrorCode, ResponseValue, SelectedMount, ServiceMountSpec, ServiceNetworkSpec, ServicePortSpec,
 };
 use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 
 use crate::engine::ServiceEngineConfig;
 use crate::ledger::schema::ResourceRecord;
 use crate::resource::transaction::ResourceTransaction;
-use crate::resource::vm::ManagedVmSpec;
+use crate::resource::vm::{ManagedVmMountSpec, ManagedVmSpec};
 use crate::session::{
     CancellationToken, ClientIdentityKey, QuotaError, ResourceHandle, SandboxResources,
     SessionManager, StartReplayDecision,
@@ -42,7 +43,8 @@ pub async fn start(
     if from.is_some() {
         return Err(ErrorCode::CheckpointUnsupported);
     }
-    let proxy_config = network
+    let (mounts, selected_mounts) = normalize_mounts(mounts)?;
+    let mut proxy_config = network
         .map(|policy| {
             crate::network_policy::build_proxy_config(
                 policy,
@@ -53,11 +55,9 @@ pub async fn start(
         })
         .transpose()
         .map_err(|_| ErrorCode::InvalidRequest)?;
+    proxy_config = proxy_config_for_mounts(proxy_config, !mounts.is_empty());
     if !admissions_open {
         return Err(ErrorCode::ServiceUnavailable);
-    }
-    if !mounts.is_empty() {
-        return Err(ErrorCode::MountUnavailable);
     }
     if !ports.is_empty() {
         return Err(ErrorCode::PortIsolationUnavailable);
@@ -82,8 +82,8 @@ pub async fn start(
         {
             StartReplayDecision::Begin => {}
             StartReplayDecision::InProgress => return Err(ErrorCode::DuplicateRequest),
-            StartReplayDecision::Replay(sandbox_id) => {
-                return Ok(sandbox_started(sandbox_id));
+            StartReplayDecision::Replay { sandbox_id, mounts } => {
+                return Ok(sandbox_started(sandbox_id, mounts));
             }
             StartReplayDecision::Expired => return Err(ErrorCode::StartResultExpired),
             StartReplayDecision::CapacityExceeded => return Err(ErrorCode::QuotaExceeded),
@@ -138,10 +138,13 @@ pub async fn start(
             &engine,
             &identity,
             sandbox_id,
-            cpus,
-            memory_mib,
-            disk_mib,
-            proxy_config,
+            PrepareInstanceOptions {
+                cpus,
+                memory_mib,
+                disk_mib,
+                mounts,
+                proxy_config,
+            },
             &cancellation,
             &mut transaction,
         ) {
@@ -174,7 +177,13 @@ pub async fn start(
             Ok(handle) => {
                 if let Some(replay_id) = client_instance_id.as_deref() {
                     let committed = sessions
-                        .complete_start_replay(session_id, &identity, replay_id, handle)
+                        .complete_start_replay(
+                            session_id,
+                            &identity,
+                            replay_id,
+                            handle,
+                            selected_mounts.clone(),
+                        )
                         .unwrap_or(false);
                     if !committed {
                         let _ = sessions.stop_managed_vm(
@@ -186,7 +195,7 @@ pub async fn start(
                         return Err(ErrorCode::ServiceUnavailable);
                     }
                 }
-                Ok(sandbox_started(handle))
+                Ok(sandbox_started(handle, selected_mounts))
             }
             Err(error) => {
                 abandon_start_replay(
@@ -225,12 +234,76 @@ pub async fn start(
     }
 }
 
-fn sandbox_started(sandbox_id: ResourceHandle) -> ResponseValue {
+fn sandbox_started(sandbox_id: ResourceHandle, mounts: Vec<SelectedMount>) -> ResponseValue {
     ResponseValue::SandboxStarted {
         sandbox_id: sandbox_id.to_string(),
-        mounts: Vec::new(),
+        mounts,
         host_ports: Vec::new(),
     }
+}
+
+fn normalize_mounts(
+    mounts: Vec<ServiceMountSpec>,
+) -> Result<(Vec<ManagedVmMountSpec>, Vec<SelectedMount>), ErrorCode> {
+    let mut guest_paths = BTreeSet::new();
+    let mut normalized = Vec::with_capacity(mounts.len());
+    let mut selected = Vec::with_capacity(mounts.len());
+    for mount in mounts {
+        if mount.host_path.trim().is_empty()
+            || !valid_guest_mount_path(&mount.guest_path)
+            || !guest_paths.insert(mount.guest_path.clone())
+        {
+            return Err(ErrorCode::InvalidRequest);
+        }
+        let host_path =
+            std::fs::canonicalize(&mount.host_path).map_err(|_| ErrorCode::InvalidRequest)?;
+        if !host_path.is_dir() {
+            return Err(ErrorCode::InvalidRequest);
+        }
+        let host_path = host_path
+            .into_os_string()
+            .into_string()
+            .map_err(|_| ErrorCode::InvalidRequest)?;
+        selected.push(SelectedMount {
+            guest_path: mount.guest_path.clone(),
+            backend: "compat-smb-direct".to_string(),
+        });
+        normalized.push(ManagedVmMountSpec {
+            host_path,
+            guest_path: mount.guest_path,
+            read_only: mount.read_only,
+        });
+    }
+    Ok((normalized, selected))
+}
+
+fn valid_guest_mount_path(path: &str) -> bool {
+    if !path.starts_with('/')
+        || path == "/"
+        || path.contains('\\')
+        || path.contains('\0')
+        || path == "/tmp/lsb/mounts"
+        || path.starts_with("/tmp/lsb/mounts/")
+        || "/tmp/lsb/mounts".starts_with(&format!("{path}/"))
+    {
+        return false;
+    }
+    path.split('/')
+        .skip(1)
+        .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
+fn proxy_config_for_mounts(
+    proxy_config: Option<lsb_proxy::ProxyConfig>,
+    has_mounts: bool,
+) -> Option<lsb_proxy::ProxyConfig> {
+    if !has_mounts {
+        return proxy_config;
+    }
+    Some(match proxy_config {
+        Some(config) => config.with_smb_mount_relay(),
+        None => lsb_proxy::ProxyConfig::mount_only_smb(),
+    })
 }
 
 fn abandon_start_replay(
@@ -294,14 +367,19 @@ pub async fn stop(
     .map_err(|_| ErrorCode::InternalError)?
 }
 
+struct PrepareInstanceOptions {
+    cpus: u16,
+    memory_mib: u32,
+    disk_mib: u32,
+    mounts: Vec<ManagedVmMountSpec>,
+    proxy_config: Option<lsb_proxy::ProxyConfig>,
+}
+
 fn prepare_instance(
     engine: &ServiceEngineConfig,
     identity: &ClientIdentityKey,
     sandbox_id: ResourceHandle,
-    cpus: u16,
-    memory_mib: u32,
-    disk_mib: u32,
-    proxy_config: Option<lsb_proxy::ProxyConfig>,
+    options: PrepareInstanceOptions,
     cancellation: &CancellationToken,
     transaction: &mut ResourceTransaction,
 ) -> Result<ManagedVmSpec> {
@@ -336,7 +414,7 @@ fn prepare_instance(
     let result = (|| {
         copy_with_cancellation(engine.base_rootfs(), &rootfs_image, cancellation)
             .context("copy protected base rootfs")?;
-        let requested_bytes = u64::from(disk_mib) * 1024 * 1024;
+        let requested_bytes = u64::from(options.disk_mib) * 1024 * 1024;
         let base_bytes = std::fs::metadata(&rootfs_image)?.len();
         if requested_bytes < base_bytes {
             anyhow::bail!("requested disk is smaller than the verified base rootfs");
@@ -349,9 +427,10 @@ fn prepare_instance(
         Ok(ManagedVmSpec {
             instance_dir: instance_dir.clone(),
             rootfs_image,
-            cpus: usize::from(cpus),
-            memory_mib: u64::from(memory_mib),
-            proxy_config,
+            cpus: usize::from(options.cpus),
+            memory_mib: u64::from(options.memory_mib),
+            mounts: options.mounts,
+            proxy_config: options.proxy_config,
         })
     })();
     if result.is_err()
@@ -455,10 +534,13 @@ mod tests {
             &engine,
             &identity,
             sandbox_id,
-            2,
-            1024,
-            1,
-            None,
+            PrepareInstanceOptions {
+                cpus: 2,
+                memory_mib: 1024,
+                disk_mib: 1,
+                mounts: Vec::new(),
+                proxy_config: None,
+            },
             &CancellationToken::default(),
             &mut transaction,
         )
@@ -481,5 +563,92 @@ mod tests {
         transaction.finish().unwrap();
         assert!(!spec.instance_dir.exists());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn direct_mounts_preserve_nested_targets_access_and_selected_backend() {
+        let root = std::env::temp_dir().join(format!("lsbsw-direct-mounts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("workspace/output")).unwrap();
+        let (mounts, selected) = normalize_mounts(vec![
+            ServiceMountSpec {
+                host_path: root.join("workspace").display().to_string(),
+                guest_path: "/workspace".to_string(),
+                read_only: true,
+            },
+            ServiceMountSpec {
+                host_path: root.join("workspace/output").display().to_string(),
+                guest_path: "/workspace/output".to_string(),
+                read_only: false,
+            },
+        ])
+        .unwrap();
+
+        assert_eq!(mounts.len(), 2);
+        assert!(mounts[0].read_only);
+        assert!(!mounts[1].read_only);
+        assert_eq!(selected[0].guest_path, "/workspace");
+        assert_eq!(selected[1].guest_path, "/workspace/output");
+        assert!(selected
+            .iter()
+            .all(|mount| mount.backend == "compat-smb-direct"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn direct_mounts_reject_duplicates_files_and_unsafe_guest_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "lsbsw-invalid-direct-mounts-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mount = |guest_path: &str| ServiceMountSpec {
+            host_path: root.display().to_string(),
+            guest_path: guest_path.to_string(),
+            read_only: true,
+        };
+        assert_eq!(
+            normalize_mounts(vec![mount("/workspace"), mount("/workspace")]),
+            Err(ErrorCode::InvalidRequest)
+        );
+        for guest_path in [
+            "workspace",
+            "/",
+            "/workspace/../state",
+            "/workspace//output",
+            "/tmp/lsb",
+            "/tmp/lsb/mounts/escape",
+        ] {
+            assert_eq!(
+                normalize_mounts(vec![mount(guest_path)]),
+                Err(ErrorCode::InvalidRequest)
+            );
+        }
+        let file = root.join("file");
+        std::fs::write(&file, b"not a directory").unwrap();
+        assert_eq!(
+            normalize_mounts(vec![ServiceMountSpec {
+                host_path: file.display().to_string(),
+                guest_path: "/workspace".to_string(),
+                read_only: true,
+            }]),
+            Err(ErrorCode::InvalidRequest)
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn direct_mounts_select_mount_only_or_combined_proxy_modes() {
+        let mount_only = proxy_config_for_mounts(None, true).unwrap();
+        assert!(mount_only.is_mount_only_smb());
+        assert!(!mount_only.permits_network_policy());
+
+        let combined =
+            proxy_config_for_mounts(Some(lsb_proxy::ProxyConfig::default()), true).unwrap();
+        assert!(!combined.is_mount_only_smb());
+        assert!(combined.permits_network_policy());
+        assert!(combined.permits_smb_mount_relay("10.0.0.1".parse().unwrap(), 445));
+        assert!(proxy_config_for_mounts(None, false).is_none());
     }
 }

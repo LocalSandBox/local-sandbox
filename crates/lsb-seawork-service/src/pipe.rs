@@ -448,7 +448,11 @@ impl HealthContext {
             }
             .to_string(),
             whpx: self.whpx.clone(),
-            smb: HealthState::Unknown,
+            smb: if self.engine.is_some() {
+                HealthState::Ready
+            } else {
+                HealthState::Unavailable
+            },
             wfp: HealthState::Unavailable,
             bundle: if self.engine.is_some() {
                 HealthState::Ready
@@ -459,12 +463,7 @@ impl HealthContext {
     }
 
     fn capabilities(&self) -> CapabilityHealth {
-        CapabilityHealth {
-            direct_mount: false,
-            direct_mount_backends: Vec::new(),
-            watch: self.engine.is_some(),
-            ports: false,
-        }
+        capabilities_for_verified_engine(self.engine.is_some())
     }
 
     fn service_info(&self) -> ServiceInfo {
@@ -484,6 +483,19 @@ impl HealthContext {
             feature_bits_hex: HexU64(SERVICE_FEATURE_BITS),
             capabilities: self.capabilities(),
         }
+    }
+}
+
+fn capabilities_for_verified_engine(engine_ready: bool) -> CapabilityHealth {
+    CapabilityHealth {
+        direct_mount: engine_ready,
+        direct_mount_backends: if engine_ready {
+            vec!["compat-smb-direct".to_string()]
+        } else {
+            Vec::new()
+        },
+        watch: engine_ready,
+        ports: false,
     }
 }
 
@@ -2068,6 +2080,18 @@ mod tests {
         assert_eq!(context.health().wfp, HealthState::Unavailable);
         assert_eq!(context.health().bundle, HealthState::Unavailable);
         assert!(!context.health().ready);
+    }
+
+    #[test]
+    fn verified_engine_advertises_only_the_compat_direct_mount_backend() {
+        let unavailable = capabilities_for_verified_engine(false);
+        assert!(!unavailable.direct_mount);
+        assert!(unavailable.direct_mount_backends.is_empty());
+
+        let ready = capabilities_for_verified_engine(true);
+        assert!(ready.direct_mount);
+        assert_eq!(ready.direct_mount_backends, ["compat-smb-direct"]);
+        assert!(!ready.ports);
     }
 
     #[test]

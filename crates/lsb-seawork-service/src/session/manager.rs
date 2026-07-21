@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use lsb_service_proto::SelectedMount;
 
 use super::quota::{QuotaBook, QuotaLimits, SandboxResources};
 use super::{CancellationToken, ResourceHandle};
@@ -132,10 +133,13 @@ struct StartReplayKey {
     client_instance_id: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum StartReplayState {
     Preparing,
-    Running(ResourceHandle),
+    Running {
+        sandbox_id: ResourceHandle,
+        mounts: Vec<SelectedMount>,
+    },
     Retired,
 }
 
@@ -146,11 +150,14 @@ struct StartReplayRecord {
     updated_at: Instant,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartReplayDecision {
     Begin,
     InProgress,
-    Replay(ResourceHandle),
+    Replay {
+        sandbox_id: ResourceHandle,
+        mounts: Vec<SelectedMount>,
+    },
     Expired,
     CapacityExceeded,
 }
@@ -394,15 +401,20 @@ impl SessionManager {
             client_instance_id: client_instance_id.to_string(),
         };
         if let Some(record) = state.start_replays.get(&key) {
-            return Ok(match record.state {
+            return Ok(match &record.state {
                 StartReplayState::Preparing if record.session_id == session_id => {
                     StartReplayDecision::InProgress
                 }
-                StartReplayState::Running(handle) if record.session_id == session_id => {
-                    StartReplayDecision::Replay(handle)
+                StartReplayState::Running { sandbox_id, mounts }
+                    if record.session_id == session_id =>
+                {
+                    StartReplayDecision::Replay {
+                        sandbox_id: *sandbox_id,
+                        mounts: mounts.clone(),
+                    }
                 }
                 StartReplayState::Preparing
-                | StartReplayState::Running(_)
+                | StartReplayState::Running { .. }
                 | StartReplayState::Retired => StartReplayDecision::Expired,
             });
         }
@@ -426,6 +438,7 @@ impl SessionManager {
         identity: &ClientIdentityKey,
         client_instance_id: &str,
         sandbox_id: ResourceHandle,
+        mounts: Vec<SelectedMount>,
     ) -> Result<bool> {
         let mut state = self
             .state
@@ -441,7 +454,7 @@ impl SessionManager {
         if record.session_id != session_id || record.state != StartReplayState::Preparing {
             return Ok(false);
         }
-        record.state = StartReplayState::Running(sandbox_id);
+        record.state = StartReplayState::Running { sandbox_id, mounts };
         record.updated_at = Instant::now();
         Ok(true)
     }
@@ -480,7 +493,13 @@ impl SessionManager {
         for (key, record) in &mut state.start_replays {
             if &key.identity == identity
                 && record.session_id == session_id
-                && record.state == StartReplayState::Running(sandbox_id)
+                && matches!(
+                    record.state,
+                    StartReplayState::Running {
+                        sandbox_id: replay_sandbox_id,
+                        ..
+                    } if replay_sandbox_id == sandbox_id
+                )
             {
                 record.state = StartReplayState::Retired;
                 record.updated_at = now;
@@ -1221,6 +1240,10 @@ mod tests {
         let original_session = manager.open(identity.clone()).unwrap();
         let reconnect_session = manager.open(identity.clone()).unwrap();
         let sandbox_id = ResourceHandle::random().unwrap();
+        let selected_mounts = vec![SelectedMount {
+            guest_path: "/workspace".to_string(),
+            backend: "compat-smb-direct".to_string(),
+        }];
 
         assert_eq!(
             manager
@@ -1235,13 +1258,22 @@ mod tests {
             StartReplayDecision::InProgress
         );
         assert!(manager
-            .complete_start_replay(original_session, &identity, "stable-start", sandbox_id,)
+            .complete_start_replay(
+                original_session,
+                &identity,
+                "stable-start",
+                sandbox_id,
+                selected_mounts.clone(),
+            )
             .unwrap());
         assert_eq!(
             manager
                 .begin_start_replay(original_session, &identity, "stable-start")
                 .unwrap(),
-            StartReplayDecision::Replay(sandbox_id)
+            StartReplayDecision::Replay {
+                sandbox_id,
+                mounts: selected_mounts,
+            }
         );
         assert_eq!(
             manager

@@ -131,7 +131,8 @@ if (generatedStartSandbox.test(declarations)) {
 }
 
 const generatedMountBackends = 'directMountBackends: Array<string>'
-const patchedMountBackends = "directMountBackends: Array<'pinned-ro' | 'staged-sync'>"
+const patchedMountBackends =
+  "directMountBackends: Array<'pinned-ro' | 'staged-sync' | 'compat-smb-direct'>"
 if (declarations.includes(generatedMountBackends)) {
   declarations = declarations.replace(generatedMountBackends, patchedMountBackends)
 } else if (!declarations.includes(patchedMountBackends)) {

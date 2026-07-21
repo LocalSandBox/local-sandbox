@@ -276,7 +276,9 @@ impl ServiceClient {
             })
             .await?
         {
-            ResponseValue::SandboxStarted { sandbox_id, .. } => Ok(RemoteSandbox { sandbox_id }),
+            ResponseValue::SandboxStarted {
+                sandbox_id, mounts, ..
+            } => Ok(RemoteSandbox { sandbox_id, mounts }),
             _ => Err(ClientError::Protocol(
                 "StartSandbox returned a mismatched result".to_string(),
             )),
@@ -1034,6 +1036,7 @@ impl Default for StartSandboxOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteSandbox {
     sandbox_id: String,
+    mounts: Vec<lsb_service_proto::SelectedMount>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1203,6 +1206,10 @@ impl RemoteProcess {
 impl RemoteSandbox {
     pub fn id(&self) -> &str {
         &self.sandbox_id
+    }
+
+    pub fn mounts(&self) -> &[lsb_service_proto::SelectedMount] {
+        &self.mounts
     }
 }
 

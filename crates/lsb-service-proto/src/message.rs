@@ -934,6 +934,47 @@ mod tests {
     }
 
     #[test]
+    fn direct_mount_request_shape_preserves_access_and_enforces_count_bound() {
+        let mount = ServiceMountSpec {
+            host_path: r"C:\Users\caller\workspace".to_string(),
+            guest_path: "/workspace".to_string(),
+            read_only: true,
+        };
+        let request = Request {
+            deadline_ms: None,
+            op: RequestOp::StartSandbox {
+                client_instance_id: None,
+                from: None,
+                cpus: 2,
+                memory_mib: 2048,
+                disk_mib: 4096,
+                mounts: vec![mount.clone()],
+                ports: Vec::new(),
+                network: None,
+            },
+        };
+        request.validate().unwrap();
+        let encoded = serde_json::to_vec(&request).unwrap();
+        let decoded: Request = parse_control(&encoded).unwrap();
+        assert_eq!(decoded, request);
+
+        let too_many = Request {
+            deadline_ms: None,
+            op: RequestOp::StartSandbox {
+                client_instance_id: None,
+                from: None,
+                cpus: 2,
+                memory_mib: 2048,
+                disk_mib: 4096,
+                mounts: vec![mount; 33],
+                ports: Vec::new(),
+                network: None,
+            },
+        };
+        assert_eq!(too_many.validate(), Err(ProtocolError::InvalidJson));
+    }
+
+    #[test]
     fn network_contract_is_bounded_feature_gated_and_redacted() {
         let network = ServiceNetworkSpec {
             allowed_hosts: vec!["api.example.test".to_string()],

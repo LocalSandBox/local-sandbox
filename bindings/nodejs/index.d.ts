@@ -439,7 +439,7 @@ export interface SandboxInitResult {
 
 export interface SeaWorkCapabilities {
   directMount: boolean
-  directMountBackends: Array<'pinned-ro' | 'staged-sync'>
+  directMountBackends: Array<'pinned-ro' | 'staged-sync' | 'compat-smb-direct'>
   watch: boolean
   ports: boolean
 }
@@ -498,6 +498,8 @@ export interface SeaWorkStartOptions {
   diskSizeMb?: number
   /** Exact host-to-guest TCP mappings. The service remains fail-closed until WFP isolation passes. */
   ports?: Array<PortMappingConfig>
+  /** Legacy direct mounts. Only flags 0 (read-write) and 1 (MS_RDONLY) are supported. */
+  mounts?: Array<{ type: 'overlay'; hostPath: string; guestPath: string } | { type: 'direct'; hostPath: string; guestPath: string; flags: number }>
   /** Service-owned public egress, scoped secrets, and HTTPS interception policy. */
   network?: NetworkConfig
 }

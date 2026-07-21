@@ -430,15 +430,26 @@ mod tests {
     fn startup_operation_heartbeats_with_monotonic_checkpoints() {
         let mut checkpoint = 3u32;
         let mut checkpoints = Vec::new();
+        let (heartbeat_tx, heartbeat_rx) = std::sync::mpsc::channel();
         let value = run_startup_operation(
             &mut checkpoint,
             Duration::from_millis(10),
-            || {
-                std::thread::sleep(Duration::from_millis(35));
+            move || {
+                heartbeat_rx
+                    .recv_timeout(Duration::from_secs(1))
+                    .map_err(|_| anyhow::anyhow!("first startup heartbeat was not reported"))?;
+                heartbeat_rx
+                    .recv_timeout(Duration::from_secs(1))
+                    .map_err(|_| anyhow::anyhow!("second startup heartbeat was not reported"))?;
                 Ok(42)
             },
             |checkpoint| {
                 checkpoints.push(checkpoint);
+                heartbeat_tx.send(()).map_err(|_| {
+                    windows_service::Error::Winapi(std::io::Error::other(
+                        "startup operation ended before heartbeat",
+                    ))
+                })?;
                 Ok(())
             },
         )

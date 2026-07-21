@@ -24,7 +24,15 @@ pub struct ManagedVmSpec {
     pub rootfs_image: PathBuf,
     pub cpus: usize,
     pub memory_mib: u64,
+    pub mounts: Vec<ManagedVmMountSpec>,
     pub proxy_config: Option<lsb_proxy::ProxyConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedVmMountSpec {
+    pub host_path: String,
+    pub guest_path: String,
+    pub read_only: bool,
 }
 
 enum Command {
@@ -883,6 +891,13 @@ fn build_and_start(
     if let Some(attachment) = network_attachment {
         builder = builder.network_attachment(attachment);
     }
+    for mount in &spec.mounts {
+        builder = builder.mount(lsb_vm::MountConfig::Direct {
+            host_path: mount.host_path.clone(),
+            guest_path: mount.guest_path.clone(),
+            flags: u64::from(mount.read_only),
+        });
+    }
     let sandbox = builder.build()?;
     sandbox.start()?;
     if let Some(handle) = &proxy_handle {
@@ -977,6 +992,7 @@ mod tests {
             rootfs_image: PathBuf::from(r"C:\Users\caller\instance\rootfs.ext4"),
             cpus: 100,
             memory_mib: 64,
+            mounts: Vec::new(),
             proxy_config: None,
         };
         assert!(validate_spec(&engine, &spec).is_err());
@@ -989,6 +1005,7 @@ mod tests {
             rootfs_image: PathBuf::from(r"C:\ProgramData\LocalSandbox\instance\rootfs.ext4"),
             cpus: 2,
             memory_mib: 4096,
+            mounts: Vec::new(),
             proxy_config: None,
         };
 

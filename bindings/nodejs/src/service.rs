@@ -4,7 +4,7 @@ use napi::bindgen_prelude::{Buffer, Either, Result, Uint8Array};
 use napi_derive::napi;
 
 use crate::types::{
-  CopyOptions, DirEntry, ExecResult, FileChangeEvent, MkdirOptions, NetworkConfig,
+  CopyOptions, DirEntry, ExecResult, FileChangeEvent, MkdirOptions, MountConfig, NetworkConfig,
   PortMappingConfig, RemoveOptions, StatResult, WatchOptions,
 };
 #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
@@ -40,6 +40,11 @@ pub struct SeaWorkStartOptions {
   pub diskSizeMb: Option<u32>,
   /// Exact host-to-guest TCP mappings. The service remains fail-closed until WFP isolation passes.
   pub ports: Option<Vec<PortMappingConfig>>,
+  /// Legacy direct mounts. Only flags 0 (read-write) and 1 (MS_RDONLY) are supported.
+  #[napi(
+    ts_type = "Array<{ type: 'overlay'; hostPath: string; guestPath: string } | { type: 'direct'; hostPath: string; guestPath: string; flags: number }>"
+  )]
+  pub mounts: Option<Vec<MountConfig>>,
   /// Service-owned public egress, scoped secrets, and HTTPS interception policy.
   pub network: Option<NetworkConfig>,
 }
@@ -66,6 +71,7 @@ pub struct SeaWorkHealth {
 #[napi(object)]
 pub struct SeaWorkCapabilities {
   pub directMount: bool,
+  #[napi(ts_type = "Array<'pinned-ro' | 'staged-sync' | 'compat-smb-direct'>")]
   pub directMountBackends: Vec<String>,
   pub watch: bool,
   pub ports: bool,
@@ -292,6 +298,7 @@ impl SeaWorkService {
         memoryMb: None,
         diskSizeMb: None,
         ports: None,
+        mounts: None,
         network: None,
       });
       let start = lsb_service_client::StartSandboxOptions {
@@ -301,6 +308,7 @@ impl SeaWorkService {
           .map_err(|_| napi::Error::from_reason("cpus is out of range"))?,
         memory_mib: opts.memoryMb.unwrap_or(2048),
         disk_mib: opts.diskSizeMb.unwrap_or(4096),
+        mounts: map_service_mounts(opts.mounts)?,
         ports: map_service_ports(opts.ports)?,
         network: Some(
           opts
@@ -459,7 +467,77 @@ fn map_service_network(
   })
 }
 
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[allow(dead_code)]
+fn map_service_mounts(
+  mounts: Option<Vec<MountConfig>>,
+) -> Result<Vec<lsb_service_proto::ServiceMountSpec>> {
+  let mounts = mounts.unwrap_or_default();
+  if mounts.len() > 32 {
+    return Err(napi::Error::from_reason(
+      "[INVALID_REQUEST] at most 32 service mounts are supported",
+    ));
+  }
+  let mut guest_paths = std::collections::BTreeSet::new();
+  mounts
+    .into_iter()
+    .map(|mount| {
+      if mount.r#type == "overlay" {
+        return Err(napi::Error::from_reason(
+          "[MOUNT_UNSUPPORTED] overlay mounts are not supported by the SeaWork service",
+        ));
+      }
+      if mount.r#type != "direct" {
+        return Err(napi::Error::from_reason(
+          "[INVALID_REQUEST] service mount type must be 'direct'",
+        ));
+      }
+      let read_only = match mount.flags {
+        Some(0.0) => false,
+        Some(1.0) => true,
+        _ => {
+          return Err(napi::Error::from_reason(
+            "[INVALID_REQUEST] direct service mount flags must be integer 0 or 1",
+          ));
+        }
+      };
+      if mount.hostPath.trim().is_empty() || mount.guestPath.trim().is_empty() {
+        return Err(napi::Error::from_reason(
+          "[INVALID_REQUEST] service mount paths must not be empty",
+        ));
+      }
+      if !mount.guestPath.starts_with('/') {
+        return Err(napi::Error::from_reason(
+          "[INVALID_REQUEST] service mount guestPath must be absolute",
+        ));
+      }
+      if !guest_paths.insert(mount.guestPath.clone()) {
+        return Err(napi::Error::from_reason(
+          "[INVALID_REQUEST] service mount guestPath values must be unique",
+        ));
+      }
+      let host_path = std::fs::canonicalize(&mount.hostPath).map_err(|_| {
+        napi::Error::from_reason(
+          "[INVALID_REQUEST] service mount hostPath must name an existing directory",
+        )
+      })?;
+      if !host_path.is_dir() {
+        return Err(napi::Error::from_reason(
+          "[INVALID_REQUEST] service mount hostPath must name an existing directory",
+        ));
+      }
+      let host_path = host_path.into_os_string().into_string().map_err(|_| {
+        napi::Error::from_reason("[INVALID_REQUEST] service mount hostPath must be valid Unicode")
+      })?;
+      Ok(lsb_service_proto::ServiceMountSpec {
+        host_path,
+        guest_path: mount.guestPath,
+        read_only,
+      })
+    })
+    .collect()
+}
+
+#[allow(dead_code)]
 fn map_service_ports(
   ports: Option<Vec<PortMappingConfig>>,
 ) -> Result<Vec<lsb_service_proto::ServicePortSpec>> {
@@ -475,7 +553,7 @@ fn map_service_ports(
     .collect()
 }
 
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[allow(dead_code)]
 fn service_port(value: u32, label: &str) -> Result<u16> {
   u16::try_from(value)
     .ok()
@@ -1036,6 +1114,81 @@ fn stable_service_error_reason(error: &lsb_service_proto::ErrorEnvelope) -> Stri
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn service_mount_mapping_accepts_only_direct_directory_mounts_with_flags_zero_or_one() {
+    let root = std::env::temp_dir().join(format!(
+      "lsb-node-service-mounts-{}",
+      std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("workspace/output")).unwrap();
+    let mapped = map_service_mounts(Some(vec![
+      MountConfig {
+        r#type: "direct".to_string(),
+        hostPath: root.join("workspace").display().to_string(),
+        guestPath: "/workspace".to_string(),
+        flags: Some(1.0),
+      },
+      MountConfig {
+        r#type: "direct".to_string(),
+        hostPath: root.join("workspace/output").display().to_string(),
+        guestPath: "/workspace/output".to_string(),
+        flags: Some(0.0),
+      },
+    ]))
+    .unwrap();
+
+    assert_eq!(mapped.len(), 2);
+    assert!(mapped[0].read_only);
+    assert!(!mapped[1].read_only);
+    assert_eq!(mapped[0].guest_path, "/workspace");
+    assert_eq!(mapped[1].guest_path, "/workspace/output");
+    let _ = std::fs::remove_dir_all(root);
+  }
+
+  #[test]
+  fn service_mount_mapping_rejects_overlay_flags_duplicates_and_non_directories() {
+    let mount = |mount_type: &str, guest_path: &str, flags: Option<f64>| MountConfig {
+      r#type: mount_type.to_string(),
+      hostPath: std::env::temp_dir().display().to_string(),
+      guestPath: guest_path.to_string(),
+      flags,
+    };
+    let overlay = map_service_mounts(Some(vec![mount(
+      "overlay",
+      "/workspace",
+      None,
+    )]))
+    .unwrap_err();
+    assert!(overlay.reason.contains("[MOUNT_UNSUPPORTED]"));
+    for flags in [None, Some(2.0), Some(0.5), Some(f64::NAN)] {
+      let error = map_service_mounts(Some(vec![mount("direct", "/workspace", flags)]))
+        .unwrap_err();
+      assert!(error.reason.contains("[INVALID_REQUEST]"));
+    }
+    let duplicate = map_service_mounts(Some(vec![
+      mount("direct", "/workspace", Some(1.0)),
+      mount("direct", "/workspace", Some(0.0)),
+    ]))
+    .unwrap_err();
+    assert!(duplicate.reason.contains("unique"));
+
+    let file = std::env::temp_dir().join(format!(
+      "lsb-node-service-mount-file-{}",
+      std::process::id()
+    ));
+    std::fs::write(&file, b"not a directory").unwrap();
+    let error = map_service_mounts(Some(vec![MountConfig {
+      r#type: "direct".to_string(),
+      hostPath: file.display().to_string(),
+      guestPath: "/workspace".to_string(),
+      flags: Some(1.0),
+    }]))
+    .unwrap_err();
+    assert!(error.reason.contains("existing directory"));
+    let _ = std::fs::remove_file(file);
+  }
 
   #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
   #[test]
