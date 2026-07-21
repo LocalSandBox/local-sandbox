@@ -473,7 +473,6 @@ function Invoke-ClientSmoke {
                     hosts = @('httpbin.org')
                 }
             }
-            httpsInterception = [ordered]@{ enabled = $true; requestHeaders = @() }
         }
     }
     elseif ($Sequential) {
