@@ -136,6 +136,40 @@ function Assert-ProtectedAcl {
     }
 }
 
+function Get-ProtectedAclOwnerSid {
+    param([Parameter(Mandatory = $true)][string] $Path)
+
+    $acl = Get-Acl -LiteralPath $Path
+    if (-not $acl.AreAccessRulesProtected) {
+        throw "Signing asset directory inherits access rules: $Path"
+    }
+    $privileged = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $privileged.Add('S-1-5-18') | Out-Null
+    $privileged.Add('S-1-5-32-544') | Out-Null
+    $owners = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($rule in $acl.GetAccessRules(
+        $true,
+        $true,
+        [Security.Principal.SecurityIdentifier]
+    )) {
+        $sid = $rule.IdentityReference.Value
+        if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            ($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne
+                [Security.AccessControl.FileSystemRights]::FullControl) {
+            throw "Signing asset directory has an unexpected access rule: $Path"
+        }
+        if (-not $privileged.Contains($sid)) {
+            $owners.Add($sid) | Out-Null
+        }
+    }
+    if ($owners.Count -ne 1) {
+        throw "Signing asset directory must have exactly one designated owner SID: $Path"
+    }
+    $ownerSid = [Security.Principal.SecurityIdentifier]::new(@($owners)[0])
+    Assert-ProtectedAcl -Path $Path -CurrentUserSid $ownerSid
+    return $ownerSid
+}
+
 function Write-Marker {
     param([Parameter(Mandatory = $true)][string] $Path, [Parameter(Mandatory = $true)][string] $Kind)
 
@@ -248,7 +282,7 @@ switch ($Mode) {
         if (Test-Path -LiteralPath $signingRoot) {
             Assert-NotReparsePoint -Path $signingRoot | Out-Null
             Assert-Marker -Path $signingMarker -Kind 'installed'
-            Assert-ProtectedAcl -Path $signingRoot -CurrentUserSid $state.CurrentUserSid
+            Get-ProtectedAclOwnerSid -Path $signingRoot | Out-Null
             throw 'Protected signing assets are already provisioned; use Verify instead of replacing them.'
         }
         New-Item -ItemType Directory -Path $stageRoot | Out-Null
@@ -296,8 +330,8 @@ switch ($Mode) {
         }
         Assert-NotReparsePoint -Path $signingRoot | Out-Null
         Assert-Marker -Path $signingMarker -Kind 'installed'
-        Assert-ProtectedAcl -Path $signingRoot -CurrentUserSid $state.CurrentUserSid
-        Get-PublicCertificateInfo -Directory $signingRoot -CurrentUserSid $state.CurrentUserSid |
+        $ownerSid = Get-ProtectedAclOwnerSid -Path $signingRoot
+        Get-PublicCertificateInfo -Directory $signingRoot -CurrentUserSid $ownerSid |
             ConvertTo-Json -Compress
     }
     'Abort' {
