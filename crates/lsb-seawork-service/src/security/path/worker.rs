@@ -10,7 +10,7 @@ use crate::security::impersonation::ImpersonationGuard;
 use super::identity::{AuthorizedMountRoot, MountAccess};
 use super::policy::MountPolicy;
 use super::ExportOptions;
-use crate::resource::mount_sync::TreeSnapshot;
+use crate::resource::mount_sync::{EntryFingerprint, SyncDirection, SyncOperation, TreeSnapshot};
 
 enum Command {
     Authorize {
@@ -33,6 +33,13 @@ enum Command {
     SnapshotProtected {
         root_pin: OwnedHandle,
         reply: mpsc::SyncSender<Result<TreeSnapshot>>,
+    },
+    ImportOperation {
+        root_pin: OwnedHandle,
+        staging_root_pin: OwnedHandle,
+        relative: PathBuf,
+        desired: Option<EntryFingerprint>,
+        reply: mpsc::SyncSender<Result<()>>,
     },
     ExportFile {
         root_pin: OwnedHandle,
@@ -145,6 +152,28 @@ impl PathWorker {
             .context("filesystem worker stopped")?;
         response.recv().context("filesystem worker lost reply")?
     }
+
+    pub fn import_operation(
+        &self,
+        authorized: &AuthorizedMountRoot,
+        protected: &ProtectedStagingRoot,
+        operation: &SyncOperation,
+    ) -> Result<()> {
+        if operation.direction != SyncDirection::ImportHost {
+            anyhow::bail!("host import requires an import reconciliation operation");
+        }
+        let (reply, response) = mpsc::sync_channel(1);
+        self.commands
+            .send(Command::ImportOperation {
+                root_pin: authorized.duplicate_root_handle()?,
+                staging_root_pin: protected.duplicate_root_handle()?,
+                relative: operation.relative.clone(),
+                desired: operation.desired.clone(),
+                reply,
+            })
+            .context("filesystem worker stopped")?;
+        response.recv().context("filesystem worker lost reply")?
+    }
 }
 
 impl Drop for PathWorker {
@@ -194,6 +223,22 @@ fn run(token: OwnedHandle, policy: MountPolicy, commands: mpsc::Receiver<Command
             }
             Command::SnapshotProtected { root_pin, reply } => {
                 let result = super::snapshot::protected_tree(root_pin);
+                let _ = reply.send(result);
+            }
+            Command::ImportOperation {
+                root_pin,
+                staging_root_pin,
+                relative,
+                desired,
+                reply,
+            } => {
+                let result = super::import::apply_host_import(
+                    &token,
+                    &root_pin,
+                    &staging_root_pin,
+                    &relative,
+                    desired.as_ref(),
+                );
                 let _ = reply.send(result);
             }
             Command::ExportFile {

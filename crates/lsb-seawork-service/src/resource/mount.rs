@@ -123,7 +123,7 @@ impl ProtectedStagingRoot {
         if !path.is_absolute() {
             bail!("protected staging root must be absolute");
         }
-        let (root, info) = open_protected_directory(path)?;
+        let (root, info) = open_protected_directory(path, true)?;
         use windows_sys::Win32::Storage::FileSystem::{
             FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_ENCRYPTED, FILE_ATTRIBUTE_OFFLINE,
             FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_RECALL_ON_OPEN,
@@ -168,7 +168,7 @@ impl std::fmt::Debug for ProtectedStagingRoot {
 }
 
 pub(crate) fn protected_identity(path: &Path) -> Result<String> {
-    let (_handle, info) = open_protected_directory(path)?;
+    let (_handle, info) = open_protected_directory(path, false)?;
     Ok(format!(
         "{:08x}:{:016x}",
         info.dwVolumeSerialNumber,
@@ -178,6 +178,7 @@ pub(crate) fn protected_identity(path: &Path) -> Result<String> {
 
 fn open_protected_directory(
     path: &Path,
+    writable: bool,
 ) -> Result<(
     OwnedHandle,
     windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION,
@@ -186,9 +187,10 @@ fn open_protected_directory(
     use std::os::windows::io::{AsRawHandle, FromRawHandle};
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, GetFileInformationByHandle, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, OPEN_EXISTING, SYNCHRONIZE,
+        CreateFileW, GetFileInformationByHandle, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY,
+        FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        OPEN_EXISTING, SYNCHRONIZE,
     };
 
     let wide = path
@@ -199,7 +201,14 @@ fn open_protected_directory(
     let raw = unsafe {
         CreateFileW(
             wide.as_ptr(),
-            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_LIST_DIRECTORY
+                | FILE_READ_ATTRIBUTES
+                | SYNCHRONIZE
+                | if writable {
+                    FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_DELETE_CHILD
+                } else {
+                    0
+                },
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             std::ptr::null(),
             OPEN_EXISTING,

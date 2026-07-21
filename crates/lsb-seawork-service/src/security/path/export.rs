@@ -135,7 +135,7 @@ fn open_or_create_parents(root: &OwnedHandle, components: Vec<OsString>) -> Resu
     Ok(parent)
 }
 
-fn create_temporary(parent: &OwnedHandle) -> Result<std::fs::File> {
+pub(super) fn create_temporary(parent: &OwnedHandle) -> Result<std::fs::File> {
     for _ in 0..8 {
         let mut random = [0u8; 8];
         getrandom::fill(&mut random)
@@ -160,7 +160,7 @@ fn create_temporary(parent: &OwnedHandle) -> Result<std::fs::File> {
     bail!("could not reserve a unique export temporary file")
 }
 
-fn require_safe_entry(info: &BY_HANDLE_FILE_INFORMATION, directory: bool) -> Result<()> {
+pub(super) fn require_safe_entry(info: &BY_HANDLE_FILE_INFORMATION, directory: bool) -> Result<()> {
     let denied = FILE_ATTRIBUTE_REPARSE_POINT
         | FILE_ATTRIBUTE_ENCRYPTED
         | FILE_ATTRIBUTE_OFFLINE
@@ -168,13 +168,14 @@ fn require_safe_entry(info: &BY_HANDLE_FILE_INFORMATION, directory: bool) -> Res
         | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS;
     if info.dwFileAttributes & denied != 0
         || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0) != directory
+        || (!directory && info.nNumberOfLinks > 1)
     {
         bail!("handle-relative export entry has an unsafe type or attributes");
     }
     Ok(())
 }
 
-fn rename_relative(
+pub(super) fn rename_relative(
     source: &std::fs::File,
     parent: &OwnedHandle,
     destination_name: &OsStr,
@@ -223,7 +224,7 @@ fn rename_relative(
     Ok(())
 }
 
-fn delete_on_close(file: &std::fs::File) {
+pub(super) fn delete_on_close(file: &std::fs::File) {
     let disposition = FILE_DISPOSITION_INFORMATION { DeleteFile: true };
     let mut io_status = IO_STATUS_BLOCK::default();
     let _ = unsafe {

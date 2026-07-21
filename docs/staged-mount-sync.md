@@ -90,9 +90,20 @@ Both modes reject unsafe attributes, multi-link or repeated identities, bound pa
 entries, and bytes, hash only held file handles, and re-query identity, size, and
 last-write time after each read. Initial staging also derives its controller baseline
 from the newly pinned protected root. A standard-token regression mutates, removes, and
-adds nested entries and proves fresh host and protected snapshots agree. Capability-bound
-operation execution, conflict publication, VM lifecycle wiring, and retained-stage
-teardown remain unavailable.
+adds nested entries and proves fresh host and protected snapshots agree.
+
+The path worker also accepts an `ImportHost` operation only with both retained root
+capabilities. It traverses and opens the observed host entry under the caller token,
+repeats DACL checks, rejects reparse/multi-link/type/length drift, and reverts before
+mutating the protected stage. File data is copied from that held source into a random
+create-new stage sibling, content-hashed and identity/size/time revalidated, flushed,
+and atomically replaced by exact-handle rename. Directory creation, file-to-directory
+replacement, and deepest-first absent-entry deletion use handle-relative opens and exact
+handle disposition; namespace parents are never reopened by path. A standard-token
+regression applies the ordered shapes and proves the resulting host/stage content
+snapshots agree with no temporary left behind. Cycle dispatch, guest-to-host directory
+and deletion operations, post-operation snapshot proof, conflict publication, VM
+lifecycle wiring, and retained-stage teardown remain unavailable.
 
 ## Reconciliation
 
@@ -124,10 +135,11 @@ This controller does not activate mounts or perform privileged mutation I/O. Its
 due. The mount records the authorized root identity, caller SID, and access mode at
 prepare time and makes its controller private; a different host capability or either
 snapshot failure makes reconciliation terminal before a plan is exposed. Production
-still must execute each import/export through pinned capabilities, publish conflict
-artifacts and durable recovery metadata, and bind the cycle to VM stop/cleanup. Until
-that integration and its Windows evidence exist, the service continues to advertise no
-mount capability.
+still must dispatch its ordered plan through the available host-import and file-export
+primitives, add guest-to-host directory/deletion operations, prove the post-operation
+snapshots before advancing the baseline, publish conflict artifacts and durable recovery
+metadata, and bind the cycle to VM stop/cleanup. Until that integration and its Windows
+evidence exist, the service continues to advertise no mount capability.
 
 Conflict names are exactly
 `<filename>.lsb-conflict-<128-bit-lowercase-hex-session-id>-<decimal-sequence>` and must
