@@ -19,7 +19,10 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $RunRoot,
 
-    [string] $CommandSpecBase64 = ''
+    [string] $CommandSpecBase64 = '',
+
+    [ValidatePattern('^$|^[a-z0-9][a-z0-9._-]{0,95}$')]
+    [string] $ReuseRunId = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -153,10 +156,15 @@ try {
             if (-not (Test-Path -LiteralPath $suitePath -PathType Leaf)) {
                 throw "Unknown Windows test suite '$Suite'; expected $suitePath"
             }
-            & $suitePath `
-                -Phase $Phase `
-                -RunRoot $runPath `
-                -SnapshotSha $SnapshotSha 2>&1 | Tee-Object -FilePath $logPath
+            $suiteArguments = @{
+                Phase = $Phase
+                RunRoot = $runPath
+                SnapshotSha = $SnapshotSha
+            }
+            if (-not [string]::IsNullOrWhiteSpace($ReuseRunId)) {
+                $suiteArguments['ReuseRunId'] = $ReuseRunId
+            }
+            & $suitePath @suiteArguments 2>&1 | Tee-Object -FilePath $logPath
             $exitCode = 0
         }
         if ($exitCode -eq 0) {

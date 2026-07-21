@@ -18,6 +18,8 @@ param(
     [string] $Suite = 'preflight',
 
     [string] $CommandSpecBase64 = '',
+    [ValidatePattern('^$|^[a-z0-9][a-z0-9._-]{0,95}$')]
+    [string] $ReuseRunId = '',
     [string] $Root = 'C:\dev\local-sandbox-agent',
     [string] $StateRoot = (Join-Path $env:ProgramData 'LocalSandbox\DevTest'),
     [int] $LockTimeoutSeconds = 120
@@ -142,6 +144,12 @@ try {
         $SnapshotRef = [string]$continuation.snapshot_ref
         $Suite = [string]$continuation.suite
         $CommandSpecBase64 = [string]$continuation.command_spec_base64
+        $ReuseRunId = if ($null -eq $continuation.PSObject.Properties['reuse_run_id']) {
+            ''
+        }
+        else {
+            [string]$continuation.reuse_run_id
+        }
         if ((Get-BootId) -eq [string]$continuation.boot_id_before) {
             throw "Windows has not rebooted since run '$RunId' was armed."
         }
@@ -176,7 +184,8 @@ try {
         -Suite $Suite `
         -Phase $phase `
         -RunRoot $runPath `
-        -CommandSpecBase64 $CommandSpecBase64
+        -CommandSpecBase64 $CommandSpecBase64 `
+        -ReuseRunId $ReuseRunId
     $runnerExit = $LASTEXITCODE
     if ($runnerExit -ne 0) {
         exit $runnerExit
@@ -191,6 +200,7 @@ try {
             snapshot_ref = $SnapshotRef
             suite = $Suite
             command_spec_base64 = $CommandSpecBase64
+            reuse_run_id = $ReuseRunId
             boot_id_before = Get-BootId
             armed_utc = [DateTime]::UtcNow.ToString('o')
         }

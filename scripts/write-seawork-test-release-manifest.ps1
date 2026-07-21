@@ -188,6 +188,22 @@ $manifestPath = Join-Path $run 'seawork-test-release-manifest.json'
     candidate_version = $version
     synthetic_snapshot_sha = $SnapshotSha
     windows_run_ids = @($runId)
+    artifact_provenance = if (
+        $null -ne $releaseEvidence.PSObject.Properties['artifact_reuse']
+    ) {
+        [ordered]@{
+            mode = 'verified-reuse'
+            source_run_id = [string]$releaseEvidence.artifact_reuse.source_run_id
+            source_snapshot_sha = [string]$releaseEvidence.artifact_reuse.source_snapshot_sha
+            source_snapshot_tree_sha = `
+                [string]$releaseEvidence.artifact_reuse.source_snapshot_tree_sha
+            source_release_evidence_sha256 = `
+                [string]$releaseEvidence.artifact_reuse.source_release_evidence_sha256
+        }
+    }
+    else {
+        [ordered]@{ mode = 'built-in-run' }
+    }
     windows_build = [ordered]@{
         caption = [string]$os.Caption
         build = [string]$os.BuildNumber

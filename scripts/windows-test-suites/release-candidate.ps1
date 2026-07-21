@@ -329,11 +329,19 @@ foreach ($name in @($payloadName, $symbolsName, 'SHA256SUMS')) {
 }
 Copy-Item -LiteralPath $eventSigned -Destination (Join-Path $RunRoot 'evidence-event-messages.json')
 $evidenceName = 'evidence-release-candidate.json'
+$snapshotTreeSha = (& git rev-parse "${SnapshotSha}^{tree}").Trim().ToLowerInvariant()
+$baseCommit = (& git rev-parse "${SnapshotSha}^").Trim().ToLowerInvariant()
+if ($LASTEXITCODE -ne 0 -or $snapshotTreeSha -notmatch '^[0-9a-f]{40}$' -or
+    $baseCommit -notmatch '^[0-9a-f]{40}$') {
+    throw 'Could not resolve release-candidate snapshot provenance.'
+}
 [ordered]@{
     schema_version = 1
     suite = 'release-candidate'
     status = 'passed'
     snapshot_sha = $SnapshotSha
+    snapshot_tree_sha = $snapshotTreeSha
+    base_commit = $baseCommit
     version = $version
     service_profile = 'production'
     publisher_subject = [string]$certificateInfo.subject

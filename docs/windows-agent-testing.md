@@ -147,6 +147,23 @@ The test-release suites are:
 - `service-reboot`: the same owned install before reboot, delayed automatic startup and
   a post-reboot signed standard-user smoke, followed by uninstall.
 
+After one run has constructed a candidate, a retry at the exact same Git tree, base
+commit, candidate version, and publisher identity can reuse it without rebuilding or
+recompressing:
+
+```bash
+scripts/win-test reboot service-reboot \
+  --reuse-candidate <source-run-id>
+```
+
+Reuse is fail-closed. The Windows runner checks the source and destination run owners,
+rejects reparse points, verifies every source fetch-manifest hash and required staged
+manifest, re-runs trusted PE/catalog closure and installed-layout verification, copies
+the candidate into the new owned run, and repeats those checks there. The new evidence
+records the source run/snapshot/tree and keeps all runtime smoke and reboot checks in
+the new run. A source candidate from a different tree, base commit, version, or signer
+is rejected.
+
 The install harness refuses an existing service, Event Log source, install/state/client
 root, test user, or scheduled task that it cannot prove belongs to its exact run. It is
 dedicated-laptop test infrastructure, not a replacement for SeaWork's NSIS transaction.
@@ -167,7 +184,9 @@ The bootstrap runs the pre-reboot phase, atomically writes an `awaiting_reboot`
 continuation containing the run ID, snapshot SHA/ref, suite, and old Windows boot
 identity, and only then schedules `shutdown.exe`. The macOS wrapper waits up to 15
 minutes for SSH and requires the Windows boot identity to change before invoking the
-post-reboot phase. Merely restarting `sshd` cannot satisfy this check.
+post-reboot phase. It then waits for an interactive console sign-in because the
+filtered-current-user proof requires that user's existing limited token. Merely
+restarting `sshd` cannot satisfy either check.
 
 If the macOS agent or terminal is interrupted, resume without creating a new snapshot:
 

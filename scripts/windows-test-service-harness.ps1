@@ -251,7 +251,7 @@ function Invoke-FilteredUserProcess {
         -Argument ('/d /c call "{0}"' -f $batchPath)
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(10)
     $principal = New-ScheduledTaskPrincipal `
-        -UserId $State.client_user_identity `
+        -UserId $State.client_user_sid `
         -LogonType Interactive `
         -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet `
@@ -263,8 +263,10 @@ function Invoke-FilteredUserProcess {
         $registered = Register-ScheduledTask -TaskName $taskName -Action $action `
             -Trigger $trigger -Principal $principal -Settings $settings
         if ([string]$registered.Principal.RunLevel -ne 'Limited' -or
-            [string]$registered.Principal.LogonType -notin @('Interactive', 'InteractiveToken')) {
+            [string]$registered.Principal.LogonType -notin @('Interactive', 'InteractiveToken') -or
+            [string]$registered.Principal.UserId -cne [string]$State.client_user_sid) {
             throw "Filtered client task principal mismatch: " +
+                "userId=$($registered.Principal.UserId), " +
                 "logonType=$($registered.Principal.LogonType), " +
                 "runLevel=$($registered.Principal.RunLevel)."
         }

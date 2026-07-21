@@ -22,7 +22,7 @@ Usage:
   scripts/win-test preflight
   scripts/win-test run -- <executable> [arguments...]
   scripts/win-test suite <suite-name>
-  scripts/win-test reboot <suite-name>
+  scripts/win-test reboot <suite-name> [--reuse-candidate <run-id>]
   scripts/win-test resume <run-id>
   scripts/win-test fetch <run-id> <new-local-directory>
 
@@ -248,7 +248,7 @@ encode_command() {
 }
 
 invoke_bootstrap() {
-    local mode="$1" suite="$2" command_spec="${3:-}"
+    local mode="$1" suite="$2" command_spec="${3:-}" reuse_run_id="${4:-}"
     local bootstrap_arguments=(
         pwsh -NoProfile -NonInteractive -File
         "${windows_root}/bootstrap.ps1"
@@ -260,6 +260,9 @@ invoke_bootstrap() {
     )
     if [[ -n "$command_spec" ]]; then
         bootstrap_arguments+=( -CommandSpecBase64 "$command_spec" )
+    fi
+    if [[ -n "$reuse_run_id" ]]; then
+        bootstrap_arguments+=( -ReuseRunId "$reuse_run_id" )
     fi
     ssh_windows "${bootstrap_arguments[@]}"
 }
@@ -284,6 +287,24 @@ wait_for_reboot() {
         sleep 5
     done
     fail "Windows did not complete reboot within 15 minutes; resume later with: scripts/win-test resume $run_id"
+}
+
+wait_for_interactive_user() {
+    local deadline observed
+    deadline=$(( $(date +%s) + 900 ))
+    printf 'Waiting for the standard-user console session required by the filtered-token proof...\n'
+    while (( $(date +%s) < deadline )); do
+        observed="$(ssh_windows pwsh -NoProfile -NonInteractive -Command \
+            '(Get-CimInstance Win32_ComputerSystem).UserName' 2>/dev/null || true)"
+        observed="${observed//$'\r'/}"
+        observed="${observed//$'\n'/}"
+        if [[ -n "$observed" ]]; then
+            printf 'Interactive Windows session detected; resuming the exact run.\n'
+            return 0
+        fi
+        sleep 5
+    done
+    fail "No interactive Windows user signed in within 15 minutes; sign in, then resume with: scripts/win-test resume $run_id"
 }
 
 resume_run() {
@@ -346,15 +367,23 @@ case "$action" in
         invoke_bootstrap Run "$1"
         ;;
     reboot)
-        [[ "$#" -eq 1 ]] || fail 'reboot requires exactly one suite name'
+        [[ "$#" -eq 1 || "$#" -eq 3 ]] || \
+            fail 'reboot syntax is: scripts/win-test reboot <suite-name> [--reuse-candidate <run-id>]'
         [[ "$1" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || fail 'invalid suite name'
         suite_name="$1"
+        reuse_run_id=''
+        if [[ "$#" -eq 3 ]]; then
+            [[ "$2" == '--reuse-candidate' ]] || fail 'unknown reboot option'
+            [[ "$3" =~ ^[a-z0-9][a-z0-9._-]{0,95}$ ]] || fail 'invalid reuse candidate run ID'
+            reuse_run_id="$3"
+        fi
         old_boot_id="$(get_boot_id)"
         old_boot_id="${old_boot_id//$'\r'/}"
         old_boot_id="${old_boot_id//$'\n'/}"
         create_snapshot
-        invoke_bootstrap Reboot "$suite_name"
+        invoke_bootstrap Reboot "$suite_name" '' "$reuse_run_id"
         wait_for_reboot "$old_boot_id"
+        wait_for_interactive_user
         resume_run "$run_id"
         ;;
     resume)
