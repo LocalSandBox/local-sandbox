@@ -1548,9 +1548,10 @@ where
     R: AsyncRead + Unpin,
 {
     let mut header = [0u8; HEADER_LEN];
-    tokio::time::timeout(Duration::from_secs(65), pipe.read_exact(&mut header))
-        .await
-        .map_err(|_| ClientError::Protocol("frame header timeout".to_string()))??;
+    // A healthy connection may be idle while a sandbox boots, a transfer runs,
+    // or a spawned process produces no events. Bound only partial frames after
+    // a header declares a payload; connection lifetime is owned by the session.
+    pipe.read_exact(&mut header).await?;
     let header = FrameHeader::decode(header)?;
     let mut payload = vec![0u8; header.payload_len as usize];
     tokio::time::timeout(Duration::from_secs(10), pipe.read_exact(&mut payload))
