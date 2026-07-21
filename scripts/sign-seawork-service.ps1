@@ -15,6 +15,7 @@ param(
     [string]$ExpectedPublisherSubject,
     [string]$ExpectedPublisherSha256,
     [switch]$AllowUntrustedTestCertificate,
+    [switch]$UseLocalMachineStore,
     [switch]$SkipTimestamp
 )
 
@@ -152,6 +153,12 @@ function Invoke-Sign {
     $collection = @()
     $arguments = @()
     $importedThumbprints = [Collections.Generic.List[string]]::new()
+    $storeLocation = if ($UseLocalMachineStore) {
+        'Cert:\LocalMachine\My'
+    }
+    else {
+        'Cert:\CurrentUser\My'
+    }
     try {
         $collection = [Security.Cryptography.X509Certificates.X509Certificate2Collection]::new()
         $collection.Import(
@@ -168,7 +175,7 @@ function Invoke-Sign {
             throw 'PFX signer has an invalid SHA-1 certificate identifier'
         }
         foreach ($certificate in $collection) {
-            $certificatePath = "Cert:\CurrentUser\My\$($certificate.Thumbprint)"
+            $certificatePath = "$storeLocation\$($certificate.Thumbprint)"
             if (Test-Path -LiteralPath $certificatePath) {
                 throw 'Refusing to replace a certificate already present in the signing user store'
             }
@@ -176,7 +183,7 @@ function Invoke-Sign {
         $securePassword = ConvertTo-SecureString -String $password -AsPlainText -Force
         $imported = @(Import-PfxCertificate `
             -FilePath $pfx `
-            -CertStoreLocation 'Cert:\CurrentUser\My' `
+            -CertStoreLocation $storeLocation `
             -Password $securePassword `
             -Exportable:$false)
         foreach ($certificate in $imported) {
@@ -186,6 +193,9 @@ function Invoke-Sign {
             throw 'The imported certificate set did not contain the PFX signer'
         }
         $arguments = @('sign', '/fd', 'SHA256', '/s', 'My', '/sha1', $signerThumbprint)
+        if ($UseLocalMachineStore) {
+            $arguments = @('sign', '/fd', 'SHA256', '/sm', '/s', 'My', '/sha1', $signerThumbprint)
+        }
         if (-not $SkipTimestamp) {
             if ([string]::IsNullOrWhiteSpace($TimestampUrl)) {
                 throw 'TimestampUrl is required unless SkipTimestamp is explicitly set'
@@ -198,7 +208,7 @@ function Invoke-Sign {
     }
     finally {
         foreach ($thumbprint in $importedThumbprints) {
-            $certificatePath = "Cert:\CurrentUser\My\$thumbprint"
+            $certificatePath = "$storeLocation\$thumbprint"
             if (Test-Path -LiteralPath $certificatePath) {
                 Remove-Item -Path $certificatePath -DeleteKey -Force
             }

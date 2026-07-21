@@ -186,6 +186,7 @@ Invoke-Native (Join-Path $PWD 'scripts\verify-seawork-event-messages.ps1') @(
 
 Invoke-Native (Join-Path $PWD 'scripts\sign-seawork-service.ps1') @(
     '-Mode', 'SignPe',
+    '-UseLocalMachineStore',
     '-ServiceBinary', $service,
     '-PfxPath', $pfx,
     '-PasswordFile', $passwordFile,
@@ -245,6 +246,7 @@ $bundle = Resolve-RegularDirectory (Join-Path $stage 'LocalSandbox') 'staged ser
 
 Invoke-Native (Join-Path $PWD 'scripts\sign-seawork-service.ps1') @(
     '-Mode', 'Catalog',
+    '-UseLocalMachineStore',
     '-BundleRoot', $bundle,
     '-WorkDirectory', $catalogWork,
     '-PfxPath', $pfx,
@@ -285,6 +287,40 @@ Invoke-Native (Join-Path $bundle 'bin\localsandbox-seawork-service.exe') @(
     '--verify-bundle', '--json'
 ) 'installed-layout bundle verification'
 
+$nodeRelease = Join-Path $releaseRoot 'node-release'
+Invoke-Native (Join-Path $PWD 'scripts\package-seawork-node-release.ps1') @(
+    '-Version', $version,
+    '-PublisherSha256', [string]$certificateInfo.sha256_thumbprint,
+    '-OutputDirectory', $nodeRelease
+) 'Windows Node package construction'
+$nodeEvidenceSource = Resolve-RegularFile `
+    (Join-Path $nodeRelease 'evidence-node-packages.json') `
+    'Node package evidence'
+$nodeEvidence = Get-Content -LiteralPath $nodeEvidenceSource -Raw | ConvertFrom-Json
+if ($nodeEvidence.status -ne 'passed' -or $nodeEvidence.version -ne $version -or
+    $nodeEvidence.publisher_sha256 -cne [string]$certificateInfo.sha256_thumbprint -or
+    @($nodeEvidence.packages).Count -ne 2) {
+    throw 'Node package evidence does not match the signed candidate'
+}
+$nodePackageNames = [Collections.Generic.List[string]]::new()
+foreach ($package in @($nodeEvidence.packages)) {
+    $name = [string]$package.file
+    if ($name -notmatch '^[A-Za-z0-9][A-Za-z0-9._+-]{0,120}\.tgz$' -or
+        $nodePackageNames.Contains($name)) {
+        throw 'Node package evidence contains an unsafe or duplicate filename'
+    }
+    $source = Resolve-RegularFile (Join-Path $nodeRelease "artifacts\$name") "Node package $name"
+    $observedHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($observedHash -cne [string]$package.sha256 -or
+        (Get-Item -LiteralPath $source).Length -ne [long]$package.size) {
+        throw "Node package evidence hash/size mismatch: $name"
+    }
+    Copy-Item -LiteralPath $source -Destination (Join-Path $RunRoot $name)
+    $nodePackageNames.Add($name)
+}
+Copy-Item -LiteralPath $nodeEvidenceSource `
+    -Destination (Join-Path $RunRoot 'evidence-node-packages.json')
+
 $payloadName = "lsb-seawork-service-v$version-windows-x86_64.zip"
 $symbolsName = "lsb-seawork-service-v$version-windows-x86_64-symbols.zip"
 foreach ($name in @($payloadName, $symbolsName, 'SHA256SUMS')) {
@@ -310,16 +346,26 @@ $evidenceName = 'evidence-release-candidate.json'
         name = $symbolsName
         sha256 = (Get-FileHash -LiteralPath (Join-Path $RunRoot $symbolsName) -Algorithm SHA256).Hash.ToLowerInvariant()
     }
+    node_packages = @($nodeEvidence.packages)
     trusted_signature_required = $true
     timestamp_required = $true
 } | ConvertTo-Json -Depth 8 | Set-Content `
     -LiteralPath (Join-Path $RunRoot $evidenceName) `
     -Encoding utf8NoBOM
 
-Write-FetchManifest @(
+Invoke-Native (Join-Path $PWD 'scripts\write-seawork-test-release-manifest.ps1') @(
+    '-RunRoot', $RunRoot,
+    '-SnapshotSha', $SnapshotSha
+) 'base test-release manifest generation'
+
+$fetchNames = @(
     $payloadName,
     $symbolsName,
     'SHA256SUMS',
+    'seawork-test-release-manifest.json',
     'evidence-event-messages.json',
+    'evidence-node-packages.json',
     $evidenceName
 )
+$fetchNames += @($nodePackageNames)
+Write-FetchManifest $fetchNames
