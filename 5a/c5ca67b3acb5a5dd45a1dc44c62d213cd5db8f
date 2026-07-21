@@ -1,0 +1,22 @@
+scripts/windows-test-service-harness.ps1
+  s_d92cdce887f5bb::t_1d2527436dbf61 93-95,97-100,103-114,116-120,122-126,128-169,171-181,380
+  s_d92cdce887f5bb::t_dafac2db330eb0 25-30
+  s_d92cdce887f5bb::t_3811fdb4983209 96,101-102,170
+  s_d92cdce887f5bb::t_c548b2e4eaa115 115,121,127
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "5ac5ca67b3acb5a5dd45a1dc44c62d213cd5db8f",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
