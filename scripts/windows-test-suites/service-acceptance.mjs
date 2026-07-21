@@ -234,11 +234,7 @@ try {
       status: 'failed',
       stable_error: error instanceof Error ? error.name : 'unknown',
       failed_stage: failedStage,
-      stable_detail:
-        ['identity', 'connect-service', 'service-info', 'service-health'].includes(failedStage) &&
-        error instanceof Error
-          ? error.message
-          : undefined,
+      stable_detail: error instanceof Error ? error.message : 'unknown',
       checks,
     })}\n`,
     'utf8',

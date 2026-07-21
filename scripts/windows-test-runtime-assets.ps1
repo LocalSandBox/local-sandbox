@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('Prepare', 'Commit', 'Verify', 'Abort')]
+    [ValidateSet('Prepare', 'Commit', 'Verify', 'Abort', 'Remove')]
     [string] $Mode,
 
     [ValidatePattern('^[a-z0-9][a-z0-9._-]{0,95}$')]
@@ -39,6 +39,24 @@ function Assert-PlainFile {
     return $item
 }
 
+function Assert-X86KernelImage {
+    param([string] $Path)
+    $bytes = [byte[]]::new(0x206)
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $read = $stream.Read($bytes, 0, $bytes.Length)
+    }
+    finally {
+        $stream.Dispose()
+    }
+    if ($read -ne $bytes.Length -or
+        $bytes[0x1fe] -ne 0x55 -or $bytes[0x1ff] -ne 0xaa -or
+        $bytes[0x202] -ne 0x48 -or $bytes[0x203] -ne 0x64 -or
+        $bytes[0x204] -ne 0x72 -or $bytes[0x205] -ne 0x53) {
+        throw 'Kernel Image is not an x86_64 Linux boot-protocol image.'
+    }
+}
+
 function Write-Marker {
     param([string] $Path, [string] $Kind)
     [ordered]@{ schema_version = 1; owner = $owner; kind = $Kind } |
@@ -64,6 +82,7 @@ function Get-RuntimeInfo {
         Assert-PlainFile $path "runtime asset $name" 16GB | Out-Null
         $files[$name] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
     }
+    Assert-X86KernelImage (Join-Path $runtime.FullName 'Image')
     foreach ($name in @('qemu-system-x86_64.exe', 'qemu-img.exe')) {
         Assert-PlainFile (Join-Path $qemu.FullName $name) "QEMU asset $name" 1GB | Out-Null
     }
@@ -130,6 +149,7 @@ switch ($Mode) {
         & tar.exe -xzf $runtimeArchive -C $runtimeExtract
         if ($LASTEXITCODE -ne 0) { throw "Extracting runtime assets failed with exit code $LASTEXITCODE" }
         Assert-PlainFile (Join-Path $runtimeExtract 'Image') 'kernel image' 1GB | Out-Null
+        Assert-X86KernelImage (Join-Path $runtimeExtract 'Image')
         Assert-PlainFile (Join-Path $runtimeExtract 'initramfs.cpio.gz') 'initramfs' 2GB | Out-Null
         Assert-PlainFile (Join-Path $runtimeExtract 'rootfs.ext4') 'root filesystem' 16GB | Out-Null
         $archive = Join-Path $stage 'qemu.tar.gz'
@@ -187,5 +207,14 @@ switch ($Mode) {
             Remove-Item -LiteralPath $stage -Recurse -Force
         }
         [ordered]@{ status = 'aborted' } | ConvertTo-Json -Compress
+    }
+    'Remove' {
+        Assert-Marker $rootMarker 'installed'
+        Assert-PlainDirectory $runtimeRoot 'runtime asset root' | Out-Null
+        Assert-PlainDirectory $qemuRoot 'QEMU asset root' | Out-Null
+        Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
+        Remove-Item -LiteralPath $qemuRoot -Recurse -Force
+        Remove-Item -LiteralPath $rootMarker -Force
+        [ordered]@{ status = 'removed' } | ConvertTo-Json -Compress
     }
 }

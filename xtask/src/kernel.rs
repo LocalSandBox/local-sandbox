@@ -16,6 +16,7 @@ const KERNEL_BUILD_DOCKER_SCRIPT: &str = r#"set -e
 KERNEL_ARCH="${LSB_KERNEL_ARCH:-arm64}"
 KERNEL_TARGET="${LSB_KERNEL_TARGET:-Image}"
 KERNEL_OUTPUT_RELATIVE_PATH="${LSB_KERNEL_OUTPUT_RELATIVE_PATH:-arch/${KERNEL_ARCH}/boot/Image}"
+KERNEL_JOBS="${LSB_KERNEL_JOBS:-$(nproc)}"
 
 apt-get update -qq > /dev/null 2>&1
 apt-get install -y -qq build-essential bc flex bison libelf-dev libssl-dev > /dev/null 2>&1
@@ -25,7 +26,7 @@ cp /tmp/lsb_defconfig "arch/${KERNEL_ARCH}/configs/lsb_defconfig"
 make ARCH="${KERNEL_ARCH}" lsb_defconfig > /dev/null 2>&1
 
 echo "    Compiling kernel (this takes a few minutes)..."
-make ARCH="${KERNEL_ARCH}" -j"$(nproc)" "${KERNEL_TARGET}"
+make ARCH="${KERNEL_ARCH}" -j"${KERNEL_JOBS}" "${KERNEL_TARGET}"
 
 cp "${KERNEL_OUTPUT_RELATIVE_PATH}" /output/Image
 "#;
@@ -123,6 +124,16 @@ pub fn build_kernel_for_platform(platform: &PlatformSpec) -> Result<()> {
     } else {
         let engine =
             container_engine("Docker or Podman is required to build the kernel on this host.")?;
+        let kernel_jobs = env_value("LSB_KERNEL_JOBS")
+            .map(|value| {
+                value
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|jobs| *jobs > 0)
+                    .map(|_| value)
+                    .ok_or_else(|| anyhow!("LSB_KERNEL_JOBS must be a positive integer"))
+            })
+            .transpose()?;
         println!(
             "    Building in {} ({} container)",
             engine, platform.docker_platform
@@ -142,6 +153,12 @@ pub fn build_kernel_for_platform(platform: &PlatformSpec) -> Result<()> {
                     "LSB_KERNEL_OUTPUT_RELATIVE_PATH={}",
                     layout.output_relpath
                 ))
+                .args(
+                    kernel_jobs
+                        .as_ref()
+                        .map(|jobs| vec!["-e".to_string(), format!("LSB_KERNEL_JOBS={jobs}")])
+                        .unwrap_or_default(),
+                )
                 .arg("-v")
                 .arg(format!("{}:/tmp/lsb_defconfig:ro", defconfig.display()))
                 .arg("-v")

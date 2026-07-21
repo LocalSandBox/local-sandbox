@@ -479,9 +479,13 @@ function Invoke-ClientSmoke {
                 $failedResult = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
                 Copy-Item -LiteralPath $resultPath `
                     -Destination (Join-Path $RunRoot "evidence-node-$Suffix-failed.json")
+                $stableDetail = if ($null -ne $failedResult.PSObject.Properties['stable_detail']) {
+                    [string]$failedResult.stable_detail
+                }
+                else { 'no stable detail' }
                 throw "The filtered-token Node smoke '$Suffix' failed at stage " +
                     "'$($failedResult.failed_stage)' after $(@($failedResult.checks).Count) checks: " +
-                    "$($failedResult.stable_detail)"
+                    $stableDetail
             }
             throw "The filtered-token Node smoke '$Suffix' exited " +
                 "$($tokenProof.process_exit_code) without a result."
