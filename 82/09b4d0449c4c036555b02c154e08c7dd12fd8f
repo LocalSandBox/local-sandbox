@@ -1,0 +1,22 @@
+scripts/sign-seawork-service.ps1
+  s_d92cdce887f5bb::t_c3bf52bcf571df 363-370,374
+  s_d92cdce887f5bb::t_7b79cbbd9f8e3d 257-287,291-300,313,316,323-327,330,342-348,350-362,381,384-390
+  s_d92cdce887f5bb::t_1b8808a95afc01 372-373
+  s_d92cdce887f5bb::t_152dec3e0c1340 288-290,371,375-380,382-383
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "8209b4d0449c4c036555b02c154e08c7dd12fd8f",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
