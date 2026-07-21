@@ -1,0 +1,233 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+host="${WIN_TEST_HOST:-win-test}"
+windows_root='C:/dev/local-sandbox-agent'
+snapshot_index=''
+snapshot_objects=''
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
+
+usage() {
+    cat <<'EOF'
+Usage:
+  scripts/win-test setup
+  scripts/win-test verify
+  scripts/win-test preflight
+  scripts/win-test run -- <executable> [arguments...]
+  scripts/win-test suite <suite-name>
+  scripts/win-test reboot <suite-name>
+  scripts/win-test resume <run-id>
+
+WIN_TEST_HOST overrides the default SSH alias "win-test".
+EOF
+}
+
+fail() {
+    printf 'win-test: %s\n' "$*" >&2
+    exit 2
+}
+
+cleanup() {
+    if [[ -n "$snapshot_index" && -f "$snapshot_index" ]]; then
+        rm -f "$snapshot_index"
+    fi
+    if [[ -n "$snapshot_objects" && -d "$snapshot_objects" ]]; then
+        rm -rf -- "$snapshot_objects"
+    fi
+}
+trap cleanup EXIT
+
+validate_host() {
+    [[ "$host" =~ ^[A-Za-z0-9._-]+$ ]] || fail 'WIN_TEST_HOST must be an SSH host alias without shell metacharacters'
+}
+
+ssh_windows() {
+    ssh \
+        -o BatchMode=yes \
+        -o ConnectTimeout=8 \
+        -o ServerAliveInterval=15 \
+        -o ServerAliveCountMax=4 \
+        "$host" "$@"
+}
+
+setup_host() {
+    local staging="C:/Windows/Temp/local-sandbox-agent-setup-$$"
+    local setup_status=0 cleanup_status=0
+    if ssh_windows pwsh -NoProfile -NonInteractive -Command \
+        "New-Item -ItemType Directory -Force -Path '$staging' | Out-Null" && \
+        scp \
+            -o BatchMode=yes \
+            -o ConnectTimeout=8 \
+            "$script_dir/setup-windows-test-host.ps1" \
+            "$script_dir/windows-test-bootstrap.ps1" \
+            "${host}:${staging}/" && \
+        ssh_windows pwsh -NoProfile -NonInteractive -File \
+            "${staging}/setup-windows-test-host.ps1" \
+            -BootstrapSource "${staging}/windows-test-bootstrap.ps1" && \
+        ssh_windows pwsh -NoProfile -NonInteractive -File \
+            "${windows_root}/setup-windows-test-host.ps1" -VerifyOnly; then
+        setup_status=0
+    else
+        setup_status=$?
+    fi
+    ssh_windows pwsh -NoProfile -NonInteractive -Command \
+        "Remove-Item -LiteralPath '$staging' -Recurse -Force -ErrorAction SilentlyContinue" || \
+        cleanup_status=$?
+    if (( setup_status != 0 )); then
+        return "$setup_status"
+    fi
+    return "$cleanup_status"
+}
+
+verify_host() {
+    ssh_windows pwsh -NoProfile -NonInteractive -File \
+        "${windows_root}/setup-windows-test-host.ps1" -VerifyOnly
+}
+
+create_snapshot() {
+    local base_sha tree_sha message discovered_root git_dir base_objects
+    discovered_root="$(git -C "$repo_root" rev-parse --show-toplevel)"
+    [[ "$discovered_root" == "$repo_root" ]] || fail "script directory is not inside the expected Git root: $repo_root"
+    cd "$repo_root"
+    base_sha="$(git rev-parse HEAD)"
+    git_dir="$(git rev-parse --absolute-git-dir)"
+    base_objects="$git_dir/objects"
+    snapshot_index="$(mktemp "${TMPDIR:-/tmp}/local-sandbox-win-test-index.XXXXXX")"
+    snapshot_objects="$(mktemp -d "${TMPDIR:-/tmp}/local-sandbox-win-test-objects.XXXXXX")"
+    rm -f "$snapshot_index"
+    GIT_INDEX_FILE="$snapshot_index" \
+        GIT_OBJECT_DIRECTORY="$snapshot_objects" \
+        GIT_ALTERNATE_OBJECT_DIRECTORIES="$base_objects" \
+        git read-tree HEAD
+    GIT_INDEX_FILE="$snapshot_index" \
+        GIT_OBJECT_DIRECTORY="$snapshot_objects" \
+        GIT_ALTERNATE_OBJECT_DIRECTORIES="$base_objects" \
+        git add -A -- .
+    tree_sha="$(GIT_INDEX_FILE="$snapshot_index" \
+        GIT_OBJECT_DIRECTORY="$snapshot_objects" \
+        GIT_ALTERNATE_OBJECT_DIRECTORIES="$base_objects" \
+        git write-tree)"
+    message="Local Windows test snapshot based on $base_sha"
+    snapshot_sha="$(printf '%s\n' "$message" | \
+        GIT_OBJECT_DIRECTORY="$snapshot_objects" \
+        GIT_ALTERNATE_OBJECT_DIRECTORIES="$base_objects" \
+        git commit-tree "$tree_sha" -p "$base_sha")"
+    run_id="$(date -u '+%Y%m%dt%H%M%Sz')-$$-${snapshot_sha:0:12}"
+    snapshot_ref="refs/heads/snapshots/$run_id"
+    GIT_OBJECT_DIRECTORY="$snapshot_objects" \
+        GIT_ALTERNATE_OBJECT_DIRECTORIES="$base_objects" \
+        git push --quiet --force "${host}:${windows_root}/mirror.git" \
+            "$base_sha:refs/heads/snapshot-bases/current" \
+            "$snapshot_sha:$snapshot_ref"
+    printf 'Windows test run: %s\nSnapshot: %s (base %s)\n' \
+        "$run_id" "$snapshot_sha" "$base_sha"
+}
+
+encode_command() {
+    [[ "$#" -gt 0 ]] || fail 'run requires an executable after --'
+    command_spec_base64="$(printf '%s\0' "$@" | base64 | tr -d '\n')"
+}
+
+invoke_bootstrap() {
+    local mode="$1" suite="$2" command_spec="${3:-}"
+    local bootstrap_arguments=(
+        pwsh -NoProfile -NonInteractive -File
+        "${windows_root}/bootstrap.ps1"
+        -Mode "$mode"
+        -RunId "$run_id"
+        -SnapshotSha "$snapshot_sha"
+        -SnapshotRef "$snapshot_ref"
+        -Suite "$suite"
+    )
+    if [[ -n "$command_spec" ]]; then
+        bootstrap_arguments+=( -CommandSpecBase64 "$command_spec" )
+    fi
+    ssh_windows "${bootstrap_arguments[@]}"
+}
+
+get_boot_id() {
+    ssh_windows pwsh -NoProfile -NonInteractive -Command \
+        '(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().Ticks.ToString()'
+}
+
+wait_for_reboot() {
+    local old_boot_id="$1" deadline now observed
+    deadline=$(( $(date +%s) + 900 ))
+    printf 'Waiting for Windows to reboot and sshd to return...\n'
+    while (( $(date +%s) < deadline )); do
+        observed="$(get_boot_id 2>/dev/null || true)"
+        observed="${observed//$'\r'/}"
+        observed="${observed//$'\n'/}"
+        if [[ -n "$observed" && "$observed" != "$old_boot_id" ]]; then
+            printf 'Windows returned with a new boot identity.\n'
+            return 0
+        fi
+        sleep 5
+    done
+    fail "Windows did not complete reboot within 15 minutes; resume later with: scripts/win-test resume $run_id"
+}
+
+resume_run() {
+    local resume_id="$1"
+    [[ "$resume_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$ ]] || fail 'invalid run ID'
+    ssh_windows pwsh -NoProfile -NonInteractive -File \
+        "${windows_root}/bootstrap.ps1" -Mode Resume -RunId "$resume_id"
+}
+
+validate_host
+[[ "$#" -gt 0 ]] || { usage; exit 2; }
+action="$1"
+shift
+
+case "$action" in
+    setup)
+        [[ "$#" -eq 0 ]] || fail 'setup takes no arguments'
+        setup_host
+        ;;
+    verify)
+        [[ "$#" -eq 0 ]] || fail 'verify takes no arguments'
+        verify_host
+        ;;
+    preflight)
+        [[ "$#" -eq 0 ]] || fail 'preflight takes no arguments'
+        create_snapshot
+        invoke_bootstrap Run preflight
+        ;;
+    run)
+        [[ "${1:-}" == '--' ]] || fail 'run syntax is: scripts/win-test run -- <executable> [arguments...]'
+        shift
+        encode_command "$@"
+        create_snapshot
+        invoke_bootstrap Run command "$command_spec_base64"
+        ;;
+    suite)
+        [[ "$#" -eq 1 ]] || fail 'suite requires exactly one suite name'
+        [[ "$1" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || fail 'invalid suite name'
+        create_snapshot
+        invoke_bootstrap Run "$1"
+        ;;
+    reboot)
+        [[ "$#" -eq 1 ]] || fail 'reboot requires exactly one suite name'
+        [[ "$1" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || fail 'invalid suite name'
+        suite_name="$1"
+        old_boot_id="$(get_boot_id)"
+        old_boot_id="${old_boot_id//$'\r'/}"
+        old_boot_id="${old_boot_id//$'\n'/}"
+        create_snapshot
+        invoke_bootstrap Reboot "$suite_name"
+        wait_for_reboot "$old_boot_id"
+        resume_run "$run_id"
+        ;;
+    resume)
+        [[ "$#" -eq 1 ]] || fail 'resume requires exactly one run ID'
+        resume_run "$1"
+        ;;
+    -h|--help|help)
+        usage
+        ;;
+    *)
+        usage
+        fail "unknown action: $action"
+        ;;
+esac
