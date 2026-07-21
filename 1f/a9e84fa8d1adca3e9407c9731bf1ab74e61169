@@ -1,0 +1,64 @@
+.github/workflows/release.yml
+  s_d92cdce887f5bb::t_2dbd498ca95bad 335
+scripts/setup-windows-test-host.ps1
+  s_d92cdce887f5bb::t_20f9a450b6325e 7,233,332,336,351-355
+  s_d92cdce887f5bb::t_3392e48a626089 356
+state.md
+  s_d92cdce887f5bb::t_89f80b6a1bc73e 8-9,12-13
+scripts/win-test
+  s_d92cdce887f5bb::t_20f9a450b6325e 20-21,75,82,139-142,144-148,154-157,159-166,169-176,317,322-329
+  s_d92cdce887f5bb::t_15705ce1e6b56f 132,135
+  s_d92cdce887f5bb::t_98e48035739d2b 18,131,133-134,136-138,314-316
+  s_d92cdce887f5bb::t_3dabf2b6361c43 8,45-47,150,168
+  s_d92cdce887f5bb::t_f7389f682c7383 143,149,151,158,167
+  s_d92cdce887f5bb::t_63d7beba8587aa 152-153
+Cargo.toml
+  s_d92cdce887f5bb::t_3fae694b1a7c86 27
+scripts/sign-seawork-service.ps1
+  s_d92cdce887f5bb::t_680518a6ead7cf 273-277,279-280,282-314
+  s_d92cdce887f5bb::t_079cc5b1a891dd 72
+docs/seawork-test-release-handoff.md
+  s_d92cdce887f5bb::t_89f80b6a1bc73e 347-368
+  s_d92cdce887f5bb::t_77912ffd581b1a 324-346
+scripts/windows-test-runtime-assets.ps1
+  s_d92cdce887f5bb::t_27753441dddc0e 117,119-122
+  s_d92cdce887f5bb::t_20f9a450b6325e 1-108,110-114,135-147,177-191
+  s_d92cdce887f5bb::t_3e1cd9ac952f14 123-126
+  s_d92cdce887f5bb::t_9471132cc80170 118
+  s_d92cdce887f5bb::t_0de74ed766dfc9 148-157,159-176
+  s_d92cdce887f5bb::t_f7389f682c7383 109,115-116,127-134,158
+scripts/windows-test-suites/release-candidate.ps1
+  s_d92cdce887f5bb::t_df7b7ce65f9226 157-162
+  s_d92cdce887f5bb::t_f9d853a7edf4a6 61-81,151,153-155,164-166,174-176
+  s_d92cdce887f5bb::t_2dbd498ca95bad 150
+  s_d92cdce887f5bb::t_ee889e2cd1f372 28-33
+scripts/windows-test-signing-assets.ps1
+  s_d92cdce887f5bb::t_14530288309a3a 81-102,270-271,344
+  s_d92cdce887f5bb::t_9471132cc80170 4,10-11,163-166,178,231-233,272-273,300-301,312-343
+docs/windows-agent-testing.md
+  s_d92cdce887f5bb::t_fabd3418a846d5 48-51,73-76
+  s_d92cdce887f5bb::t_77912ffd581b1a 39,42-45
+  s_d92cdce887f5bb::t_c41d04d554d98e 46-47
+  s_d92cdce887f5bb::t_1a0989b00a2796 77
+plan.md
+  s_d92cdce887f5bb::t_89f80b6a1bc73e 293,297
+  s_d92cdce887f5bb::t_77912ffd581b1a 303
+scripts/windows-test-suites/artifact-fetch-smoke.ps1
+  s_d92cdce887f5bb::t_466340e7028871 1-33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "1fa9e84fa8d1adca3e9407c9731bf1ab74e61169",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
