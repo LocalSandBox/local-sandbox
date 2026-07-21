@@ -1,0 +1,27 @@
+scripts/windows-test-suites/installed-service-smoke.ps1
+  s_d92cdce887f5bb::t_d290fa18f92467 7-9,17-18,20-28
+scripts/windows-test-service-harness.ps1
+  s_d92cdce887f5bb::t_d290fa18f92467 265-270,273,275
+docs/windows-agent-testing.md
+  s_d92cdce887f5bb::t_652e69d3be1232 159-165,171-173
+scripts/win-test
+  s_d92cdce887f5bb::t_d290fa18f92467 24,364-365,367-373,375
+scripts/windows-test-reuse-candidate.ps1
+  s_d92cdce887f5bb::t_d290fa18f92467 122,126,131,135-138,141-147,320
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "7d87dcb4fc2efa3a55f9e754ee79c0684249be3d",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
