@@ -1,0 +1,40 @@
+scripts/windows-test-suites/release-candidate.ps1
+  s_d92cdce887f5bb::t_ec21b0c1d8b514 332-333
+  s_d92cdce887f5bb::t_cdade9adf0e288 334-337,343-344
+scripts/windows-test-bootstrap.ps1
+  s_d92cdce887f5bb::t_cdade9adf0e288 21-22,147-152,187-188,203
+scripts/windows-dev-test.ps1
+  s_d92cdce887f5bb::t_cdade9adf0e288 22-25,159-167
+scripts/windows-test-reuse-candidate.ps1
+  s_d92cdce887f5bb::t_96ff278b6dd895 1-267,270-273,275-353,355-389
+  s_d92cdce887f5bb::t_ec21b0c1d8b514 268-269,274
+  s_d92cdce887f5bb::t_61da5be01e0281 354
+scripts/windows-test-service-harness.ps1
+  s_d92cdce887f5bb::t_cdade9adf0e288 254,266-267,269
+scripts/win-test
+  s_d92cdce887f5bb::t_1801de3a2ef8b9 292-309,386
+  s_d92cdce887f5bb::t_cdade9adf0e288 25,251,264-266,370-371,374-379,384
+scripts/windows-test-suites/service-reboot.ps1
+  s_d92cdce887f5bb::t_cdade9adf0e288 7-9,17-18,21-29
+scripts/write-seawork-test-release-manifest.ps1
+  s_d92cdce887f5bb::t_ec21b0c1d8b514 191-206
+docs/windows-agent-testing.md
+  s_d92cdce887f5bb::t_cdade9adf0e288 150-166
+  s_d92cdce887f5bb::t_1801de3a2ef8b9 187-189
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "5361eb5149261f1f42f95111251448d87cd8cdab",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
