@@ -1,0 +1,22 @@
+scripts/windows-test-service-harness.ps1
+  s_d92cdce887f5bb::t_d512beef9a0f3c 42-59,61-64,601-604
+  s_d92cdce887f5bb::t_d5989a6f1d5fb9 60
+scripts/windows-test-suites/filtered-client-token.ps1
+  s_d92cdce887f5bb::t_d512beef9a0f3c 17,20,25-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "7cb6e3c32b1a84089541564c79bb2aab2e044d53",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
