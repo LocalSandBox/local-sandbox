@@ -62,6 +62,8 @@ fn run_registered(
         startup_checkpoint,
         STARTUP_WAIT_HINT,
     ))?;
+    crate::security::process::allow_interactive_identity_queries()
+        .context("permit interactive clients to pin the service process identity")?;
 
     let paths = ServicePaths::discover()?;
     paths.prepare()?;

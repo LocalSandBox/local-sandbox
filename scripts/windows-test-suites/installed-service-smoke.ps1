@@ -31,6 +31,8 @@ foreach ($name in @(
     'evidence-installed-smoke.json',
     'evidence-node-mount-free.json',
     'evidence-node-direct-mounts.json',
+    'evidence-node-network.json',
+    'evidence-node-sequential.json',
     'evidence-uninstall.json'
 )) {
     $path = Join-Path $RunRoot $name
@@ -43,3 +45,6 @@ foreach ($name in @(
     }
 }
 $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
+$manifestWriter = Join-Path (Split-Path -Parent $PSScriptRoot) `
+    'write-seawork-test-release-manifest.ps1'
+& $manifestWriter -RunRoot $RunRoot -SnapshotSha $SnapshotSha | Out-Null

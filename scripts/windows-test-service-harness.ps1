@@ -179,6 +179,148 @@ public static class ServiceConfigNative
     }
 }
 
+function Invoke-FilteredUserProcess {
+    param(
+        [object] $State,
+        [string] $Executable,
+        [string[]] $Arguments,
+        [string] $WorkingDirectory,
+        [string] $ProofPath,
+        [string] $TaskSuffix,
+        [int] $TimeoutSeconds = 1800
+    )
+    if ($TaskSuffix -notmatch '^[a-z0-9][a-z0-9-]{0,31}$') {
+        throw 'filtered client task suffix is invalid'
+    }
+    foreach ($value in @($Executable, $WorkingDirectory, $ProofPath) + @($Arguments)) {
+        if ($value -match '["%\r\n]') { throw 'filtered client task value is unsafe for cmd.exe' }
+    }
+    $taskName = "$($State.client_task_prefix)-$TaskSuffix"
+    if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
+        throw "Refusing to adopt an existing filtered client task: $taskName"
+    }
+    $batchPath = "$ProofPath.cmd"
+    $groupsPath = "$ProofPath.groups.csv"
+    $userPath = "$ProofPath.user.csv"
+    $tracePath = "$ProofPath.trace.txt"
+    $exitPath = "$ProofPath.exit.txt"
+    $quotedArguments = @($Arguments | ForEach-Object { '"{0}"' -f $_ }) -join ' '
+    @(
+        '@echo off',
+        "> `"$tracePath`" echo started",
+        "whoami.exe /groups /fo csv /nh > `"$groupsPath`"",
+        "if errorlevel 1 (echo groups-failed:%errorlevel%>> `"$tracePath`" & exit /b %errorlevel%)",
+        ">> `"$tracePath`" echo groups-passed",
+        "whoami.exe /user /fo csv /nh > `"$userPath`"",
+        "if errorlevel 1 (echo user-failed:%errorlevel%>> `"$tracePath`" & exit /b %errorlevel%)",
+        ">> `"$tracePath`" echo user-passed",
+        "pushd `"$WorkingDirectory`"",
+        "if errorlevel 1 (echo pushd-failed:%errorlevel%>> `"$tracePath`" & exit /b %errorlevel%)",
+        ">> `"$tracePath`" echo pushd-passed",
+        "`"$Executable`" $quotedArguments",
+        'set "lsb_exit=%errorlevel%"',
+        ">> `"$tracePath`" echo executable-result:%lsb_exit%",
+        "> `"$exitPath`" echo %lsb_exit%",
+        'popd',
+        'exit /b 0'
+    ) | Set-Content -LiteralPath $batchPath -Encoding ascii
+    $action = New-ScheduledTaskAction -Execute $env:ComSpec `
+        -Argument ('/d /c call "{0}"' -f $batchPath)
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(10)
+    $principal = New-ScheduledTaskPrincipal `
+        -UserId $State.client_user_identity `
+        -LogonType Interactive `
+        -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet `
+        -ExecutionTimeLimit (New-TimeSpan -Seconds ($TimeoutSeconds + 60)) `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -MultipleInstances IgnoreNew
+    try {
+        $registered = Register-ScheduledTask -TaskName $taskName -Action $action `
+            -Trigger $trigger -Principal $principal -Settings $settings
+        if ([string]$registered.Principal.RunLevel -ne 'Limited' -or
+            [string]$registered.Principal.LogonType -notin @('Interactive', 'InteractiveToken')) {
+            throw "Filtered client task principal mismatch: " +
+                "logonType=$($registered.Principal.LogonType), " +
+                "runLevel=$($registered.Principal.RunLevel)."
+        }
+        $startedAfter = [datetime]::Now.AddSeconds(-2)
+        Start-ScheduledTask -TaskName $taskName
+        $deadline = [datetime]::UtcNow.AddSeconds($TimeoutSeconds)
+        do {
+            $task = Get-ScheduledTask -TaskName $taskName
+            $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName
+            if ($task.State -eq 'Ready' -and $taskInfo.LastRunTime -ge $startedAfter) {
+                break
+            }
+            Start-Sleep -Milliseconds 250
+        } while ([datetime]::UtcNow -lt $deadline)
+        if ($task.State -ne 'Ready' -or $taskInfo.LastRunTime -lt $startedAfter) {
+            throw "Filtered client task exceeded its $TimeoutSeconds second execution limit."
+        }
+        if ([uint32]$taskInfo.LastTaskResult -ne 0) {
+            $trace = if (Test-Path -LiteralPath $tracePath -PathType Leaf) {
+                (Get-Content -LiteralPath $tracePath -Raw).Trim()
+            }
+            else { 'trace-not-written' }
+            throw "Filtered client task failed with result $($taskInfo.LastTaskResult): $trace"
+        }
+        if (-not (Test-Path -LiteralPath $groupsPath -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $userPath -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $exitPath -PathType Leaf)) {
+            throw 'Filtered client task did not write token proof inputs.'
+        }
+        [int]$processExitCode = 0
+        if (-not [int]::TryParse(
+            (Get-Content -LiteralPath $exitPath -Raw).Trim(),
+            [ref]$processExitCode
+        )) {
+            throw 'Filtered client task wrote an invalid process exit code.'
+        }
+        $groups = @(Get-Content -LiteralPath $groupsPath |
+            ConvertFrom-Csv -Header GroupName, Type, Sid, Attributes)
+        $users = @(Get-Content -LiteralPath $userPath |
+            ConvertFrom-Csv -Header UserName, Sid)
+        $medium = @($groups | Where-Object Sid -eq 'S-1-16-8192')
+        $high = @($groups | Where-Object Sid -eq 'S-1-16-12288')
+        $administrators = @($groups | Where-Object Sid -eq 'S-1-5-32-544')
+        if ($users.Count -ne 1 -or $users[0].Sid -cne [string]$State.client_user_sid -or
+            $medium.Count -ne 1 -or $high.Count -ne 0 -or
+            $administrators.Count -ne 1 -or
+            $administrators[0].Attributes -notmatch '(?i)deny') {
+            throw 'Filtered client task token proof inputs are invalid.'
+        }
+        $proof = [ordered]@{
+            schema_version = 1
+            status = 'passed'
+            mode = 'filtered-current-user'
+            source = 'interactive-limited-scheduled-task'
+            user_name = [string]$users[0].UserName
+            user_sid = [string]$users[0].Sid
+            integrity_level = 'medium'
+            integrity_rid = 8192
+            elevated = $false
+            administrator = $false
+            administrator_group_attributes = [string]$administrators[0].Attributes
+            elevation_proof = 'limited-task-plus-medium-integrity'
+            process_exit_code = $processExitCode
+            privilege_behavior_validated = $true
+            separate_account_profile_validated = $false
+        }
+        $proof | ConvertTo-Json -Depth 5 |
+            Set-Content -LiteralPath $ProofPath -Encoding utf8NoBOM
+        $proof = Get-Content -LiteralPath $ProofPath -Raw | ConvertFrom-Json
+        return $proof
+    }
+    finally {
+        Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $batchPath, $groupsPath, $userPath, $tracePath, $exitPath `
+            -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-CompatibilityResources {
     $shares = @(& net.exe share | Where-Object { $_ -match '^lsb-' } | ForEach-Object {
         ($_ -split '\s+', 2)[0].ToLowerInvariant()
@@ -202,10 +344,43 @@ function Assert-CompatibleResourcesRestored {
     }
 }
 
+function Assert-SecretAbsentFromLogs {
+    param([object] $State, [string] $Secret)
+    $files = [Collections.Generic.List[IO.FileInfo]]::new()
+    $stateFiles = @(Get-ChildItem -LiteralPath $State.state_root -Recurse -Force -File `
+        -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.json', '.log') })
+    foreach ($file in $stateFiles) { $files.Add($file) }
+    foreach ($file in @(Get-ChildItem -LiteralPath $RunRoot -Force -File -Filter 'output-*.log' `
+        -ErrorAction SilentlyContinue)) {
+        $files.Add($file)
+    }
+    foreach ($file in $files) {
+        if (Select-String -LiteralPath $file.FullName -SimpleMatch -Quiet -Pattern $Secret) {
+            throw "The scoped test secret appeared in a protected log: $($file.Name)"
+        }
+    }
+}
+
 function Wait-ServiceState {
     param([string] $State, [int] $Seconds)
     $service = Get-Service -Name $serviceName
     $service.WaitForStatus($State, [TimeSpan]::FromSeconds($Seconds))
+}
+
+function Wait-OwnedProcessExit {
+    param([uint32] $ProcessId, [string] $ExecutablePath, [int] $Seconds)
+    if ($ProcessId -eq 0) { return }
+    $deadline = [datetime]::UtcNow.AddSeconds($Seconds)
+    while ([datetime]::UtcNow -lt $deadline) {
+        $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+        if ($null -eq $process) { return }
+        if (-not [string]::IsNullOrWhiteSpace($process.Path) -and
+            -not $process.Path.Equals($ExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Refusing to wait on a process whose executable is not owned by this run.'
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    throw "Owned service process $ProcessId did not exit within $Seconds seconds."
 }
 
 function Read-InstallState {
@@ -221,10 +396,20 @@ function Read-InstallState {
 }
 
 function Invoke-ClientSmoke {
-    param([object] $State, [switch] $Mounts, [string] $Suffix)
+    param(
+        [object] $State,
+        [switch] $Mounts,
+        [switch] $Network,
+        [switch] $Sequential,
+        [string] $Suffix
+    )
+    $scenarioCount = [int]$Mounts.IsPresent + [int]$Network.IsPresent + [int]$Sequential.IsPresent
+    if ($scenarioCount -gt 1) {
+        throw 'Only one specialized client smoke scenario may be selected.'
+    }
     $clientData = Join-Path $State.client_data_root $Suffix
     New-Item -ItemType Directory -Path $clientData | Out-Null
-    Set-Sddl $clientData ("O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{0})" -f $State.test_user_sid)
+    Set-Sddl $clientData ("O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{0})" -f $State.client_user_sid)
     $workspace = Join-Path $clientData 'workspace'
     $output = Join-Path $workspace 'output'
     $skills = Join-Path $clientData 'skills'
@@ -243,40 +428,92 @@ function Invoke-ClientSmoke {
         )
     } else { @() }
     $configPath = Join-Path $clientData 'client-config.json'
-    [ordered]@{
+    $clientConfig = [ordered]@{
         bindingEntry = Join-Path $State.client_harness_root 'index.js'
         instanceId = "acceptance-$Suffix"
         mounts = $mountList
         resultPath = $resultPath
-    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $configPath -Encoding utf8NoBOM
-
-    $taskName = "LocalSandboxAgent-$($State.run_id)-$Suffix"
-    if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
-        throw 'The standard-user smoke task already exists.'
+        expectedUserName = [string]$State.client_user_name
     }
-    $action = New-ScheduledTaskAction `
-        -Execute (Join-Path $State.client_harness_root 'node.exe') `
-        -Argument ('"{0}" "{1}"' -f (Join-Path $State.client_harness_root 'service-acceptance.mjs'), $configPath) `
-        -WorkingDirectory $State.client_harness_root
-    $principal = New-ScheduledTaskPrincipal `
-        -UserId "$env:COMPUTERNAME\$($State.test_user_name)" `
-        -LogonType S4U `
-        -RunLevel Limited
-    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::FromMinutes(15))
-    Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings | Out-Null
+    $secretValue = $null
+    if ($Network) {
+        $secretValue = [Convert]::ToHexString(
+            [Security.Cryptography.RandomNumberGenerator]::GetBytes(32)
+        ).ToLowerInvariant()
+        $clientConfig['scenario'] = 'network'
+        $clientConfig['secretExpected'] = $secretValue
+        $clientConfig['network'] = [ordered]@{
+            allow = @('example.com', 'registry.npmjs.org', 'httpbin.org')
+            secrets = [ordered]@{
+                LSB_TEST_SECRET = [ordered]@{
+                    value = $secretValue
+                    hosts = @('httpbin.org')
+                }
+            }
+            httpsInterception = [ordered]@{ enabled = $true; requestHeaders = @() }
+        }
+    }
+    elseif ($Sequential) {
+        $clientConfig['scenario'] = 'sequential'
+    }
+    $clientConfig | ConvertTo-Json -Depth 8 |
+        Set-Content -LiteralPath $configPath -Encoding utf8NoBOM
+
+    $clientExecutable = Join-Path $State.client_harness_root 'node.exe'
+    $clientArguments = @(
+        (Join-Path $State.client_harness_root 'service-acceptance.mjs'),
+        $configPath
+    )
+    $tokenProofPath = Join-Path $clientData 'client-token-proof.json'
     try {
-        Start-ScheduledTask -TaskName $taskName
-        $deadline = [DateTime]::UtcNow.AddMinutes(12)
-        do {
-            Start-Sleep -Seconds 2
-            if (Test-Path -LiteralPath $resultPath -PathType Leaf) { break }
-        } while ([DateTime]::UtcNow -lt $deadline)
+        $tokenProof = Invoke-FilteredUserProcess `
+            -State $State `
+            -Executable $clientExecutable `
+            -Arguments $clientArguments `
+            -WorkingDirectory $State.client_harness_root `
+            -ProofPath $tokenProofPath `
+            -TaskSuffix $Suffix `
+            -TimeoutSeconds 1800
+        if ([int]$tokenProof.process_exit_code -ne 0) {
+            if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
+                $failedResult = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+                Copy-Item -LiteralPath $resultPath `
+                    -Destination (Join-Path $RunRoot "evidence-node-$Suffix-failed.json")
+                throw "The filtered-token Node smoke '$Suffix' failed at stage " +
+                    "'$($failedResult.failed_stage)' after $(@($failedResult.checks).Count) checks: " +
+                    "$($failedResult.stable_detail)"
+            }
+            throw "The filtered-token Node smoke '$Suffix' exited " +
+                "$($tokenProof.process_exit_code) without a result."
+        }
         if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
-            $info = Get-ScheduledTaskInfo -TaskName $taskName
-            throw "The standard-user Node smoke did not produce a result (task code $($info.LastTaskResult))."
+            throw 'The filtered-token Node smoke did not produce a result.'
         }
         $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
-        if ($result.status -ne 'passed') { throw 'The standard-user Node smoke reported failure.' }
+        if ($result.status -ne 'passed') { throw 'The filtered-token Node smoke reported failure.' }
+        $result | Add-Member -NotePropertyName client_token -NotePropertyValue ([ordered]@{
+            mode = 'filtered-current-user'
+            source = [string]$tokenProof.source
+            user_name = [string]$tokenProof.user_name
+            user_sid = [string]$tokenProof.user_sid
+            integrity_level = 'medium'
+            integrity_rid = [int]$tokenProof.integrity_rid
+            elevated = [bool]$tokenProof.elevated
+            administrator = [bool]$tokenProof.administrator
+            privilege_behavior_validated = $true
+            separate_account_profile_validated = $false
+        })
+        if ($Network) {
+            $observedChecks = @($result.checks | ForEach-Object { [string]$_.name })
+            if ('scoped-secret-injection' -cnotin $observedChecks) {
+                throw 'The network smoke did not prove scoped secret injection.'
+            }
+            Assert-SecretAbsentFromLogs $State $secretValue
+            $result.checks += [pscustomobject]@{ name = 'scoped-secret-redacted'; passed = $true }
+        }
+        if ($Sequential -and [int]$result.effects -ne 10) {
+            throw 'The sequential smoke did not complete ten effects.'
+        }
         if ($Mounts) {
             if ((Get-Content -LiteralPath (Join-Path $output 'result.txt') -Raw) -cne 'nested-output' -or
                 (Test-Path -LiteralPath (Join-Path $workspace 'forbidden.txt')) -or
@@ -285,10 +522,13 @@ function Invoke-ClientSmoke {
                 throw 'The direct-mount host visibility or access-mode proof failed.'
             }
         }
+        $result | ConvertTo-Json -Depth 8 |
+            Set-Content -LiteralPath $resultPath -Encoding utf8NoBOM
         Copy-Item -LiteralPath $resultPath -Destination (Join-Path $RunRoot "evidence-node-$Suffix.json")
     }
     finally {
-        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $configPath -Force -ErrorAction SilentlyContinue
+        $secretValue = $null
     }
 }
 
@@ -331,14 +571,32 @@ function Install-And-Smoke {
     $bundle = Join-Path $RunRoot "release-work\out\lsb-seawork-service-v$version-windows-x86_64-stage\LocalSandbox"
     $serviceBinary = Join-Path $versionRoot 'bin\localsandbox-seawork-service.exe'
     $eventKey = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\$serviceName"
-    $userName = "LsbTr$($SnapshotSha.Substring(0, 8))"
+    $clientIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $clientUserIdentity = [string]$clientIdentity.Name
+    $clientUserName = [string]$env:USERNAME
+    $clientUserSid = [string]$clientIdentity.User.Value
+    if ([string]::IsNullOrWhiteSpace($clientUserIdentity) -or
+        [string]::IsNullOrWhiteSpace($clientUserName) -or
+        $clientUserSid -notmatch '^S-1-5-21-(?:\d+-){3}\d+$') {
+        throw 'The elevated harness does not have a supported local/domain user identity.'
+    }
+    $clientTaskPrefix = "LocalSandboxAgent-$($SnapshotSha.Substring(0, 8))"
+    if (Get-ScheduledTask | Where-Object TaskName -like "$clientTaskPrefix-*") {
+        throw 'Refusing to adopt an existing filtered client task.'
+    }
     $runId = Split-Path -Leaf ([IO.Path]::GetFullPath($RunRoot).TrimEnd('\'))
     [ordered]@{
         schema_version = 1; owner = $owner; snapshot_sha = $SnapshotSha; run_id = $runId
         version = $version; service_binary = $serviceBinary; install_root = $installRoot
         install_marker = $installMarker; state_root = $stateRoot; event_key = $eventKey
         client_harness_root = $clientHarness; client_harness_base = $clientHarnessBase
-        client_data_root = $clientDataRoot; test_user_name = $userName; test_user_sid = $null
+        client_data_root = $clientDataRoot
+        client_user_identity = $clientUserIdentity
+        client_user_name = $clientUserName
+        client_user_sid = $clientUserSid
+        client_token_mode = 'filtered-current-user'
+        client_task_prefix = $clientTaskPrefix
+        separate_account_profile_validated = $false
     } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $installStatePath -Encoding utf8NoBOM
 
     Assert-PlainDirectory $bundle 'signed staged bundle' | Out-Null
@@ -365,6 +623,7 @@ function Install-And-Smoke {
     Set-Sddl $clientHarnessBase $clientHarnessSddl
     Invoke-Native 'scripts\sign-seawork-service.ps1' @(
         '-Mode', 'SignTestNode', '-ClientBinary', (Join-Path $clientHarness 'node.exe'),
+        '-UseLocalMachineStore',
         '-PfxPath', $env:SEAWORK_WINDOWS_PFX_PATH,
         '-PasswordFile', $env:SEAWORK_WINDOWS_PFX_PASSWORD_FILE,
         '-ExpectedPublisherSubject', [string]$evidence.publisher_subject,
@@ -399,25 +658,31 @@ function Install-And-Smoke {
     New-ItemProperty -Path $eventKey -Name EventMessageFile -Value $serviceBinary -PropertyType ExpandString | Out-Null
     New-ItemProperty -Path $eventKey -Name TypesSupported -Value 7 -PropertyType DWord | Out-Null
 
-    if (Get-LocalUser -Name $userName -ErrorAction SilentlyContinue) { throw 'The test standard user already exists.' }
-    $random = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(24)) + 'aA1!'
-    $secure = ConvertTo-SecureString $random -AsPlainText -Force
-    $user = New-LocalUser -Name $userName -Password $secure -AccountNeverExpires -PasswordNeverExpires -UserMayNotChangePassword -Description "$owner $SnapshotSha"
-    $random = $null; $secure = $null
-    Set-Sddl $clientDataRoot ("O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{0})" -f $user.SID.Value)
-    $installState = Read-InstallState
-    $installState.test_user_sid = $user.SID.Value
-    $installState | ConvertTo-Json -Depth 6 |
-        Set-Content -LiteralPath $installStatePath -Encoding utf8NoBOM
-
+    Set-Sddl $clientDataRoot ("O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{0})" -f $clientUserSid)
     Invoke-Native sc.exe @('start', $serviceName) 'service start'
     Wait-ServiceState 'Running' 120
     $state = Read-InstallState
     $before = Get-CompatibilityResources
     Invoke-ClientSmoke $state -Suffix 'mount-free'
     Invoke-ClientSmoke $state -Mounts -Suffix 'direct-mounts'
+    Invoke-ClientSmoke $state -Network -Suffix 'network'
+    Invoke-ClientSmoke $state -Sequential -Suffix 'sequential'
     Assert-CompatibleResourcesRestored $before $stateRoot
-    [ordered]@{ schema_version = 1; status = 'passed'; snapshot_sha = $SnapshotSha; production_identity = $true; standard_user = $true; uac_after_install = $false; compatibility_resources_restored = $true } |
+    [ordered]@{
+        schema_version = 1
+        status = 'passed'
+        snapshot_sha = $SnapshotSha
+        production_identity = $true
+        client_validation = [ordered]@{
+            mode = 'filtered-current-user'
+            privilege_behavior_validated = $true
+            medium_integrity = $true
+            non_admin = $true
+            separate_account_profile_validated = $false
+        }
+        uac_after_install = $false
+        compatibility_resources_restored = $true
+    } |
         ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $RunRoot 'evidence-installed-smoke.json') -Encoding utf8NoBOM
 }
 
@@ -427,7 +692,17 @@ function Smoke-Installed {
     $before = Get-CompatibilityResources
     Invoke-ClientSmoke $state -Mounts -Suffix 'post-reboot'
     Assert-CompatibleResourcesRestored $before $state.state_root
-    [ordered]@{ schema_version = 1; status = 'passed'; snapshot_sha = $SnapshotSha; post_reboot = $true } |
+    [ordered]@{
+        schema_version = 1
+        status = 'passed'
+        snapshot_sha = $SnapshotSha
+        post_reboot = $true
+        client_validation = [ordered]@{
+            mode = 'filtered-current-user'
+            privilege_behavior_validated = $true
+            separate_account_profile_validated = $false
+        }
+    } |
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $RunRoot 'evidence-post-reboot.json') -Encoding utf8NoBOM
 }
 
@@ -438,34 +713,38 @@ function Uninstall-Owned {
         if (-not $service.PathName.Contains([string]$state.service_binary, [StringComparison]::OrdinalIgnoreCase)) {
             throw 'Refusing to remove a service whose ImagePath is not owned by this run.'
         }
+        $serviceProcessId = [uint32]$service.ProcessId
         if ((Get-Service -Name $serviceName).Status -ne 'Stopped') {
             Stop-Service -Name $serviceName
             Wait-ServiceState 'Stopped' 60
         }
+        Wait-OwnedProcessExit $serviceProcessId ([string]$state.service_binary) 60
         Invoke-Native sc.exe @('delete', $serviceName) 'service deletion'
     }
     if (Test-Path -LiteralPath $state.event_key) {
         if ((Get-ItemPropertyValue -LiteralPath $state.event_key -Name LocalSandboxAgentOwner) -ne $owner) { throw 'Event source ownership mismatch.' }
         Remove-Item -LiteralPath $state.event_key -Recurse -Force
     }
-    $user = Get-LocalUser -Name $state.test_user_name -ErrorAction SilentlyContinue
-    if ($null -ne $user) {
-        if ($user.Description -ne "$owner $SnapshotSha") { throw 'Test user ownership mismatch.' }
-        Remove-LocalUser -Name $state.test_user_name
+    foreach ($task in @(Get-ScheduledTask | Where-Object TaskName -like "$($state.client_task_prefix)-*")) {
+        Stop-ScheduledTask -TaskName $task.TaskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $task.TaskName -Confirm:$false
     }
     Assert-OwnerMarker $state.install_marker 'install-root'
     Assert-OwnerMarker (Join-Path $state.client_harness_base '.local-sandbox-agent-client.json') 'client-root'
     Assert-OwnerMarker (Join-Path $state.state_root '.local-sandbox-agent-state.json') 'state-root'
     Assert-OwnerMarker (Join-Path $state.client_data_root '.local-sandbox-agent-client-data.json') 'client-data-root'
-    Remove-Item -LiteralPath $state.install_root -Recurse -Force
-    Remove-Item -LiteralPath $state.client_harness_base -Recurse -Force
-    Remove-Item -LiteralPath $state.state_root -Recurse -Force
-    Remove-Item -LiteralPath $state.client_data_root -Recurse -Force
+    Remove-Item -LiteralPath $state.install_root -Recurse -Force -ErrorAction Stop
+    Remove-Item -LiteralPath $state.client_harness_base -Recurse -Force -ErrorAction Stop
+    Remove-Item -LiteralPath $state.state_root -Recurse -Force -ErrorAction Stop
+    Remove-Item -LiteralPath $state.client_data_root -Recurse -Force -ErrorAction Stop
+    Remove-Item -LiteralPath $installStatePath -Force -ErrorAction Stop
 }
 
-Assert-Administrator
-switch ($Mode) {
-    'InstallAndSmoke' { Install-And-Smoke }
-    'SmokeInstalled' { Smoke-Installed }
-    'Uninstall' { Uninstall-Owned }
+if ($MyInvocation.InvocationName -ne '.') {
+    Assert-Administrator
+    switch ($Mode) {
+        'InstallAndSmoke' { Install-And-Smoke }
+        'SmokeInstalled' { Smoke-Installed }
+        'Uninstall' { Uninstall-Owned }
+    }
 }

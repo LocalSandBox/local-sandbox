@@ -59,6 +59,18 @@ function Test-NodeChecks {
     return $true
 }
 
+function Test-FilteredTokenEvidence {
+    param([object] $Evidence)
+    if ($null -eq $Evidence -or $null -eq $Evidence.client_token) { return $false }
+    $token = $Evidence.client_token
+    return $token.mode -eq 'filtered-current-user' -and
+        $token.integrity_level -eq 'medium' -and
+        -not [bool]$token.elevated -and
+        -not [bool]$token.administrator -and
+        [bool]$token.privilege_behavior_validated -and
+        -not [bool]$token.separate_account_profile_validated
+}
+
 $repoRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $run = [IO.Path]::GetFullPath($RunRoot).TrimEnd('\')
 $releaseEvidence = Read-JsonFile (Join-Path $run 'evidence-release-candidate.json') `
@@ -138,7 +150,10 @@ $caseProof = [ordered]@{
     'signed-install' = ($null -ne $installed -and [bool]$installed.production_identity)
     'service-health' = (Test-NodeChecks $mountFree @('service-health'))
     'mount-free-lifecycle' = (Test-NodeChecks $mountFree @('unary-exec', 'filesystem'))
-    'four-mount-standard-user' = (Test-NodeChecks $directMounts @('direct-mount-layout'))
+    'four-mount-standard-user' = (
+        (Test-NodeChecks $directMounts @('direct-mount-layout')) -and
+        (Test-FilteredTokenEvidence $directMounts)
+    )
     'exec-and-files' = (Test-NodeChecks $mountFree @('unary-exec', 'filesystem'))
     'spawn-stream-kill' = (Test-NodeChecks $mountFree @('spawn-stream-exit', 'spawn-kill'))
     'cancellation-cleanup' = (Test-NodeChecks $mountFree @('exec-cancellation'))
@@ -171,7 +186,7 @@ $manifestPath = Join-Path $run 'seawork-test-release-manifest.json'
     status = if ($pending.Count -eq 0) { 'complete' } else { 'incomplete' }
     local_sandbox_commit = $localSandboxCommit
     candidate_version = $version
-    synthetic_snapshot_sha256 = $SnapshotSha
+    synthetic_snapshot_sha = $SnapshotSha
     windows_run_ids = @($runId)
     windows_build = [ordered]@{
         caption = [string]$os.Caption
@@ -193,6 +208,10 @@ $manifestPath = Join-Path $run 'seawork-test-release-manifest.json'
         overlay_mount = $false
     }
     production_identities = $testContract.identities
+    validation_scope = [ordered]@{
+        standard_user_privilege_behavior = 'filtered-medium-integrity-non-admin-current-user-token'
+        separate_account_profile_behavior = 'not-validated'
+    }
     case_results = $caseResults
     redacted_log_locations = $redactedLogs
 } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
