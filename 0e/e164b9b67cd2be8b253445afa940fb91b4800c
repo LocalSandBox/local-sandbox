@@ -1,0 +1,28 @@
+scripts/sign-seawork-service.ps1
+  s_d92cdce887f5bb::t_7b2e2b34eb48b9 18,156-161,178,186,196-198,211
+scripts/write-seawork-test-release-manifest.ps1
+  s_d92cdce887f5bb::t_4522c9bc235285 82,106-108,122
+  s_d92cdce887f5bb::t_57e220f1aecbe8 1-81,83-105,109-121,123-215
+scripts/package-seawork-node-release.ps1
+  s_d92cdce887f5bb::t_2f32c269d3a64b 1-196
+scripts/windows-test-suites/release-candidate.ps1
+  s_d92cdce887f5bb::t_7b2e2b34eb48b9 189,249
+  s_d92cdce887f5bb::t_71ff2ae0b2f528 290-323,349,361,367,370-371
+  s_d92cdce887f5bb::t_7085f7dc4c21f6 356-360,365
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "0ee164b9b67cd2be8b253445afa940fb91b4800c",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
