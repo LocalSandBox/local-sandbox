@@ -5,12 +5,12 @@
 - SeaWork baseline inspected: `test` at `f9c6cd8ff339688a669451e36078d6cbbc91c1b2`
 - Candidate version: `0.4.7-test.1`
 - Current milestone: `TR-2 — Build a safe native Windows release harness`
-- Status: TR-1 source bridge committed and source gates pass; TR-1 runtime gate awaits the signed installed-service harness run; TR-2 protected signing/runtime assets and artifact fetch pass; signed PE passes but bundle catalog is blocked by empty QEMU files
+- Status: TR-1 source bridge committed and source gates pass; TR-1 runtime gate awaits the signed installed-service harness run; TR-2 protected signing/runtime assets and artifact fetch pass; versioned Windows fast gate and signed PE pass, but bundle catalog is blocked by empty QEMU files
 - Next action: resolve whether to newline-normalize 50 inert empty QEMU cache/icon placeholders or build a custom catalog writer, then finish release-candidate and installed-service-smoke
 - LocalSandbox candidate: not ready
 - Overall test release: blocked on LocalSandbox candidate and mandatory SeaWork NSIS/adapter work
 - Active blockers: MakeCat cannot catalog zero-byte files; the pinned QEMU tree has 50 inert empty cache/icon placeholders, requiring an explicit payload-normalization versus custom-catalog decision
-- Latest Windows evidence: `20260721t092307z-2849-0bb79dcee94c` (`release-candidate`, trusted timestamped PE and Event Log checks passed; bundle catalog stopped at the first zero-byte QEMU member; snapshot `0bb79dcee94cc2b94d53cc88038b93ce5163d5ec`)
+- Latest Windows evidence: `20260721t093545z-10582-bd0575284ff0` (`service-fast`, passed for `0.4.7-test.1`; snapshot `bd0575284ff0f6bccec5f05aed8016b2b08fabfc` based on commit `5f1c3cbc12c82cc2a0c1790b1dbb3147263af219`)
 - Handoff: `docs/seawork-test-release-handoff.md` (initial draft; append-only)
 
 Update only these fields as work advances. Put implementation history in commits,

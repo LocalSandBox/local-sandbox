@@ -366,3 +366,17 @@ Status: **trusted PE signing passes; closed bundle construction remains incomple
 - No incomplete artifact is a candidate. Finishing the closed catalog requires an
   explicit decision between newline-normalizing those inert empty staged files (keeping
   every path cataloged) and implementing a custom WinTrust catalog writer.
+
+## 2026-07-21 — Candidate version propagation and Windows fast gate
+
+Status: **`0.4.7-test.1` source/package gate passed; installed runtime gate pending**
+
+- Commit `5f1c3cbc12c82cc2a0c1790b1dbb3147263af219` propagates `0.4.7-test.1`
+  through every LocalSandbox Rust crate, internal versioned Rust dependency, the Node
+  binding crate, and all main/platform Node package manifests.
+- Windows `service-fast` run `20260721t093545z-10582-bd0575284ff0` passed against
+  snapshot `bd0575284ff0f6bccec5f05aed8016b2b08fabfc` based on that commit. It covered
+  the Rust service/protocol/client/proxy/VM suites, scoped Clippy, a native Windows Node
+  build, declaration type checking, package metadata, startup, and all ten Node tests.
+- The bundle catalog decision in the preceding entry is unchanged. This fast run does
+  not claim a completed signed archive or installed production-identity runtime.

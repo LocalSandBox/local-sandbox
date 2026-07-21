@@ -338,7 +338,7 @@ trust bypass, helper, or elevated normal client.
 
 ### TR-4 — Produce the pinned LocalSandbox release candidate
 
-- [ ] Select and propagate the recorded prerelease version through Rust crates, Node
+- [x] Select and propagate the recorded prerelease version through Rust crates, Node
   packages, manifests, generated declarations, and artifact names.
 - [ ] Build the production-profile service with static CRT and Event Log resources.
   Sign and timestamp the PE and catalog using the external PFX through the existing
