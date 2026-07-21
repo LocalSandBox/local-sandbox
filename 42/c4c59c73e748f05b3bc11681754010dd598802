@@ -1,0 +1,22 @@
+scripts/windows-test-suites/archive-acceptance.ps1
+  s_d92cdce887f5bb::t_c7819b498b9bad 72,75,141-145,147
+  s_d92cdce887f5bb::t_b9f98ba18832b2 1-71,73-74,76-140,146,148-182
+docs/windows-agent-testing.md
+  s_d92cdce887f5bb::t_b9f98ba18832b2 149-151
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "42c4c59c73e748f05b3bc11681754010dd598802",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
