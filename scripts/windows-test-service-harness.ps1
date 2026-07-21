@@ -39,6 +39,29 @@ function Assert-Administrator {
     }
 }
 
+function Get-InteractiveClientIdentity {
+    $computer = Get-CimInstance Win32_ComputerSystem
+    $accountName = [string]$computer.UserName
+    if ([string]::IsNullOrWhiteSpace($accountName) -or $accountName -notmatch '\\') {
+        throw 'No supported interactive console user is logged on for filtered-token validation.'
+    }
+    try {
+        $account = [Security.Principal.NTAccount]::new($accountName)
+        $sid = $account.Translate([Security.Principal.SecurityIdentifier])
+    }
+    catch {
+        throw "The interactive console user '$accountName' could not be resolved: $($_.Exception.Message)"
+    }
+    if ($sid.Value -notmatch '^S-1-5-21-(?:\d+-){3}\d+$') {
+        throw "The interactive console user '$accountName' does not have a supported user SID."
+    }
+    return [pscustomobject]@{
+        identity = $accountName
+        name = $accountName.Substring($accountName.LastIndexOf('\') + 1)
+        sid = [string]$sid.Value
+    }
+}
+
 function Assert-PlainDirectory {
     param([string] $Path, [string] $Label)
     $item = Get-Item -LiteralPath $Path -Force
@@ -575,15 +598,10 @@ function Install-And-Smoke {
     $bundle = Join-Path $RunRoot "release-work\out\lsb-seawork-service-v$version-windows-x86_64-stage\LocalSandbox"
     $serviceBinary = Join-Path $versionRoot 'bin\localsandbox-seawork-service.exe'
     $eventKey = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\$serviceName"
-    $clientIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $clientUserIdentity = [string]$clientIdentity.Name
-    $clientUserName = [string]$env:USERNAME
-    $clientUserSid = [string]$clientIdentity.User.Value
-    if ([string]::IsNullOrWhiteSpace($clientUserIdentity) -or
-        [string]::IsNullOrWhiteSpace($clientUserName) -or
-        $clientUserSid -notmatch '^S-1-5-21-(?:\d+-){3}\d+$') {
-        throw 'The elevated harness does not have a supported local/domain user identity.'
-    }
+    $clientIdentity = Get-InteractiveClientIdentity
+    $clientUserIdentity = [string]$clientIdentity.identity
+    $clientUserName = [string]$clientIdentity.name
+    $clientUserSid = [string]$clientIdentity.sid
     $clientTaskPrefix = "LocalSandboxAgent-$($SnapshotSha.Substring(0, 8))"
     if (Get-ScheduledTask | Where-Object TaskName -like "$clientTaskPrefix-*") {
         throw 'Refusing to adopt an existing filtered client task.'

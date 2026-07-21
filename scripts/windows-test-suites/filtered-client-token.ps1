@@ -14,16 +14,16 @@ if ($Phase -ne 'Normal') { throw 'The filtered-client-token suite does not suppo
 $harness = Join-Path (Split-Path -Parent $PSScriptRoot) 'windows-test-service-harness.ps1'
 . $harness -Mode InstallAndSmoke -RunRoot $RunRoot -SnapshotSha $SnapshotSha
 Assert-Administrator
-$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$identity = Get-InteractiveClientIdentity
 $probeRoot = Join-Path $RunRoot 'filtered-client-token-probe'
 New-Item -ItemType Directory -Path $probeRoot | Out-Null
-Set-Sddl $probeRoot ("O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{0})" -f $identity.User.Value)
+Set-Sddl $probeRoot ("O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{0})" -f $identity.sid)
 $proofPath = Join-Path $probeRoot 'proof.json'
 $state = [pscustomobject]@{
     client_harness_root = Split-Path -Parent $harness
     client_task_prefix = "LocalSandboxAgent-$($SnapshotSha.Substring(0, 8))"
-    client_user_identity = $identity.Name
-    client_user_sid = $identity.User.Value
+    client_user_identity = $identity.identity
+    client_user_sid = $identity.sid
 }
 try {
     $result = Invoke-FilteredUserProcess `
