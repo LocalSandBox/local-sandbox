@@ -168,6 +168,23 @@ impl StagedReconciler {
         Ok(())
     }
 
+    pub fn notify_full_rescan(&mut self, now: Duration) -> Result<()> {
+        self.observe(now)?;
+        if !matches!(
+            self.state,
+            ReconcileState::Active | ReconcileState::Finalizing
+        ) {
+            bail!("staged reconciliation is no longer accepting changes");
+        }
+        self.changes.mark_full_rescan();
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .context("staged reconciliation generation overflow")?;
+        self.dirty_since.get_or_insert(now);
+        Ok(())
+    }
+
     pub fn begin_final_flush(&mut self, now: Duration) -> Result<Duration> {
         self.observe(now)?;
         if self.state != ReconcileState::Active || self.pending.is_some() {
@@ -320,6 +337,19 @@ impl StagedReconciler {
         Ok(())
     }
 
+    pub fn fail_monitor(&mut self, now: Duration) -> Result<()> {
+        self.observe(now)?;
+        if !matches!(
+            self.state,
+            ReconcileState::Active | ReconcileState::Finalizing
+        ) {
+            bail!("staged reconciliation monitor cannot fail in its current state");
+        }
+        self.pending = None;
+        self.state = ReconcileState::Failed;
+        Ok(())
+    }
+
     fn observe(&mut self, now: Duration) -> Result<()> {
         if now < self.last_observed {
             bail!("staged reconciliation clock moved backwards");
@@ -346,6 +376,11 @@ impl StagedReconciler {
 }
 
 impl ChangeQueue {
+    pub fn mark_full_rescan(&mut self) {
+        self.paths.clear();
+        self.full_rescan = true;
+    }
+
     pub fn push(&mut self, relative: PathBuf) -> Result<()> {
         validate_relative_path(&relative)?;
         if relative.is_absolute()
@@ -1168,5 +1203,37 @@ mod tests {
         assert_eq!(queue.drain(), ChangeBatch::FullRescan);
         assert_eq!(queue.drain(), ChangeBatch::Paths(Vec::new()));
         assert!(queue.push(PathBuf::from("../unsafe")).is_err());
+    }
+
+    #[test]
+    fn full_rescan_notification_schedules_one_dirty_cycle() {
+        let baseline = TreeSnapshot::default();
+        let mut reconciler = StagedReconciler::new(baseline, Duration::ZERO).unwrap();
+        reconciler
+            .notify_full_rescan(Duration::from_millis(10))
+            .unwrap();
+        assert_eq!(
+            reconciler
+                .due(Duration::from_millis(10) + DIRTY_RECONCILE_INTERVAL)
+                .unwrap(),
+            Some(ReconcileTrigger::Dirty)
+        );
+    }
+
+    #[test]
+    fn monitor_failure_invalidates_an_inflight_plan() {
+        let baseline = TreeSnapshot::default();
+        let mut reconciler = StagedReconciler::new(baseline.clone(), Duration::ZERO).unwrap();
+        reconciler
+            .notify_change(PathBuf::from("file"), Duration::ZERO)
+            .unwrap();
+        let planned_at = DIRTY_RECONCILE_INTERVAL;
+        let plan = reconciler
+            .plan_due(&baseline, &baseline, planned_at)
+            .unwrap()
+            .unwrap();
+        reconciler.fail_monitor(planned_at).unwrap();
+        assert_eq!(reconciler.state(), ReconcileState::Failed);
+        assert!(reconciler.complete_cycle(plan, planned_at).is_err());
     }
 }

@@ -5,10 +5,12 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 
 use crate::ledger::schema::ResourceRecord;
-use crate::security::path::{AuthorizedMountRoot, MountAccess, MountBackend, PathWorker};
+use crate::security::path::{
+    AuthorizedMountRoot, HostChangeMonitor, MountAccess, MountBackend, PathWorker,
+};
 
 use super::mount_sync::{
-    MountConflict, ReconcileState, ReconciliationPlan, StagedReconciler, SyncDirection,
+    ChangeBatch, MountConflict, ReconcileState, ReconciliationPlan, StagedReconciler, SyncDirection,
 };
 use super::transaction::ResourceTransaction;
 
@@ -19,6 +21,7 @@ pub struct StagedMount {
     host_identity: (u32, u64),
     host_owner_sid: String,
     host_access: MountAccess,
+    host_monitor: HostChangeMonitor,
     reconciliation: StagedReconciler,
     pub backend: MountBackend,
 }
@@ -53,6 +56,8 @@ impl StagedMount {
             file_id: "pending".to_string(),
             committed: false,
         })?;
+        let host_monitor =
+            HostChangeMonitor::start(authorized).context("start authorized host change monitor")?;
         worker.stage_snapshot(authorized, staging_root.clone())?;
         let protected_root = ProtectedStagingRoot::open(&staging_root)?;
         let baseline = worker.snapshot_protected(&protected_root)?;
@@ -71,6 +76,7 @@ impl StagedMount {
             host_identity: (identity.volume_serial, identity.file_index),
             host_owner_sid: authorized.owner_sid().to_string(),
             host_access: authorized.access(),
+            host_monitor,
             reconciliation: StagedReconciler::new(baseline, Duration::ZERO)?,
             backend: MountBackend::StagedSync,
         })
@@ -82,6 +88,25 @@ impl StagedMount {
 
     pub fn notify_change(&mut self, relative: PathBuf, now: Duration) -> Result<()> {
         self.reconciliation.notify_change(relative, now)
+    }
+
+    pub fn drain_host_changes(&mut self, now: Duration) -> Result<()> {
+        let changes = match self.host_monitor.drain() {
+            Ok(changes) => changes,
+            Err(error) => {
+                self.reconciliation.fail_monitor(now)?;
+                return Err(error).context("observe authorized host changes");
+            }
+        };
+        match changes {
+            ChangeBatch::Paths(paths) => {
+                for relative in paths {
+                    self.reconciliation.notify_change(relative, now)?;
+                }
+            }
+            ChangeBatch::FullRescan => self.reconciliation.notify_full_rescan(now)?,
+        }
+        Ok(())
     }
 
     pub fn begin_final_flush(&mut self, now: Duration) -> Result<Duration> {
@@ -102,6 +127,7 @@ impl StagedMount {
         worker: &PathWorker,
         now: Duration,
     ) -> Result<Option<ReconciliationPlan>> {
+        self.drain_host_changes(now)?;
         if self.reconciliation.due(now)?.is_none() {
             return Ok(None);
         }

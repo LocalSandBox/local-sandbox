@@ -42,11 +42,12 @@ sharing and compares its 64-bit volume serial plus 128-bit file ID against every
 mount ancestor and the mount root. This rejects protected-root drive-letter, short-name,
 and other textual aliases while preserving only the caller-profile identity; an
 identity collision never removes a system/service root. Unreadable, missing, reparse,
-or non-directory protected roots fail authorization. Active monitoring, periodic/final
-synchronization, conflict publication, integration of caller-token writeback with a
-protected staged tree, and privileged alias/path-swap timing evidence remain incomplete;
-mount requests therefore stay `MOUNT_UNAVAILABLE` until service/SMB lifecycle integration
-and the NTFS/ReFS acceptance matrix are complete.
+or non-directory protected roots fail authorization. A pinned host monitor and the
+periodic/final controller now feed the capability-bound operations described below, but
+the guest-event bridge, runtime driver, conflict publication, and privileged
+alias/path-swap timing evidence remain incomplete; mount requests therefore stay
+`MOUNT_UNAVAILABLE` until service/SMB lifecycle integration and the NTFS/ReFS acceptance
+matrix are complete.
 
 Protected-profile policy no longer relies only on the default profiles directory. The
 path worker reads the protected 64-bit-machine `ProfileList` view with `KEY_READ`, caps
@@ -137,11 +138,14 @@ received during an in-flight cycle retains a newer dirty generation.
 In particular, a final cycle with such a hint remains `Finalizing` and must catch up
 within the original deadline rather than reporting successful teardown.
 
-This controller does not activate mounts. Its owning
-`StagedMount` now requests fresh host and protected-stage snapshots only when a cycle is
-due. The mount records the authorized root identity, caller SID, and access mode at
-prepare time and makes its controller private; a different host capability or either
-snapshot failure makes reconciliation terminal before a plan is exposed. `execute_plan`
+This controller does not activate mounts. Its owning `StagedMount` starts a recursive
+host monitor from the already-authorized root handle before the initial staging copy,
+owns that monitor for the mount lifetime, and drains its bounded hints before deciding
+whether a cycle is due. It requests fresh host and protected-stage snapshots only when
+a dirty, periodic, or final cycle is due. The mount records the authorized root identity,
+caller SID, and access mode at prepare time and makes its controller private; a different
+host capability, monitor failure, or either snapshot failure makes reconciliation
+terminal before a plan is exposed. `execute_plan`
 dispatches every preordered import/export operation through the path worker, then obtains
 both fresh snapshots. The controller compares both trees semantically with the plan's
 expected baseline and advances only on an exact match; mutation, snapshot, or outcome
@@ -149,11 +153,11 @@ drift clears the pending cycle and fails terminally. Production still must publi
 conflict artifacts and durable recovery metadata. Divergent paths are now retained in
 the terminal controller and exposed by the owning mount alongside its still-pinned
 protected stage; they no longer survive only inside a transient error. `StagedMount`
-also forwards bounded change notifications and final-flush initiation while keeping the
-controller private. A Windows host monitor, guest-event bridge, periodic scheduler, and
-VM stop/cleanup driver must call those controls, and retained-stage user export plus SMB
-lifecycle remain incomplete. Until that integration and its Windows evidence exist, the
-service continues to advertise no mount capability.
+also forwards bounded guest change notifications and final-flush initiation while
+keeping the controller private. A guest-event bridge plus the periodic/VM stop runtime
+driver must call those controls, and retained-stage user export plus SMB lifecycle remain
+incomplete. Until that integration and its Windows evidence exist, the service continues
+to advertise no mount capability.
 
 Conflict names are exactly
 `<filename>.lsb-conflict-<128-bit-lowercase-hex-session-id>-<decimal-sequence>` and must
@@ -164,4 +168,11 @@ still Windows integration work.
 Watcher notifications are hints. The queue coalesces duplicate relative paths and holds
 at most 100 distinct changes. Boundary-plus-one clears the path set and produces one
 `FullRescan` marker, so watcher overflow cannot create unbounded memory or silently omit
-reconciliation.
+reconciliation. The Windows host monitor reopens the exact retained root with an
+empty-name, root-relative `NtCreateFile`, verifies the volume/file identity, and uses a
+64 KiB recursive overlapped `ReadDirectoryChangesW` buffer. Malformed records or kernel
+failure fail the monitor; overflow schedules a full rescan. Shutdown cancels the exact
+overlapped request and waits for its completion before releasing the buffer or handles.
+A standard-token test observes a nested file change through the pin and proves clean
+cancellation. This is source/test-binary evidence, not proof of LocalSystem, NTFS/ReFS,
+SMB, overflow timing, or adversarial rename behavior.
