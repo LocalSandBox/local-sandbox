@@ -1,0 +1,20 @@
+state.md
+  s_d92cdce887f5bb::t_4c6776b0bc5df7 4
+  s_d92cdce887f5bb::t_c65cd9959d3a59 8-9,12-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "e076785745d4698ef674d8fdbca4662187e51d57",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
