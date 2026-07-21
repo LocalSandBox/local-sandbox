@@ -39,6 +39,25 @@ function Assert-Administrator {
     return $identity.User
 }
 
+function Initialize-RustupEnvironment {
+    if (-not [string]::IsNullOrWhiteSpace($env:RUSTUP_HOME)) {
+        return
+    }
+    $command = Get-Command rustup -ErrorAction Stop
+    $rustup = (Resolve-Path -LiteralPath $command.Source).Path
+    $bin = Split-Path -Parent $rustup
+    $cargoHome = Split-Path -Parent $bin
+    if ((Split-Path -Leaf $bin) -cne 'bin' -or (Split-Path -Leaf $cargoHome) -cne '.cargo') {
+        throw 'RUSTUP_HOME is unset and rustup is not in a standard .cargo\bin directory.'
+    }
+    $rustupHome = Join-Path (Split-Path -Parent $cargoHome) '.rustup'
+    if (-not (Test-Path -LiteralPath $rustupHome -PathType Container)) {
+        throw "RUSTUP_HOME is unset and the toolchain directory is missing: $rustupHome"
+    }
+    $env:CARGO_HOME = $cargoHome
+    $env:RUSTUP_HOME = $rustupHome
+}
+
 function Assert-OwnedOrEmptyDirectory {
     param(
         [Parameter(Mandatory = $true)][string] $Path,
@@ -271,6 +290,7 @@ function Test-HostConfiguration {
     }
 }
 
+Initialize-RustupEnvironment
 $currentUserSid = Assert-Administrator
 $rootPath = Resolve-SafeRoot -Path $Root -ExpectedLeaf 'local-sandbox-agent' -Label 'Root'
 $statePath = Resolve-SafeRoot -Path $StateRoot -ExpectedLeaf 'DevTest' -Label 'StateRoot'
