@@ -5,6 +5,11 @@ service artifact and the SeaWork-owned installer. `plan.md` remains the design
 source of truth. The generated `service-contract.json` is authoritative for
 machine-consumed SCM, IPC, filesystem, health, and schema values.
 
+For the internal test-release sprint only, the required subset and evidence boundary are
+frozen in `contracts/seawork-test-release-v1.json` and `plan.md`. The temporary
+`compat-smb-direct` mount route and explicitly deferred capabilities there do not weaken
+the production packaging, trust, installation, or final-release requirements below.
+
 ## Release assets
 
 Every enabled service release publishes these files under the same SemVer as

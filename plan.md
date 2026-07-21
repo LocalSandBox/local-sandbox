@@ -244,22 +244,22 @@ create a public GitHub release during this sprint.
 
 ### TR-0 — Freeze the test-release contract
 
-- [ ] Recheck LocalSandbox HEAD/worktree and the read-only SeaWork HEAD. Append any
+- [x] Recheck LocalSandbox HEAD/worktree and the read-only SeaWork HEAD. Append any
   baseline drift to `docs/seawork-test-release-handoff.md`.
-- [ ] Add `contracts/seawork-test-release-v1.json` rather than weakening the existing
+- [x] Add `contracts/seawork-test-release-v1.json` rather than weakening the existing
   production parity contract. Encode the required operation, mount, network, identity,
   packaging, and evidence subset from sections 1–3.
-- [ ] Update the parity verifier/fixtures as needed so the test contract checks the
+- [x] Update the parity verifier/fixtures as needed so the test contract checks the
   current SeaWork source paths and proves that normal effects require the four direct
   mount profiles while no normal producer currently populates ports, `exposeHost`, or
   checkpoints.
-- [ ] Keep `workspace-shell`, `skills-files`, and `network-public-auth` as required
+- [x] Keep `workspace-shell`, `skills-files`, and `network-public-auth` as required
   golden workloads. Mark `host-connectivity`, overlay, and exhaustive lost-start/crash
   recovery out of test scope without changing their production status.
-- [ ] Add a short test-release scope note to `docs/seawork-service-release.md` and
+- [x] Add a short test-release scope note to `docs/seawork-service-release.md` and
   `docs/seawork-parity-contract.md` pointing to the new contract and this plan. Preserve
   those documents' hardened final-release requirements instead of rewriting history.
-- [ ] Record the exact candidate SemVer and baseline commits in `state.md`.
+- [x] Record the exact candidate SemVer and baseline commits in `state.md`.
 
 Gate: the test contract validates against the inspected SeaWork checkout and has no
 unresolved in-scope feature marked unavailable.

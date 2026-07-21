@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "contract_id": "seawork-test-release-v1",
+  "baseline": {
+    "seawork_commit": "f9c6cd8ff339688a669451e36078d6cbbc91c1b2",
+    "local_sandbox_commit": "0470b57be237d181b04dbd558cec4eb2fddebd5c",
+    "candidate_version": "0.4.7-test.1",
+    "windows_target": "windows-11-x86_64"
+  },
+  "source_assertions": [
+    {
+      "id": "source.baseline-package",
+      "path": "packages/local-sandbox-tools/package.json",
+      "contains": ["\"@local-sandbox/lsb-nodejs\": \"0.4.6\""],
+      "conclusion": "The inspected SeaWork checkout still uses the legacy 0.4.6 helper client and needs the pinned test-release package tuple downstream."
+    },
+    {
+      "id": "source.start-fields",
+      "path": "packages/local-sandbox-tools/src/shared.ts",
+      "contains": ["instanceId?: string", "from?: string", "ports?: readonly LocalSandboxPortMappingConfig[]", "mounts?: readonly LocalSandboxMountConfig[]", "network?: LocalSandboxNetworkConfig"],
+      "conclusion": "The service adapter must preserve the normal tool-facing start shape while applying the test-release capability rules."
+    },
+    {
+      "id": "source.required-mount-layout",
+      "path": "packages/local-sandbox-tools/src/runtime-options.ts",
+      "contains": ["DEFAULT_LOCAL_SANDBOX_WORKSPACE_MOUNT_PATH = \"/workspace\"", "DEFAULT_LOCAL_SANDBOX_WORKSPACE_OUTPUT_MOUNT_PATH", "hostPath: workspaceHostPath", "hostPath: workspaceOutputHostPath", "hostPath: agentContext.skills.from", "guestPath: agentContext.skills.to", "flags: LSB_MOUNT_FLAG_RDONLY", "flags: LSB_MOUNT_FLAG_DIRECT"],
+      "conclusion": "Normal effects create direct workspace read-only, nested output read-write, and agent skills read-only mounts."
+    },
+    {
+      "id": "source.uploaded-files-mount",
+      "path": "apps/local-apps/fe/src/shared/api/ingress-client.ts",
+      "contains": ["UPLOADED_FILES_SANDBOX_PATH = \"/uploaded_files\"", "flags: LSB_MOUNT_FLAG_RDONLY", "type: \"direct\" as const", "mounts: [createUploadedFilesMount(uploadedFilesMountedFrom)]"],
+      "absent": ["ports", "exposeHost", "from:"],
+      "conclusion": "The standard desktop producer adds uploaded files as a direct read-only mount and does not populate ports, host exposure, or checkpoints for normal effects."
+    },
+    {
+      "id": "source.scheduled-effect-inputs",
+      "path": "apps/local-apps/ingress-api/src/background/task-scheduler-loop.ts",
+      "contains": ["workspaceMountedFrom: getRunWorkspacePath(run)"],
+      "absent": ["ports", "exposeHost", "from:", "checkpoint"],
+      "conclusion": "The scheduled normal-effect producer supplies a workspace but no ports, host exposure, or checkpoint input."
+    },
+    {
+      "id": "source.operation-reachability",
+      "path": "apps/electron/src/main/sandbox-helper/helper-server.ts",
+      "contains": ["case \"startSandbox\"", "case \"exec\"", "case \"spawn\"", "case \"readFile\"", "case \"writeFile\"", "case \"mkdir\"", "case \"killProcess\"", "case \"stopSandbox\""],
+      "absent": ["case \"checkpoint\"", ".checkpoint("],
+      "conclusion": "The existing helper boundary proves the normal operation subset and has no reachable checkpoint operation."
+    },
+    {
+      "id": "source.default-network",
+      "path": "apps/electron/src/main/ingress-server.ts",
+      "contains": ["defaultNetworkEnabled: true"],
+      "conclusion": "Normal Electron tool effects require otherwise-safe public networking by default."
+    },
+    {
+      "id": "source.sequential-effects",
+      "path": "apps/electron/src/main/ingress-server.ts",
+      "contains": ["effectExecutors: [{ maxConcurrency: 1 }]"],
+      "conclusion": "The current Electron local executor runs one normal tool effect at a time."
+    }
+  ],
+  "operations": [
+    {"id":"op.connect","scope":"required","evidence":["bindings/nodejs/src/service.rs"]},
+    {"id":"op.service-info","scope":"required","evidence":["crates/lsb-seawork-service/src/status.rs"]},
+    {"id":"op.health","scope":"required","evidence":["crates/lsb-seawork-service/src/status.rs"]},
+    {"id":"op.start","scope":"required","evidence":["source.operation-reachability"]},
+    {"id":"op.stop","scope":"required","evidence":["source.operation-reachability"]},
+    {"id":"op.exec","scope":"required","evidence":["source.operation-reachability"]},
+    {"id":"op.spawn","scope":"required","evidence":["source.operation-reachability"]},
+    {"id":"op.kill-process","scope":"required","evidence":["source.operation-reachability"]},
+    {"id":"op.read-file","scope":"required","evidence":["source.operation-reachability"]},
+    {"id":"op.write-file","scope":"required","evidence":["source.operation-reachability"]},
+    {"id":"op.mkdir","scope":"required","evidence":["source.operation-reachability"]},
+    {"id":"op.cancel-cleanup","scope":"required","evidence":["crates/lsb-seawork-service/src/session/cancel.rs","crates/lsb-seawork-service/src/session/manager.rs"]}
+  ],
+  "mount_profiles": [
+    {"id":"mount.workspace-ro","scope":"required","mount_type":"direct","guest_path":"/workspace","access":"read-only","flags":1,"required_when":"always","evidence":["source.required-mount-layout"]},
+    {"id":"mount.output-rw","scope":"required","mount_type":"direct","guest_path":"/workspace/output","access":"read-write","flags":0,"required_when":"workspace-present","evidence":["source.required-mount-layout"]},
+    {"id":"mount.skills-ro","scope":"required","mount_type":"direct","guest_path":"caller-declared","access":"read-only","flags":1,"required_when":"active-agent","evidence":["source.required-mount-layout"]},
+    {"id":"mount.uploaded-files-ro","scope":"required","mount_type":"direct","guest_path":"/uploaded_files","access":"read-only","flags":1,"required_when":"uploaded-files-present","evidence":["source.uploaded-files-mount"]}
+  ],
+  "network_capabilities": [
+    {"id":"network.dns","scope":"required","evidence":["crates/lsb-proxy/src/dns.rs"]},
+    {"id":"network.public-http","scope":"required","evidence":["source.default-network","crates/lsb-proxy/src/proxy.rs"]},
+    {"id":"network.public-https","scope":"required","evidence":["source.default-network","crates/lsb-proxy/src/tls.rs"]},
+    {"id":"network.package-download","scope":"required","evidence":["fixtures/seawork-parity/network-public-auth.json"]},
+    {"id":"network.scoped-secret","scope":"required","evidence":["fixtures/seawork-parity/network-public-auth.json"]},
+    {"id":"network.private-link-local-denial","scope":"required","evidence":["crates/lsb-proxy/src/policy.rs"]}
+  ],
+  "identities": {
+    "service_name": "LocalSandboxSeaWork",
+    "pipe_name": "\\\\.\\pipe\\LocalSandbox.SeaWork.v1",
+    "service_account": "LocalSystem",
+    "state_root": "%ProgramData%\\LocalSandbox\\SeaWork",
+    "service_profile": "production"
+  },
+  "packaging": {
+    "required_artifacts": ["service-zip", "symbols-zip", "SHA256SUMS", "bundle-manifest", "service-contract", "runtime-dependencies", "sbom-and-licenses", "seawork-test-release-manifest"],
+    "node_packages": ["@local-sandbox/lsb-nodejs", "@local-sandbox/lsb-nodejs-win32-x64-msvc"],
+    "signing": {
+      "certificate": "SeaWork-CodeSign.pfx",
+      "timestamp_required": true,
+      "trusted_chain_required": true,
+      "forbidden_flags": ["-AllowUntrustedTestCertificate", "-SkipTimestamp"]
+    }
+  },
+  "evidence": {
+    "machine_readable_manifest": "seawork-test-release-manifest.json",
+    "required_cases": ["signed-install", "service-health", "mount-free-lifecycle", "four-mount-standard-user", "exec-and-files", "spawn-stream-kill", "cancellation-cleanup", "public-network-and-secret", "private-target-denial", "ten-sequential-effects", "reboot-continuation", "normal-stop-cleanup", "uninstall"],
+    "required_fields": ["local_sandbox_commit", "candidate_version", "synthetic_snapshot_sha256", "windows_run_ids", "windows_build", "artifact_hashes", "publisher_subject", "publisher_sha256", "protocol", "capabilities", "production_identities", "case_results", "redacted_log_locations"]
+  },
+  "unsupported_capabilities": [
+    {"id":"checkpoint","test_scope":"out-of-scope","behavior":"Reject non-empty from with CHECKPOINT_UNSUPPORTED.","production_status_unchanged":true},
+    {"id":"ports","test_scope":"out-of-scope","behavior":"Reject non-empty ports with PORT_ISOLATION_UNAVAILABLE.","production_status_unchanged":true},
+    {"id":"network.expose-host","test_scope":"out-of-scope","behavior":"Reject non-empty network.exposeHost with PORT_ISOLATION_UNAVAILABLE.","production_status_unchanged":true},
+    {"id":"mount.overlay","test_scope":"out-of-scope","behavior":"Reject overlay mounts with a stable unsupported-capability error; never reinterpret them as direct mounts.","production_status_unchanged":true},
+    {"id":"host-connectivity","test_scope":"out-of-scope","behavior":"Do not run the production host-connectivity golden workload for this candidate.","production_status_unchanged":true},
+    {"id":"exhaustive-lost-start-crash-recovery","test_scope":"out-of-scope","behavior":"Require only bounded same-session instanceId recovery and cancelled normal-effect cleanup.","production_status_unchanged":true}
+  ],
+  "golden_workloads": [
+    {"id":"golden.workspace-shell","covers":["mount.workspace-ro","mount.output-rw","op.exec","op.spawn","op.kill-process"],"fixture":"fixtures/seawork-parity/workspace-shell.json","comparison":["stdout","stderr","exit-order","workspace-read-only","output-tree"],"test_scope":"required","production_status_unchanged":true},
+    {"id":"golden.skills-files","covers":["mount.skills-ro","op.read-file","op.write-file","op.mkdir"],"fixture":"fixtures/seawork-parity/skills-files.json","comparison":["content","encoding","permissions","filesystem-tree","stable-errors"],"test_scope":"required","production_status_unchanged":true},
+    {"id":"golden.network-public-auth","covers":["network.dns","network.public-http","network.public-https","network.package-download","network.scoped-secret","network.private-link-local-denial"],"fixture":"fixtures/seawork-parity/network-public-auth.json","comparison":["network-effects","secret-scope","redaction","stable-errors"],"test_scope":"required","production_status_unchanged":true},
+    {"id":"golden.host-connectivity","covers":["ports","network.expose-host"],"fixture":"fixtures/seawork-parity/host-connectivity.json","comparison":["exact-ports","cross-logon-denial"],"test_scope":"out-of-scope","production_status_unchanged":true},
+    {"id":"golden.start-loss-recovery","covers":["checkpoint","exhaustive-lost-start-crash-recovery"],"fixture":"fixtures/seawork-parity/start-loss-recovery.json","comparison":["resource-count","retry-result","cleanup-state","stable-errors"],"test_scope":"out-of-scope","production_status_unchanged":true}
+  ]
+}

@@ -6,6 +6,12 @@ SeaWork Windows service replacement. Its authority is the decision record in
 `0ae88c6d338ffb10d765296625ea38b3b3991f64`, using
 `@local-sandbox/lsb-nodejs` 0.4.6.
 
+The narrower internal test-release subset is frozen separately in
+`contracts/seawork-test-release-v1.json` and `plan.md`. That contract selects the
+three required golden workloads and the temporary direct-SMB mount path without
+changing any blocking status or hardened final-release requirement in this production
+parity contract.
+
 The contract deliberately separates production reachability from LocalSandbox's wider
 SDK. The pinned helper reaches start, exec, spawn, read, write, mkdir, process kill, and
 stop. It also forwards mounts, ports, network policy, host exposure, secrets, resource

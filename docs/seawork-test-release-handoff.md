@@ -258,3 +258,30 @@ Ports/host exposure, checkpoints, overlay mounts, helper removal, hostile-user t
 full multi-user concurrency, production fleet rollout, and hardened crash/power-loss
 mount reconciliation remain out of this test release. Unsupported inputs must fail or
 take the permitted pre-acquisition live fallback; they must not be silently ignored.
+
+## 2026-07-21 — TR-0 baseline drift and frozen test contract
+
+Status: **LocalSandbox TR-0 contract gate complete; implementation artifacts pending**
+
+- LocalSandbox was rechecked clean at `0470b57be237d181b04dbd558cec4eb2fddebd5c`
+  before the contract tranche.
+- The current read-only SeaWork checkout is branch `test` at
+  `f9c6cd8ff339688a669451e36078d6cbbc91c1b2`, superseding the baseline recorded
+  in the initial entry. Between `1fb4d7cdc30e274c70870916e092600fc9b80aa6`
+  and the new commit, the only change in the inspected LocalSandbox/ingress runtime
+  source areas adds `workspaceVersioners: [{ maxConcurrency: 1 }]` beside the existing
+  single-concurrency effect executor. No tool-facing start, mount, network, helper, or
+  installer API in the initial handoff changed.
+- `contracts/seawork-test-release-v1.json` freezes candidate version
+  `0.4.7-test.1`, the production identities, required operation/mount/network subset,
+  signed packaging tuple, and machine-readable Windows evidence fields.
+- The pinned source assertions prove that normal desktop/scheduled effects require the
+  workspace, nested output, skills, and optional uploaded-files direct mount profiles,
+  while their normal producers do not populate ports, `network.exposeHost`, or
+  checkpoints.
+- `workspace-shell`, `skills-files`, and `network-public-auth` remain required.
+  `host-connectivity`, overlay mounts, and exhaustive lost-start/crash recovery are
+  explicitly out of this test-release scope without changing their production parity
+  status.
+- Verification command:
+  `cargo run -p xtask --locked -- verify-seawork-parity --contract contracts/seawork-test-release-v1.json --seawork-repo /Users/SG3937/code/seawork`.
