@@ -1,0 +1,21 @@
+scripts/windows-test-bootstrap.ps1
+  s_d92cdce887f5bb::t_8e1cc52c6ae407 38-56,115
+scripts/setup-windows-test-host.ps1
+  s_d92cdce887f5bb::t_8e1cc52c6ae407 42-60,293
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "b067792952c00bec111e05ec131f9fe99eaa89b2",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
