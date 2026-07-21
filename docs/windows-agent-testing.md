@@ -146,6 +146,9 @@ The test-release suites are:
   four-mount smoke, compatibility-resource proof, and uninstall; and
 - `service-reboot`: the same owned install before reboot, delayed automatic startup and
   a post-reboot signed standard-user smoke, followed by uninstall.
+- `archive-acceptance`: bounded extraction and repeated trusted signature, catalog,
+  installed-layout, and embedded-manifest verification of an exact prior run's service
+  ZIP; invoke it with `--reuse-candidate <source-run-id>`.
 
 After one run has constructed a candidate, a retry at the exact same Git tree, base
 commit, candidate version, and publisher identity can reuse it without rebuilding or
