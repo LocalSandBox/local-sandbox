@@ -1,0 +1,53 @@
+crates/lsb-seawork-service/src/session/manager.rs
+  s_d92cdce887f5bb::t_38b5e39b5ca13a 6,136,139-142,153,157-160,404,408-414,417,441,457,496-502,1261-1265,1267,1273-1274,1276
+  s_d92cdce887f5bb::t_28b467d4595406 1243-1246,1266,1275
+crates/lsb-seawork-service/src/rpc/sandbox.rs
+  s_d92cdce887f5bb::t_5ebe4b812e095d 58,294-306,567-569,571-646,649-653
+  s_d92cdce887f5bb::t_2c9b3cced5d79d 1,17,46-47,198,237,240,245-257,260-293,374
+  s_d92cdce887f5bb::t_2d9877d134be8a 10,258-259,570,647-648
+  s_d92cdce887f5bb::t_9a0de1b6e7cd24 141-147,307,370,376-382,417,430-433,537-543
+  s_d92cdce887f5bb::t_38b5e39b5ca13a 85-86,180-186
+  s_d92cdce887f5bb::t_17b1b56eb7f028 308
+bindings/nodejs/src/service.rs
+  s_d92cdce887f5bb::t_f2a2904a4df00b 1118-1192
+  s_d92cdce887f5bb::t_af3bdd7780dc6b 7,43-47,74,301,311,471-537
+  s_d92cdce887f5bb::t_6c05dcda01bcbc 470,540,556
+  s_d92cdce887f5bb::t_fcc28c5d31a83a 538-539
+crates/lsb-seawork-service/src/resource/vm.rs
+  s_d92cdce887f5bb::t_2c9b3cced5d79d 27,31-37,894-900,995,1008
+crates/lsb-seawork-service/src/pipe.rs
+  s_d92cdce887f5bb::t_59859a03ae31f2 451-455,466,489-501,2085-2095
+  s_d92cdce887f5bb::t_36f357e58a431b 2096
+bindings/nodejs/test/api-shape.spec.ts
+  s_d92cdce887f5bb::t_af3bdd7780dc6b 129-132,150
+crates/lsb-service-client/src/connection.rs
+  s_d92cdce887f5bb::t_79fed1c77492b0 279,281,1039,1210-1212
+  s_d92cdce887f5bb::t_2d9877d134be8a 280
+  s_d92cdce887f5bb::t_109bcb4ea36023 1213
+bindings/nodejs/scripts/patch-generated-loader.mjs
+  s_d92cdce887f5bb::t_af3bdd7780dc6b 134-135
+crates/lsb-service-proto/src/message.rs
+  s_d92cdce887f5bb::t_79fed1c77492b0 937-976
+  s_d92cdce887f5bb::t_89a1b5bc2de6c5 936
+crates/lsb-seawork-service/src/scm.rs
+  s_d92cdce887f5bb::t_bea61b74e04feb 448-452
+  s_d92cdce887f5bb::t_cc92bcb5333a0d 433,437-443
+bindings/nodejs/index.d.ts
+  s_d92cdce887f5bb::t_af3bdd7780dc6b 442,501-502
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "f6b2c472588e652b7a9489766c8569fb0c99e3b4",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
