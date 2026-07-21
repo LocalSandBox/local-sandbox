@@ -2,19 +2,22 @@ use std::os::windows::io::OwnedHandle;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::ledger::schema::ResourceRecord;
-use crate::security::path::{AuthorizedMountRoot, MountBackend, PathWorker};
+use crate::security::path::{AuthorizedMountRoot, MountAccess, MountBackend, PathWorker};
 
-use super::mount_sync::StagedReconciler;
+use super::mount_sync::{ReconciliationPlan, StagedReconciler};
 use super::transaction::ResourceTransaction;
 
 pub struct StagedMount {
     pub mount_id: String,
     pub staging_root: PathBuf,
     protected_root: ProtectedStagingRoot,
-    pub reconciliation: StagedReconciler,
+    host_identity: (u32, u64),
+    host_owner_sid: String,
+    host_access: MountAccess,
+    reconciliation: StagedReconciler,
     pub backend: MountBackend,
 }
 
@@ -63,6 +66,9 @@ impl StagedMount {
             mount_id: mount_id.to_string(),
             staging_root,
             protected_root,
+            host_identity: (identity.volume_serial, identity.file_index),
+            host_owner_sid: authorized.owner_sid().to_string(),
+            host_access: authorized.access(),
             reconciliation: StagedReconciler::new(baseline, Duration::ZERO)?,
             backend: MountBackend::StagedSync,
         })
@@ -70,6 +76,40 @@ impl StagedMount {
 
     pub fn protected_root(&self) -> &ProtectedStagingRoot {
         &self.protected_root
+    }
+
+    pub fn plan_due(
+        &mut self,
+        authorized: &AuthorizedMountRoot,
+        worker: &PathWorker,
+        now: Duration,
+    ) -> Result<Option<ReconciliationPlan>> {
+        if self.reconciliation.due(now)?.is_none() {
+            return Ok(None);
+        }
+        let identity = authorized.identity();
+        if self.host_identity != (identity.volume_serial, identity.file_index)
+            || self.host_owner_sid != authorized.owner_sid()
+            || self.host_access != authorized.access()
+        {
+            self.reconciliation.fail_observation(now)?;
+            bail!("staged reconciliation received a different host capability");
+        }
+        let host = match worker.snapshot_host(authorized) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.reconciliation.fail_observation(now)?;
+                return Err(error).context("snapshot authorized host capability");
+            }
+        };
+        let guest = match worker.snapshot_protected(&self.protected_root) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.reconciliation.fail_observation(now)?;
+                return Err(error).context("snapshot protected staging capability");
+            }
+        };
+        self.reconciliation.plan_due(&host, &guest, now)
     }
 }
 

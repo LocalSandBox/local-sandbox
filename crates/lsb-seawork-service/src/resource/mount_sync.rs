@@ -278,6 +278,20 @@ impl StagedReconciler {
         Ok(())
     }
 
+    pub fn fail_observation(&mut self, now: Duration) -> Result<()> {
+        self.observe(now)?;
+        if self.pending.is_some()
+            || !matches!(
+                self.state,
+                ReconcileState::Active | ReconcileState::Finalizing
+            )
+        {
+            bail!("staged reconciliation cannot fail an observation in its current state");
+        }
+        self.state = ReconcileState::Failed;
+        Ok(())
+    }
+
     fn observe(&mut self, now: Duration) -> Result<()> {
         if now < self.last_observed {
             bail!("staged reconciliation clock moved backwards");
@@ -974,6 +988,16 @@ mod tests {
         assert_eq!(failed.state(), ReconcileState::Failed);
         assert!(failed
             .notify_change(PathBuf::from("file"), DIRTY_RECONCILE_INTERVAL)
+            .is_err());
+
+        let mut observation_failed =
+            StagedReconciler::new(baseline.clone(), Duration::ZERO).unwrap();
+        observation_failed
+            .fail_observation(DIRTY_RECONCILE_INTERVAL)
+            .unwrap();
+        assert_eq!(observation_failed.state(), ReconcileState::Failed);
+        assert!(observation_failed
+            .fail_observation(DIRTY_RECONCILE_INTERVAL)
             .is_err());
 
         let mut invalid = StagedReconciler::new(baseline.clone(), Duration::ZERO).unwrap();

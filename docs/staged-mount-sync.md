@@ -119,12 +119,15 @@ received during an in-flight cycle retains a newer dirty generation.
 In particular, a final cycle with such a hint remains `Finalizing` and must catch up
 within the original deadline rather than reporting successful teardown.
 
-This controller does not activate mounts or perform privileged I/O. The path worker can
-now obtain fresh host and protected-stage snapshots through pinned capabilities, but the
-controller still must request those snapshots for each cycle, execute each import/export
-through pinned capabilities, publish conflict artifacts and durable recovery metadata,
-and bind the cycle to VM stop/cleanup. Until that integration and its Windows evidence
-exist, the service continues to advertise no mount capability.
+This controller does not activate mounts or perform privileged mutation I/O. Its owning
+`StagedMount` now requests fresh host and protected-stage snapshots only when a cycle is
+due. The mount records the authorized root identity, caller SID, and access mode at
+prepare time and makes its controller private; a different host capability or either
+snapshot failure makes reconciliation terminal before a plan is exposed. Production
+still must execute each import/export through pinned capabilities, publish conflict
+artifacts and durable recovery metadata, and bind the cycle to VM stop/cleanup. Until
+that integration and its Windows evidence exist, the service continues to advertise no
+mount capability.
 
 Conflict names are exactly
 `<filename>.lsb-conflict-<128-bit-lowercase-hex-session-id>-<decimal-sequence>` and must
