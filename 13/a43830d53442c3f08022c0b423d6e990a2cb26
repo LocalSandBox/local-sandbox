@@ -1,0 +1,19 @@
+scripts/windows-test-signing-assets.ps1
+  s_d92cdce887f5bb::t_6c5e983d6ad1b8 139-172,285,333-334
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "13a43830d53442c3f08022c0b423d6e990a2cb26",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
