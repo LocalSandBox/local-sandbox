@@ -380,3 +380,18 @@ Status: **`0.4.7-test.1` source/package gate passed; installed runtime gate pend
   build, declaration type checking, package metadata, startup, and all ten Node tests.
 - The bundle catalog decision in the preceding entry is unchanged. This fast run does
   not claim a completed signed archive or installed production-identity runtime.
+
+## 2026-07-21 — Read-only SeaWork drift check
+
+Status: **no downstream LocalSandbox/installer contract drift**
+
+- The read-only SeaWork checkout externally advanced from contract baseline `test` at
+  `f9c6cd8ff339688a669451e36078d6cbbc91c1b2` to clean branch `dev` at
+  `773e15b2a06e8339f236db124c824a07457b901d`.
+- The two intervening commits change the file viewer dependency and IT-center skill
+  content only. None of `apps/electron/src/main/app.ts`,
+  `apps/electron/src/main/ingress-server.ts`, `apps/electron/electron-builder.yml`,
+  `apps/electron/scripts/windows`, or `packages/local-sandbox-tools/src/shared.ts`
+  changed.
+- The frozen contract verifier still passes all eight pinned source assertions. No
+  SeaWork file was modified.

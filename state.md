@@ -2,7 +2,7 @@
 
 - Updated: 2026-07-21
 - LocalSandbox baseline: `feat/lsb-win-service` at `0470b57be237d181b04dbd558cec4eb2fddebd5c`
-- SeaWork baseline inspected: `test` at `f9c6cd8ff339688a669451e36078d6cbbc91c1b2`
+- SeaWork baseline inspected: contract `test` at `f9c6cd8ff339688a669451e36078d6cbbc91c1b2`; current read-only `dev` at `773e15b2a06e8339f236db124c824a07457b901d` with no relevant runtime/installer drift
 - Candidate version: `0.4.7-test.1`
 - Current milestone: `TR-2 — Build a safe native Windows release harness`
 - Status: TR-1 source bridge committed and source gates pass; TR-1 runtime gate awaits the signed installed-service harness run; TR-2 protected signing/runtime assets and artifact fetch pass; versioned Windows fast gate and signed PE pass, but bundle catalog is blocked by empty QEMU files
