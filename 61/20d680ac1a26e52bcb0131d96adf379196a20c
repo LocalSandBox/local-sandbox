@@ -1,0 +1,54 @@
+scripts/windows-test-signing-assets.ps1
+  s_d92cdce887f5bb::t_cfb34471c2ff9c 247-258
+  s_d92cdce887f5bb::t_12b079284a772b 262-264
+  s_d92cdce887f5bb::t_3f7435d2a0b4eb 1-159,161-222,224-244,246,259-261,265-279
+  s_d92cdce887f5bb::t_a131e0f107f635 160
+  s_d92cdce887f5bb::t_bd8dff965d69cb 223,245
+scripts/windows-test-suites/service-acceptance.mjs
+  s_d92cdce887f5bb::t_5116f2ceaaf741 1-131
+scripts/windows-test-service-harness.ps1
+  s_d92cdce887f5bb::t_f1ec099bf46bbd 1-238,240-360
+  s_d92cdce887f5bb::t_35b2da737b4ca5 239
+scripts/windows-test-artifacts.ps1
+  s_d92cdce887f5bb::t_3f7435d2a0b4eb 1-105
+scripts/windows-test-bootstrap.ps1
+  s_d92cdce887f5bb::t_bfe66d2adbb472 144-146
+scripts/windows-test-suites/release-candidate.ps1
+  s_d92cdce887f5bb::t_ce2b94c270f682 1-283
+scripts/windows-test-suites/service-fast.ps1
+  s_d92cdce887f5bb::t_bfe66d2adbb472 1-65,67-92
+  s_d92cdce887f5bb::t_35b2da737b4ca5 66
+scripts/windows-test-suites/installed-service-smoke.ps1
+  s_d92cdce887f5bb::t_e5a010f5434024 1-45
+docs/windows-agent-testing.md
+  s_d92cdce887f5bb::t_175923aa04e4bb 35-47,54-68,123-137
+  s_d92cdce887f5bb::t_7963aa939b340e 138
+scripts/setup-windows-test-host.ps1
+  s_d92cdce887f5bb::t_490545de89fe59 6-7,231-232,329-330,332-333,341-352
+scripts/win-test
+  s_d92cdce887f5bb::t_490545de89fe59 16-17,23,67-68,72-74,90-145,255-262,297-300
+scripts/sign-seawork-service.ps1
+  s_d92cdce887f5bb::t_4a2ee6b7219d34 151-152,202
+  s_d92cdce887f5bb::t_28a95561c5165b 338-342
+  s_d92cdce887f5bb::t_45b427f8938cd4 150,153,155-194,196-201,203-208,360
+  s_d92cdce887f5bb::t_2adbf37fc85b9e 4,8,324-337,343-358
+  s_d92cdce887f5bb::t_b2352c8ab74041 359
+scripts/windows-test-suites/service-reboot.ps1
+  s_d92cdce887f5bb::t_e5a010f5434024 1-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "6120d680ac1a26e52bcb0131d96adf379196a20c",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
