@@ -1,4 +1,5 @@
 use std::ffi::{OsStr, OsString};
+use std::io::{Read, Write};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::path::{Component, Path};
@@ -59,6 +60,48 @@ pub(super) fn export_open_file_under_client_token(
     relative_destination: &Path,
     options: ExportOptions,
 ) -> Result<u64> {
+    export_open_file_internal(
+        protected_source,
+        source_len,
+        source_modified,
+        None,
+        authorized_root,
+        relative_destination,
+        options,
+    )
+}
+
+pub(super) fn export_planned_file_under_client_token(
+    protected_source: &mut std::fs::File,
+    source_len: u64,
+    source_modified: SystemTime,
+    expected_hash: [u8; 32],
+    authorized_root: &OwnedHandle,
+    relative_destination: &Path,
+) -> Result<u64> {
+    export_open_file_internal(
+        protected_source,
+        source_len,
+        source_modified,
+        Some(expected_hash),
+        authorized_root,
+        relative_destination,
+        ExportOptions {
+            overwrite: true,
+            max_bytes: source_len,
+        },
+    )
+}
+
+fn export_open_file_internal(
+    protected_source: &mut std::fs::File,
+    source_len: u64,
+    source_modified: SystemTime,
+    expected_hash: Option<[u8; 32]>,
+    authorized_root: &OwnedHandle,
+    relative_destination: &Path,
+    options: ExportOptions,
+) -> Result<u64> {
     if source_len > options.max_bytes {
         bail!("export source is not a bounded regular file");
     }
@@ -69,21 +112,39 @@ pub(super) fn export_open_file_under_client_token(
         .ok_or_else(|| anyhow::anyhow!("export destination is empty"))?;
 
     let parent = open_or_create_parents(authorized_root, components)?;
+    super::import::remove_directory_target_if_present(&parent, &leaf)?;
     let mut output = create_temporary(&parent)?;
     let result = (|| {
-        let limit = source_len
-            .checked_add(1)
-            .context("export source length bound overflow")?;
-        let copied = std::io::copy(
-            &mut std::io::Read::take(&mut *protected_source, limit),
-            &mut output,
-        )?;
+        let mut hasher = expected_hash.map(|_| blake3::Hasher::new());
+        let mut buffer = [0u8; 64 * 1024];
+        let mut copied = 0u64;
+        loop {
+            let read = protected_source.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            copied = copied
+                .checked_add(read as u64)
+                .context("export source length bound overflow")?;
+            if copied > source_len {
+                bail!("protected export source grew while it was copied");
+            }
+            if let Some(hasher) = hasher.as_mut() {
+                hasher.update(&buffer[..read]);
+            }
+            output.write_all(&buffer[..read])?;
+        }
         let final_metadata = protected_source.metadata()?;
         if copied != source_len
             || final_metadata.len() != source_len
             || final_metadata.modified()? != source_modified
         {
             bail!("protected export source changed while it was copied");
+        }
+        if let (Some(hasher), Some(expected)) = (hasher, expected_hash) {
+            if *hasher.finalize().as_bytes() != expected {
+                bail!("protected export source differs from the planned content hash");
+            }
         }
         output.sync_all()?;
         rename_relative(&output, &parent, &leaf, options.overwrite)?;
@@ -93,6 +154,61 @@ pub(super) fn export_open_file_under_client_token(
         delete_on_close(&output);
     }
     result
+}
+
+pub(super) fn require_protected_directory(
+    staging_root: &OwnedHandle,
+    relative: &Path,
+    expected_len: u64,
+) -> Result<()> {
+    let Some((_entry, info)) = open_protected_entry_optional(staging_root, relative)? else {
+        bail!("protected export directory disappeared after observation");
+    };
+    require_safe_entry(&info, true)?;
+    let len = ((info.nFileSizeHigh as u64) << 32) | info.nFileSizeLow as u64;
+    if len != expected_len {
+        bail!("protected export directory changed after observation");
+    }
+    Ok(())
+}
+
+pub(super) fn require_protected_absent(staging_root: &OwnedHandle, relative: &Path) -> Result<()> {
+    if open_protected_entry_optional(staging_root, relative)?.is_some() {
+        bail!("protected export source reappeared after observation");
+    }
+    Ok(())
+}
+
+fn open_protected_entry_optional(
+    staging_root: &OwnedHandle,
+    relative: &Path,
+) -> Result<Option<(OwnedHandle, BY_HANDLE_FILE_INFORMATION)>> {
+    crate::resource::mount_sync::validate_relative_path(relative)?;
+    let mut components = relative_components(relative)?;
+    let leaf = components
+        .pop()
+        .ok_or_else(|| anyhow::anyhow!("protected export source is empty"))?;
+    let mut parent = staging_root.try_clone()?;
+    let parent_access = FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+    for component in components {
+        let Some((child, info)) = relative::open_relative_optional(
+            &parent,
+            &component,
+            parent_access,
+            RelativeKind::Directory,
+        )?
+        else {
+            return Ok(None);
+        };
+        require_safe_entry(&info, true)?;
+        parent = child;
+    }
+    relative::open_relative_optional(
+        &parent,
+        &leaf,
+        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        RelativeKind::Any,
+    )
 }
 
 fn relative_components(path: &Path) -> Result<Vec<OsString>> {

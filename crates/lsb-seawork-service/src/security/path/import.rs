@@ -160,7 +160,7 @@ fn publish_target_file(
     result
 }
 
-fn ensure_target_directory(root: &OwnedHandle, components: &[OsString]) -> Result<()> {
+pub(super) fn ensure_target_directory(root: &OwnedHandle, components: &[OsString]) -> Result<()> {
     let (leaf, parents) = components
         .split_last()
         .context("stage import directory is empty")?;
@@ -195,7 +195,7 @@ fn ensure_target_directory(root: &OwnedHandle, components: &[OsString]) -> Resul
     Ok(())
 }
 
-fn delete_target(root: &OwnedHandle, components: &[OsString]) -> Result<()> {
+pub(super) fn delete_target(root: &OwnedHandle, components: &[OsString]) -> Result<()> {
     let (leaf, parents) = components
         .split_last()
         .context("stage import deletion path is empty")?;
@@ -212,7 +212,10 @@ fn delete_target(root: &OwnedHandle, components: &[OsString]) -> Result<()> {
     mark_delete(&entry)
 }
 
-fn remove_directory_target_if_present(parent: &OwnedHandle, leaf: &OsString) -> Result<()> {
+pub(super) fn remove_directory_target_if_present(
+    parent: &OwnedHandle,
+    leaf: &OsString,
+) -> Result<()> {
     let Some((entry, info)) =
         relative::open_relative_optional(parent, leaf, target_entry_access(), RelativeKind::Any)?
     else {
@@ -301,7 +304,7 @@ fn mark_delete(handle: &OwnedHandle) -> Result<()> {
     Ok(())
 }
 
-fn relative_components(path: &Path) -> Result<Vec<OsString>> {
+pub(super) fn relative_components(path: &Path) -> Result<Vec<OsString>> {
     let components = path
         .components()
         .map(|component| match component {

@@ -270,6 +270,27 @@ impl StagedReconciler {
         Ok(())
     }
 
+    pub fn complete_verified_cycle(
+        &mut self,
+        plan: ReconciliationPlan,
+        host: &TreeSnapshot,
+        guest: &TreeSnapshot,
+        now: Duration,
+    ) -> Result<()> {
+        self.observe(now)?;
+        self.require_pending(&plan)?;
+        if let Err(error) = validate_snapshot(host)
+            .and_then(|_| validate_snapshot(guest))
+            .and_then(|_| require_same_snapshot(&plan.next_baseline, host))
+            .and_then(|_| require_same_snapshot(&plan.next_baseline, guest))
+        {
+            self.pending = None;
+            self.state = ReconcileState::Failed;
+            return Err(error);
+        }
+        self.complete_cycle(plan, now)
+    }
+
     pub fn fail_cycle(&mut self, plan: ReconciliationPlan, now: Duration) -> Result<()> {
         self.observe(now)?;
         self.require_pending(&plan)?;
@@ -652,6 +673,21 @@ fn same_entry(left: Option<&EntryFingerprint>, right: Option<&EntryFingerprint>)
     }
 }
 
+fn require_same_snapshot(expected: &TreeSnapshot, actual: &TreeSnapshot) -> Result<()> {
+    let paths = expected
+        .entries
+        .keys()
+        .chain(actual.entries.keys())
+        .collect::<BTreeSet<_>>();
+    if paths
+        .into_iter()
+        .any(|path| !same_entry(expected.entries.get(path), actual.entries.get(path)))
+    {
+        bail!("staged reconciliation result differs from its planned snapshot");
+    }
+    Ok(())
+}
+
 #[allow(dead_code)]
 pub(super) fn mirror_tree(source: &Path, destination: &Path) -> Result<TreeSnapshot> {
     if destination.exists() {
@@ -999,6 +1035,35 @@ mod tests {
         assert!(observation_failed
             .fail_observation(DIRTY_RECONCILE_INTERVAL)
             .is_err());
+
+        let changed = TreeSnapshot {
+            entries: [(PathBuf::from("file"), fingerprint(2))].into(),
+        };
+        let mut verified = StagedReconciler::new(baseline.clone(), Duration::ZERO).unwrap();
+        verified
+            .notify_change(PathBuf::from("file"), Duration::ZERO)
+            .unwrap();
+        let plan = verified
+            .plan_due(&changed, &baseline, DIRTY_RECONCILE_INTERVAL)
+            .unwrap()
+            .unwrap();
+        verified
+            .complete_verified_cycle(plan, &changed, &changed, DIRTY_RECONCILE_INTERVAL)
+            .unwrap();
+        assert_eq!(verified.baseline(), &changed);
+
+        let mut drifted = StagedReconciler::new(baseline.clone(), Duration::ZERO).unwrap();
+        drifted
+            .notify_change(PathBuf::from("file"), Duration::ZERO)
+            .unwrap();
+        let plan = drifted
+            .plan_due(&changed, &baseline, DIRTY_RECONCILE_INTERVAL)
+            .unwrap()
+            .unwrap();
+        assert!(drifted
+            .complete_verified_cycle(plan, &changed, &baseline, DIRTY_RECONCILE_INTERVAL)
+            .is_err());
+        assert_eq!(drifted.state(), ReconcileState::Failed);
 
         let mut invalid = StagedReconciler::new(baseline.clone(), Duration::ZERO).unwrap();
         invalid

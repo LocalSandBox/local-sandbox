@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 use crate::ledger::schema::ResourceRecord;
 use crate::security::path::{AuthorizedMountRoot, MountAccess, MountBackend, PathWorker};
 
-use super::mount_sync::{ReconciliationPlan, StagedReconciler};
+use super::mount_sync::{ReconciliationPlan, StagedReconciler, SyncDirection};
 use super::transaction::ResourceTransaction;
 
 pub struct StagedMount {
@@ -87,11 +87,7 @@ impl StagedMount {
         if self.reconciliation.due(now)?.is_none() {
             return Ok(None);
         }
-        let identity = authorized.identity();
-        if self.host_identity != (identity.volume_serial, identity.file_index)
-            || self.host_owner_sid != authorized.owner_sid()
-            || self.host_access != authorized.access()
-        {
+        if self.require_host_capability(authorized).is_err() {
             self.reconciliation.fail_observation(now)?;
             bail!("staged reconciliation received a different host capability");
         }
@@ -110,6 +106,55 @@ impl StagedMount {
             }
         };
         self.reconciliation.plan_due(&host, &guest, now)
+    }
+
+    pub fn execute_plan(
+        &mut self,
+        authorized: &AuthorizedMountRoot,
+        worker: &PathWorker,
+        plan: ReconciliationPlan,
+        completed_at: Duration,
+    ) -> Result<()> {
+        let outcome: Result<(
+            super::mount_sync::TreeSnapshot,
+            super::mount_sync::TreeSnapshot,
+        )> = (|| {
+            self.require_host_capability(authorized)?;
+            for operation in plan.operations() {
+                match operation.direction {
+                    SyncDirection::ImportHost => {
+                        worker.import_operation(authorized, &self.protected_root, operation)?
+                    }
+                    SyncDirection::ExportGuest => {
+                        worker.export_operation(authorized, &self.protected_root, operation)?
+                    }
+                }
+            }
+            Ok((
+                worker.snapshot_host(authorized)?,
+                worker.snapshot_protected(&self.protected_root)?,
+            ))
+        })();
+        let (host, guest) = match outcome {
+            Ok(snapshots) => snapshots,
+            Err(error) => {
+                self.reconciliation.fail_cycle(plan, completed_at)?;
+                return Err(error).context("execute staged reconciliation plan");
+            }
+        };
+        self.reconciliation
+            .complete_verified_cycle(plan, &host, &guest, completed_at)
+    }
+
+    fn require_host_capability(&self, authorized: &AuthorizedMountRoot) -> Result<()> {
+        let identity = authorized.identity();
+        if self.host_identity != (identity.volume_serial, identity.file_index)
+            || self.host_owner_sid != authorized.owner_sid()
+            || self.host_access != authorized.access()
+        {
+            bail!("staged reconciliation received a different host capability");
+        }
+        Ok(())
     }
 }
 

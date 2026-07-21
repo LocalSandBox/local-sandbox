@@ -101,9 +101,16 @@ and atomically replaced by exact-handle rename. Directory creation, file-to-dire
 replacement, and deepest-first absent-entry deletion use handle-relative opens and exact
 handle disposition; namespace parents are never reopened by path. A standard-token
 regression applies the ordered shapes and proves the resulting host/stage content
-snapshots agree with no temporary left behind. Cycle dispatch, guest-to-host directory
-and deletion operations, post-operation snapshot proof, conflict publication, VM
-lifecycle wiring, and retained-stage teardown remain unavailable.
+snapshots agree with no temporary left behind.
+
+The symmetric `ExportGuest` worker operation requires a retained read-write host
+capability. It verifies an absent, directory, or file source beneath the protected-stage
+pin before impersonation. Directories, type changes, and deepest-first deletions then use
+the same relative exact-handle target primitives under the caller token. Planned file
+copy additionally hashes the bytes while publishing and refuses a same-length source
+whose content differs from the plan; failure deletes only the random temporary and does
+not publish the destination. A standard-token regression exercises the full namespace
+shape and planned-hash rejection.
 
 ## Reconciliation
 
@@ -130,16 +137,19 @@ received during an in-flight cycle retains a newer dirty generation.
 In particular, a final cycle with such a hint remains `Finalizing` and must catch up
 within the original deadline rather than reporting successful teardown.
 
-This controller does not activate mounts or perform privileged mutation I/O. Its owning
+This controller does not activate mounts. Its owning
 `StagedMount` now requests fresh host and protected-stage snapshots only when a cycle is
 due. The mount records the authorized root identity, caller SID, and access mode at
 prepare time and makes its controller private; a different host capability or either
-snapshot failure makes reconciliation terminal before a plan is exposed. Production
-still must dispatch its ordered plan through the available host-import and file-export
-primitives, add guest-to-host directory/deletion operations, prove the post-operation
-snapshots before advancing the baseline, publish conflict artifacts and durable recovery
-metadata, and bind the cycle to VM stop/cleanup. Until that integration and its Windows
-evidence exist, the service continues to advertise no mount capability.
+snapshot failure makes reconciliation terminal before a plan is exposed. `execute_plan`
+dispatches every preordered import/export operation through the path worker, then obtains
+both fresh snapshots. The controller compares both trees semantically with the plan's
+expected baseline and advances only on an exact match; mutation, snapshot, or outcome
+drift clears the pending cycle and fails terminally. Production still must publish
+conflict artifacts and durable recovery metadata, connect watcher/periodic/final timing
+to VM stop/cleanup, and implement retained-stage user export and SMB lifecycle. Until
+that integration and its Windows evidence exist, the service continues to advertise no
+mount capability.
 
 Conflict names are exactly
 `<filename>.lsb-conflict-<128-bit-lowercase-hex-session-id>-<decimal-sequence>` and must
