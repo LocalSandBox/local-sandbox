@@ -1,0 +1,26 @@
+scripts/windows-test-runtime-assets.ps1
+  s_d92cdce887f5bb::t_796e99667be862 4,211-218
+  s_d92cdce887f5bb::t_977735145d989d 42-59,85,152,219
+xtask/src/kernel.rs
+  s_d92cdce887f5bb::t_977735145d989d 19,29,127-136,156-161
+scripts/windows-test-suites/service-acceptance.mjs
+  s_d92cdce887f5bb::t_cd0df2a203c340 237
+scripts/windows-test-service-harness.ps1
+  s_d92cdce887f5bb::t_cd0df2a203c340 482-485,488
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "2d631e7525c95af17e3259b5a2237a8ee49a034a",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
