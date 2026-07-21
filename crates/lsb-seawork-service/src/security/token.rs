@@ -155,7 +155,7 @@ fn open_thread_token() -> Result<OwnedHandle> {
 
 fn open_process_token(process: HANDLE) -> Result<OwnedHandle> {
     let mut token = ptr::null_mut();
-    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY | TOKEN_DUPLICATE, &mut token) } == 0 {
         bail!(
             "OpenProcessToken failed: {}",
             std::io::Error::last_os_error()
@@ -229,6 +229,25 @@ fn snapshot(token: &OwnedHandle) -> Result<TokenSnapshot> {
 }
 
 fn is_administrator(token: HANDLE) -> Result<bool> {
+    let mut membership_token = ptr::null_mut();
+    if unsafe {
+        DuplicateTokenEx(
+            token,
+            TOKEN_QUERY,
+            ptr::null(),
+            SecurityImpersonation,
+            TokenImpersonation,
+            &mut membership_token,
+        )
+    } == 0
+    {
+        bail!(
+            "DuplicateTokenEx for membership check failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    let membership_token = owned(membership_token);
+
     let authority = SECURITY_NT_AUTHORITY;
     let mut administrators: PSID = ptr::null_mut();
     if unsafe {
@@ -254,7 +273,8 @@ fn is_administrator(token: HANDLE) -> Result<bool> {
     }
 
     let mut member = 0;
-    let checked = unsafe { CheckTokenMembership(token, administrators, &mut member) };
+    let checked =
+        unsafe { CheckTokenMembership(raw(&membership_token), administrators, &mut member) };
     unsafe { FreeSid(administrators) };
     if checked == 0 {
         bail!(
@@ -336,10 +356,33 @@ fn owned(handle: HANDLE) -> OwnedHandle {
 
 #[cfg(test)]
 mod tests {
+    use std::ptr;
+
+    use windows_sys::Win32::Security::{TOKEN_DUPLICATE, TOKEN_QUERY};
     use windows_sys::Win32::System::SystemServices::SECURITY_MANDATORY_MEDIUM_RID;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    use super::{is_administrator, owned, raw};
 
     #[test]
     fn medium_integrity_constant_matches_policy() {
         assert_eq!(SECURITY_MANDATORY_MEDIUM_RID, 0x2000);
+    }
+
+    #[test]
+    fn administrator_check_accepts_a_primary_process_token() {
+        let mut token = ptr::null_mut();
+        assert_ne!(
+            unsafe {
+                OpenProcessToken(
+                    GetCurrentProcess(),
+                    TOKEN_QUERY | TOKEN_DUPLICATE,
+                    &mut token,
+                )
+            },
+            0
+        );
+        let token = owned(token);
+        assert!(is_administrator(raw(&token)).is_ok());
     }
 }
