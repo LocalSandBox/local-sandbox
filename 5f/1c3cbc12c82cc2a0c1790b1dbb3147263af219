@@ -1,0 +1,53 @@
+bindings/nodejs/npm/darwin-x64/package.json
+  s_d92cdce887f5bb::t_fb3ad8a1649333 3
+bindings/nodejs/npm/darwin-arm64/package.json
+  s_d92cdce887f5bb::t_fb3ad8a1649333 3
+crates/lsb-platform/Cargo.toml
+  s_d92cdce887f5bb::t_fb3ad8a1649333 3,14
+crates/lsb-proxy/Cargo.toml
+  s_d92cdce887f5bb::t_fb3ad8a1649333 3
+crates/lsb-vm/Cargo.toml
+  s_d92cdce887f5bb::t_fb3ad8a1649333 3,11-12
+bindings/nodejs/Cargo.toml
+  s_d92cdce887f5bb::t_fb3ad8a1649333 5
+crates/lsb-cli/Cargo.toml
+  s_d92cdce887f5bb::t_fb3ad8a1649333 3
+crates/lsb-service-proto/Cargo.toml
+  s_d92cdce887f5bb::t_fb3ad8a1649333 3
+crates/lsb-service-spike/Cargo.toml
+  s_d92cdce887f5bb::t_fb3ad8a1649333 3
+crates/lsb-sdk/Cargo.toml
+  s_d92cdce887f5bb::t_fb3ad8a1649333 3,10-14
+bindings/nodejs/npm/win32-x64-msvc/package.json
+  s_d92cdce887f5bb::t_fb3ad8a1649333 3
+crates/lsb-seawork-service/Cargo.toml
+  s_d92cdce887f5bb::t_fb3ad8a1649333 3
+bindings/nodejs/package.json
+  s_d92cdce887f5bb::t_fb3ad8a1649333 3
+crates/lsb-proto/Cargo.toml
+  s_d92cdce887f5bb::t_fb3ad8a1649333 3
+crates/lsb-guest/Cargo.toml
+  s_d92cdce887f5bb::t_fb3ad8a1649333 3
+crates/lsb-store/Cargo.toml
+  s_d92cdce887f5bb::t_fb3ad8a1649333 3,13
+crates/lsb-service-client/Cargo.toml
+  s_d92cdce887f5bb::t_fb3ad8a1649333 3
+Cargo.lock
+  s_d92cdce887f5bb::t_eec1352d1a399c 936,959,969,989,998,1021,1040,1060,1074,1083,1096,1111
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "5f1c3cbc12c82cc2a0c1790b1dbb3147263af219",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
