@@ -78,7 +78,7 @@ pub const SPEC: PlatformSpec = PlatformSpec {
 };
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-use std::os::fd::AsRawFd;
+use std::os::fd::AsFd;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::sync::Arc;
@@ -127,14 +127,13 @@ pub fn create_vm(config: PlatformVmConfig) -> Result<Arc<dyn PlatformVm>> {
     let vm_config =
         VirtualMachineConfiguration::new(&boot_loader, config.cpus, config.memory_bytes);
 
-    let dev_null;
     let serial_attachment = if config.console {
-        FileHandleSerialAttachment::new(std::io::stdin().as_raw_fd(), std::io::stdout().as_raw_fd())
+        FileHandleSerialAttachment::try_new(std::io::stdin().as_fd(), std::io::stdout().as_fd())?
     } else if config.verbose {
-        FileHandleSerialAttachment::new_write_only(std::io::stderr().as_raw_fd())
+        FileHandleSerialAttachment::try_new_write_only(std::io::stderr().as_fd())?
     } else {
-        dev_null = std::fs::File::open("/dev/null")?;
-        FileHandleSerialAttachment::new_write_only(dev_null.as_raw_fd())
+        let dev_null = std::fs::File::open("/dev/null")?;
+        FileHandleSerialAttachment::try_new_write_only(dev_null.as_fd())?
     };
     let serial = VirtioConsoleSerialPort::new_with_attachment(&serial_attachment);
     vm_config.set_serial_ports(&[serial]);

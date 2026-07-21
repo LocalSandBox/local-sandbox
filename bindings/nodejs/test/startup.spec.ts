@@ -1,10 +1,10 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import test from 'ava'
 
-import { isSupportedRuntimePlatform, useBuiltEntrypoint } from './helpers'
+import { getRuntimeReadiness, isSupportedRuntimePlatform, useBuiltEntrypoint } from './helpers'
 
 test('exports the documented runtime methods from the built entrypoint', (t) => {
   const entrypoint = useBuiltEntrypoint(t)
@@ -51,3 +51,55 @@ test('supported builds reject mount host paths that do not exist before boot', a
   t.truthy(error)
   t.regex(error?.message ?? '', /host path does not exist/i)
 })
+
+test.serial(
+  'macOS serial output cannot be redirected into a reused host file descriptor',
+  async (t) => {
+    const entrypoint = useBuiltEntrypoint(t)
+    if (!entrypoint) {
+      return
+    }
+
+    if (process.platform !== 'darwin') {
+      t.pass()
+      return
+    }
+
+    const readiness = getRuntimeReadiness()
+    if (!readiness.ok) {
+      t.log(readiness.message)
+      t.pass()
+      return
+    }
+
+    const testDir = mkdtempSync(join(tmpdir(), 'lsb-nodejs-serial-fd-'))
+    const sentinelPath = join(testDir, 'sentinel')
+    const sentinelContents = `sentinel-${process.pid}-${Date.now()}`
+    writeFileSync(sentinelPath, sentinelContents)
+
+    const { Sandbox } = entrypoint
+    let sandbox: Awaited<ReturnType<typeof Sandbox.start>> | undefined
+    let sentinelFd: number | undefined
+
+    try {
+      sandbox = await Sandbox.start({ dataDir: readiness.dataDir })
+
+      // Open only after start() so this descriptor can reuse the number formerly
+      // occupied by create_vm()'s local /dev/null File in the buggy implementation.
+      sentinelFd = openSync(sentinelPath, 'r+')
+      const result = await sandbox.exec(`printf '%s' 'lsb-nodejs-serial-probe' > /dev/hvc0`)
+      t.is(result.exitCode, 0)
+
+      await sandbox.stop()
+      sandbox = undefined
+
+      t.is(readFileSync(sentinelPath, 'utf8'), sentinelContents)
+    } finally {
+      if (sentinelFd !== undefined) {
+        closeSync(sentinelFd)
+      }
+      await sandbox?.stop()
+      rmSync(testDir, { recursive: true, force: true })
+    }
+  },
+)
