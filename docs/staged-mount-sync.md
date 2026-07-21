@@ -77,10 +77,22 @@ a bounded relative source; before impersonation, it opens every source component
 handle-relatively without delete sharing and requires a regular non-reparse final file.
 Thus neither side of the export worker boundary accepts a naked path. Standard-token
 tests prove the staging directory stays pinned, its retained and ledger identities
-match, and traversal, absolute, ADS, or empty protected-source names fail closed. The
-ordered controller still lacks capability-bound snapshot/operation execution, conflict
-publication, VM lifecycle wiring, and retained-stage teardown, so mount activation
-remains unavailable.
+match, and traversal, absolute, ADS, or empty protected-source names fail closed.
+
+Fresh reconciliation snapshots now start from duplicated `AuthorizedMountRoot` and
+`ProtectedStagingRoot` handles. Directory names are obtained with
+`GetFileInformationByHandleEx(FileIdBothDirectoryRestartInfo/FileIdBothDirectoryInfo)`
+on the exact directory handle; every returned component is validated and reopened with
+`NtCreateFile` relative to that handle, without delete sharing and without following
+reparse points. Host traversal runs under the retained caller token and repeats an
+explicit DACL `AccessCheck`; protected-stage traversal remains under the service token.
+Both modes reject unsafe attributes, multi-link or repeated identities, bound paths,
+entries, and bytes, hash only held file handles, and re-query identity, size, and
+last-write time after each read. Initial staging also derives its controller baseline
+from the newly pinned protected root. A standard-token regression mutates, removes, and
+adds nested entries and proves fresh host and protected snapshots agree. Capability-bound
+operation execution, conflict publication, VM lifecycle wiring, and retained-stage
+teardown remain unavailable.
 
 ## Reconciliation
 
@@ -107,10 +119,11 @@ received during an in-flight cycle retains a newer dirty generation.
 In particular, a final cycle with such a hint remains `Finalizing` and must catch up
 within the original deadline rather than reporting successful teardown.
 
-This controller does not activate mounts or perform privileged I/O. Production still
-must obtain fresh host and protected-stage snapshots, execute each import/export through
-the pinned capabilities, publish conflict artifacts and durable recovery metadata, and
-bind the controller to VM stop/cleanup. Until that integration and its Windows evidence
+This controller does not activate mounts or perform privileged I/O. The path worker can
+now obtain fresh host and protected-stage snapshots through pinned capabilities, but the
+controller still must request those snapshots for each cycle, execute each import/export
+through pinned capabilities, publish conflict artifacts and durable recovery metadata,
+and bind the cycle to VM stop/cleanup. Until that integration and its Windows evidence
 exist, the service continues to advertise no mount capability.
 
 Conflict names are exactly

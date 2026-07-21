@@ -3,6 +3,7 @@ mod identity;
 mod policy;
 mod profiles;
 pub(crate) mod relative;
+mod snapshot;
 mod walk;
 mod worker;
 

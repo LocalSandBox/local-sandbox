@@ -240,7 +240,7 @@ fn inspect_tree(
     })
 }
 
-fn require_access_check(
+pub(super) fn require_access_check(
     token: &OwnedHandle,
     handle: &OwnedHandle,
     desired_access: u32,
@@ -456,7 +456,7 @@ struct CopyBounds {
     file_bytes: u64,
 }
 
-fn file_version(info: &BY_HANDLE_FILE_INFORMATION) -> (u32, u64, u64, u64) {
+pub(super) fn file_version(info: &BY_HANDLE_FILE_INFORMATION) -> (u32, u64, u64, u64) {
     (
         info.dwVolumeSerialNumber,
         ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
@@ -546,7 +546,7 @@ fn require_directory(info: &BY_HANDLE_FILE_INFORMATION, path: &Path) -> Result<(
     Ok(())
 }
 
-fn reject_attributes(attributes: u32, path: &Path) -> Result<()> {
+pub(super) fn reject_attributes(attributes: u32, path: &Path) -> Result<()> {
     let denied = FILE_ATTRIBUTE_REPARSE_POINT
         | FILE_ATTRIBUTE_ENCRYPTED
         | FILE_ATTRIBUTE_OFFLINE

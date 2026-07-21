@@ -48,8 +48,9 @@ impl StagedMount {
             file_id: "pending".to_string(),
             committed: false,
         })?;
-        let baseline = worker.stage_snapshot(authorized, staging_root.clone())?;
+        worker.stage_snapshot(authorized, staging_root.clone())?;
         let protected_root = ProtectedStagingRoot::open(&staging_root)?;
+        let baseline = worker.snapshot_protected(&protected_root)?;
         transaction.replace_and_commit(
             staging_intent,
             ResourceRecord::StagingRoot {

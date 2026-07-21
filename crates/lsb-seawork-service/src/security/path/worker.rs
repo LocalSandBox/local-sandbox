@@ -26,6 +26,14 @@ enum Command {
         destination: PathBuf,
         reply: mpsc::SyncSender<Result<TreeSnapshot>>,
     },
+    SnapshotHost {
+        root_pin: OwnedHandle,
+        reply: mpsc::SyncSender<Result<TreeSnapshot>>,
+    },
+    SnapshotProtected {
+        root_pin: OwnedHandle,
+        reply: mpsc::SyncSender<Result<TreeSnapshot>>,
+    },
     ExportFile {
         root_pin: OwnedHandle,
         staging_root_pin: OwnedHandle,
@@ -115,6 +123,28 @@ impl PathWorker {
             .context("filesystem worker stopped")?;
         response.recv().context("filesystem worker lost reply")?
     }
+
+    pub fn snapshot_host(&self, authorized: &AuthorizedMountRoot) -> Result<TreeSnapshot> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.commands
+            .send(Command::SnapshotHost {
+                root_pin: authorized.duplicate_root_handle()?,
+                reply,
+            })
+            .context("filesystem worker stopped")?;
+        response.recv().context("filesystem worker lost reply")?
+    }
+
+    pub fn snapshot_protected(&self, protected: &ProtectedStagingRoot) -> Result<TreeSnapshot> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.commands
+            .send(Command::SnapshotProtected {
+                root_pin: protected.duplicate_root_handle()?,
+                reply,
+            })
+            .context("filesystem worker stopped")?;
+        response.recv().context("filesystem worker lost reply")?
+    }
 }
 
 impl Drop for PathWorker {
@@ -158,6 +188,14 @@ fn run(token: OwnedHandle, policy: MountPolicy, commands: mpsc::Receiver<Command
                 );
                 let _ = reply.send(result);
             }
+            Command::SnapshotHost { root_pin, reply } => {
+                let result = snapshot_host_once(&token, root_pin);
+                let _ = reply.send(result);
+            }
+            Command::SnapshotProtected { root_pin, reply } => {
+                let result = super::snapshot::protected_tree(root_pin);
+                let _ = reply.send(result);
+            }
             Command::ExportFile {
                 root_pin,
                 staging_root_pin,
@@ -179,6 +217,13 @@ fn run(token: OwnedHandle, policy: MountPolicy, commands: mpsc::Receiver<Command
             Command::Stop => return,
         }
     }
+}
+
+fn snapshot_host_once(token: &OwnedHandle, root_pin: OwnedHandle) -> Result<TreeSnapshot> {
+    let guard = ImpersonationGuard::for_token(token)?;
+    let result = super::snapshot::host_tree(token, root_pin);
+    guard.revert().context("revert filesystem worker token")?;
+    result
 }
 
 fn export_once(
