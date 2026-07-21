@@ -18,6 +18,7 @@ Set-StrictMode -Version Latest
 $serviceName = 'LocalSandboxSeaWork'
 $owner = 'local-sandbox-agent-install-smoke'
 $installStatePath = Join-Path $RunRoot 'installed-service-state.json'
+$clientHarnessSddl = 'O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)'
 
 function Invoke-Native {
     param([string] $Executable, [string[]] $Arguments, [string] $Label)
@@ -64,9 +65,19 @@ function Assert-OwnerMarker {
     }
 }
 
+function Assert-Sddl {
+    param([string] $Sddl, [string] $Label)
+    try {
+        return [Security.AccessControl.RawSecurityDescriptor]::new($Sddl)
+    }
+    catch {
+        throw "$Label SDDL is invalid: $($_.Exception.Message)"
+    }
+}
+
 function Set-Sddl {
     param([string] $Path, [string] $Sddl)
-    $raw = [Security.AccessControl.RawSecurityDescriptor]::new($Sddl)
+    $raw = Assert-Sddl $Sddl "ACL for $Path"
     $bytes = [byte[]]::new($raw.BinaryLength)
     $raw.GetBinaryForm($bytes, 0)
     $acl = [Security.AccessControl.DirectorySecurity]::new()
@@ -188,6 +199,7 @@ function Invoke-ClientSmoke {
 }
 
 function Install-And-Smoke {
+    Assert-Sddl $clientHarnessSddl 'test client harness ACL' | Out-Null
     if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
         throw 'Refusing to touch an existing LocalSandboxSeaWork service.'
     }
@@ -223,12 +235,23 @@ function Install-And-Smoke {
 
     $versionRoot = Join-Path $installRoot "versions\$version"
     $bundle = Join-Path $RunRoot "release-work\out\lsb-seawork-service-v$version-windows-x86_64-stage\LocalSandbox"
+    $serviceBinary = Join-Path $versionRoot 'bin\localsandbox-seawork-service.exe'
+    $eventKey = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\$serviceName"
+    $userName = "LsbTr$($SnapshotSha.Substring(0, 8))"
+    $runId = Split-Path -Leaf ([IO.Path]::GetFullPath($RunRoot).TrimEnd('\'))
+    [ordered]@{
+        schema_version = 1; owner = $owner; snapshot_sha = $SnapshotSha; run_id = $runId
+        version = $version; service_binary = $serviceBinary; install_root = $installRoot
+        install_marker = $installMarker; state_root = $stateRoot; event_key = $eventKey
+        client_harness_root = $clientHarness; client_harness_base = $clientHarnessBase
+        client_data_root = $clientDataRoot; test_user_name = $userName; test_user_sid = $null
+    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $installStatePath -Encoding utf8NoBOM
+
     Assert-PlainDirectory $bundle 'signed staged bundle' | Out-Null
     New-Item -ItemType Directory -Path $versionRoot | Out-Null
     foreach ($entry in Get-ChildItem -LiteralPath $bundle -Force) {
         Copy-Item -LiteralPath $entry.FullName -Destination $versionRoot -Recurse
     }
-    $serviceBinary = Join-Path $versionRoot 'bin\localsandbox-seawork-service.exe'
     Invoke-Native $serviceBinary @('--verify-bundle', '--json') 'copied installed-layout verification'
 
     $priorPublisher = $env:SEAWORK_PUBLISHER_SHA256
@@ -245,7 +268,7 @@ function Install-And-Smoke {
     Copy-Item -LiteralPath 'bindings\nodejs\index.js' -Destination $clientHarness
     Copy-Item -LiteralPath 'bindings\nodejs\lsb-nodejs.win32-x64-msvc.node' -Destination $clientHarness
     Copy-Item -LiteralPath 'scripts\windows-test-suites\service-acceptance.mjs' -Destination $clientHarness
-    Set-Sddl $clientHarnessBase 'O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;RX;;;BU)'
+    Set-Sddl $clientHarnessBase $clientHarnessSddl
     Invoke-Native 'scripts\sign-seawork-service.ps1' @(
         '-Mode', 'SignTestNode', '-ClientBinary', (Join-Path $clientHarness 'node.exe'),
         '-PfxPath', $env:SEAWORK_WINDOWS_PFX_PATH,
@@ -276,28 +299,22 @@ function Install-And-Smoke {
         egress_allow = @(); upstream_proxy = $null; ports_enabled = $false
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $stateRoot 'config\service.json') -Encoding utf8NoBOM
     Set-Sddl $stateRoot ("O:SYG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{0})" -f $serviceSid)
-    $eventKey = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\$serviceName"
     if (Test-Path -LiteralPath $eventKey) { throw 'Refusing to adopt an existing Event Log source.' }
     New-Item -Path $eventKey | Out-Null
+    New-ItemProperty -Path $eventKey -Name LocalSandboxAgentOwner -Value $owner -PropertyType String | Out-Null
     New-ItemProperty -Path $eventKey -Name EventMessageFile -Value $serviceBinary -PropertyType ExpandString | Out-Null
     New-ItemProperty -Path $eventKey -Name TypesSupported -Value 7 -PropertyType DWord | Out-Null
-    New-ItemProperty -Path $eventKey -Name LocalSandboxAgentOwner -Value $owner -PropertyType String | Out-Null
 
-    $userName = "LsbTr$($SnapshotSha.Substring(0, 8))"
     if (Get-LocalUser -Name $userName -ErrorAction SilentlyContinue) { throw 'The test standard user already exists.' }
     $random = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(24)) + 'aA1!'
     $secure = ConvertTo-SecureString $random -AsPlainText -Force
     $user = New-LocalUser -Name $userName -Password $secure -AccountNeverExpires -PasswordNeverExpires -UserMayNotChangePassword -Description "$owner $SnapshotSha"
     $random = $null; $secure = $null
     Set-Sddl $clientDataRoot ("O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{0})" -f $user.SID.Value)
-    $runId = Split-Path -Leaf ([IO.Path]::GetFullPath($RunRoot).TrimEnd('\'))
-    [ordered]@{
-        schema_version = 1; owner = $owner; snapshot_sha = $SnapshotSha; run_id = $runId
-        version = $version; service_binary = $serviceBinary; install_root = $installRoot
-        install_marker = $installMarker; state_root = $stateRoot; event_key = $eventKey
-        client_harness_root = $clientHarness; client_harness_base = $clientHarnessBase
-        client_data_root = $clientDataRoot; test_user_name = $userName; test_user_sid = $user.SID.Value
-    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $installStatePath -Encoding utf8NoBOM
+    $installState = Read-InstallState
+    $installState.test_user_sid = $user.SID.Value
+    $installState | ConvertTo-Json -Depth 6 |
+        Set-Content -LiteralPath $installStatePath -Encoding utf8NoBOM
 
     Invoke-Native sc.exe @('start', $serviceName) 'service start'
     Wait-ServiceState 'Running' 120
