@@ -56,12 +56,34 @@ pub fn inspect_startup(paths: &ServicePaths) -> StartupRecovery {
     if transaction.transaction.phase == TransactionPhase::Quarantined {
         return StartupRecovery::Quarantined;
     }
-    if transaction.transaction.phase.is_terminal() {
-        return StartupRecovery::None;
-    }
     let Ok(current) = std::env::current_exe() else {
         return StartupRecovery::Quarantined;
     };
+    if transaction.transaction.phase.is_terminal() {
+        let committed = load_json::<CommittedStateEnvelope>(&paths.updates.committed)
+            .ok()
+            .filter(|state| state.validate().is_ok());
+        let coherent = match transaction.transaction.phase {
+            TransactionPhase::TargetCommitted => {
+                current == Path::new(&transaction.transaction.target_image_path)
+                    && committed.as_ref().is_some_and(|state| {
+                        state.committed.current == transaction.transaction.target_bundle_identity
+                    })
+            }
+            TransactionPhase::RollbackComplete => {
+                current == Path::new(&transaction.transaction.old_image_path)
+                    && committed.as_ref().is_some_and(|state| {
+                        state.committed.current == transaction.transaction.old_bundle_identity
+                    })
+            }
+            _ => false,
+        };
+        return if coherent {
+            StartupRecovery::None
+        } else {
+            StartupRecovery::Quarantined
+        };
+    }
     if current == Path::new(&transaction.transaction.target_image_path) {
         StartupRecovery::TargetService {
             update_id: transaction.transaction.update_id,
@@ -222,7 +244,21 @@ impl Coordinator {
         let first_delay = machine_jitter(Duration::from_secs(5 * 60), 10 * 60)
             .unwrap_or(Duration::from_secs(10 * 60));
         let mut next = SystemTime::now() + first_delay;
+        let mut recovering = false;
         while !self.stop.load(Ordering::Acquire) {
+            if self.transaction_recovery_pending() {
+                recovering = true;
+                if SystemTime::now() >= next {
+                    let _ = start_recovery_helper();
+                    next = SystemTime::now() + Duration::from_secs(5 * 60);
+                }
+                std::thread::sleep(Duration::from_secs(1));
+                continue;
+            }
+            if recovering {
+                recovering = false;
+                next = SystemTime::now() + first_delay;
+            }
             let manual = self.trigger.swap(false, Ordering::AcqRel);
             if manual || SystemTime::now() >= next {
                 let result = self.check_once();
@@ -249,6 +285,13 @@ impl Coordinator {
         }
     }
 
+    fn transaction_recovery_pending(&self) -> bool {
+        match load_json::<TransactionEnvelope>(&self.paths.updates.current_transaction) {
+            Ok(transaction) => transaction.validate().is_ok(),
+            Err(error) => !is_not_found(&error),
+        }
+    }
+
     fn check_once(&mut self) -> Result<()> {
         if self.stop.load(Ordering::Acquire) {
             bail!("service shutdown cancelled update check");
@@ -259,33 +302,32 @@ impl Coordinator {
         committed.validate()?;
         self.context
             .set_committed_identity(committed.committed.current.clone());
-        let pages = self.http.release_pages(self.current_etag().as_deref())?;
-        if pages.not_modified {
-            self.record_success(UpdatePhase::UpdateNoCandidate, None, pages.etag)?;
-            return Ok(());
-        }
-        let mut selector = ReleaseSelector::new();
-        for page in pages.pages {
-            selector.push_page(&page)?;
-        }
-        let candidate = selector.select(
-            self.channel,
-            &committed.committed.current.version,
-            &committed.committed.highest_committed_version,
-        )?;
+        let ReleasePages {
+            pages,
+            etag,
+            not_modified,
+        } = self.http.release_pages(self.current_etag().as_deref())?;
+        let candidate = if not_modified {
+            self.cached_candidate(&committed)?
+        } else {
+            let mut selector = ReleaseSelector::new();
+            for page in pages {
+                selector.push_page(&page)?;
+            }
+            selector.select(
+                self.channel,
+                &committed.committed.current.version,
+                &committed.committed.highest_committed_version,
+            )?
+        };
         let Some(candidate) = candidate else {
-            self.record_success(UpdatePhase::UpdateNoCandidate, None, pages.etag)?;
+            self.record_success(UpdatePhase::UpdateNoCandidate, None, etag)?;
             return Ok(());
         };
         if let Some((retry_after_utc, permanently_suppressed)) =
             self.failed_target_suppression(&candidate)?
         {
-            self.record_suppressed(
-                candidate,
-                retry_after_utc,
-                permanently_suppressed,
-                pages.etag,
-            )?;
+            self.record_suppressed(candidate, retry_after_utc, permanently_suppressed, etag)?;
             return Ok(());
         }
         self.set_phase(UpdatePhase::UpdateDownloading, Some(candidate.clone()))?;
@@ -380,11 +422,7 @@ impl Coordinator {
             }
             return Err(error);
         }
-        self.record_success(
-            UpdatePhase::UpdateActivationPending,
-            Some(candidate),
-            pages.etag,
-        )
+        self.record_success(UpdatePhase::UpdateActivationPending, Some(candidate), etag)
     }
 
     fn current_etag(&self) -> Option<String> {
@@ -392,6 +430,32 @@ impl Coordinator {
             .lock()
             .ok()
             .and_then(|status| status.etag.clone())
+    }
+
+    fn cached_candidate(
+        &self,
+        committed: &CommittedStateEnvelope,
+    ) -> Result<Option<ReleaseCandidate>> {
+        let candidate = self
+            .status
+            .lock()
+            .map_err(|_| anyhow::anyhow!("coordinator status poisoned"))?
+            .selected
+            .clone();
+        let Some(candidate) = candidate else {
+            return Ok(None);
+        };
+        candidate.validate()?;
+        let candidate_version = semver::Version::parse(&candidate.version)?;
+        let baseline = semver::Version::parse(&committed.committed.current.version)?.max(
+            semver::Version::parse(&committed.committed.highest_committed_version)?,
+        );
+        if candidate_version <= baseline
+            || (self.channel == ReleaseChannel::Stable && candidate.prerelease)
+        {
+            return Ok(None);
+        }
+        Ok(Some(candidate))
     }
 
     fn set_phase(&self, phase: UpdatePhase, selected: Option<ReleaseCandidate>) -> Result<()> {
@@ -454,7 +518,12 @@ impl Coordinator {
         status.retry.attempt_count = status.retry.attempt_count.saturating_add(1).min(10);
         status.retry.retry_after_utc = error
             .downcast_ref::<RateLimited>()
-            .and_then(|failure| failure.retry_after_utc.clone());
+            .and_then(|failure| failure.retry_after_utc.clone())
+            .or_else(|| {
+                error
+                    .downcast_ref::<HttpStatusFailure>()
+                    .and_then(|failure| failure.retry_after_utc.clone())
+            });
         let _ = write_json_atomic(&self.paths.updates.status, &*status);
         self.context.observe_update(
             status.phase,
@@ -553,6 +622,24 @@ impl std::fmt::Display for RateLimited {
 
 impl std::error::Error for RateLimited {}
 
+#[derive(Debug)]
+struct HttpStatusFailure {
+    status: u16,
+    retry_after_utc: Option<String>,
+}
+
+impl std::fmt::Display for HttpStatusFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "GitHub update endpoint returned HTTP {}",
+            self.status
+        )
+    }
+}
+
+impl std::error::Error for HttpStatusFailure {}
+
 struct ReleasePages {
     pages: Vec<Vec<u8>>,
     etag: Option<String>,
@@ -613,7 +700,11 @@ impl GithubHttp {
                 .into());
             }
             if status != 200 {
-                bail!("GitHub releases API returned HTTP {status}");
+                return Err(HttpStatusFailure {
+                    status,
+                    retry_after_utc: retry_after_utc(&response),
+                }
+                .into());
             }
             if page == 1 {
                 observed_etag = header(&response, "etag");
@@ -631,6 +722,9 @@ impl GithubHttp {
             if count < 50 {
                 break;
             }
+            if page == 10 {
+                bail!("GitHub release pagination exceeds the compiled limit");
+            }
         }
         Ok(ReleasePages {
             pages,
@@ -646,17 +740,22 @@ impl GithubHttp {
         stop: &AtomicBool,
     ) -> Result<PathBuf> {
         let final_path = downloads.join(format!("{}.zip", candidate.archive_sha256));
-        if final_path.exists() {
-            if fs::metadata(&final_path)?.len() == candidate.asset_size
-                && sha256_file(&final_path)? == candidate.archive_sha256
-            {
-                return Ok(final_path);
+        match fs::symlink_metadata(&final_path) {
+            Ok(metadata) if regular_non_reparse(&metadata) => {
+                if metadata.len() == candidate.asset_size
+                    && sha256_file(&final_path)? == candidate.archive_sha256
+                {
+                    return Ok(final_path);
+                }
+                bail!("digest-addressed archive cache contains contradictory bytes");
             }
-            bail!("digest-addressed archive cache contains contradictory bytes");
+            Ok(_) => bail!("digest-addressed archive cache path is ambiguous"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
         let partial = downloads.join(format!("{}.partial", candidate.archive_sha256));
         match fs::symlink_metadata(&partial) {
-            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            Ok(metadata) if regular_non_reparse(&metadata) => {
                 fs::remove_file(&partial)?;
             }
             Ok(_) => bail!("download partial path is ambiguous"),
@@ -686,7 +785,11 @@ impl GithubHttp {
                     }
                     .into());
                 }
-                bail!("GitHub release asset returned HTTP {status}");
+                return Err(HttpStatusFailure {
+                    status,
+                    retry_after_utc: retry_after_utc(&result),
+                }
+                .into());
             }
             response = Some(result);
             break;
@@ -820,7 +923,14 @@ fn start_helper() -> Result<()> {
         ServiceAccess::QUERY_STATUS | ServiceAccess::START,
     )?;
     if service.query_status()?.current_state == ServiceState::Stopped {
-        service.start::<&std::ffi::OsStr>(&[])?;
+        if let Err(error) = service.start::<&std::ffi::OsStr>(&[]) {
+            if service
+                .query_status()
+                .is_ok_and(|status| status.current_state == ServiceState::Stopped)
+            {
+                return Err(error.into());
+            }
+        }
     }
     Ok(())
 }
@@ -914,6 +1024,14 @@ fn sha256_file(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+fn regular_non_reparse(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    metadata.is_file()
+        && !metadata.file_type().is_symlink()
+        && metadata.file_attributes() & 0x400 == 0
+}
+
 fn remove_owned_staging(root: &Path, transaction_id: &str) -> Result<()> {
     use std::os::windows::fs::MetadataExt;
 
@@ -948,11 +1066,20 @@ fn classify_error(error: &anyhow::Error) -> UpdateCheckCategory {
     if error.downcast_ref::<RateLimited>().is_some() {
         return UpdateCheckCategory::RateLimited;
     }
+    if error.downcast_ref::<HttpStatusFailure>().is_some() {
+        return UpdateCheckCategory::Http;
+    }
     let text = format!("{error:#}").to_ascii_lowercase();
     if text.contains("tls") || text.contains("certificate") {
         UpdateCheckCategory::Tls
     } else if text.contains("http") || text.contains("github") {
         UpdateCheckCategory::Http
+    } else if text.contains("network")
+        || text.contains("connect")
+        || text.contains("dns")
+        || text.contains("transport")
+    {
+        UpdateCheckCategory::Network
     } else if text.contains("download") || text.contains("asset") {
         UpdateCheckCategory::Download
     } else if text.contains("bundle")
@@ -961,6 +1088,15 @@ fn classify_error(error: &anyhow::Error) -> UpdateCheckCategory {
         || text.contains("publisher")
     {
         UpdateCheckCategory::Verification
+    } else if text.contains("release")
+        || text.contains("semver")
+        || text.contains("json")
+        || text.contains("immutable")
+        || text.contains("metadata")
+    {
+        UpdateCheckCategory::MetadataInvalid
+    } else if text.contains("helper protocol") || text.contains("updater scm configuration") {
+        UpdateCheckCategory::HelperTooOld
     } else {
         UpdateCheckCategory::Internal
     }
