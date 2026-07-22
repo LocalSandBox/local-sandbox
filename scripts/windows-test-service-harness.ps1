@@ -414,6 +414,27 @@ function Wait-OwnedProcessExit {
     throw "Owned service process $ProcessId did not exit within $Seconds seconds."
 }
 
+function Stop-OwnedService {
+    param([int] $Seconds)
+    $deadline = [datetime]::UtcNow.AddSeconds($Seconds)
+    while ([datetime]::UtcNow -lt $deadline) {
+        $status = (Get-Service -Name $serviceName).Status
+        if ($status -eq 'Stopped') { return }
+        if ($status -eq 'Running') {
+            try { Stop-Service -Name $serviceName -ErrorAction Stop }
+            catch {
+                # SCM recovery can race a stop request after an unexpected exit.
+                # Re-read the bounded state until it is running or stopped.
+            }
+        }
+        elseif ($status -notin @('StartPending', 'StopPending')) {
+            throw "Owned service entered unsupported state '$status' during removal."
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    throw "Owned service did not stop within $Seconds seconds."
+}
+
 function Read-InstallState {
     if (-not (Test-Path -LiteralPath $installStatePath -PathType Leaf)) {
         throw 'The run has no installed service ownership state.'
@@ -744,8 +765,7 @@ function Uninstall-Owned {
         }
         $serviceProcessId = [uint32]$service.ProcessId
         if ((Get-Service -Name $serviceName).Status -ne 'Stopped') {
-            Stop-Service -Name $serviceName
-            Wait-ServiceState 'Stopped' 60
+            Stop-OwnedService 120
         }
         Wait-OwnedProcessExit $serviceProcessId ([string]$state.service_binary) 60
         Invoke-Native sc.exe @('delete', $serviceName) 'service deletion'

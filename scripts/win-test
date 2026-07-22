@@ -295,7 +295,7 @@ wait_for_interactive_user() {
     printf 'Waiting for the standard-user console session required by the filtered-token proof...\n'
     while (( $(date +%s) < deadline )); do
         observed="$(ssh_windows pwsh -NoProfile -NonInteractive -Command \
-            '(Get-CimInstance Win32_ComputerSystem).UserName' 2>/dev/null || true)"
+            '"(Get-CimInstance Win32_ComputerSystem).UserName"' 2>/dev/null || true)"
         observed="${observed//$'\r'/}"
         observed="${observed//$'\n'/}"
         if [[ -n "$observed" ]]; then

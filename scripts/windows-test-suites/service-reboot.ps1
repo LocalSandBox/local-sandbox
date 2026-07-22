@@ -27,7 +27,28 @@ if ($Phase -eq 'BeforeReboot') {
             -SnapshotSha $SnapshotSha `
             -SourceRunId $ReuseRunId
     }
-    & $harness -Mode InstallAndSmoke -RunRoot $RunRoot -SnapshotSha $SnapshotSha
+    try {
+        & $harness -Mode InstallAndSmoke -RunRoot $RunRoot -SnapshotSha $SnapshotSha
+    }
+    catch {
+        $installError = $_
+        if (Test-Path -LiteralPath (Join-Path $RunRoot 'installed-service-state.json')) {
+            try {
+                & $harness -Mode Uninstall -RunRoot $RunRoot -SnapshotSha $SnapshotSha
+                [ordered]@{
+                    schema_version = 1
+                    status = 'passed'
+                    owned_resources_removed = $true
+                    after_failed_pre_reboot = $true
+                } | ConvertTo-Json | Set-Content -LiteralPath `
+                    (Join-Path $RunRoot 'evidence-uninstall.json') -Encoding utf8NoBOM
+            }
+            catch {
+                throw "Pre-reboot validation failed: $installError; owned cleanup also failed: $_"
+            }
+        }
+        throw $installError
+    }
     exit 0
 }
 
