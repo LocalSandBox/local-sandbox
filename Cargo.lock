@@ -1079,6 +1079,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "lsb-seawork-updater"
+version = "0.5.0-rc.1"
+dependencies = [
+ "anyhow",
+ "lsb-seawork-update",
+ "lsb-service-client",
+ "lsb-service-proto",
+ "semver",
+ "serde",
+ "serde_json",
+ "tokio",
+ "windows-service",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "lsb-service-client"
 version = "0.5.0-rc.1"
 dependencies = [
