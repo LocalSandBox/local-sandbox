@@ -760,20 +760,33 @@ impl WindowsBackend {
         let now = time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)?;
         let failed = match protected_load_json::<FailedTargetState>(&self.paths.failed_target) {
-            Ok(mut failed)
-                if failed.validate().is_ok()
-                    && failed.archive_sha256 == update.target_bundle_identity.archive_sha256 =>
-            {
-                failed.record_rollback(now)?;
-                failed
+            Ok(mut failed) => {
+                failed.validate()?;
+                if failed.archive_sha256 == update.target_bundle_identity.archive_sha256
+                    && failed.target_version == update.target_bundle_identity.version
+                {
+                    failed.record_rollback(now)?;
+                    failed
+                } else if failed.archive_sha256 == update.target_bundle_identity.archive_sha256 {
+                    bail!("failed-target digest is bound to a contradictory version");
+                } else {
+                    FailedTargetState {
+                        target_version: update.target_bundle_identity.version.clone(),
+                        archive_sha256: update.target_bundle_identity.archive_sha256.clone(),
+                        rollback_count: 1,
+                        last_rollback_utc: now,
+                        suppressed: false,
+                    }
+                }
             }
-            _ => FailedTargetState {
+            Err(error) if is_not_found(&error) => FailedTargetState {
                 target_version: update.target_bundle_identity.version.clone(),
                 archive_sha256: update.target_bundle_identity.archive_sha256.clone(),
                 rollback_count: 1,
                 last_rollback_utc: now,
                 suppressed: false,
             },
+            Err(error) => return Err(error).context("load protected failed-target state"),
         };
         failed.validate()?;
         write_json_atomic(&self.paths.failed_target, &failed)
