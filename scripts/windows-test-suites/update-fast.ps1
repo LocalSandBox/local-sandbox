@@ -55,6 +55,47 @@ Invoke-Native cargo @(
     '-D', 'warnings'
 ) 'controlled-update Clippy gate'
 
+Invoke-Native cargo @(
+    'build',
+    '-p', 'lsb-seawork-updater',
+    '--locked'
+) 'updater binary build'
+
+$targetRoot = if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
+    Join-Path $PWD 'target'
+}
+else {
+    [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
+}
+$updater = Join-Path $targetRoot 'debug\localsandbox-seawork-updater.exe'
+if (-not (Test-Path -LiteralPath $updater -PathType Leaf)) {
+    throw 'The updater build did not produce the expected Windows executable.'
+}
+
+$versionText = (& $updater --version --json | Out-String).Trim()
+if ($LASTEXITCODE -ne 0) {
+    throw "updater version query failed with exit code $LASTEXITCODE"
+}
+$version = $versionText | ConvertFrom-Json
+if ($version.service_name -cne 'LocalSandboxSeaWorkUpdater' -or
+    [string]::IsNullOrWhiteSpace([string]$version.helper_version) -or
+    [int]$version.helper_protocol_major -ne 1 -or
+    [int]$version.helper_protocol_minor -lt 1) {
+    throw 'The updater version query returned an invalid identity or protocol.'
+}
+
+$installText = (& $updater --verify-install --json 2>$null | Out-String).Trim()
+$installExitCode = $LASTEXITCODE
+if ([string]::IsNullOrWhiteSpace($installText)) {
+    throw 'The updater invalid-install check did not emit bounded JSON evidence.'
+}
+$install = $installText | ConvertFrom-Json
+if ($installExitCode -eq 0 -or $install.valid -ne $false -or
+    $install.service_name -cne 'LocalSandboxSeaWorkUpdater' -or
+    $install.error -cne 'INSTALL_INVALID') {
+    throw 'The disposable updater unexpectedly passed its installed-helper self-check.'
+}
+
 $evidenceName = 'evidence-update-fast.json'
 $evidencePath = Join-Path $RunRoot $evidenceName
 [ordered]@{
@@ -63,6 +104,8 @@ $evidencePath = Join-Path $RunRoot $evidenceName
     snapshot_sha = $SnapshotSha
     status = 'passed'
     native_windows = $true
+    helper_version_mode_exercised = $true
+    invalid_install_rejection_exercised = $true
     signed_installation_exercised = $false
     controlled_update_exercised = $false
     exhaustive_failure_matrix_exercised = $false
