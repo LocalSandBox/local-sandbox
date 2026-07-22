@@ -186,6 +186,8 @@ pub fn validate_download_url(value: &str, initial: bool) -> Result<()> {
     if url.scheme() != "https"
         || !url.username().is_empty()
         || url.password().is_some()
+        || url.port_or_known_default() != Some(443)
+        || url.fragment().is_some()
         || url.host_str().is_none_or(|host| !allowed.contains(&host))
         || (initial && url.host_str() != Some("github.com"))
     {
@@ -348,6 +350,8 @@ mod tests {
             "http://github.com/a",
             "https://evil.example/a",
             "https://user@github.com/a",
+            "https://github.com:8443/a",
+            "https://github.com/a#fragment",
         ] {
             assert!(validate_download_url(url, false).is_err());
         }

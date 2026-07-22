@@ -43,6 +43,7 @@ const MAIN_EXE: &str = "localsandbox-seawork-service.exe";
 const STATUS_SCHEMA: u32 = 1;
 const REQUIRED_HELPER_PROTOCOL: HelperProtocol = HelperProtocol { major: 1, minor: 1 };
 const HELPER_VERSION_TIMEOUT: Duration = Duration::from_secs(5);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 
 pub enum StartupRecovery {
     None,
@@ -882,11 +883,20 @@ impl GithubHttp {
         }
         let mut url = candidate.asset_url.clone();
         let mut response = None;
+        let deadline = Instant::now() + DOWNLOAD_TIMEOUT;
         for redirect in 0..=MAX_REDIRECTS {
             validate_download_url(&url, redirect == 0)?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                bail!("GitHub asset download exceeded its compiled overall timeout");
+            }
             let result = self
                 .agent
                 .get(&url)
+                .config()
+                .timeout_global(Some(remaining))
+                .timeout_recv_body(Some(remaining))
+                .build()
                 .header("Accept", "application/octet-stream")
                 .header("Accept-Encoding", "identity")
                 .call()?;
