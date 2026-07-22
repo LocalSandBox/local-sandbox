@@ -1,0 +1,19 @@
+crates/lsb-seawork-service/src/update/mod.rs
+  s_f467a00f62f93c::t_db1cde0c0350ab 439,472,481-492
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "d83b92d339b19dec3da2a64943031dec85a99758",
+  "prompts": {},
+  "sessions": {
+    "s_f467a00f62f93c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f88c5-3e3b-7723-a390-0d43291a7df3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
