@@ -856,6 +856,7 @@ jobs:
   stage-github-release:
     name: Stage draft GitHub release
     needs: [prepare, publisher-config, tag, service-ready]
+    if: ${{ always() && needs.prepare.result == 'success' && needs.publisher-config.result == 'success' && needs.tag.result == 'success' && needs.service-ready.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1047,6 +1048,7 @@ jobs:
   finalize-github-release:
     name: Publish GitHub release
     needs: [prepare, publish-nodejs]
+    if: ${{ always() && needs.prepare.result == 'success' && needs.publish-nodejs.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
