@@ -1,0 +1,19 @@
+scripts/windows-test-suites/updater-release-smoke.ps1
+  s_f467a00f62f93c::t_a68ca137d9b576 103-115
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "7179e8231e0da465a80cf539aeb7c27000c069e2",
+  "prompts": {},
+  "sessions": {
+    "s_f467a00f62f93c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f88c5-3e3b-7723-a390-0d43291a7df3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}

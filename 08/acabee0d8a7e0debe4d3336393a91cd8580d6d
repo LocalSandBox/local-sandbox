@@ -1,0 +1,49 @@
+crates/lsb-seawork-update/src/policy.rs
+  s_f467a00f62f93c::t_4e4022412d4a23 1-5,7-13,45-186,189-221,248,255-264,268-274,280-299,301-302,305-309,311-315,317-328,330-332,334-335,337,339,344-345
+  s_f467a00f62f93c::t_32ac3c116ca683 265-267,275-279,338,340-343
+  s_f467a00f62f93c::t_3973af0e09b6bb 300,303-304,310,316,329,336
+  s_f467a00f62f93c::t_771132789ed21f 187-188,222-247,249-254
+  s_f467a00f62f93c::t_74380010216d16 333
+  s_f467a00f62f93c::t_b2b59c76efa07c 6,14-44
+crates/lsb-seawork-update/Cargo.toml
+  s_f467a00f62f93c::t_cc73f3e7fc0790 7-10,19-20
+crates/lsb-seawork-service/src/update/mod.rs
+  s_f467a00f62f93c::t_bbcb3b2aa80bbe 12-13
+  s_f467a00f62f93c::t_0452f1f6bbdcd6 792-798
+  s_f467a00f62f93c::t_2e245141a55bd7 820-826
+  s_f467a00f62f93c::t_c7523b8c25be71 2
+  s_f467a00f62f93c::t_29432cb8794a1e 16-18,860-863
+  s_f467a00f62f93c::t_865a7f0e03122a 451-456,553-558
+  s_f467a00f62f93c::t_479d2195708c58 3,5,8,14,40-41,410,831,849-859,864-883
+  s_f467a00f62f93c::t_a8293ded2c290d 884-886
+crates/lsb-seawork-service/Cargo.toml
+  s_f467a00f62f93c::t_52d192f3cc6ceb 19
+Cargo.toml
+  s_f467a00f62f93c::t_52d192f3cc6ceb 31
+crates/lsb-seawork-update/src/archive.rs
+  s_f467a00f62f93c::t_b2b59c76efa07c 98
+crates/lsb-seawork-update/src/discovery.rs
+  s_f467a00f62f93c::t_b2b59c76efa07c 40,159
+crates/lsb-seawork-update/src/lib.rs
+  s_f467a00f62f93c::t_b2b59c76efa07c 20-21
+  s_f467a00f62f93c::t_4e4022412d4a23 7,18-19,22
+  s_f467a00f62f93c::t_cc73f3e7fc0790 6,17
+Cargo.lock
+  s_f467a00f62f93c::t_bad5c18f0ba6c4 1080-1081
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "08acabee0d8a7e0debe4d3336393a91cd8580d6d",
+  "prompts": {},
+  "sessions": {
+    "s_f467a00f62f93c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f88c5-3e3b-7723-a390-0d43291a7df3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}

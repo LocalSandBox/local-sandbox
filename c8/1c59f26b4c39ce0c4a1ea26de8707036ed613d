@@ -1,0 +1,28 @@
+scripts/windows-test-suites/update-fast.ps1
+  s_f467a00f62f93c::t_cdf598bab24b51 1-86
+docs/seawork-update-evidence.md
+  s_f467a00f62f93c::t_1a61605e68a2cd 23,25,33-43,47-48,86-88
+xtask/src/seawork_update_evidence.rs
+  s_f467a00f62f93c::t_95ac8609d413d2 414-415,573-575
+  s_f467a00f62f93c::t_64506353b4d653 16,29-37,52-53,395-399,402,419-420,430,433,449-450,452,455-456,569,612,625-663
+docs/seawork-test-release-handoff.md
+  s_f467a00f62f93c::t_1a61605e68a2cd 1086-1116
+docs/windows-agent-testing.md
+  s_f467a00f62f93c::t_1a61605e68a2cd 35,143-145
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "c81c59f26b4c39ce0c4a1ea26de8707036ed613d",
+  "prompts": {},
+  "sessions": {
+    "s_f467a00f62f93c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f88c5-3e3b-7723-a390-0d43291a7df3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}

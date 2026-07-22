@@ -1,0 +1,34 @@
+crates/lsb-seawork-update/src/lib.rs
+  s_f467a00f62f93c::t_17ba9b5eec9df0 23
+  s_f467a00f62f93c::t_3b49232d9c2c01 19
+  s_f467a00f62f93c::t_8c7fb7bce4cc4a 20-22
+crates/lsb-seawork-update/src/policy.rs
+  s_f467a00f62f93c::t_3b49232d9c2c01 15-63,68-86,349-369,375-377
+  s_f467a00f62f93c::t_8c7fb7bce4cc4a 64-67,370-374
+  s_f467a00f62f93c::t_17ba9b5eec9df0 178-181,378-425
+  s_f467a00f62f93c::t_c898118de0ac20 426
+crates/lsb-seawork-updater/src/windows.rs
+  s_f467a00f62f93c::t_c562762f1f9964 1346-1398
+  s_f467a00f62f93c::t_c0a5f35667a955 1399
+crates/lsb-seawork-service/src/update/mod.rs
+  s_f467a00f62f93c::t_17ba9b5eec9df0 319
+  s_f467a00f62f93c::t_54c31dde3c7824 13-14,20-21,767-774,776-787,804-807,809
+  s_f467a00f62f93c::t_e36dc684c64661 790-794
+  s_f467a00f62f93c::t_8c7fb7bce4cc4a 15-17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "17b877ff800be0e4153d4624f129a10d1060353e",
+  "prompts": {},
+  "sessions": {
+    "s_f467a00f62f93c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f88c5-3e3b-7723-a390-0d43291a7df3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}

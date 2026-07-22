@@ -1,0 +1,27 @@
+crates/lsb-seawork-update/src/lib.rs
+  s_f467a00f62f93c::t_61060e3d17db58 6,13
+crates/lsb-seawork-update/src/state.rs
+  s_f467a00f62f93c::t_a2fa99db3e6f8d 51-56,198,242-246,326-335
+  s_f467a00f62f93c::t_9e52b12aa03cd0 19-21,129-131,227-233,321-325
+  s_f467a00f62f93c::t_61060e3d17db58 1-18,22-50,57-128,132-197,199-226,234-241,247-320,336-343
+crates/lsb-seawork-update/Cargo.toml
+  s_f467a00f62f93c::t_61060e3d17db58 9,16-18
+Cargo.lock
+  s_f467a00f62f93c::t_b954402d71e09b 1071,1077
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "11cbc2e7d36e4568b1fe27fc6f68e478069a91dc",
+  "prompts": {},
+  "sessions": {
+    "s_f467a00f62f93c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f88c5-3e3b-7723-a390-0d43291a7df3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
