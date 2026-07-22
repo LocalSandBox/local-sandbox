@@ -1007,3 +1007,74 @@ SeaWork must continue to implement and prove every installer/SCM/ACL/recovery/un
 row from the preceding entries. This LocalSandbox evidence tooling does not install the
 helper, synthesize a signed release tuple, authorize remote-host execution, or replace
 SeaWork-owned acceptance work.
+
+## 2026-07-22 — Controlled updater install and repair hardening
+
+Status: **LocalSandbox helper/install contract hardened; SeaWork implementation and
+signed Windows execution evidence remain open**
+
+This append-only entry extends the controlled self-upgrade entries above. It does not
+change the separate immutable updater-artifact rule, transfer install/repair/uninstall
+ownership to LocalSandbox, or modify the current release workflow.
+
+### Additional LocalSandbox source baseline
+
+- `7d7b66e`: the service requires the helper's full `--verify-install --json`
+  self-check; the helper verifies protected fixed directories/state, its complete SCM
+  identity/recovery/DACL policy, the generated 60-second main-service stop bound, and
+  pinned old-process exit. Downloads use exclusive partial files and durable directory
+  publication where Windows supports it.
+- `7b35850`: package verification binds the target service contract's minimum helper
+  protocol; the coordinator rejects an incompatible installed helper before sealing
+  admissions and records the actual compatible protocol in the transaction. Recovery
+  tolerates only transaction-owned mixed ImagePath/Event Log mutation boundaries,
+  re-verifies the last-known-good bundle before restart, and emits bounded update
+  phase/category/version/digest-prefix diagnostics.
+- `3c899c7`: replay from every post-placement phase re-verifies the exact final target,
+  target helper-protocol requirement, protected SCM command, and exact post-commit
+  state before the transaction can finalize.
+
+The deterministic updater artifact manifest is now schema version 2. In addition to
+the existing binary digest, publisher, protocol, service name, and command, it binds:
+
+- display name `LocalSandbox for SeaWork Updater`;
+- `SERVICE_WIN32_OWN_PROCESS`, LocalSystem, and automatic start;
+- unrestricted service SID;
+- service-object SDDL
+  `O:SYG:SYD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00000005;;;IU)`;
+- restart delays of 5, 30, and 120 seconds with an 86,400-second reset period; and
+- failure actions enabled for non-crash failures.
+
+### Mandatory SeaWork changes
+
+1. Treat updater manifest schema 2 as the complete install/repair input. Reject an
+   older, missing, cross-version, or contradictory manifest rather than filling SCM
+   fields from local defaults.
+2. Create and protect the generated Program Files product/updater/versions roots and
+   every generated ProgramData update-state directory before the service or helper is
+   started. Child version/staging trees must inherit the generated administrator and
+   service-only ACL; neither standard users nor interactive users may obtain write,
+   delete, owner, or DACL rights.
+3. Install/repair the helper SCM entry with the exact schema-2 display name, own-process
+   type, quoted command, LocalSystem account, automatic start, no dependencies,
+   unrestricted SID, service-object SDDL, three restart actions/reset period, and the
+   non-crash-failure flag. Any mismatch is a failed repair, not a warning.
+4. Use the signed helper's bounded `--verify-install --json` mode after binary,
+   publisher, path, ACL, and SCM setup. Exit success plus `valid: true`, the exact
+   service name, and a compatible protocol are all required. `--version --json` alone
+   is not install evidence. The public failure field is deliberately the stable
+   `INSTALL_INVALID` code; SeaWork must not depend on raw internal exception text.
+5. During repair, preserve a valid nonterminal transaction, restore the exact protected
+   helper/SCM policy, and start the helper so it can reconcile the journal. Do not clear
+   committed, failed-target, transaction, or version state to make verification pass.
+6. A target whose catalog-covered service contract requires a newer helper must remain
+   on the healthy current service with `UPDATE_HELPER_TOO_OLD`. Repair must install a
+   compatible helper from the same pinned immutable release tuple before retrying.
+7. Keep the current `just release <version>` and `service_evidence=skip|required`
+   dispatch behavior. LocalSandbox did not modify `.github/workflows/release.yml` for
+   this work; publication wiring remains a separate owner task.
+
+Signed Windows evidence must additionally prove schema-2 SCM policy enforcement,
+standard-user no-UAC behavior, protected directory/file rejection, exact old-process
+exit, pre-switch failure without forced workload loss, recovery from either half of an
+ImagePath/Event Log update, and full target/last-known-good re-verification on replay.
