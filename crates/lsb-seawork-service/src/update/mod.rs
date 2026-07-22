@@ -436,6 +436,7 @@ impl Coordinator {
             }
         };
         let mut helper_owns_transaction = false;
+        let mut journal_created = false;
         let handoff = (|| {
             self.set_phase(UpdatePhase::UpdateWaitingForIdle, Some(candidate.clone()))?;
             self.context
@@ -468,6 +469,7 @@ impl Coordinator {
                 bail!("admissions changed before durable helper handoff");
             }
             create_json(&self.paths.updates.current_transaction, &transaction)?;
+            journal_created = true;
             self.require_not_stopping("updater helper start")?;
             self.set_phase(UpdatePhase::UpdateHelperStarting, Some(candidate.clone()))?;
             start_helper()?;
@@ -476,9 +478,18 @@ impl Coordinator {
         })();
         if let Err(error) = handoff {
             if !helper_owns_transaction {
-                let _ = remove_file_if_exists(&self.paths.updates.current_transaction);
-                let _ = self.context.abort_automatic_update(&update_id);
-                let _ = remove_owned_staging(&self.paths.updates.staging, &transaction_id);
+                let cleanup = (|| {
+                    if journal_created
+                        && !remove_file_if_exists(&self.paths.updates.current_transaction)?
+                    {
+                        bail!("unowned helper transaction journal disappeared during cleanup");
+                    }
+                    self.context.abort_automatic_update(&update_id)?;
+                    remove_owned_staging(&self.paths.updates.staging, &transaction_id)
+                })();
+                if let Err(cleanup) = cleanup {
+                    return Err(cleanup).context("unowned helper handoff cleanup failed");
+                }
             }
             return Err(error);
         }
