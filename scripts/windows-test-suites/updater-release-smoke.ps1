@@ -100,21 +100,19 @@ $updater = Resolve-RegularFile $updater 'release updater PE'
 $signingScript = Resolve-RegularFile `
     (Join-Path (Split-Path -Parent $PSScriptRoot) 'sign-seawork-service.ps1') `
     'updater signing script'
-Invoke-Native $signingScript @(
-    '-Mode', 'SignUpdaterPe',
-    '-UseLocalMachineStore',
-    '-UpdaterBinary', $updater,
-    '-PfxPath', $pfx,
-    '-PasswordFile', $passwordFile,
-    '-ExpectedPublisherSubject', [string]$certificate.subject,
-    '-ExpectedPublisherSha256', [string]$certificate.sha256_thumbprint
-) 'updater PE signing'
-Invoke-Native $signingScript @(
-    '-Mode', 'VerifyUpdaterPe',
-    '-UpdaterBinary', $updater,
-    '-ExpectedPublisherSubject', [string]$certificate.subject,
-    '-ExpectedPublisherSha256', [string]$certificate.sha256_thumbprint
-) 'updater PE signature verification'
+& $signingScript `
+    -Mode SignUpdaterPe `
+    -UseLocalMachineStore `
+    -UpdaterBinary $updater `
+    -PfxPath $pfx `
+    -PasswordFile $passwordFile `
+    -ExpectedPublisherSubject ([string]$certificate.subject) `
+    -ExpectedPublisherSha256 ([string]$certificate.sha256_thumbprint) | Out-Null
+& $signingScript `
+    -Mode VerifyUpdaterPe `
+    -UpdaterBinary $updater `
+    -ExpectedPublisherSubject ([string]$certificate.subject) `
+    -ExpectedPublisherSha256 ([string]$certificate.sha256_thumbprint) | Out-Null
 
 $versionResult = (& $updater --version --json | Out-String).Trim() | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or
