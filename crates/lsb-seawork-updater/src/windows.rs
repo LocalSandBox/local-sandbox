@@ -150,6 +150,7 @@ impl WindowsBackend {
     }
 
     fn verify_package(&self, root: &Path, transaction: &TransactionEnvelope) -> Result<()> {
+        require_regular_directory(root)?;
         let update = &transaction.transaction;
         let policy = PackagePolicy {
             expected_version: &update.target_bundle_identity.version,
@@ -367,6 +368,7 @@ impl UpdateBackend for WindowsBackend {
             }
             Ok::<_, anyhow::Error>(())
         });
+        let result = result.and_then(|()| self.finalize_commit(transaction));
         if let Err(error) = result {
             self.record_failed_target(update).with_context(|| {
                 format!("record failed target after activation health failure: {error:#}")

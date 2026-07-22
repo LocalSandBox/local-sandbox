@@ -48,6 +48,7 @@ impl PendingUpdate {
 enum MaintenanceState {
     Active,
     Pending(PendingUpdate),
+    Recovered(PendingUpdate),
     Uninstalling,
     Quarantined,
 }
@@ -82,7 +83,9 @@ impl MaintenanceManager {
                 admissions.begin_update_waiting().map(|_| ())
             }
             MaintenanceState::Uninstalling => admissions.restore_uninstalling(),
-            MaintenanceState::Pending(_) | MaintenanceState::Quarantined => {
+            MaintenanceState::Pending(_)
+            | MaintenanceState::Recovered(_)
+            | MaintenanceState::Quarantined => {
                 admissions.quarantine();
                 Ok(())
             }
@@ -109,30 +112,41 @@ impl MaintenanceManager {
         update_id: &str,
         target: &BundleIdentity,
     ) -> Result<()> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("maintenance state poisoned"))?;
-        let pending = require_pending_id(&state, update_id)?;
-        if &pending.target != target {
-            bail!("startup transaction target differs from pending update");
-        }
+        self.restore_journal_pending(update_id, target)?;
+        self.admissions.begin_update_waiting()?;
         self.admissions.mark_activation_pending()
     }
 
     pub fn restore_update_sealed(&self, update_id: &str, target: &BundleIdentity) -> Result<()> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("maintenance state poisoned"))?;
-        let pending = require_pending_id(&state, update_id)?;
-        if &pending.target != target {
-            bail!("startup transaction target differs from pending update");
-        }
-        drop(state);
+        self.restore_journal_pending(update_id, target)?;
         let restored = self.admissions.begin_update_waiting()?;
         if restored != AdmissionState::UpdateSealed {
             bail!("recovered old service does not have zero-use sealed admissions");
+        }
+        Ok(())
+    }
+
+    fn restore_journal_pending(&self, update_id: &str, target: &BundleIdentity) -> Result<()> {
+        let recovered = PendingUpdate {
+            schema_version: 2,
+            update_id: update_id.to_string(),
+            target: target.clone(),
+        };
+        recovered.validate()?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("maintenance state poisoned"))?;
+        match &*state {
+            MaintenanceState::Active => *state = MaintenanceState::Recovered(recovered),
+            MaintenanceState::Pending(pending) | MaintenanceState::Recovered(pending)
+                if pending == &recovered => {}
+            MaintenanceState::Pending(_) | MaintenanceState::Recovered(_) => {
+                bail!("startup transaction differs from pending update")
+            }
+            MaintenanceState::Uninstalling | MaintenanceState::Quarantined => {
+                bail!("maintenance state cannot recover an update transaction")
+            }
         }
         Ok(())
     }
@@ -148,12 +162,14 @@ impl MaintenanceManager {
         match self.state.lock() {
             Ok(state) => match &*state {
                 MaintenanceState::Active => "READY",
-                MaintenanceState::Pending(_) => match self.admissions.snapshot().state {
-                    AdmissionState::UpdateWaitingForIdle => "UPDATE_WAITING_FOR_IDLE",
-                    AdmissionState::UpdateSealed => "UPDATE_SEALED",
-                    AdmissionState::ActivationPending => "UPDATE_PENDING",
-                    _ => "MAINTENANCE_QUARANTINE",
-                },
+                MaintenanceState::Pending(_) | MaintenanceState::Recovered(_) => {
+                    match self.admissions.snapshot().state {
+                        AdmissionState::UpdateWaitingForIdle => "UPDATE_WAITING_FOR_IDLE",
+                        AdmissionState::UpdateSealed => "UPDATE_SEALED",
+                        AdmissionState::ActivationPending => "UPDATE_PENDING",
+                        _ => "MAINTENANCE_QUARANTINE",
+                    }
+                }
                 MaintenanceState::Uninstalling => "UNINSTALL_PENDING",
                 MaintenanceState::Quarantined => "MAINTENANCE_QUARANTINE",
             },
@@ -179,7 +195,7 @@ impl MaintenanceManager {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("maintenance state poisoned"))?;
-        if let MaintenanceState::Pending(pending) = &*state {
+        if let MaintenanceState::Pending(pending) | MaintenanceState::Recovered(pending) = &*state {
             if pending.target == target {
                 return Ok(pending.update_id.clone());
             }
@@ -258,7 +274,7 @@ impl MaintenanceManager {
         let (phase, target) = match self.state.lock() {
             Ok(state) => match &*state {
                 MaintenanceState::Active => (UpdatePhase::UpdateIdle, None),
-                MaintenanceState::Pending(pending) => {
+                MaintenanceState::Pending(pending) | MaintenanceState::Recovered(pending) => {
                     let phase = match snapshot.state {
                         AdmissionState::UpdateWaitingForIdle => UpdatePhase::UpdateWaitingForIdle,
                         AdmissionState::UpdateSealed => UpdatePhase::UpdateSealed,
@@ -317,7 +333,11 @@ fn clear_pending(
     admissions: &AdmissionController,
     initial_admissions: bool,
 ) -> Result<()> {
-    remove_pending(pending_path)?;
+    match state {
+        MaintenanceState::Pending(_) => remove_pending(pending_path)?,
+        MaintenanceState::Recovered(_) => {}
+        _ => bail!("no update is pending"),
+    }
     *state = if initial_admissions {
         MaintenanceState::Active
     } else {
@@ -332,8 +352,14 @@ fn require_pending_id<'a>(
     update_id: &str,
 ) -> Result<&'a PendingUpdate> {
     match state {
-        MaintenanceState::Pending(pending) if pending.update_id == update_id => Ok(pending),
-        MaintenanceState::Pending(_) => bail!("update identifier does not match pending state"),
+        MaintenanceState::Pending(pending) | MaintenanceState::Recovered(pending)
+            if pending.update_id == update_id =>
+        {
+            Ok(pending)
+        }
+        MaintenanceState::Pending(_) | MaintenanceState::Recovered(_) => {
+            bail!("update identifier does not match pending state")
+        }
         _ => bail!("no update is pending"),
     }
 }
@@ -477,6 +503,41 @@ mod tests {
             .restore_activation_pending(&update_id, &contradictory)
             .is_err());
         restarted.abort_update(&update_id).unwrap();
+    }
+
+    #[test]
+    fn journal_recovers_after_pending_record_was_already_committed() {
+        let path = path("post-commit-recovery");
+        let _ = std::fs::remove_file(&path);
+        let target = target("0.5.0-rc.2");
+        let update_id = "d".repeat(32);
+
+        let (_, target_manager) = setup(path.clone());
+        target_manager
+            .restore_activation_pending(&update_id, &target)
+            .unwrap();
+        assert_eq!(target_manager.stable_code(), "UPDATE_PENDING");
+        target_manager
+            .commit_update(
+                &update_id,
+                &target.version,
+                &target.bundle_manifest_sha256,
+                target.protocol,
+                target.ledger.writer_schema,
+                target.service_configuration_revision,
+            )
+            .unwrap();
+        assert!(target_manager.admissions.accepts_work());
+        assert!(!path.exists());
+
+        let (_, old_manager) = setup(path.clone());
+        old_manager
+            .restore_update_sealed(&update_id, &target)
+            .unwrap();
+        assert_eq!(old_manager.stable_code(), "UPDATE_SEALED");
+        old_manager.abort_update(&update_id).unwrap();
+        assert!(old_manager.admissions.accepts_work());
+        assert!(!path.exists());
     }
 
     #[test]
