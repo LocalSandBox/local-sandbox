@@ -81,6 +81,17 @@ install:
     mkdir -p ~/.local/bin; \
     cp "target/release/$binary_name" "$HOME/.local/bin/$binary_name"
 
-# Dispatch the gated release workflow. Accepts patch, minor, major, or X.Y.Z.
-release version="patch":
-    gh workflow run release.yml --ref main -f version="{{ version }}"
+# Dispatch a release; prereleases skip evidence by default, stable releases require it.
+release version service_evidence="":
+    @evidence="{{ service_evidence }}"; \
+    if [ -z "$evidence" ]; then \
+        case "{{ version }}" in \
+            *-*) evidence="skip" ;; \
+            *) evidence="required" ;; \
+        esac; \
+    fi; \
+    case "$evidence" in \
+        skip|required) ;; \
+        *) echo "service_evidence must be skip or required" >&2; exit 2 ;; \
+    esac; \
+    gh workflow run release.yml --ref main -f version="{{ version }}" -f service_evidence="$evidence"
