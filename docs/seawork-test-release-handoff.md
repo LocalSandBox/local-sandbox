@@ -1114,3 +1114,37 @@ evidence explicitly records that no signed installation or controlled update was
 executed. SeaWork still owns installing/repairing the helper from the pinned immutable
 release tuple and running the signed production-profile cases above against the real
 SCM entries; record that final evidence in a later append-only handoff entry.
+
+## 2026-07-22 — Native Windows controlled-upgrade source gate
+
+Status: **passed on Windows 11 x64; signed SeaWork-installed activation remains
+downstream**
+
+- LocalSandbox source commit: `2facd2368824affed580ea737326bf17fac6b55c`.
+- Windows run: `20260722t115107z-60899-537cc74a70b9`; synthetic snapshot:
+  `537cc74a70b9f5d310c3d5cc455c13fcece7f092`.
+- Host preflight identified Windows 11 Pro x64 build 26200 with WHPX enabled, elevated
+  runner access, automatic/running SSH, and Rust/Cargo 1.96.1.
+- The service baseline passed 327 native Rust tests (one harness-child test ignored),
+  the Windows VM library passed 36 tests (11 asset-dependent QEMU smokes ignored), and
+  all 11 Node build/API/startup tests passed. Scoped service Clippy passed.
+- The focused update gate passed all 29 update package/discovery/download/state tests,
+  all eight native updater tests, all 36 release/evidence tests, and strict Clippy for
+  `lsb-seawork-update`, `lsb-seawork-updater`, and `xtask`.
+- Fetch-verified evidence SHA-256 values are
+  `2ef89410fd4ead1cc042863f4783bead326214139ea46f905dc60db20f088ceb`
+  (`evidence-service-fast.json`) and
+  `bce7c9630213ac73918aff8a4b75af7adf520c953e7e680f00f11f5504fda8b6`
+  (`evidence-update-fast.json`). Both bind the exact synthetic snapshot and report
+  `passed`.
+- The first native run exposed two Rust 1.96 `nonminimal_bool` findings in the service
+  session manager. Commit `2facd23` applied the equivalent simplified predicates; the
+  complete gate then passed on the corrected snapshot.
+
+This gate exercises the Windows-only coordinator/updater code and representative happy
+and failure/recovery logic, but deliberately records
+`signed_installation_exercised: false` and `controlled_update_exercised: false`.
+SeaWork must still install the signed helper and execute the reduced production-profile
+acceptance set from the preceding entry: successful activation, unhealthy-target
+rollback, untrusted/incompatible rejection, busy-to-idle behavior, and one real reboot
+at `image_path_changed`.
