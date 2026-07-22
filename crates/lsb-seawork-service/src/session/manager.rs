@@ -7,6 +7,7 @@ use lsb_service_proto::SelectedMount;
 
 use super::quota::{QuotaBook, QuotaLimits, SandboxResources};
 use super::{CancellationToken, ResourceHandle};
+use crate::admission::{ActiveUseLease, AdmissionController};
 #[cfg(windows)]
 use crate::engine::ServiceEngineConfig;
 #[cfg(windows)]
@@ -51,7 +52,7 @@ impl ClientIdentityKey {
 struct Session {
     identity: ClientIdentityKey,
     cancellation: CancellationToken,
-    test_resources: HashMap<ResourceHandle, String>,
+    test_resources: HashMap<ResourceHandle, TestResource>,
     #[cfg(windows)]
     sandboxes: HashMap<ResourceHandle, SandboxSlot>,
     #[cfg(windows)]
@@ -63,9 +64,15 @@ struct Session {
 
 #[cfg(windows)]
 #[derive(Debug)]
-enum SandboxSlot {
-    Preparing,
-    Running(ManagedVm),
+struct SandboxSlot {
+    vm: Option<ManagedVm>,
+    _active_use: ActiveUseLease,
+}
+
+#[derive(Debug)]
+struct TestResource {
+    value: String,
+    _active_use: ActiveUseLease,
 }
 
 #[cfg(windows)]
@@ -165,17 +172,27 @@ pub enum StartReplayDecision {
 #[derive(Debug, Clone)]
 pub struct SessionManager {
     state: Arc<Mutex<State>>,
+    admissions: AdmissionController,
 }
 
 impl SessionManager {
     pub fn new(limits: QuotaLimits) -> Self {
+        Self::with_admissions(limits, AdmissionController::new(true))
+    }
+
+    pub fn with_admissions(limits: QuotaLimits, admissions: AdmissionController) -> Self {
         Self {
             state: Arc::new(Mutex::new(State {
                 sessions: HashMap::new(),
                 quotas: QuotaBook::new(limits),
                 start_replays: HashMap::new(),
             })),
+            admissions,
         }
+    }
+
+    pub fn admissions(&self) -> &AdmissionController {
+        &self.admissions
     }
 
     pub fn open(&self, identity: ClientIdentityKey) -> Result<ResourceHandle> {
@@ -309,6 +326,7 @@ impl SessionManager {
         if !matches {
             bail!("resource not found");
         }
+        let active_use = self.admissions.reserve_active_use()?;
         let handle = ResourceHandle::random()?;
         state
             .quotas
@@ -317,7 +335,13 @@ impl SessionManager {
             .sessions
             .get_mut(&session_id)
             .context("session disappeared")?;
-        session.test_resources.insert(handle, value);
+        session.test_resources.insert(
+            handle,
+            TestResource {
+                value,
+                _active_use: active_use,
+            },
+        );
         Ok(handle)
     }
 
@@ -332,7 +356,10 @@ impl SessionManager {
         if &session.identity != identity {
             return None;
         }
-        session.test_resources.get(&handle).cloned()
+        session
+            .test_resources
+            .get(&handle)
+            .map(|resource| resource.value.clone())
     }
 
     pub fn close_test_resource(
@@ -525,6 +552,7 @@ impl SessionManager {
         if !matches {
             bail!("resource not found");
         }
+        let active_use = self.admissions.reserve_active_use()?;
         let handle = ResourceHandle::random()?;
         state
             .quotas
@@ -533,7 +561,13 @@ impl SessionManager {
             .sessions
             .get_mut(&session_id)
             .context("session disappeared")?;
-        session.sandboxes.insert(handle, SandboxSlot::Preparing);
+        session.sandboxes.insert(
+            handle,
+            SandboxSlot {
+                vm: None,
+                _active_use: active_use,
+            },
+        );
         Ok(handle)
     }
 
@@ -553,7 +587,11 @@ impl SessionManager {
             .get_mut(&session_id)
             .filter(|session| &session.identity == identity)
             .is_some_and(|session| {
-                if matches!(session.sandboxes.get(&handle), Some(SandboxSlot::Preparing)) {
+                if session
+                    .sandboxes
+                    .get(&handle)
+                    .is_some_and(|slot| slot.vm.is_none())
+                {
                     session.sandboxes.remove(&handle);
                     true
                 } else {
@@ -588,7 +626,11 @@ impl SessionManager {
                 .get(&session_id)
                 .filter(|session| &session.identity == identity)
                 .context("resource not found")?;
-            if !matches!(session.sandboxes.get(&handle), Some(SandboxSlot::Preparing)) {
+            if !session
+                .sandboxes
+                .get(&handle)
+                .is_some_and(|slot| slot.vm.is_none())
+            {
                 bail!("sandbox reservation is unavailable");
             }
             session.cancellation.clone()
@@ -611,7 +653,12 @@ impl SessionManager {
             }
             bail!("session closed during VM startup");
         };
-        if &session.identity != identity || !session.sandboxes.contains_key(&handle) {
+        if &session.identity != identity
+            || !session
+                .sandboxes
+                .get(&handle)
+                .is_some_and(|slot| slot.vm.is_none())
+        {
             if let Ok(vm) = started {
                 let _ = vm.stop(std::time::Duration::from_secs(30));
             }
@@ -619,7 +666,11 @@ impl SessionManager {
         }
         match started {
             Ok(vm) => {
-                session.sandboxes.insert(handle, SandboxSlot::Running(vm));
+                session
+                    .sandboxes
+                    .get_mut(&handle)
+                    .context("sandbox reservation disappeared")?
+                    .vm = Some(vm);
                 Ok(handle)
             }
             Err(error) => {
@@ -651,9 +702,9 @@ impl SessionManager {
                 if &session.identity != identity {
                     return Ok(false);
                 }
-                let vm = match session.sandboxes.remove(&handle) {
-                    Some(SandboxSlot::Running(vm)) => vm,
-                    Some(slot @ SandboxSlot::Preparing) => {
+                let slot = match session.sandboxes.remove(&handle) {
+                    Some(slot) if slot.vm.is_some() => slot,
+                    Some(slot) => {
                         session.sandboxes.insert(handle, slot);
                         bail!("sandbox is still preparing");
                     }
@@ -681,7 +732,7 @@ impl SessionManager {
                     .into_iter()
                     .filter_map(|id| session.watches.remove(&id))
                     .collect::<Vec<_>>();
-                (vm, processes, watches)
+                (slot, processes, watches)
             };
             for process in &processes {
                 state
@@ -705,7 +756,12 @@ impl SessionManager {
                 controller.stop();
             }
         }
-        let result = vm.stop(timeout);
+        let mut slot = vm;
+        let result = slot
+            .vm
+            .take()
+            .context("running sandbox lost its VM")?
+            .stop(timeout);
         let mut state = self
             .state
             .lock()
@@ -736,8 +792,12 @@ impl SessionManager {
             if &session.identity != identity {
                 return Ok(None);
             }
-            match session.sandboxes.get(&handle) {
-                Some(SandboxSlot::Running(vm)) => vm.controller(),
+            match session
+                .sandboxes
+                .get(&handle)
+                .and_then(|slot| slot.vm.as_ref())
+            {
+                Some(vm) => vm.controller(),
                 _ => return Ok(None),
             }
         };
@@ -765,8 +825,12 @@ impl SessionManager {
             if &session.identity != identity {
                 return Ok(None);
             }
-            match session.sandboxes.get(&handle) {
-                Some(SandboxSlot::Running(vm)) => vm.controller(),
+            match session
+                .sandboxes
+                .get(&handle)
+                .and_then(|slot| slot.vm.as_ref())
+            {
+                Some(vm) => vm.controller(),
                 _ => return Ok(None),
             }
         };
@@ -795,8 +859,12 @@ impl SessionManager {
                 if &session.identity != identity {
                     return Ok(None);
                 }
-                match session.sandboxes.get(&sandbox_id) {
-                    Some(SandboxSlot::Running(vm)) => vm.controller(),
+                match session
+                    .sandboxes
+                    .get(&sandbox_id)
+                    .and_then(|slot| slot.vm.as_ref())
+                {
+                    Some(vm) => vm.controller(),
                     _ => return Ok(None),
                 }
             };
@@ -820,10 +888,10 @@ impl SessionManager {
         let valid = state.sessions.get(&session_id).is_some_and(|session| {
             &session.identity == identity
                 && session.processes.contains_key(&resource.id)
-                && matches!(
-                    session.sandboxes.get(&sandbox_id),
-                    Some(SandboxSlot::Running(_))
-                )
+                && session
+                    .sandboxes
+                    .get(&sandbox_id)
+                    .is_some_and(|slot| slot.vm.is_some())
         });
         if !valid {
             if let Ok(process) = started {
@@ -1027,8 +1095,12 @@ impl SessionManager {
                 if &session.identity != identity {
                     return Ok(None);
                 }
-                match session.sandboxes.get(&sandbox_id) {
-                    Some(SandboxSlot::Running(vm)) => vm.controller(),
+                match session
+                    .sandboxes
+                    .get(&sandbox_id)
+                    .and_then(|slot| slot.vm.as_ref())
+                {
+                    Some(vm) => vm.controller(),
                     _ => return Ok(None),
                 }
             };
@@ -1052,10 +1124,10 @@ impl SessionManager {
         let valid = state.sessions.get(&session_id).is_some_and(|session| {
             &session.identity == identity
                 && session.watches.contains_key(&resource.id)
-                && matches!(
-                    session.sandboxes.get(&sandbox_id),
-                    Some(SandboxSlot::Running(_))
-                )
+                && session
+                    .sandboxes
+                    .get(&sandbox_id)
+                    .is_some_and(|slot| slot.vm.is_some())
         });
         if !valid {
             if let Ok(watch) = started {

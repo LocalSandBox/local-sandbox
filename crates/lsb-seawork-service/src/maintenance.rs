@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
 use lsb_service_proto::{BundleIdentity, UpdatePhase, UpdateRetryState, UpdateStatus, SUPPORTED};
 use serde::{Deserialize, Serialize};
 
+use crate::admission::{AdmissionController, AdmissionState};
 use crate::ledger::atomic;
 use crate::session::SessionManager;
 use crate::LEDGER_SCHEMA_VERSION;
@@ -57,32 +57,50 @@ pub struct MaintenanceManager {
     pending_path: PathBuf,
     uninstall_path: PathBuf,
     initial_admissions: bool,
-    admissions: Arc<AtomicBool>,
+    admissions: AdmissionController,
     state: Arc<Mutex<MaintenanceState>>,
 }
 
 impl MaintenanceManager {
-    pub fn load(pending_path: PathBuf, initial_admissions: bool) -> Self {
+    pub fn load(
+        pending_path: PathBuf,
+        initial_admissions: bool,
+        admissions: AdmissionController,
+    ) -> Self {
         let uninstall_path = pending_path.with_file_name("pending-uninstall.json");
         let uninstall_pending = load_uninstall(&uninstall_path);
-        let state = match (load_pending(&pending_path), uninstall_pending) {
+        let mut state = match (load_pending(&pending_path), uninstall_pending) {
             (Ok(None), Ok(true)) => MaintenanceState::Uninstalling,
             (Ok(Some(pending)), Ok(false)) => MaintenanceState::Pending(pending),
             (Ok(None), Ok(false)) if initial_admissions => MaintenanceState::Active,
             (Ok(None), Ok(false)) => MaintenanceState::Quarantined,
             _ => MaintenanceState::Quarantined,
         };
-        let admissions_open = matches!(state, MaintenanceState::Active);
+        let restored = match &state {
+            MaintenanceState::Active => admissions.reopen(initial_admissions),
+            MaintenanceState::Pending(_) if initial_admissions => {
+                admissions.begin_update_waiting().map(|_| ())
+            }
+            MaintenanceState::Uninstalling => admissions.restore_uninstalling(),
+            MaintenanceState::Pending(_) | MaintenanceState::Quarantined => {
+                admissions.quarantine();
+                Ok(())
+            }
+        };
+        if restored.is_err() {
+            admissions.quarantine();
+            state = MaintenanceState::Quarantined;
+        }
         Self {
             pending_path,
             uninstall_path,
             initial_admissions,
-            admissions: Arc::new(AtomicBool::new(admissions_open)),
+            admissions,
             state: Arc::new(Mutex::new(state)),
         }
     }
 
-    pub fn admissions(&self) -> Arc<AtomicBool> {
+    pub fn admissions(&self) -> AdmissionController {
         self.admissions.clone()
     }
 
@@ -90,7 +108,12 @@ impl MaintenanceManager {
         match self.state.lock() {
             Ok(state) => match &*state {
                 MaintenanceState::Active => "READY",
-                MaintenanceState::Pending(_) => "UPDATE_PENDING",
+                MaintenanceState::Pending(_) => match self.admissions.snapshot().state {
+                    AdmissionState::UpdateWaitingForIdle => "UPDATE_WAITING_FOR_IDLE",
+                    AdmissionState::UpdateSealed => "UPDATE_SEALED",
+                    AdmissionState::ActivationPending => "UPDATE_PENDING",
+                    _ => "MAINTENANCE_QUARANTINE",
+                },
                 MaintenanceState::Uninstalling => "UNINSTALL_PENDING",
                 MaintenanceState::Quarantined => "MAINTENANCE_QUARANTINE",
             },
@@ -103,6 +126,9 @@ impl MaintenanceManager {
         sessions: &SessionManager,
         target: BundleIdentity,
     ) -> Result<String> {
+        if !self.admissions.is_same_controller(sessions.admissions()) {
+            bail!("maintenance and session admissions are not shared");
+        }
         if target.validate().is_err()
             || target.protocol.major != SUPPORTED.major
             || target.ledger.writer_schema != LEDGER_SCHEMA_VERSION
@@ -129,10 +155,12 @@ impl MaintenanceManager {
         };
         pending.validate()?;
         atomic::write_value(&self.pending_path, &pending)?;
-        self.admissions.store(false, Ordering::Release);
         *state = MaintenanceState::Pending(pending.clone());
-        drop(state);
-        sessions.drain_all()?;
+        if self.admissions.begin_update_waiting().is_err() {
+            self.admissions.quarantine();
+            *state = MaintenanceState::Quarantined;
+            bail!("failed to enter update wait state");
+        }
         Ok(pending.update_id)
     }
 
@@ -186,13 +214,19 @@ impl MaintenanceManager {
         current: Option<BundleIdentity>,
         active_use_count: u32,
     ) -> UpdateStatus {
+        let snapshot = self.admissions.snapshot();
         let (phase, target) = match self.state.lock() {
             Ok(state) => match &*state {
                 MaintenanceState::Active => (UpdatePhase::UpdateIdle, None),
-                MaintenanceState::Pending(pending) => (
-                    UpdatePhase::UpdateWaitingForIdle,
-                    Some(pending.target.clone()),
-                ),
+                MaintenanceState::Pending(pending) => {
+                    let phase = match snapshot.state {
+                        AdmissionState::UpdateWaitingForIdle => UpdatePhase::UpdateWaitingForIdle,
+                        AdmissionState::UpdateSealed => UpdatePhase::UpdateSealed,
+                        AdmissionState::ActivationPending => UpdatePhase::UpdateActivationPending,
+                        _ => UpdatePhase::UpdateRecoveryQuarantine,
+                    };
+                    (phase, Some(pending.target.clone()))
+                }
                 MaintenanceState::Uninstalling => (UpdatePhase::UpdateIdle, None),
                 MaintenanceState::Quarantined => (UpdatePhase::UpdateRecoveryQuarantine, None),
             },
@@ -202,7 +236,7 @@ impl MaintenanceManager {
             phase,
             current,
             target,
-            active_use_count,
+            active_use_count: snapshot.active_use_count.max(active_use_count),
             last_check_category: None,
             retry: UpdateRetryState {
                 attempt_count: 0,
@@ -229,7 +263,7 @@ impl MaintenanceManager {
                 &PendingUninstall { schema_version: 1 },
             )?;
         }
-        self.admissions.store(false, Ordering::Release);
+        self.admissions.begin_uninstall()?;
         *state = MaintenanceState::Uninstalling;
         drop(state);
         sessions.drain_all()?;
@@ -240,7 +274,7 @@ impl MaintenanceManager {
 fn clear_pending(
     state: &mut MaintenanceState,
     pending_path: &Path,
-    admissions: &AtomicBool,
+    admissions: &AdmissionController,
     initial_admissions: bool,
 ) -> Result<()> {
     remove_pending(pending_path)?;
@@ -249,7 +283,7 @@ fn clear_pending(
     } else {
         MaintenanceState::Quarantined
     };
-    admissions.store(initial_admissions, Ordering::Release);
+    admissions.reopen(initial_admissions)?;
     Ok(())
 }
 
@@ -340,25 +374,32 @@ mod tests {
         }
     }
 
+    fn setup(path: PathBuf) -> (SessionManager, MaintenanceManager) {
+        let admissions = AdmissionController::new(true);
+        let sessions = SessionManager::with_admissions(QuotaLimits::default(), admissions.clone());
+        let manager = MaintenanceManager::load(path, true, admissions);
+        (sessions, manager)
+    }
+
     #[test]
     fn pending_update_is_durable_idempotent_and_abortable() {
         let path = path("pending.json");
         let _ = std::fs::remove_file(&path);
-        let sessions = SessionManager::new(QuotaLimits::default());
-        let manager = MaintenanceManager::load(path.clone(), true);
+        let (sessions, manager) = setup(path.clone());
         let target_bundle = target("0.5.0-rc.2");
         let update_id = manager
             .prepare_update(&sessions, target_bundle.clone())
             .unwrap();
-        assert!(!manager.admissions.load(Ordering::Acquire));
+        assert!(!manager.admissions.accepts_work());
         assert_eq!(
             manager
                 .prepare_update(&sessions, target_bundle.clone())
                 .unwrap(),
             update_id
         );
-        let restarted = MaintenanceManager::load(path.clone(), true);
-        assert_eq!(restarted.stable_code(), "UPDATE_PENDING");
+        let restarted =
+            MaintenanceManager::load(path.clone(), true, AdmissionController::new(true));
+        assert_eq!(restarted.stable_code(), "UPDATE_SEALED");
         assert!(restarted
             .commit_update(
                 &update_id,
@@ -369,17 +410,16 @@ mod tests {
                 target_bundle.service_configuration_revision,
             )
             .is_err());
-        assert_eq!(restarted.stable_code(), "UPDATE_PENDING");
+        assert_eq!(restarted.stable_code(), "UPDATE_SEALED");
         restarted.abort_update(&update_id).unwrap();
-        assert!(restarted.admissions.load(Ordering::Acquire));
+        assert!(restarted.admissions.accepts_work());
     }
 
     #[test]
     fn commit_requires_the_complete_exact_bundle_identity() {
         let path = path("exact-identity");
         let _ = std::fs::remove_file(&path);
-        let sessions = SessionManager::new(QuotaLimits::default());
-        let manager = MaintenanceManager::load(path.clone(), true);
+        let (sessions, manager) = setup(path.clone());
         let target = target("0.5.0-rc.2");
         let update_id = manager.prepare_update(&sessions, target.clone()).unwrap();
         let mut wrong_digest = target.clone();
@@ -404,7 +444,46 @@ mod tests {
                 target.service_configuration_revision,
             )
             .unwrap();
-        assert!(manager.admissions.load(Ordering::Acquire));
+        assert!(manager.admissions.accepts_work());
+    }
+
+    #[test]
+    fn prepare_update_waits_without_draining_and_seals_on_natural_idle() {
+        let path = path("natural-idle");
+        let _ = std::fs::remove_file(&path);
+        let (sessions, manager) = setup(path.clone());
+        let identity =
+            crate::session::ClientIdentityKey::for_test("S-1-5-21-owner", "S-1-5-5-1-1", 1);
+        let session = sessions.open(identity.clone()).unwrap();
+        let first = sessions
+            .create_test_resource(session, &identity, "first".to_string())
+            .unwrap();
+
+        manager
+            .prepare_update(&sessions, target("0.5.0-rc.2"))
+            .unwrap();
+        assert_eq!(manager.stable_code(), "UPDATE_WAITING_FOR_IDLE");
+        assert!(manager.admissions.accepts_work());
+        assert_eq!(
+            sessions.get_test_resource(session, &identity, first),
+            Some("first".to_string())
+        );
+
+        let second = sessions
+            .create_test_resource(session, &identity, "second".to_string())
+            .unwrap();
+        sessions
+            .close_test_resource(session, &identity, first)
+            .unwrap();
+        assert_eq!(manager.stable_code(), "UPDATE_WAITING_FOR_IDLE");
+        sessions
+            .close_test_resource(session, &identity, second)
+            .unwrap();
+        assert_eq!(manager.stable_code(), "UPDATE_SEALED");
+        assert!(!manager.admissions.accepts_work());
+        assert!(sessions
+            .create_test_resource(session, &identity, "racing".to_string())
+            .is_err());
     }
 
     #[test]
@@ -412,9 +491,9 @@ mod tests {
         let path = path("corrupt.json");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"not json").unwrap();
-        let manager = MaintenanceManager::load(path.clone(), true);
+        let manager = MaintenanceManager::load(path.clone(), true, AdmissionController::new(true));
         assert_eq!(manager.stable_code(), "MAINTENANCE_QUARANTINE");
-        assert!(!manager.admissions.load(Ordering::Acquire));
+        assert!(!manager.admissions.accepts_work());
         let _ = std::fs::remove_file(path);
     }
 
@@ -424,12 +503,11 @@ mod tests {
         let uninstall = path.with_file_name("pending-uninstall.json");
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&uninstall);
-        let sessions = SessionManager::new(QuotaLimits::default());
-        let manager = MaintenanceManager::load(path.clone(), true);
+        let (sessions, manager) = setup(path.clone());
         assert!(manager.prepare_uninstall(&sessions).unwrap());
-        let restarted = MaintenanceManager::load(path, true);
+        let restarted = MaintenanceManager::load(path, true, AdmissionController::new(true));
         assert_eq!(restarted.stable_code(), "UNINSTALL_PENDING");
-        assert!(!restarted.admissions.load(Ordering::Acquire));
+        assert!(!restarted.admissions.accepts_work());
         let _ = std::fs::remove_file(uninstall);
     }
 }

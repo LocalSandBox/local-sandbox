@@ -22,7 +22,6 @@ use crate::session::{
 
 #[allow(clippy::too_many_arguments)]
 pub async fn start(
-    admissions_open: bool,
     engine: Option<ServiceEngineConfig>,
     sessions: SessionManager,
     session_id: ResourceHandle,
@@ -56,9 +55,6 @@ pub async fn start(
         .transpose()
         .map_err(|_| ErrorCode::InvalidRequest)?;
     proxy_config = proxy_config_for_mounts(proxy_config, !mounts.is_empty());
-    if !admissions_open {
-        return Err(ErrorCode::ServiceUnavailable);
-    }
     if !ports.is_empty() {
         return Err(ErrorCode::PortIsolationUnavailable);
     }
@@ -108,6 +104,8 @@ pub async fn start(
             );
             if error.downcast_ref::<QuotaError>().is_some() {
                 return Err(ErrorCode::QuotaExceeded);
+            } else if !sessions.admissions().accepts_work() {
+                return Err(ErrorCode::ServiceDraining);
             } else {
                 return Err(ErrorCode::ResourceNotFound);
             }
