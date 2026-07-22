@@ -1,0 +1,117 @@
+justfile
+  s_4295b9feabbe21::t_6f6a7ead4f6123 84-86
+crates/lsb-service-spike/Cargo.toml
+  s_4295b9feabbe21::t_17a07e16212675 3,13
+xtask/src/main.rs
+  s_4295b9feabbe21::t_17a07e16212675 31,52-53
+  s_4295b9feabbe21::t_6212133fdfd676 51
+crates/lsb-sdk/Cargo.toml
+  s_4295b9feabbe21::t_6f6a7ead4f6123 3,10-14
+.github/workflows/nodejs-binding.yml
+  s_4295b9feabbe21::t_6f6a7ead4f6123 4-9,64-65,98-99
+  s_4295b9feabbe21::t_9ab018ba08bfc2 10-22,90-92,109-131
+bindings/nodejs/npm/darwin-arm64/package.json
+  s_4295b9feabbe21::t_6f6a7ead4f6123 3
+.github/workflows/publish-crates.yml
+  s_4295b9feabbe21::t_6f6a7ead4f6123 4-16,23,26-37,39-42,44-45,47-51,54-57,59-60,62-63,67
+.github/workflows/release.yml
+  s_4295b9feabbe21::t_6f6a7ead4f6123 2,5-7,9-11,20-23,26,33-40,43-85,87-139,141-142,241-242,244-249,251-253,257,259,280-281,283,286,288,290,296-297,303,305,309,312,333-334,336,341,344,355-356,358,362,370-372,755-756,762,764-788,791-792,813-814,816-817,819-820,822-823,838-839,850-854,860-879,881-895,897-899,905-907
+  s_4295b9feabbe21::t_f99d75e3551bad 183-184,187,190-191,214-215
+  s_4295b9feabbe21::t_a693f5d0a4af8d 8,12-19,41-42,86,140
+  s_4295b9feabbe21::t_6874970819b72a 835-836,880
+  s_4295b9feabbe21::t_e6b14a0cfc3acd 143-182,185-186,188-189,192-213,216,254-256
+  s_4295b9feabbe21::t_1f38a3834c9af2 789,804-805,807-812,815,818,821,824-834,837,840-849,855-859,896,900-904
+  s_4295b9feabbe21::t_c3157636704d0b 217-240,243,250,260,313,366
+  s_4295b9feabbe21::t_ac3017da007303 383,386,396,400-401,404-405,416,524,567,606,609
+  s_4295b9feabbe21::t_2393316b6d1aa4 613-614,625,628-629,650,660,689-753,757
+  s_4295b9feabbe21::t_ffd2cdc2166dd9 754
+.github/workflows/release_nodejs.yml
+  s_4295b9feabbe21::t_71713f1775cdf5 14-17,70,72-74,76,80-81,86-90,92-93,104,113,127,129
+  s_4295b9feabbe21::t_6f6a7ead4f6123 1,4,6-13,18-19,27,37-39,44,48,51,54,84-85,94-98,100,102-103,105-112,114-115,117-118,121-125,128,132-135
+bindings/nodejs/npm/win32-x64-msvc/package.json
+  s_4295b9feabbe21::t_6f6a7ead4f6123 3
+bindings/nodejs/Cargo.toml
+  s_4295b9feabbe21::t_6f6a7ead4f6123 5
+crates/lsb-platform/src/macos_serial_tests.rs
+  s_4295b9feabbe21::t_6f6a7ead4f6123 1-194
+README.md
+  s_4295b9feabbe21::t_6f6a7ead4f6123 451-480
+xtask/src/seawork_release.rs
+  s_4295b9feabbe21::t_075c0ce7ca09ca 347,1194-1195,1200
+.github/workflows/ci.yml
+  s_4295b9feabbe21::t_4524fd4bd2dc13 76-78
+  s_4295b9feabbe21::t_6f6a7ead4f6123 4-9,24-25,28,35-36,56-57
+crates/lsb-platform/src/macos_aarch64/mod.rs
+  s_4295b9feabbe21::t_6f6a7ead4f6123 81,131,133,135-136
+crates/lsb-proxy/Cargo.toml
+  s_4295b9feabbe21::t_6f6a7ead4f6123 3
+crates/lsb-seawork-service/Cargo.toml
+  s_4295b9feabbe21::t_17a07e16212675 3,17,22,25
+crates/lsb-platform/src/macos_x86_64/mod.rs
+  s_4295b9feabbe21::t_6f6a7ead4f6123 81,131,133,135-136
+xtask/src/release.rs
+  s_4295b9feabbe21::t_577e5fce300725 476,481-484,486-535
+  s_4295b9feabbe21::t_6f6a7ead4f6123 5,7-8,13-19,24-31,34-43,48-71,88-121,123-153,155-213,234-244,246-248,250-256,258-274,276,280-286,292-301,303-309,448-475,477-480,485,536-537
+  s_4295b9feabbe21::t_2ffe271b988922 80-84
+  s_4295b9feabbe21::t_817c3616cecea1 245
+  s_4295b9feabbe21::t_6212133fdfd676 20-23,32-33,44-47,72-79,85-87,122,154,214-233,249,257,275,277-279,287-291,302
+docs/seawork-service-release.md
+  s_4295b9feabbe21::t_931f0941f11d09 32,44-48,57,59,61,73-82,282-287,292-293,306-307
+crates/lsb-service-client/Cargo.toml
+  s_4295b9feabbe21::t_17a07e16212675 3,13
+crates/lsb-proto/Cargo.toml
+  s_4295b9feabbe21::t_6f6a7ead4f6123 3
+crates/lsb-platform/Cargo.toml
+  s_4295b9feabbe21::t_6f6a7ead4f6123 3,14
+xtask/Cargo.toml
+  s_4295b9feabbe21::t_6f6a7ead4f6123 14-17
+crates/lsb-service-proto/Cargo.toml
+  s_4295b9feabbe21::t_17a07e16212675 3
+crates/lsb-store/Cargo.toml
+  s_4295b9feabbe21::t_6f6a7ead4f6123 3,13
+bindings/nodejs/package.json
+  s_4295b9feabbe21::t_6f6a7ead4f6123 3
+Cargo.toml
+  s_4295b9feabbe21::t_17a07e16212675 27-28
+  s_4295b9feabbe21::t_6f6a7ead4f6123 19-26,29-31
+crates/lsb-platform/src/macos_aarch64/serial.rs
+  s_4295b9feabbe21::t_6f6a7ead4f6123 1-2,17-19,22-32,34,41,45-47,49-54,56,63-83,88-102,138-141
+bindings/nodejs/test/startup.spec.ts
+  s_4295b9feabbe21::t_6f6a7ead4f6123 1,7,59-110
+crates/lsb-cli/Cargo.toml
+  s_4295b9feabbe21::t_6f6a7ead4f6123 3,11-16
+crates/lsb-guest/Cargo.toml
+  s_4295b9feabbe21::t_6f6a7ead4f6123 3,12
+bindings/nodejs/npm/darwin-x64/package.json
+  s_4295b9feabbe21::t_6f6a7ead4f6123 3
+crates/lsb-platform/src/macos_x86_64/serial.rs
+  s_4295b9feabbe21::t_6f6a7ead4f6123 1-2,17-19,22-32,34,41,45-47,49-54,56,63-83,88-102,138-141
+crates/lsb-vm/Cargo.toml
+  s_4295b9feabbe21::t_6f6a7ead4f6123 3,11-12
+Cargo.lock
+  s_da77f56a021791::t_4b29a1ceaa61dc 936,959,969,989,998,1021,1040,1060,1074,1083,1096,1111,1538,1798-1821,2175-2183,2303,2307
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "681f73d9d4c38b12a87257a91f33c5c1b44154d9",
+  "prompts": {},
+  "sessions": {
+    "s_4295b9feabbe21": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f888a-a79f-7be0-9079-31c6ba67e0d4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    },
+    "s_da77f56a021791": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f885f-8b1a-7371-af59-2753509c3118",
+        "model": "unknown"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
