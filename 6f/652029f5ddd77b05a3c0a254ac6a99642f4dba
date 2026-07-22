@@ -1,0 +1,28 @@
+docs/seawork-test-release-handoff.md
+  s_f467a00f62f93c::t_3a293d561cc4d8 1081-1085
+docs/seawork-update-evidence.md
+  s_f467a00f62f93c::t_1a5f675d5359d5 17
+  s_f467a00f62f93c::t_fa0a3109ceb78f 80-83
+xtask/src/seawork_update_evidence.rs
+  s_f467a00f62f93c::t_07958d4227f95e 250-253
+  s_f467a00f62f93c::t_1a5f675d5359d5 11,55-56,81-91,247-249,254-256,565,573-581
+scripts/assemble-seawork-update-evidence.ps1
+  s_f467a00f62f93c::t_fa0a3109ceb78f 106,108-125,190-191
+  s_f467a00f62f93c::t_1a5f675d5359d5 174,193-201
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "6f652029f5ddd77b05a3c0a254ac6a99642f4dba",
+  "prompts": {},
+  "sessions": {
+    "s_f467a00f62f93c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f88c5-3e3b-7723-a390-0d43291a7df3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
