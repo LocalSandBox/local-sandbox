@@ -949,3 +949,61 @@ at every journal phase, reboot recovery, three-failure suppression, repair, and
 uninstall. Append the immutable release URL/ID, source commit/tree, PE and ZIP SHA-256
 values, publisher/timestamp evidence, and Windows run IDs here; do not replace this
 entry or infer those values from unsigned local builds.
+
+## 2026-07-22 — Controlled self-upgrade source hardening and evidence contract
+
+Status: **LocalSandbox source contract extended; signed Windows execution and all
+SeaWork-owned installation, repair, boot-recovery, and uninstall work remain open**
+
+This append-only entry extends the controlled self-upgrade source baseline above. It
+does not change the separate immutable updater-artifact rule or the current release
+workflow boundary.
+
+Additional LocalSandbox commits are:
+
+- `5f69b4f`: exact recovery when the target committed through the maintenance protocol
+  before the helper finalized the protected committed-state record;
+- `21ba92c`: host-neutral coordinator policy tests plus a bounded, no-window helper
+  `--version --json` query before handoff; the service requires helper protocol 1.1 or
+  a compatible newer minor and reports incompatible identity/protocol as
+  `helper_too_old` without changing SCM ImagePath;
+- `5ede1b2`: a digest-bound Windows controlled-update evidence schema, validator,
+  assembler, and complete case/crash/reboot phase matrix; and
+- `d2b3b30`: helper candidate placement now opens and creates every child relative to
+  pinned NT directory handles, rejects reparse entries, and re-verifies the exact final
+  bundle before SCM mutation.
+
+No change was made to `.github/workflows/release.yml`. The current `just release
+<version>` and `service_evidence=skip|required` behavior remains authoritative. The
+dedicated update evidence is deliberately separate from existing service-release
+evidence and lives below:
+
+```text
+artifacts/windows-update-evidence/
+  <source-git-sha>/<service-archive-sha256>/<helper-binary-sha256>/manifest.json
+```
+
+On the authorized Windows host, use
+`scripts/assemble-seawork-update-evidence.ps1`; independently validate with:
+
+```powershell
+cargo run -p xtask --locked -- verify-seawork-update-evidence `
+  --manifest <manifest-path> `
+  --service-archive <exact-service-zip> `
+  --helper <exact-installed-helper-exe> `
+  --require-complete
+```
+
+The complete gate binds the source commit, immutable GitHub release ID/tag, service ZIP,
+installed helper PE and queried protocol, accepted publisher SHA-256 identity, and exact
+previous/candidate bundle identities. It requires stable/prerelease selection, busy
+wait, idle/start race, successful activation, health rollback, hostile/incompatible
+rejection including a too-old helper, failed-target suppression, SeaWork repair, and
+SeaWork uninstall. It also independently requires helper-crash and real-reboot recovery
+at every nonterminal durable journal phase. Incomplete `blocked`/`not_run` handoffs are
+retained with stable codes but cannot pass `--require-complete`.
+
+SeaWork must continue to implement and prove every installer/SCM/ACL/recovery/uninstall
+row from the preceding entries. This LocalSandbox evidence tooling does not install the
+helper, synthesize a signed release tuple, authorize remote-host execution, or replace
+SeaWork-owned acceptance work.
