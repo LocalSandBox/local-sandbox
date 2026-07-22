@@ -102,8 +102,8 @@ jobs:
           cargo test -p lsb-store --locked qemu_img_discovery
       - name: Cargo unit tests
         run: cargo test --workspace --locked
-      - name: Strict service release lint
-        run: cargo clippy -p xtask -p lsb-service-proto -p lsb-service-client -p lsb-seawork-service --locked --no-deps -- -D warnings
+      - name: Strict SeaWork release lint
+        run: cargo clippy -p xtask -p lsb-service-proto -p lsb-service-client -p lsb-seawork-update -p lsb-seawork-service -p lsb-seawork-updater --locked --no-deps -- -D warnings
       - name: Generate service SBOM and license inventory
         run: |
           $root = Join-Path $env:RUNNER_TEMP 'seawork-release-metadata'

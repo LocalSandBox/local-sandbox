@@ -65,13 +65,17 @@ Configure these secrets in the protected `seawork-service-signing` environment:
 | `SEAWORK_CODESIGN_PFX_BASE64` | Base64 of the organization-controlled PFX |
 | `SEAWORK_CODESIGN_PASSWORD` | PFX password |
 
-The workflow builds the x64 service with a statically linked CRT and preserved
-PDB, signs and timestamps the PE, records runtime and Cargo dependencies,
-generates the SPDX/license inventory, stages the closed bundle, creates and
-signs the catalog, builds deterministic payload/symbol ZIPs, verifies the
-installed-layout bundle, emits checksums, creates GitHub artifact attestations,
-and stages the assets through the workflow's single draft GitHub release path.
-Signing secrets exist only in the signing environment and below `RUNNER_TEMP`.
+The workflow builds the x64 service and updater helper with a statically linked
+CRT, preserves the service PDB, and signs and timestamps both PEs. It records
+runtime and Cargo dependencies, generates the SPDX/license inventory, stages the
+closed service bundle, creates and signs the catalog, and builds deterministic
+service payload/symbol ZIPs. It also emits the separate, deterministic updater
+ZIP, schema-2 updater manifest, and updater checksum file required by the SeaWork
+installer. Before publication the workflow verifies the installed-layout service
+bundle and the closed updater tuple, creates GitHub artifact attestations for both
+payload ZIPs, and stages every asset through the workflow's single draft GitHub
+release path. Signing secrets exist only in the signing environment and below
+`RUNNER_TEMP`.
 
 Each invocation explicitly selects `service_evidence=skip|required`. `required`
 binds complete Windows evidence to the prepared commit and exact payload ZIP

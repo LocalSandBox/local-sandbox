@@ -386,7 +386,7 @@ jobs:
           echo "${LSB_MANAGED_QEMU_SHA256}  ${LSB_MANAGED_QEMU_TARBALL}" | sha256sum -c -
 
   build-seawork-service:
-    name: Build and sign SeaWork Windows service
+    name: Build and sign SeaWork Windows artifacts
     if: ${{ vars.SEAWORK_SERVICE_SIGNING_ENABLED == 'true' }}
     needs: [prepare, build-os-image, service-config]
     runs-on: windows-latest
@@ -402,6 +402,7 @@ jobs:
     env:
       SEAWORK_PUBLISHER_SUBJECT: ${{ vars.SEAWORK_PUBLISHER_SUBJECT }}
       SEAWORK_PUBLISHER_SHA256: ${{ needs.service-config.outputs.publisher-sha256 }}
+      SEAWORK_PUBLISHER_SHA256_PREVIOUS: ${{ needs.service-config.outputs.publisher-sha256-previous }}
       SEAWORK_TIMESTAMP_URL: ${{ vars.SEAWORK_TIMESTAMP_URL }}
       SEAWORK_CODESIGN_PFX_BASE64: ${{ secrets.SEAWORK_CODESIGN_PFX_BASE64 }}
       SEAWORK_CODESIGN_PASSWORD: ${{ secrets.SEAWORK_CODESIGN_PASSWORD }}
@@ -442,10 +443,12 @@ jobs:
           "LSB_WINDOWS_MC_PATH=$($toolset.FullName)\x64\mc.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "LSB_WINDOWS_RC_PATH=$($toolset.FullName)\x64\rc.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Build service and symbols
+      - name: Build service, updater, and symbols
         env:
           RUSTFLAGS: -C target-feature=+crt-static
-        run: cargo build -p lsb-seawork-service --locked --release --target x86_64-pc-windows-msvc
+        run: |
+          cargo build -p lsb-seawork-service -p lsb-seawork-updater `
+            --locked --release --target x86_64-pc-windows-msvc
 
       - name: Verify embedded Event Log messages
         run: |
@@ -496,7 +499,7 @@ jobs:
           "LSB_SEAWORK_PFX=$secrets\codesign.pfx" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "LSB_SEAWORK_PASSWORD=$secrets\password.txt" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Sign service PE
+      - name: Sign service and updater PEs
         run: |
           # TODO: Remove SkipTrustVerification after provisioning the company root CA on hosted runners.
           .\scripts\sign-seawork-service.ps1 `
@@ -508,6 +511,34 @@ jobs:
             -ExpectedPublisherSubject $env:SEAWORK_PUBLISHER_SUBJECT `
             -ExpectedPublisherSha256 $env:SEAWORK_PUBLISHER_SHA256 `
             -SkipTrustVerification
+          .\scripts\sign-seawork-service.ps1 `
+            -Mode SignUpdaterPe `
+            -UpdaterBinary '.\target\x86_64-pc-windows-msvc\release\localsandbox-seawork-updater.exe' `
+            -PfxPath $env:LSB_SEAWORK_PFX `
+            -PasswordFile $env:LSB_SEAWORK_PASSWORD `
+            -TimestampUrl $env:SEAWORK_TIMESTAMP_URL `
+            -ExpectedPublisherSubject $env:SEAWORK_PUBLISHER_SUBJECT `
+            -ExpectedPublisherSha256 $env:SEAWORK_PUBLISHER_SHA256 `
+            -SkipTrustVerification
+
+      - name: Verify signed updater identity
+        run: |
+          $updater = '.\target\x86_64-pc-windows-msvc\release\localsandbox-seawork-updater.exe'
+          .\scripts\sign-seawork-service.ps1 `
+            -Mode VerifyUpdaterPe `
+            -UpdaterBinary $updater `
+            -ExpectedPublisherSubject $env:SEAWORK_PUBLISHER_SUBJECT `
+            -ExpectedPublisherSha256 $env:SEAWORK_PUBLISHER_SHA256 `
+            -SkipTrustVerification | Out-Null
+          $identityText = (& $updater --version --json | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'signed updater version query failed' }
+          $identity = $identityText | ConvertFrom-Json
+          if ($identity.service_name -cne 'LocalSandboxSeaWorkUpdater' -or
+              [string]$identity.helper_version -cne $env:LSB_SEAWORK_VERSION -or
+              [int]$identity.helper_protocol_major -ne 1 -or
+              [int]$identity.helper_protocol_minor -ne 1) {
+            throw 'signed updater identity or helper protocol is invalid'
+          }
 
       - name: Verify signed PE Event Log messages
         run: |
@@ -593,6 +624,17 @@ jobs:
             --pdb $pdb `
             --source-map $sourceMapPath
 
+      - name: Package updater release artifacts
+        run: |
+          cargo run -p xtask --locked -- package-release `
+            --artifact seawork-updater `
+            --platform windows-x86_64 `
+            --version $env:LSB_SEAWORK_VERSION `
+            --output-dir target/seawork-service/out `
+            --updater-binary target/x86_64-pc-windows-msvc/release/localsandbox-seawork-updater.exe `
+            --publisher-subject $env:SEAWORK_PUBLISHER_SUBJECT `
+            --publisher-thumbprint $env:SEAWORK_PUBLISHER_SHA256
+
       - name: Verify final signatures and bundle
         run: |
           .\scripts\sign-seawork-service.ps1 `
@@ -609,13 +651,21 @@ jobs:
         with:
           subject-path: target/seawork-service/out/lsb-seawork-service-*.zip
 
-      - name: Upload service release assets
+      - name: Attest updater release asset
+        uses: actions/attest@v4
+        with:
+          subject-path: target/seawork-service/out/lsb-seawork-updater-v*-windows-x86_64.zip
+
+      - name: Upload SeaWork release assets
         uses: actions/upload-artifact@v4
         with:
           name: seawork-service-release
           path: |
             target/seawork-service/out/lsb-seawork-service-*.zip
             target/seawork-service/out/lsb-seawork-service-v*-SHA256SUMS
+            target/seawork-service/out/lsb-seawork-updater-v*-windows-x86_64.zip
+            target/seawork-service/out/lsb-seawork-updater-v*-windows-x86_64-manifest.json
+            target/seawork-service/out/lsb-seawork-updater-v*-SHA256SUMS
             target/seawork-service/event-messages-signed.json
           if-no-files-found: error
           retention-days: 14
@@ -723,7 +773,7 @@ jobs:
           if [[ "$SERVICE_ENABLED" != "true" ]]; then
             status=not-applicable
           elif [[ "$BUILD_RESULT" != "success" ]]; then
-            echo "signed SeaWork service construction did not succeed" >&2
+            echo "signed SeaWork service/updater construction did not succeed" >&2
             exit 1
           elif [[ "$EVIDENCE_POLICY" == "required" && "$GATE_RESULT" != "success" ]]; then
             echo "required exact-artifact Windows evidence did not validate" >&2
@@ -736,7 +786,7 @@ jobs:
             {
               echo "# ⚠️ Windows service evidence skipped by operator"
               echo
-              echo "The signed service passed hosted build-time verification but is **not Windows-evidence-qualified**."
+              echo "The signed service and updater passed hosted build-time verification, but the service is **not Windows-evidence-qualified**."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -805,7 +855,7 @@ jobs:
 
   stage-github-release:
     name: Stage draft GitHub release
-    needs: [prepare, tag, service-ready]
+    needs: [prepare, publisher-config, tag, service-ready]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -829,6 +879,65 @@ jobs:
         with:
           name: seawork-service-release-status
           path: artifacts/
+      - name: Validate SeaWork release artifact tuple
+        if: ${{ vars.SEAWORK_SERVICE_SIGNING_ENABLED == 'true' }}
+        env:
+          PUBLISHER_SHA256: ${{ needs.publisher-config.outputs.current }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          service="artifacts/lsb-seawork-service-v${VERSION}-windows-x86_64.zip"
+          updater="artifacts/lsb-seawork-updater-v${VERSION}-windows-x86_64.zip"
+          manifest="artifacts/lsb-seawork-updater-v${VERSION}-windows-x86_64-manifest.json"
+          sums="artifacts/lsb-seawork-updater-v${VERSION}-SHA256SUMS"
+          for path in "$service" "$updater" "$manifest" "$sums"; do
+            if [[ ! -f "$path" ]]; then
+              echo "required SeaWork release artifact is missing: $path" >&2
+              exit 1
+            fi
+          done
+
+          shopt -s nullglob
+          service_payloads=(artifacts/lsb-seawork-service-v*-windows-x86_64.zip)
+          updater_payloads=(artifacts/lsb-seawork-updater-v*-windows-x86_64.zip)
+          updater_manifests=(artifacts/lsb-seawork-updater-v*-windows-x86_64-manifest.json)
+          updater_sums=(artifacts/lsb-seawork-updater-v*-SHA256SUMS)
+          if (( ${#service_payloads[@]} != 1 || ${#updater_payloads[@]} != 1 ||
+                ${#updater_manifests[@]} != 1 || ${#updater_sums[@]} != 1 )); then
+            echo "expected exactly one version-consistent service/updater release tuple" >&2
+            exit 1
+          fi
+
+          (
+            cd artifacts
+            sha256sum -c "lsb-seawork-updater-v${VERSION}-SHA256SUMS"
+          )
+          jq -e \
+            --arg version "$VERSION" \
+            --arg publisher "$PUBLISHER_SHA256" \
+            '.schema_version == 2 and
+             .version == $version and
+             .target == "x86_64-pc-windows-msvc" and
+             .binary_name == "localsandbox-seawork-updater.exe" and
+             .publisher_sha256_thumbprint == $publisher and
+             .protocol.major == 1 and .protocol.min == 1 and .protocol.max == 1 and
+             .service_name == "LocalSandboxSeaWorkUpdater"' \
+            "$manifest" >/dev/null
+
+          mapfile -t entries < <(unzip -Z1 "$updater" | LC_ALL=C sort)
+          if (( ${#entries[@]} != 2 )) ||
+             [[ "${entries[0]}" != "localsandbox-seawork-updater.exe" ]] ||
+             [[ "${entries[1]}" != "manifests/updater.json" ]]; then
+            echo "updater archive does not have the required closed two-file layout" >&2
+            exit 1
+          fi
+          unzip -p "$updater" manifests/updater.json | cmp - "$manifest"
+          binary_sha256="$(unzip -p "$updater" localsandbox-seawork-updater.exe | sha256sum | awk '{print $1}')"
+          manifest_binary_sha256="$(jq -r '.binary_sha256' "$manifest")"
+          if [[ "$binary_sha256" != "$manifest_binary_sha256" ]]; then
+            echo "updater archive binary digest differs from its manifest" >&2
+            exit 1
+          fi
       - name: Create or update draft release
         env:
           EVIDENCE_STATUS: ${{ needs.service-ready.outputs.evidence-status }}
@@ -842,8 +951,10 @@ jobs:
           set -euo pipefail
           if [[ "$SERVICE_ENABLED" == "true" ]]; then
             service_line="Windows service: included"
+            updater_line="Windows updater helper: included"
           else
             service_line="Windows service: not included"
+            updater_line="Windows updater helper: not included"
           fi
           case "$EVIDENCE_STATUS" in
             validated) evidence_line="Windows service evidence: validated for the exact payload" ;;
@@ -851,8 +962,8 @@ jobs:
             not-applicable) evidence_line="Windows service evidence: not applicable" ;;
             *) echo "unexpected service evidence status: $EVIDENCE_STATUS" >&2; exit 1 ;;
           esac
-          section="$(printf '<!-- seawork-status:start -->\n%s\n%s\n<!-- seawork-status:end -->' \
-            "$service_line" "$evidence_line")"
+          section="$(printf '<!-- seawork-status:start -->\n%s\n%s\n%s\n<!-- seawork-status:end -->' \
+            "$service_line" "$updater_line" "$evidence_line")"
 
           if is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null)"; then
             if [[ "$is_draft" == "true" ]]; then
@@ -877,6 +988,36 @@ jobs:
             fi
             gh release create "$RELEASE_TAG" artifacts/* "${args[@]}"
           fi
+
+      - name: Validate staged GitHub release tuple
+        if: ${{ vars.SEAWORK_SERVICE_SIGNING_ENABLED == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IS_PRERELEASE: ${{ needs.prepare.outputs.is-prerelease }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release.json
+          jq -e \
+            --arg tag "$RELEASE_TAG" \
+            --argjson prerelease "$IS_PRERELEASE" \
+            --arg service "lsb-seawork-service-v${VERSION}-windows-x86_64.zip" \
+            --arg updater "lsb-seawork-updater-v${VERSION}-windows-x86_64.zip" \
+            --arg manifest "lsb-seawork-updater-v${VERSION}-windows-x86_64-manifest.json" \
+            --arg sums "lsb-seawork-updater-v${VERSION}-SHA256SUMS" \
+            'def valid_asset($name):
+               [.assets[] | select(.name == $name and .state == "uploaded" and
+                 (.size > 0) and (.digest | test("^sha256:[0-9a-f]{64}$")))] | length == 1;
+             .tag_name == $tag and
+             .prerelease == $prerelease and
+             ((.draft == true) or (.immutable == true)) and
+             valid_asset($service) and valid_asset($updater) and
+             valid_asset($manifest) and valid_asset($sums)' \
+            release.json >/dev/null
 
   publish-crates:
     name: Optionally publish crates.io packages
@@ -914,7 +1055,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           IS_PRERELEASE: ${{ needs.prepare.outputs.is-prerelease }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          SERVICE_ENABLED: ${{ vars.SEAWORK_SERVICE_SIGNING_ENABLED == 'true' }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
+          set -euo pipefail
           if [[ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" == "true" ]]; then
             if [[ "$IS_PRERELEASE" == "true" ]]; then
               gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
@@ -924,3 +1068,25 @@ jobs:
           else
             echo "${RELEASE_TAG} is already public"
           fi
+
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release.json
+          jq -e \
+            --arg tag "$RELEASE_TAG" \
+            --argjson prerelease "$IS_PRERELEASE" \
+            --argjson service_enabled "$SERVICE_ENABLED" \
+            --arg service "lsb-seawork-service-v${VERSION}-windows-x86_64.zip" \
+            --arg updater "lsb-seawork-updater-v${VERSION}-windows-x86_64.zip" \
+            --arg manifest "lsb-seawork-updater-v${VERSION}-windows-x86_64-manifest.json" \
+            --arg sums "lsb-seawork-updater-v${VERSION}-SHA256SUMS" \
+            'def valid_asset($name):
+               [.assets[] | select(.name == $name and .state == "uploaded" and
+                 (.size > 0) and (.digest | test("^sha256:[0-9a-f]{64}$")))] | length == 1;
+             .tag_name == $tag and .draft == false and .immutable == true and
+             .prerelease == $prerelease and
+             (($service_enabled | not) or
+               (valid_asset($service) and valid_asset($updater) and
+                valid_asset($manifest) and valid_asset($sums)))' \
+            release.json >/dev/null
