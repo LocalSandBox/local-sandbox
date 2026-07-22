@@ -626,10 +626,10 @@ impl SessionManager {
                 .get(&session_id)
                 .filter(|session| &session.identity == identity)
                 .context("resource not found")?;
-            if !session
+            if session
                 .sandboxes
                 .get(&handle)
-                .is_some_and(|slot| slot.vm.is_none())
+                .is_none_or(|slot| slot.vm.is_some())
             {
                 bail!("sandbox reservation is unavailable");
             }
@@ -654,10 +654,10 @@ impl SessionManager {
             bail!("session closed during VM startup");
         };
         if &session.identity != identity
-            || !session
+            || session
                 .sandboxes
                 .get(&handle)
-                .is_some_and(|slot| slot.vm.is_none())
+                .is_none_or(|slot| slot.vm.is_some())
         {
             if let Ok(vm) = started {
                 let _ = vm.stop(std::time::Duration::from_secs(30));
