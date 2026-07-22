@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
+pub use lsb_seawork_update::ReleaseChannel as UpdateChannel;
 use serde::Deserialize;
 
 const MAX_CONFIG_SIZE: u64 = 256 * 1024;
@@ -27,14 +28,6 @@ pub struct ServiceConfig {
     pub egress_allow: Vec<String>,
     #[serde(default)]
     pub upstream_proxy: Option<ServiceUpstreamProxyConfig>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UpdateChannel {
-    #[default]
-    Stable,
-    Prerelease,
 }
 
 #[derive(Clone, PartialEq, Eq, Deserialize)]
