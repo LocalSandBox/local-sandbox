@@ -1,0 +1,85 @@
+crates/lsb-seawork-updater/Cargo.toml
+  s_f467a00f62f93c::t_fc1f5963437565 15
+crates/lsb-seawork-updater/src/windows.rs
+  s_f467a00f62f93c::t_74ac035cc41702 460
+  s_f467a00f62f93c::t_fc1f5963437565 13,329,369-376,459,461-462,464-483,743,764
+  s_f467a00f62f93c::t_4aee3b7a1c503b 463
+crates/lsb-seawork-update/src/discovery.rs
+  s_f467a00f62f93c::t_57615e08b431a2 302-317
+  s_f467a00f62f93c::t_60ec7f3f067073 34-44,49-56,191-200
+  s_f467a00f62f93c::t_13acbd2ccc6e8f 45-48,201
+  s_f467a00f62f93c::t_134614fa6308e0 22-23
+  s_f467a00f62f93c::t_03e3bc5c686667 301
+crates/lsb-seawork-service/src/pipe.rs
+  s_f467a00f62f93c::t_f7ed900c347495 352-353,362-382,400-401,421-422,483-503,1723-1734,1736
+  s_f467a00f62f93c::t_27187714f1707e 424,463-482,504-505
+  s_f467a00f62f93c::t_e07355319a58fd 12-16
+  s_f467a00f62f93c::t_f4731e19faeac2 423,425
+crates/lsb-seawork-update/src/committed.rs
+  s_f467a00f62f93c::t_f387c60486fdf9 82,91-94,155
+crates/lsb-seawork-service/src/paths.rs
+  s_f467a00f62f93c::t_f387c60486fdf9 25,51
+crates/lsb-seawork-service/src/maintenance.rs
+  s_f467a00f62f93c::t_edd3963a5fdb63 123-139
+  s_f467a00f62f93c::t_76c862dc9095d6 459-481
+  s_f467a00f62f93c::t_f387c60486fdf9 107-122,140-146
+  s_f467a00f62f93c::t_7c5fa32079bec1 458
+crates/lsb-seawork-service/src/scm.rs
+  s_f467a00f62f93c::t_6bff74f9cd147a 208-212
+  s_f467a00f62f93c::t_74ac035cc41702 146-148
+  s_f467a00f62f93c::t_95979bcee64988 143-145,149-156,199-207,213-215
+  s_f467a00f62f93c::t_f7ed900c347495 131-136,180
+crates/lsb-seawork-service/build.rs
+  s_f467a00f62f93c::t_27187714f1707e 9,58-92
+  s_f467a00f62f93c::t_606e6507eda091 93-94
+crates/lsb-seawork-service/src/main.rs
+  s_f467a00f62f93c::t_27187714f1707e 28-29
+crates/lsb-seawork-service/Cargo.toml
+  s_f467a00f62f93c::t_0a0bafa4317cbb 15
+  s_f467a00f62f93c::t_ad2bcde8313d8d 22,24
+  s_f467a00f62f93c::t_27187714f1707e 25-26,50
+crates/lsb-seawork-service/src/update/mod.rs
+  s_f467a00f62f93c::t_198523db2479b5 230,239-241
+  s_f467a00f62f93c::t_22d0e43daf3282 1-11,14,16-23,25,27-34,79-117,119-120,133-145,147-148,155-203,209-229,231-238,242,244-259,262-279,291,295-299,301-303,333-335,381-382,388-390,395-404,412-438,446-447,449-452,454,458,540-541,555-608,615-677,680-682,689-751,778-827,834-916,939-947,951-988,990-1057
+  s_f467a00f62f93c::t_3a6534b39f597f 280,480,494,528
+  s_f467a00f62f93c::t_95979bcee64988 828-833
+  s_f467a00f62f93c::t_60ec7f3f067073 125-132
+  s_f467a00f62f93c::t_7e3808df42eaca 304-332
+  s_f467a00f62f93c::t_a51484d606a47f 609-614,683-688
+  s_f467a00f62f93c::t_13acbd2ccc6e8f 121-124
+  s_f467a00f62f93c::t_edd3963a5fdb63 39-42,71-74
+  s_f467a00f62f93c::t_2646aefa7bc545 260-261,405,411,439,445
+  s_f467a00f62f93c::t_baa7b47117918f 15,26,118,243,292-294,383-387,391-394,678-679,989
+  s_f467a00f62f93c::t_949a0fd61d99a4 24
+  s_f467a00f62f93c::t_c7679d974f42fc 336-380
+  s_f467a00f62f93c::t_6f96ec5358f9ac 300,542-554
+  s_f467a00f62f93c::t_74ac035cc41702 761-762,921-922
+  s_f467a00f62f93c::t_e07355319a58fd 204-208,406-410,440-444,459-463
+  s_f467a00f62f93c::t_5eed054e829b0d 917-920,923-938,948-950
+  s_f467a00f62f93c::t_c54ffcf3ee7654 281-290
+  s_f467a00f62f93c::t_a4a1e11d18e6fc 752-760,763-777
+  s_f467a00f62f93c::t_0d65deac0a8331 12-13,35-38,43-70,75-78
+  s_f467a00f62f93c::t_943a2ffa8dd6f4 448,453,455-457,464-479,481-493,495-527,529-539
+  s_f467a00f62f93c::t_b0d6890bc74ab6 146,149-154
+crates/lsb-seawork-service/src/admission.rs
+  s_f467a00f62f93c::t_27187714f1707e 1,3,198-219
+  s_f467a00f62f93c::t_6facbd8689a724 220-221
+Cargo.lock
+  s_f467a00f62f93c::t_f84058b77faf68 1053,1058,1062,1064-1065,1097
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "7577ca1eaf3112fe860ad09910f007ff42beee59",
+  "prompts": {},
+  "sessions": {
+    "s_f467a00f62f93c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f88c5-3e3b-7723-a390-0d43291a7df3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
