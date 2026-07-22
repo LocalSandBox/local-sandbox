@@ -743,3 +743,96 @@ again with a fresh construction run.
    this interim tuple. Mark the final LocalSandbox candidate complete only when every
    final-tree gate passes. Preserve the qualification that the `SG3937` token proof is
    not separate-account profile validation, and leave TR-6 for the SeaWork owner.
+
+## 2026-07-22 — Controlled self-upgrade helper integration contract
+
+Status: **open; LocalSandbox implementation is in progress and SeaWork installer,
+repair, and uninstall work is required after signed helper artifacts are available**
+
+### Baselines and contract source
+
+- LocalSandbox controlled-update contract: commit
+  `de7fc8f779e806d5bcef305c93e23a3743653ddd` on `feat/lsbs-auto-upgrade`.
+- SeaWork remains read-only at the last inspected `main`/`v1.3.2` baseline,
+  `be189da04a5dbdcb8641e12c997ae5567311d879`.
+- The generated `manifests/service-contract.json` is now revision 2. It fixes the
+  update repository, archive naming policy, supported channels, protected update
+  paths, updater SCM identity, updater path/command, and helper protocol range.
+- Protocol minor 6 replaces the version-only maintenance target with the complete
+  bundle identity and adds bounded update status and manual-check operations. SeaWork
+  maintenance code must pass through the complete generated identity and must not
+  reconstruct it from a version string.
+
+No signed helper artifact or final release tuple is asserted by this entry. A later
+append-only entry must bind the exact helper PE hash, service ZIP hash, publisher,
+protocol, source commit, and Windows evidence before SeaWork pins or ships it.
+
+### Mandatory SeaWork updater-service work
+
+SeaWork continues to own initial install, repair, and uninstall for both SCM entries.
+Extend the existing elevated NSIS/maintenance transaction rather than adding a second
+installer:
+
+1. Extract the catalog-covered, signed `localsandbox-seawork-updater.exe` from the
+   exact pinned LocalSandbox release and independently verify its hash, Authenticode
+   chain/timestamp, exact publisher, protected ancestry, and non-reparse final path.
+2. Install it at the generated fixed path
+   `%ProgramFiles%\SeaWork\LocalSandbox\updater\localsandbox-seawork-updater.exe`.
+   The path is intentionally outside the immutable main-service version roots; neither
+   the running service nor helper may replace it.
+3. Create `LocalSandboxSeaWorkUpdater` as a LocalSystem
+   `SERVICE_WIN32_OWN_PROCESS` with the exact quoted command ending in `--service`, the
+   generated unrestricted service SID/DACL, automatic boot recovery start, and the
+   generated bounded failure restart policy. Do not pass a transaction path, update
+   URL, version, or caller-controlled argument on its SCM command line.
+4. Configure and verify the updater before first starting the main service. A standard
+   user must never receive a UAC prompt from automatic update. If helper installation
+   or verification fails, fail closed for a service-only test build and preserve the
+   existing live-build helper fallback rules.
+5. Repair must reverify the helper binary, ACLs, SCM account/type/name/path/DACL/start
+   and failure actions, replace it only from a newer or exact pinned signed artifact,
+   and start it to reconcile any protected nonterminal update transaction before
+   declaring repair healthy.
+6. When update status reports `helper_too_old`, SeaWork installer/repair must update the
+   helper first. The helper never self-updates, and the main service must not create,
+   delete, or reconfigure its SCM entry.
+7. Uninstall must stop and delete both `LocalSandboxSeaWork` and
+   `LocalSandboxSeaWorkUpdater`, remove the updater Event/SCM configuration and only
+   verified installer-owned helper/version/state paths, and refuse ambiguous or
+   reparse-backed deletion. Preserve protected transaction evidence if safe rollback
+   or reconciliation has not completed.
+
+The protected `service.json` written by fresh install or repair may remain revision 1
+to imply `stable`, or use revision 2 with exactly `update_channel: stable` or
+`update_channel: prerelease`. SeaWork must not add repository, URL, asset-name, helper
+path, unsigned-mode, or signature-bypass settings.
+
+### Current LocalSandbox release-workflow context
+
+The release dispatch changed after the self-upgrade plan was drafted. At the contract
+commit above, `just release <version>` requires a version argument and selects
+`service_evidence=skip` by default for prereleases and `required` for stable versions;
+the workflow also accepts an explicit `skip|required` override. Follow-up publication
+must preserve that current dispatch/evidence policy rather than restoring the older
+defaulted `patch` command.
+
+The controlled-update runtime still requires one immutable GitHub release asset named
+`lsb-seawork-service-v<VERSION>-windows-x86_64.zip` with GitHub SHA-256 digest metadata.
+The LocalSandbox release build must place the signed helper and its generated contract
+metadata in that exact verified archive before this downstream work can close. SeaWork
+must consume the resulting immutable tuple; it must not fetch a separate mutable
+helper, rebuild the helper, or infer its publisher locally.
+
+### Added downstream acceptance rows
+
+Append evidence for all existing install/update/repair/uninstall rows plus:
+
+- helper SCM identity, command, account, start/recovery, DACL, protected path, signature,
+  publisher, and helper protocol exactly match the generated contract;
+- boot with no transaction makes the helper exit cleanly, while boot with a nonterminal
+  transaction resumes or rolls back before normal admissions open;
+- a too-old helper prevents activation without affecting the healthy current service,
+  then SeaWork repair upgrades the helper and permits a later retry;
+- helper crash/restart and reboot recovery cover every durable mutation boundary; and
+- uninstall removes both owned SCM entries and the fixed helper while retaining the
+  last-known-good version/state whenever reconciliation cannot be proved complete.
