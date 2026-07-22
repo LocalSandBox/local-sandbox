@@ -1018,10 +1018,11 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
+          release_id="$(gh release view "$RELEASE_TAG" --json databaseId --jq .databaseId)"
           gh api \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release.json
+            "repos/${GITHUB_REPOSITORY}/releases/${release_id}" > release.json
           jq -e \
             --arg tag "$RELEASE_TAG" \
             --argjson prerelease "$IS_PRERELEASE" \
