@@ -1,0 +1,83 @@
+crates/lsb-proto/Cargo.toml
+  s_7853a3b9f0c4b7::t_e6f9d16d46e418 3
+crates/lsb-proxy/Cargo.toml
+  s_7853a3b9f0c4b7::t_e6f9d16d46e418 3
+crates/lsb-sdk/Cargo.toml
+  s_7853a3b9f0c4b7::t_e6f9d16d46e418 3,10-14
+xtask/src/main.rs
+  s_7853a3b9f0c4b7::t_25ecd04d388c10 28,46-48
+.github/workflows/ci.yml
+  s_7853a3b9f0c4b7::t_9e7fc2aa3bc5bb 28
+  s_7853a3b9f0c4b7::t_3c7a6cd5bee65c 4-9,24-25,35-36,56-57
+.github/workflows/nodejs-binding.yml
+  s_7853a3b9f0c4b7::t_3c7a6cd5bee65c 4-9,47-48,78-79
+justfile
+  s_7853a3b9f0c4b7::t_42978c36f09ff1 84-86
+README.md
+  s_7853a3b9f0c4b7::t_ecc22d1e1b4a14 466-470
+  s_7853a3b9f0c4b7::t_cb28f0161fa710 450-452
+  s_7853a3b9f0c4b7::t_ef90277d39acd3 446-449,453-465,471-475
+xtask/src/release.rs
+  s_7853a3b9f0c4b7::t_d0afcc3ad76c48 95-106,110
+  s_7853a3b9f0c4b7::t_8f736ee52df752 86-88,109,412-427
+  s_7853a3b9f0c4b7::t_f8f9894477c0e1 168-176
+  s_7853a3b9f0c4b7::t_25ecd04d388c10 5,7-8,13-85,89-94,107-108,111-167,177-266
+  s_7853a3b9f0c4b7::t_c4bc82b24f5977 403-411,428-439
+  s_7853a3b9f0c4b7::t_36838fd82df79a 267
+.github/workflows/publish-crates.yml
+  s_7853a3b9f0c4b7::t_ecc22d1e1b4a14 16,23,26-37,39-40,45,47,50,54,56-57
+  s_7853a3b9f0c4b7::t_42978c36f09ff1 4-15,41-42,44,49,51,55,59-60,62-63,67
+  s_7853a3b9f0c4b7::t_3c3a34321a1e90 48
+.github/workflows/release_nodejs.yml
+  s_7853a3b9f0c4b7::t_42978c36f09ff1 1,4,6-15,23,33-35,40,44,47,50,66,72-73,76-78,81-82,100-101,104-108,111,115-118
+  s_7853a3b9f0c4b7::t_e786f0c565eb6f 84,86-98,112
+  s_d92cdce887f5bb::t_07b0e68e2b88f4 83
+xtask/Cargo.toml
+  s_7853a3b9f0c4b7::t_e6f9d16d46e418 9,11-12
+  s_7853a3b9f0c4b7::t_c1af7bc2ae4e13 10
+crates/lsb-store/Cargo.toml
+  s_7853a3b9f0c4b7::t_e6f9d16d46e418 3,13
+crates/lsb-guest/Cargo.toml
+  s_7853a3b9f0c4b7::t_e6f9d16d46e418 3,12
+crates/lsb-platform/Cargo.toml
+  s_7853a3b9f0c4b7::t_e6f9d16d46e418 3,14
+crates/lsb-cli/Cargo.toml
+  s_7853a3b9f0c4b7::t_e6f9d16d46e418 3,11-16
+Cargo.toml
+  s_7853a3b9f0c4b7::t_e6f9d16d46e418 15-25
+.github/workflows/release.yml
+  s_7853a3b9f0c4b7::t_ecc22d1e1b4a14 340
+  s_7853a3b9f0c4b7::t_a9cf33bd2c346e 76-81
+  s_7853a3b9f0c4b7::t_2121e17f838f2d 2,5-15,18,25-31,33-43,56-75,82-125,131-145,147-148,168-169,171,174,176,178,184-185,191,193,197,200-201,221-222,224,229,232,243-244,246,250,254,258-260,268-302,304-305,317-329,332-334,336,338-339,341,343-350,353-356,360-378
+  s_7853a3b9f0c4b7::t_d80deabaa85a6e 32,44-55,342,351-352
+  s_7853a3b9f0c4b7::t_1f83ca31bc8365 126-130
+  s_7853a3b9f0c4b7::t_fb011ffe4b003b 357-359
+crates/lsb-vm/Cargo.toml
+  s_7853a3b9f0c4b7::t_e6f9d16d46e418 3,11-12
+Cargo.lock
+  s_7853a3b9f0c4b7::t_b45df11cbc310f 1480,1740-1763,2100-2108,2225,2227
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "5217df560e921272e2c127a61dc1149d64a28e67",
+  "prompts": {},
+  "sessions": {
+    "s_7853a3b9f0c4b7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8411-e9ed-7152-ad41-0b1174705ffb",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    },
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
