@@ -12,9 +12,9 @@ use anyhow::{bail, Context, Result};
 use lsb_seawork_update::{
     bounded_retry_delay, cached_candidate, classify_release_response, create_json,
     extract_zip_archive, failed_target_decision, load_json, parse_retry_after_utc,
-    remove_file_if_exists, retry_delay, stream_exact_asset, transaction_requires_recovery,
-    validate_download_url, validate_helper_install_output, validate_release_page,
-    verify_bundle_root, verify_windows_directory_protection, verify_windows_file_protection,
+    remove_file_if_exists, retry_delay, stream_exact_asset, validate_download_url,
+    validate_helper_install_output, validate_release_page, verify_bundle_root,
+    verify_windows_directory_protection, verify_windows_file_protection,
     verify_windows_file_publisher, verify_windows_package, write_json_atomic,
     CommittedStateEnvelope, FailedTargetDecision, FailedTargetState, HelperProtocol, PackagePolicy,
     ReleaseCandidate, ReleaseChannel, ReleaseResponseStatus, ReleaseSelector, TransactionEnvelope,
@@ -275,7 +275,7 @@ impl Coordinator {
         let mut next = Instant::now() + first_delay;
         let mut recovering = false;
         while !self.stop.load(Ordering::Acquire) {
-            if self.transaction_recovery_pending() {
+            if self.transaction_journal_blocks_updates() {
                 recovering = true;
                 if Instant::now() >= next {
                     let _ = start_recovery_helper();
@@ -314,9 +314,9 @@ impl Coordinator {
         }
     }
 
-    fn transaction_recovery_pending(&self) -> bool {
+    fn transaction_journal_blocks_updates(&self) -> bool {
         match protected_load_json::<TransactionEnvelope>(&self.paths.updates.current_transaction) {
-            Ok(transaction) => transaction_requires_recovery(&transaction),
+            Ok(_) => true,
             Err(error) => !is_not_found(&error),
         }
     }
