@@ -546,11 +546,20 @@ impl UpdateBackend for WindowsBackend {
             update.helper_protocol,
         )?;
         self.require_main_command(&update.target_image_path)?;
-        let service = self.main_service(ServiceAccess::QUERY_STATUS | ServiceAccess::START)?;
-        if service.query_status()?.current_state == ServiceState::Stopped {
-            service.start::<&OsStr>(&[])?;
+        let result = (|| {
+            let service = self.main_service(ServiceAccess::QUERY_STATUS | ServiceAccess::START)?;
+            if service.query_status()?.current_state == ServiceState::Stopped {
+                service.start::<&OsStr>(&[])?;
+            }
+            self.wait_main_state(ServiceState::Running)
+        })();
+        if let Err(error) = result {
+            self.record_failed_target(update).with_context(|| {
+                format!("record failed target after startup failure: {error:#}")
+            })?;
+            return Err(error);
         }
-        self.wait_main_state(ServiceState::Running)
+        Ok(())
     }
 
     fn health_and_commit_target(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
@@ -602,7 +611,7 @@ impl UpdateBackend for WindowsBackend {
                     || status.target.as_ref() != Some(&update.target_bundle_identity)
                     || status.active_use_count != 0
                 {
-                    anyhow::bail!("target failed restricted pre-commit health");
+                    return Err(TargetHealthFailure("restricted_pre_commit").into());
                 }
                 if observation == 0 {
                     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -623,18 +632,19 @@ impl UpdateBackend for WindowsBackend {
                 || status.phase != UpdatePhase::UpdateIdle
                 || status.target.is_some()
             {
-                anyhow::bail!("target failed post-commit READY health");
+                return Err(TargetHealthFailure("post_commit_ready").into());
             }
             Ok::<_, anyhow::Error>(())
         });
-        let result = result.and_then(|()| self.finalize_commit(transaction));
         if let Err(error) = result {
-            self.record_failed_target(update).with_context(|| {
-                format!("record failed target after activation health failure: {error:#}")
-            })?;
+            if error.downcast_ref::<TargetHealthFailure>().is_some() {
+                self.record_failed_target(update).with_context(|| {
+                    format!("record failed target after activation health failure: {error:#}")
+                })?;
+            }
             return Err(error);
         }
-        Ok(())
+        self.finalize_commit(transaction)
     }
 
     fn finalize_commit(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
@@ -733,6 +743,17 @@ impl UpdateBackend for WindowsBackend {
         })
     }
 }
+
+#[derive(Debug)]
+struct TargetHealthFailure(&'static str);
+
+impl std::fmt::Display for TargetHealthFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "target failed {} health", self.0)
+    }
+}
+
+impl std::error::Error for TargetHealthFailure {}
 
 impl WindowsBackend {
     fn record_failed_target(&self, update: &lsb_seawork_update::UpdateTransaction) -> Result<()> {
