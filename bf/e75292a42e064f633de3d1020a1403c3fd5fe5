@@ -1,0 +1,25 @@
+.github/workflows/release.yml
+  s_75ebd9b1961452::t_75d0aacf4162bb 768,781
+  s_75ebd9b1961452::t_b10dceea8027fa 387,403,444,447-449,500,510-535,620-630,646-651,658-660,849,873-931,945,948,956-957,983-1012,1049-1050,1052,1062-1083
+.github/workflows/ci.yml
+  s_75ebd9b1961452::t_cb106662a25bfa 106
+  s_75ebd9b1961452::t_da588ddc58460b 105
+docs/seawork-service-release.md
+  s_75ebd9b1961452::t_75d0aacf4162bb 68-78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "bfe75292a42e064f633de3d1020a1403c3fd5fe5",
+  "prompts": {},
+  "sessions": {
+    "s_75ebd9b1961452": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f89ee-107f-73c1-b286-0e59583e3949",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
