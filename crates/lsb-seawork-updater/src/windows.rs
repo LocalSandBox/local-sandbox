@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use lsb_seawork_update::{
-    archive_file, load_json, verify_bundle_root, write_json_atomic, CommittedState,
-    CommittedStateEnvelope, PackagePolicy, TransactionEnvelope,
+    archive_file, load_json, verify_bundle_root, verify_windows_file_publisher,
+    verify_windows_package, write_json_atomic, CommittedState, CommittedStateEnvelope,
+    PackagePolicy, TransactionEnvelope,
 };
 use lsb_service_proto::{HealthState, UpdatePhase, PIPE_NAME, SERVICE_NAME, SUPPORTED};
 use windows_service::define_windows_service;
@@ -48,7 +49,9 @@ pub fn dispatch() -> Result<()> {
 pub fn verify_install() -> Result<()> {
     let paths = FixedPaths::discover()?;
     require_exact_current_executable(&paths.updater_executable)?;
-    verify_updater_service_config(&paths.updater_executable)
+    verify_updater_service_config(&paths.updater_executable)?;
+    verify_windows_file_publisher(&paths.updater_executable, &compiled_publishers())?;
+    Ok(())
 }
 
 fn service_main(_arguments: Vec<OsString>) {
@@ -86,6 +89,7 @@ fn run_recovery(stop_rx: &std::sync::mpsc::Receiver<()>) -> Result<()> {
     let paths = FixedPaths::discover()?;
     require_exact_current_executable(&paths.updater_executable)?;
     verify_updater_service_config(&paths.updater_executable)?;
+    verify_windows_file_publisher(&paths.updater_executable, &compiled_publishers())?;
     let _mutex = UpdateMutex::acquire()?;
     if stop_rx.try_recv().is_ok() {
         return Ok(());
@@ -166,6 +170,7 @@ impl WindowsBackend {
         if identity != update.target_bundle_identity {
             bail!("verified package identity differs from the protected transaction target");
         }
+        verify_windows_package(root, &report, &compiled_publishers())?;
         Ok(())
     }
 
@@ -798,4 +803,12 @@ fn service_status(state: ServiceState, checkpoint: u32, wait_seconds: u64) -> Se
 
 fn wide(value: &OsStr) -> Vec<u16> {
     value.encode_wide().chain(Some(0)).collect()
+}
+
+fn compiled_publishers() -> Vec<String> {
+    env!("LSB_COMPILED_SEAWORK_PUBLISHERS_SHA256")
+        .split(',')
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
 }

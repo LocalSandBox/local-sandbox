@@ -3,6 +3,7 @@ name = "lsb-seawork-updater"
 version.workspace = true
 edition = "2021"
 publish = false
+build = "build.rs"
 
 [dependencies]
 anyhow = "1"
@@ -18,10 +19,16 @@ tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 windows-service = "0.8.1"
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Cryptography",
+    "Win32_Security_Cryptography_Catalog",
+    "Win32_Security_WinTrust",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Registry",
     "Win32_System_Services",
+    "Win32_System_SystemServices",
     "Win32_System_Threading",
     "Win32_UI_Shell",
 ] }
