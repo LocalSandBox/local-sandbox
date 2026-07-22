@@ -836,3 +836,116 @@ Append evidence for all existing install/update/repair/uninstall rows plus:
 - helper crash/restart and reboot recovery cover every durable mutation boundary; and
 - uninstall removes both owned SCM entries and the fixed helper while retaining the
   last-known-good version/state whenever reconciliation cannot be proved complete.
+
+## 2026-07-22 — Controlled self-upgrade implementation handoff
+
+Status: **LocalSandbox source implementation complete; signed Windows end-to-end
+evidence and downstream SeaWork installer/repair/uninstall implementation remain open**
+
+This entry supersedes only the artifact-location statement in the preceding controlled
+self-upgrade entry. It does not alter that entry's SCM, repair, uninstall, or acceptance
+requirements.
+
+### Exact LocalSandbox source baseline
+
+- Branch: `feat/lsbs-auto-upgrade`.
+- Contract and maintenance API: `de7fc8f779e806d5bcef305c93e23a3743653ddd`.
+- Natural-idle admission sealing: `359c1b6`.
+- Durable discovery/state, archive, verification, and protected writes:
+  `85300d9`, `1733daf`, `6eec754`, `cd48a97`, and `be65a34`.
+- Crash-safe SCM updater helper: `73c6fea`.
+- Runtime discovery/download/coordinator, activation recovery, rate limiting, and
+  failed-target suppression: `7577ca1`.
+- Deterministic updater artifact and signing/package contract: `2de5438`.
+
+The implemented binaries are:
+
+- `localsandbox-seawork-service.exe`, protocol major 1/minor 6; and
+- `localsandbox-seawork-updater.exe`, helper protocol 1.1.
+
+The service candidate remains the exact immutable GitHub release asset
+`lsb-seawork-service-v<VERSION>-windows-x86_64.zip`. The helper is intentionally a
+separate immutable installer input:
+
+- `lsb-seawork-updater-v<VERSION>-windows-x86_64.zip`;
+- `lsb-seawork-updater-v<VERSION>-windows-x86_64-manifest.json`; and
+- `lsb-seawork-updater-v<VERSION>-SHA256SUMS`.
+
+The helper ZIP contains only `localsandbox-seawork-updater.exe` and
+`manifests/updater.json`. The manifest binds canonical version, target, binary SHA-256,
+publisher subject and SHA-256 thumbprint, helper protocol, SCM name, and exact command
+template. GitHub metadata and the manifest are discovery/integrity inputs; SeaWork must
+still independently validate the timestamped Authenticode chain and exact publisher of
+the PE before installation.
+
+This separate-artifact rule replaces the preceding entry's statement that the helper
+would be placed inside the service archive. It preserves the security invariant that
+the main service never installs or updates its own helper. SeaWork must pin the service
+and updater artifacts from one immutable release tuple and reject a missing, mutable,
+cross-version, or contradictory pair.
+
+### Runtime and protected-state contract
+
+The generated revision-2 service contract now includes the fixed release repository,
+stable/prerelease channels, updater artifact template, helper SCM identity and command,
+helper protocol, and these protected paths:
+
+- `%ProgramData%\LocalSandbox\SeaWork\updates\committed.json`;
+- `%ProgramData%\LocalSandbox\SeaWork\updates\status.json`;
+- `%ProgramData%\LocalSandbox\SeaWork\updates\failed-target.json`;
+- `%ProgramData%\LocalSandbox\SeaWork\updates\transactions\current.json`;
+- `%ProgramData%\LocalSandbox\SeaWork\updates\downloads`;
+- `%ProgramData%\LocalSandbox\SeaWork\updates\staging`; and
+- `%ProgramData%\LocalSandbox\SeaWork\updates\history`.
+
+Maintenance operations gated at protocol minor 6 are `PrepareUpdate` with the complete
+bundle identity, `GetUpdateStatus`, `CheckForUpdate`, `CommitUpdate`, and `AbortUpdate`.
+The bounded status phases include checking, no-candidate, downloading, verifying,
+waiting-for-idle, sealed, helper-starting, activation-pending, rollback-pending,
+failed-target-suppressed, and recovery-quarantine. Failure categories include network,
+TLS, HTTP, rate-limited, invalid metadata, no candidate, download, verification,
+helper-too-old, and internal failure.
+
+Startup recovery compares the protected journal with the exact running executable. An
+old-version restart restores zero-use `UpdateSealed`; a target-version restart restores
+`ActivationPending`/`UPDATE_PENDING`; a contradictory journal/executable pair remains
+health/maintenance-only in recovery quarantine. The service may validate and start the
+preinstalled helper but never creates, deletes, or reconfigures either SCM entry.
+
+After an activation-health rollback, `failed-target.json` prevents retry of the exact
+archive digest for at least 24 hours. Three such failures suppress that digest across
+service restarts until a greater release appears or SeaWork repair explicitly clears
+the valid bounded record. Repair must not delete corrupt or contradictory protected
+state merely to reopen admissions.
+
+### Release and downstream boundary
+
+No change was made to `.github/workflows/release.yml`. The current `just release
+<version>` behavior and `service_evidence=skip|required` policy described in the prior
+entry remain authoritative. LocalSandbox release publication must separately adopt the
+new `seawork-updater` package command and `SignUpdaterPe`/`VerifyUpdaterPe` modes before
+a final tuple can be asserted.
+
+SeaWork must implement every installer, repair, boot-recovery, and uninstall item in
+the preceding entry using the separate pinned updater artifact above. In particular,
+it must install the helper at the generated fixed Program Files path, seed independently
+verified `committed.json`, configure the exact helper SCM recovery policy, reconcile a
+nonterminal transaction during repair, and remove only proven installer-owned paths on
+uninstall.
+
+### Verification status and evidence still required
+
+Local verification at this baseline includes the service/update/updater source tests,
+all journal-phase recovery tests, deterministic updater packaging tests, release-version
+consistency, scoped Clippy, PowerShell parser validation, and a successful
+`x86_64-pc-windows-msvc` check of the updater binary. The service's Windows-target Cargo
+check is locally blocked before project compilation because the macOS host lacks the
+Windows SDK C headers required by transitive native dependencies.
+
+Do not treat these source checks as signed Windows acceptance evidence. Before SeaWork
+pins a tuple, run and bind exact hashes/publisher identity for successful activation,
+indefinite busy wait, idle/start race, pre-stop failure, health rollback, helper crash
+at every journal phase, reboot recovery, three-failure suppression, repair, and
+uninstall. Append the immutable release URL/ID, source commit/tree, PE and ZIP SHA-256
+values, publisher/timestamp evidence, and Windows run IDs here; do not replace this
+entry or infer those values from unsigned local builds.
