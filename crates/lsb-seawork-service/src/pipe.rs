@@ -26,6 +26,7 @@ use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
 use zeroize::Zeroize;
 
+use crate::admission::AdmissionController;
 use crate::ipc::connection::{
     ConnectionState, RateLimiter, RequestDeadline, DEFAULT_BOOT_DEADLINE,
     DEFAULT_TRANSFER_DEADLINE, DEFAULT_UNARY_DEADLINE, MAX_REQUEST_DEADLINE,
@@ -340,7 +341,7 @@ struct PendingUpload {
 
 #[derive(Clone)]
 pub struct HealthContext {
-    admissions_open: Arc<AtomicBool>,
+    admissions: AdmissionController,
     whpx: HealthState,
     sessions: SessionManager,
     engine: Option<ServiceEngineConfig>,
@@ -357,10 +358,17 @@ pub struct HealthContext {
 
 impl HealthContext {
     pub fn new(admissions_open: bool, quota_limits: QuotaLimits) -> Self {
+        Self::with_admissions_controller(quota_limits, AdmissionController::new(admissions_open))
+    }
+
+    pub fn with_admissions_controller(
+        quota_limits: QuotaLimits,
+        admissions: AdmissionController,
+    ) -> Self {
         Self {
-            admissions_open: Arc::new(AtomicBool::new(admissions_open)),
+            sessions: SessionManager::with_admissions(quota_limits, admissions.clone()),
+            admissions,
             whpx: HealthState::Unknown,
-            sessions: SessionManager::new(quota_limits),
             engine: None,
             requests: Arc::new(Semaphore::new(crate::ipc::pipe::MAX_REQUESTS_GLOBAL)),
             maintenance: None,
@@ -395,7 +403,9 @@ impl HealthContext {
         product_ca_bundle_pem: Vec<u8>,
         upstream_proxy: Option<lsb_proxy::UpstreamProxyConfig>,
     ) -> Self {
-        self.admissions_open = maintenance.admissions();
+        debug_assert!(self
+            .admissions
+            .is_same_controller(&maintenance.admissions()));
         self.maintenance = Some(maintenance);
         self.client_roots = client_roots;
         self.maintenance_roots = maintenance_roots;
@@ -407,7 +417,7 @@ impl HealthContext {
     }
 
     fn admissions_open(&self) -> bool {
-        self.admissions_open.load(Ordering::Acquire)
+        self.admissions.accepts_work()
             && self.engine.is_some()
             && self.whpx == HealthState::Ready
             && !self.client_roots.is_empty()
@@ -415,7 +425,7 @@ impl HealthContext {
     }
 
     pub fn begin_shutdown(&self) -> Result<usize> {
-        self.admissions_open.store(false, Ordering::Release);
+        self.admissions.quarantine();
         self.sessions.drain_all()
     }
 
@@ -1331,7 +1341,6 @@ async fn dispatch_request(
             ports,
             network,
         } => rpc_value!(rpc::sandbox::start(
-            context.admissions_open(),
             context.engine.clone(),
             context.sessions.clone(),
             session_id,
@@ -2181,7 +2190,7 @@ mod tests {
 
         assert_eq!(context.begin_shutdown().unwrap(), 1);
         assert!(context.sessions.is_empty());
-        assert!(!context.admissions_open.load(Ordering::Acquire));
+        assert!(!context.admissions.accepts_work());
     }
 
     #[test]

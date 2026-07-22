@@ -1,3 +1,4 @@
+mod admission;
 mod bundle;
 mod config;
 #[cfg(windows)]
@@ -6,7 +7,7 @@ pub mod ipc;
 pub mod ledger;
 #[cfg(any(windows, test))]
 mod logging;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 mod maintenance;
 mod network_policy;
 mod paths;

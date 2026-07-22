@@ -127,9 +127,12 @@ fn run_registered(
         .enable_all()
         .build()
         .context("create service async runtime")?;
+    let initial_admissions = reconciliation.admissions_open && engine.is_some();
+    let admissions = crate::admission::AdmissionController::new(initial_admissions);
     let maintenance = MaintenanceManager::load(
         paths.pending_update.clone(),
-        reconciliation.admissions_open && engine.is_some(),
+        initial_admissions,
+        admissions.clone(),
     );
     let whpx = crate::windows::whpx::health_state();
     if whpx != lsb_service_proto::HealthState::Ready {
@@ -140,8 +143,7 @@ fn run_registered(
         )?;
     }
     let effective_memory_mib = effective_memory_limit(config.quotas.memory_mib_global)?;
-    let context = HealthContext::new(
-        reconciliation.admissions_open,
+    let context = HealthContext::with_admissions_controller(
         QuotaLimits {
             connections_global: config.quotas.connections_global as usize,
             connections_per_user: config.quotas.connections_per_user as usize,
@@ -151,6 +153,7 @@ fn run_registered(
             memory_mib_global: effective_memory_mib,
             ..QuotaLimits::default()
         },
+        admissions,
     )
     .with_engine(engine)
     .with_whpx(whpx)
