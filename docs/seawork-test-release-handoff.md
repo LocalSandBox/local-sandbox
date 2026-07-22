@@ -1148,3 +1148,33 @@ SeaWork must still install the signed helper and execute the reduced production-
 acceptance set from the preceding entry: successful activation, unhealthy-target
 rollback, untrusted/incompatible rejection, busy-to-idle behavior, and one real reboot
 at `image_path_changed`.
+
+## 2026-07-22 — Final updater-mode Windows evidence
+
+Status: **focused LocalSandbox Windows gate complete; signed SCM activation remains a
+SeaWork-owned follow-up**
+
+This entry supersedes the source tuple and evidence hashes in the immediately preceding
+native Windows source-gate entry. The scope boundary stated there is unchanged.
+
+- LocalSandbox source commit: `47968b55a93e61e14e76c78c2ab8b9494920030d`.
+- Windows run: `20260722t115550z-63990-8aed40690fb6`; synthetic snapshot:
+  `8aed40690fb674945b12cd2965ef486e149ba82e`.
+- The complete `update-fast` service, Node, update, updater, evidence, and Clippy gate
+  passed again on Windows 11 x64.
+- The suite additionally built and executed the real Windows updater binary. Its
+  bounded `--version --json` mode returned the exact service identity and compatible
+  protocol, while `--verify-install --json` from the disposable checkout returned a
+  nonzero exit, `valid: false`, and stable code `INSTALL_INVALID` as required.
+- Fetch-verified evidence SHA-256 values are
+  `63ba97c286b401b0302b9e6a5c552170c311d96fe237d462276e8a8dac9b545c`
+  (`evidence-service-fast.json`) and
+  `774d53573edbd8380e59cc2d45f7fcb64ecaeb7bb014d0991887aedc7db1ead4`
+  (`evidence-update-fast.json`). The fetch-manifest SHA-256 is
+  `e1951f84747478850e5733933fd7ac8cdaf42db544398d05a98663fb8b12f0eb`.
+
+The evidence intentionally continues to report `signed_installation_exercised: false`
+and `controlled_update_exercised: false`. Completing those two fields requires
+SeaWork's signed helper installation and a second immutable signed service release; it
+must use the reduced acceptance profile already recorded above rather than the original
+exhaustive failure matrix.
