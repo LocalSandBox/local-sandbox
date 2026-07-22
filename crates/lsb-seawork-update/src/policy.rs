@@ -175,10 +175,6 @@ pub fn bounded_retry_delay(deadline: OffsetDateTime, now: OffsetDateTime) -> Dur
     Duration::from_secs(seconds as u64)
 }
 
-pub fn transaction_requires_recovery(transaction: &crate::TransactionEnvelope) -> bool {
-    transaction.validate().is_err() || !transaction.transaction.phase.is_terminal()
-}
-
 pub fn validate_download_url(value: &str, initial: bool) -> Result<()> {
     let url = url::Url::parse(value)?;
     let allowed = [
@@ -375,56 +371,6 @@ mod tests {
         assert!(validate_release_page(10, 50, None).is_err());
         assert!(validate_release_page(1, 0, Some(&"x".repeat(513))).is_err());
         assert!(classify_release_response(0, 200, None).is_err());
-    }
-
-    #[test]
-    fn only_valid_nonterminal_transactions_schedule_recovery() {
-        use lsb_service_proto::{BundleIdentity, LedgerCompatibility, ProtocolRange};
-
-        let identity = |version: &str, digest: char| BundleIdentity {
-            version: version.to_string(),
-            bundle_manifest_sha256: digest.to_string().repeat(64),
-            archive_sha256: digest.to_string().repeat(64),
-            protocol: ProtocolRange {
-                major: 1,
-                min_minor: 1,
-                max_minor: 6,
-            },
-            ledger: LedgerCompatibility {
-                reader_min_schema: 1,
-                reader_max_schema: 1,
-                writer_schema: 1,
-            },
-            service_configuration_revision: 2,
-        };
-        let mut transaction = crate::TransactionEnvelope::new(crate::UpdateTransaction {
-            transaction_id: "1".repeat(32),
-            update_id: "2".repeat(32),
-            phase: crate::TransactionPhase::Prepared,
-            created_utc: "2026-07-22T12:00:00Z".to_string(),
-            old_bundle_identity: identity("0.5.0", 'a'),
-            target_bundle_identity: identity("0.5.1", 'b'),
-            old_image_path: r"C:\Program Files\SeaWork\LocalSandbox\versions\0.5.0\bin\localsandbox-seawork-service.exe".to_string(),
-            target_image_path: r"C:\Program Files\SeaWork\LocalSandbox\versions\0.5.1\bin\localsandbox-seawork-service.exe".to_string(),
-            old_event_message_path: r"C:\Program Files\SeaWork\LocalSandbox\versions\0.5.0\bin\localsandbox-seawork-service.exe".to_string(),
-            target_event_message_path: r"C:\Program Files\SeaWork\LocalSandbox\versions\0.5.1\bin\localsandbox-seawork-service.exe".to_string(),
-            staged_root: r"C:\ProgramData\LocalSandbox\SeaWork\updates\staging\11111111111111111111111111111111\LocalSandbox".to_string(),
-            final_version_root: r"C:\Program Files\SeaWork\LocalSandbox\versions\0.5.1".to_string(),
-            helper_protocol: crate::HelperProtocol { major: 1, minor: 1 },
-            attempt_count: 1,
-            last_error_category: None,
-        }).unwrap();
-        assert!(transaction_requires_recovery(&transaction));
-
-        transaction
-            .transition(crate::TransactionPhase::Quarantined)
-            .unwrap();
-        assert!(!transaction_requires_recovery(&transaction));
-        transaction.checksum_sha256 = "0".repeat(64);
-        assert!(
-            transaction_requires_recovery(&transaction),
-            "an existing invalid journal must fail closed rather than authorize discovery"
-        );
     }
 
     #[test]
