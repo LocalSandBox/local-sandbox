@@ -1213,25 +1213,57 @@ fn unique_handle<T>(map: &HashMap<ResourceHandle, T>) -> Result<ResourceHandle> 
 }
 
 fn prune_retired(retired: &mut VecDeque<(Instant, ResourceHandle)>) {
-    let cutoff = Instant::now() - RETIRED_HANDLE_TTL;
+    prune_retired_at(retired, Instant::now());
+}
+
+fn prune_retired_at(retired: &mut VecDeque<(Instant, ResourceHandle)>, now: Instant) {
     while retired
         .front()
-        .is_some_and(|(created, _)| *created < cutoff)
+        .is_some_and(|(created, _)| now.saturating_duration_since(*created) > RETIRED_HANDLE_TTL)
     {
         retired.pop_front();
     }
 }
 
 fn prune_start_replays(records: &mut HashMap<StartReplayKey, StartReplayRecord>) {
-    let cutoff = Instant::now() - START_REPLAY_TTL;
+    prune_start_replays_at(records, Instant::now());
+}
+
+fn prune_start_replays_at(records: &mut HashMap<StartReplayKey, StartReplayRecord>, now: Instant) {
     records.retain(|_, record| {
-        record.state != StartReplayState::Retired || record.updated_at >= cutoff
+        record.state != StartReplayState::Retired
+            || now.saturating_duration_since(record.updated_at) <= START_REPLAY_TTL
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ttl_pruning_tolerates_timestamps_after_the_observed_instant() {
+        let now = Instant::now();
+        let future = now + Duration::from_secs(1);
+        let handle = ResourceHandle::random().unwrap();
+        let mut retired = VecDeque::from([(future, handle)]);
+        prune_retired_at(&mut retired, now);
+        assert_eq!(retired.front(), Some(&(future, handle)));
+
+        let key = StartReplayKey {
+            identity: ClientIdentityKey::for_test("user", "logon", 1),
+            client_instance_id: "post-reboot-start".to_string(),
+        };
+        let mut records = HashMap::from([(
+            key.clone(),
+            StartReplayRecord {
+                session_id: ResourceHandle::random().unwrap(),
+                state: StartReplayState::Retired,
+                updated_at: future,
+            },
+        )]);
+        prune_start_replays_at(&mut records, now);
+        assert!(records.contains_key(&key));
+    }
 
     #[test]
     fn start_replay_is_at_most_once_and_connection_bound() {
