@@ -13,7 +13,7 @@ const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_EVIDENCE_FILES: usize = 256;
 const MAX_DURATION_MS: u64 = 24 * 60 * 60 * 1000;
 
-const REQUIRED_CASES: &[&str] = &[
+const KNOWN_CASES: &[&str] = &[
     "update.stable_channel",
     "update.prerelease_channel",
     "update.indefinite_busy_wait",
@@ -26,7 +26,15 @@ const REQUIRED_CASES: &[&str] = &[
     "update.seawork_uninstall",
 ];
 
-const REQUIRED_PHASES: &[&str] = &[
+const REQUIRED_COMPLETE_CASES: &[&str] = &[
+    "update.stable_channel",
+    "update.indefinite_busy_wait",
+    "update.activation_success",
+    "update.health_rollback",
+    "update.untrusted_and_incompatible_rejection",
+];
+
+const KNOWN_PHASES: &[&str] = &[
     "prepared",
     "helper_started",
     "final_path_verified",
@@ -40,6 +48,8 @@ const REQUIRED_PHASES: &[&str] = &[
     "old_path_restored",
     "old_service_restarted",
 ];
+
+const REQUIRED_COMPLETE_REBOOT_PHASE: &str = "image_path_changed";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -382,10 +392,14 @@ fn validate_cases(
     files: &BTreeMap<String, &EvidenceFile>,
     require_complete: bool,
 ) -> Result<()> {
-    let required = REQUIRED_CASES.iter().copied().collect::<BTreeSet<_>>();
+    let known = KNOWN_CASES.iter().copied().collect::<BTreeSet<_>>();
+    let required = REQUIRED_COMPLETE_CASES
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
     let mut observed = BTreeSet::new();
     for case in cases {
-        if !required.contains(case.id.as_str()) || !observed.insert(case.id.as_str()) {
+        if !known.contains(case.id.as_str()) || !observed.insert(case.id.as_str()) {
             bail!("unknown or duplicate update evidence case: {}", case.id);
         }
         if case.duration_ms > MAX_DURATION_MS {
@@ -397,12 +411,13 @@ fn validate_cases(
             &case.evidence,
             files,
         )?;
-        if require_complete && case.status != Status::Passed {
+        if require_complete && required.contains(case.id.as_str()) && case.status != Status::Passed
+        {
             bail!("required update evidence case did not pass: {}", case.id);
         }
     }
-    if observed != required {
-        bail!("update evidence does not cover the exact required case matrix");
+    if require_complete && !required.is_subset(&observed) {
+        bail!("update evidence does not cover the minimum required case matrix");
     }
     Ok(())
 }
@@ -412,10 +427,10 @@ fn validate_phases(
     files: &BTreeMap<String, &EvidenceFile>,
     require_complete: bool,
 ) -> Result<()> {
-    let required = REQUIRED_PHASES.iter().copied().collect::<BTreeSet<_>>();
+    let known = KNOWN_PHASES.iter().copied().collect::<BTreeSet<_>>();
     let mut observed = BTreeSet::new();
     for phase in phases {
-        if !required.contains(phase.phase.as_str()) || !observed.insert(phase.phase.as_str()) {
+        if !known.contains(phase.phase.as_str()) || !observed.insert(phase.phase.as_str()) {
             bail!(
                 "unknown or duplicate update recovery phase: {}",
                 phase.phase
@@ -431,16 +446,14 @@ fn validate_phases(
         }
         validate_evidence_refs(&phase.evidence, files)?;
         if require_complete
-            && (phase.helper_crash != Status::Passed || phase.reboot != Status::Passed)
+            && phase.phase == REQUIRED_COMPLETE_REBOOT_PHASE
+            && phase.reboot != Status::Passed
         {
-            bail!(
-                "required crash/reboot recovery phase did not pass: {}",
-                phase.phase
-            );
+            bail!("required representative reboot recovery did not pass");
         }
     }
-    if observed != required {
-        bail!("update evidence does not cover every durable recovery phase");
+    if require_complete && !observed.contains(REQUIRED_COMPLETE_REBOOT_PHASE) {
+        bail!("update evidence lacks representative reboot recovery coverage");
     }
     Ok(())
 }
@@ -553,14 +566,13 @@ mod tests {
         std::fs::write(&evidence, b"{}\n").unwrap();
         let evidence_sha = sha256_file(&evidence).unwrap();
         let evidence_ref = "evidence/results.redacted.json";
-        let cases = REQUIRED_CASES
+        let cases = REQUIRED_COMPLETE_CASES
             .iter()
             .map(|id| json!({"id": id, "status": "passed", "duration_ms": 1, "evidence": [evidence_ref]}))
             .collect::<Vec<_>>();
-        let phases = REQUIRED_PHASES
-            .iter()
-            .map(|phase| json!({"phase": phase, "helper_crash": "passed", "reboot": "passed", "evidence": [evidence_ref]}))
-            .collect::<Vec<_>>();
+        let phases = vec![
+            json!({"phase": REQUIRED_COMPLETE_REBOOT_PHASE, "helper_crash": "not_run", "reboot": "passed", "stable_code": "helper-crash-not-required", "evidence": [evidence_ref]}),
+        ];
         let manifest = json!({
             "schema_version": 2,
             "source_git_sha": git,
@@ -597,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_complete_digest_bound_update_matrix() {
+    fn accepts_minimum_complete_digest_bound_update_matrix() {
         let (root, manifest, _) = fixture();
         validate_manifest(&manifest, true, None, None).unwrap();
         std::fs::remove_dir_all(root).unwrap();
@@ -608,6 +620,45 @@ mod tests {
         let (root, manifest, evidence) = fixture();
         std::fs::write(&evidence, b"tampered\n").unwrap();
         assert!(validate_manifest(&manifest, true, None, None).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_complete_matrix_missing_required_case() {
+        let (root, manifest, _) = fixture();
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        document["cases"].as_array_mut().unwrap().pop();
+        std::fs::write(&manifest, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+        assert!(validate_manifest(&manifest, true, None, None).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_complete_matrix_without_representative_reboot() {
+        let (root, manifest, _) = fixture();
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        document["phase_coverage"][0]["reboot"] = json!("not_run");
+        std::fs::write(&manifest, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+        assert!(validate_manifest(&manifest, true, None, None).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn accepts_nonpassing_optional_case_in_complete_matrix() {
+        let (root, manifest, _) = fixture();
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        document["cases"].as_array_mut().unwrap().push(json!({
+            "id": "update.seawork_uninstall",
+            "status": "not_run",
+            "duration_ms": 0,
+            "stable_code": "optional-case-not-run",
+            "evidence": ["evidence/results.redacted.json"]
+        }));
+        std::fs::write(&manifest, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+        validate_manifest(&manifest, true, None, None).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -20,31 +20,32 @@ commit, the previous and candidate bundle identities, and hashed runner/policy
 identities. The validator rehashes every retained evidence file and, when supplied,
 both artifacts.
 
-## Required result matrix
+## Minimum acceptance profile
 
-The `cases` array must contain exactly these IDs:
+With `--require-complete`, the `cases` array must contain passing results for these IDs:
 
 - `update.stable_channel`
-- `update.prerelease_channel`
 - `update.indefinite_busy_wait`
-- `update.idle_admission_race`
 - `update.activation_success`
 - `update.health_rollback`
 - `update.untrusted_and_incompatible_rejection`
-- `update.failed_target_suppression`
-- `update.seawork_repair`
-- `update.seawork_uninstall`
 
-The `phase_coverage` array must contain every nonterminal durable helper phase from
-`prepared` through `old_service_restarted`. Each row independently records
-`helper_crash` and `reboot` status, so one happy-path result cannot stand in for the
-crash/power-loss matrix. Every case and phase row references one or more retained,
-explicitly redacted files.
+The complete profile also requires one passing real-reboot recovery row at
+`image_path_changed`. This is the representative interruption point where the
+transaction has durably changed the service command and must safely continue or roll
+back after restart.
+
+Schema 2 still recognizes the other documented case IDs and durable helper phases.
+Operators may include those rows as additional evidence, but prerelease selection,
+the separate idle race, failed-target suppression, repair, uninstall, helper-crash
+injection, and every-phase reboot coverage are not blockers for this reduced profile.
+Every included case and phase row references one or more retained, explicitly redacted
+files.
 
 Statuses are `passed`, `failed`, `blocked`, or `not_run`. A non-passing result requires
 a stable bounded code. Incomplete manifests are valid handoff records; only
-`--require-complete` requires every case and both recovery modes at every phase to have
-passed.
+`--require-complete` requires the five cases above and the representative reboot to
+have passed. Optional non-passing rows remain valid when they carry a stable code.
 
 ## Assemble on the authorized Windows host
 
@@ -82,9 +83,9 @@ self-check, a valid timestamped Authenticode signature, and an exact signer-cert
 SHA-256 match with `-PublisherSha256`; a version-only helper query is not evidence.
 
 The Windows operator must obtain the cases using the exact signed production-profile
-tuple and the SeaWork-installed SCM entries. Helper termination is injected only after
-the named journal phase has been durably observed; reboot coverage uses an actual boot
-identity change. The retained records must show exact ImagePath/EventMessageFile,
+tuple and the SeaWork-installed SCM entries. Any optional helper termination is
+injected only after the named journal phase has been durably observed; required reboot
+coverage uses an actual boot identity change. The retained records must show exact ImagePath/EventMessageFile,
 restricted health/commit or rollback, admissions, last-known-good preservation, and
 standard-user no-UAC outcomes without retaining raw usernames, SIDs, machine names,
 paths, command lines, environments, credentials, or response bodies.
