@@ -1,0 +1,23 @@
+scripts/win-test
+  s_d92cdce887f5bb::t_27b7e91bd620a4 298
+scripts/windows-test-service-harness.ps1
+  s_d92cdce887f5bb::t_0c45c292e5ece3 417-437,768
+scripts/windows-test-suites/service-reboot.ps1
+  s_d92cdce887f5bb::t_27b7e91bd620a4 30-51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "2a5214900a5b33a25d2e3de15e77b02b18020c9b",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
