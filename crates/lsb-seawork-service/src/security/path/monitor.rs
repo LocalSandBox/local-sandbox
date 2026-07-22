@@ -3,7 +3,7 @@ use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
@@ -121,26 +121,42 @@ fn start_pinned(raw_root: HANDLE, volume: u32, index: u64) -> Result<HostChangeM
     let thread_changes = changes.clone();
     let thread_failed = failed.clone();
     let thread_stop = stop.clone();
+    let (ready, started) = mpsc::sync_channel(1);
     let thread = std::thread::Builder::new()
         .name("lsbsw-host-mount-watch".to_string())
         .spawn(move || {
-            if monitor_loop(directory, &thread_changes, &thread_stop).is_err() {
+            if let Err(error) = monitor_loop(directory, &thread_changes, &thread_stop, &ready) {
                 thread_failed.store(true, Ordering::Release);
+                let _ = ready.send(Err(error));
             }
         })
         .context("spawn authorized host change monitor")?;
-    Ok(HostChangeMonitor {
-        changes,
-        failed,
-        stop,
-        thread: Some(thread),
-    })
+    let startup = match started.recv() {
+        Ok(startup) => startup,
+        Err(error) => {
+            let _ = thread.join();
+            return Err(error).context("authorized host change monitor lost startup reply");
+        }
+    };
+    match startup {
+        Ok(()) => Ok(HostChangeMonitor {
+            changes,
+            failed,
+            stop,
+            thread: Some(thread),
+        }),
+        Err(error) => {
+            let _ = thread.join();
+            Err(error)
+        }
+    }
 }
 
 fn monitor_loop(
     directory: OwnedHandle,
     changes: &Mutex<ChangeQueue>,
     stop: &AtomicBool,
+    ready: &mpsc::SyncSender<Result<()>>,
 ) -> Result<()> {
     let raw_event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
     if raw_event.is_null() {
@@ -154,6 +170,7 @@ fn monitor_loop(
         | FILE_NOTIFY_CHANGE_SIZE
         | FILE_NOTIFY_CHANGE_LAST_WRITE
         | FILE_NOTIFY_CHANGE_SECURITY;
+    let mut startup_reported = false;
     while !stop.load(Ordering::Acquire) {
         buffer.fill(0);
         if unsafe { ResetEvent(event.as_raw_handle() as HANDLE) } == 0 {
@@ -180,6 +197,12 @@ fn monitor_loop(
             if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
                 return Err(error).context("start authorized host directory watch");
             }
+        }
+        if !startup_reported {
+            ready
+                .send(Ok(()))
+                .context("report authorized host change monitor readiness")?;
+            startup_reported = true;
         }
         let transferred = loop {
             let mut bytes = 0u32;
