@@ -498,6 +498,7 @@ jobs:
 
       - name: Sign service PE
         run: |
+          # TODO: Remove SkipTrustVerification after provisioning the company root CA on hosted runners.
           .\scripts\sign-seawork-service.ps1 `
             -Mode SignPe `
             -ServiceBinary '.\target\x86_64-pc-windows-msvc\release\localsandbox-seawork-service.exe' `
@@ -505,7 +506,8 @@ jobs:
             -PasswordFile $env:LSB_SEAWORK_PASSWORD `
             -TimestampUrl $env:SEAWORK_TIMESTAMP_URL `
             -ExpectedPublisherSubject $env:SEAWORK_PUBLISHER_SUBJECT `
-            -ExpectedPublisherSha256 $env:SEAWORK_PUBLISHER_SHA256
+            -ExpectedPublisherSha256 $env:SEAWORK_PUBLISHER_SHA256 `
+            -SkipTrustVerification
 
       - name: Verify signed PE Event Log messages
         run: |
@@ -563,7 +565,8 @@ jobs:
             -PasswordFile $env:LSB_SEAWORK_PASSWORD `
             -TimestampUrl $env:SEAWORK_TIMESTAMP_URL `
             -ExpectedPublisherSubject $env:SEAWORK_PUBLISHER_SUBJECT `
-            -ExpectedPublisherSha256 $env:SEAWORK_PUBLISHER_SHA256
+            -ExpectedPublisherSha256 $env:SEAWORK_PUBLISHER_SHA256 `
+            -SkipTrustVerification
 
       - name: Generate source map and final archives
         run: |
@@ -596,7 +599,8 @@ jobs:
             -Mode Verify `
             -BundleRoot $env:LSB_SEAWORK_STAGE\LocalSandbox `
             -ExpectedPublisherSubject $env:SEAWORK_PUBLISHER_SUBJECT `
-            -ExpectedPublisherSha256 $env:SEAWORK_PUBLISHER_SHA256
+            -ExpectedPublisherSha256 $env:SEAWORK_PUBLISHER_SHA256 `
+            -SkipTrustVerification
           & "$env:LSB_SEAWORK_STAGE\LocalSandbox\bin\localsandbox-seawork-service.exe" --verify-bundle --json
           if ($LASTEXITCODE -ne 0) { throw 'service bundle verification failed' }
 

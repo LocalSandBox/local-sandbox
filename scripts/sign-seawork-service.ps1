@@ -15,6 +15,7 @@ param(
     [string]$ExpectedPublisherSubject,
     [string]$ExpectedPublisherSha256,
     [switch]$AllowUntrustedTestCertificate,
+    [switch]$SkipTrustVerification,
     [switch]$UseLocalMachineStore,
     [switch]$SkipTimestamp
 )
@@ -146,7 +147,7 @@ function Assert-Signer {
             throw "signature publisher SHA-256 mismatch for $Path"
         }
     }
-    if (-not $AllowUntrustedTestCertificate) {
+    if (-not $AllowUntrustedTestCertificate -and -not $SkipTrustVerification) {
         $arguments = @('verify', '/v', '/pa', '/all')
         if ($RequireTimestamp) {
             $arguments += '/tw'
@@ -157,7 +158,13 @@ function Assert-Signer {
     [pscustomobject]@{
         Subject = $subject
         Sha256 = $sha256
-        Status = if ($AllowUntrustedTestCertificate) { 'UntrustedTest' } else { 'Valid' }
+        Status = if ($AllowUntrustedTestCertificate) {
+            'UntrustedTest'
+        } elseif ($SkipTrustVerification) {
+            'TrustNotVerified'
+        } else {
+            'Valid'
+        }
         TimestampRequired = [bool]$RequireTimestamp
     }
 }
@@ -386,7 +393,7 @@ function Verify-BundleSignatures {
             -Catalog $catalog `
             -ExpectedFiles $files `
             -CatalogInsideRoot
-        if (-not $AllowUntrustedTestCertificate) {
+        if (-not $AllowUntrustedTestCertificate -and -not $SkipTrustVerification) {
             $signTool = Resolve-SdkTool 'signtool.exe'
             $zeroMemberRelative = 'tools/qemu/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache'
             $zeroMember = @($files | Where-Object { $_.Relative -ceq $zeroMemberRelative })
