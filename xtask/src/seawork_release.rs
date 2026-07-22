@@ -200,6 +200,7 @@ struct UpdaterConfiguration {
     protocol: UpdaterProtocolContract,
     failure_restart_delays_ms: Vec<u32>,
     failure_reset_period_seconds: u32,
+    failure_actions_on_non_crash_failures: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -221,6 +222,15 @@ struct UpdaterArtifactManifest {
     protocol: UpdaterProtocolContract,
     service_name: &'static str,
     command_template: &'static str,
+    service_display_name: &'static str,
+    service_type: &'static str,
+    account: &'static str,
+    start: &'static str,
+    service_sid_type: &'static str,
+    service_object_sddl: &'static str,
+    failure_restart_delays_ms: Vec<u32>,
+    failure_reset_period_seconds: u32,
+    failure_actions_on_non_crash_failures: bool,
 }
 
 pub fn package_bundle(
@@ -277,7 +287,7 @@ pub fn package_updater(
         }
     }
     let manifest = UpdaterArtifactManifest {
-        schema_version: 1,
+        schema_version: 2,
         version,
         target: "x86_64-pc-windows-msvc",
         binary_name: "localsandbox-seawork-updater.exe",
@@ -292,6 +302,16 @@ pub fn package_updater(
         service_name: "LocalSandboxSeaWorkUpdater",
         command_template:
             "\"%ProgramFiles%\\SeaWork\\LocalSandbox\\updater\\localsandbox-seawork-updater.exe\" --service",
+        service_display_name: "LocalSandbox for SeaWork Updater",
+        service_type: "SERVICE_WIN32_OWN_PROCESS",
+        account: "LocalSystem",
+        start: "automatic",
+        service_sid_type: "SERVICE_SID_TYPE_UNRESTRICTED",
+        service_object_sddl:
+            "O:SYG:SYD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00000005;;;IU)",
+        failure_restart_delays_ms: vec![5_000, 30_000, 120_000],
+        failure_reset_period_seconds: 86_400,
+        failure_actions_on_non_crash_failures: true,
     };
     write_json(&manifest_path, &manifest)?;
     write_deterministic_zip(
@@ -907,6 +927,7 @@ fn service_contract(profile: ServiceProfile) -> ServiceContract {
             },
             failure_restart_delays_ms: vec![5_000, 30_000, 120_000],
             failure_reset_period_seconds: 86_400,
+            failure_actions_on_non_crash_failures: true,
         },
         install_state_schema: 1,
     }
@@ -1254,6 +1275,10 @@ mod tests {
             "LocalSandBox/local-sandbox"
         );
         assert_eq!(production["updater"]["name"], "LocalSandboxSeaWorkUpdater");
+        assert_eq!(
+            production["updater"]["failure_actions_on_non_crash_failures"],
+            true
+        );
         assert_eq!(development["service"]["name"], "LocalSandboxSeaWorkDev");
         assert_eq!(development["update"]["enabled"], false);
         assert_eq!(
@@ -1333,6 +1358,17 @@ mod tests {
         assert_eq!(manifest["version"], "0.5.0");
         assert_eq!(manifest["binary_sha256"], sha256_file(&binary).unwrap());
         assert_eq!(manifest["service_name"], "LocalSandboxSeaWorkUpdater");
+        assert_eq!(manifest["schema_version"], 2);
+        assert_eq!(manifest["start"], "automatic");
+        assert_eq!(
+            manifest["service_sid_type"],
+            "SERVICE_SID_TYPE_UNRESTRICTED"
+        );
+        assert_eq!(
+            manifest["failure_restart_delays_ms"],
+            serde_json::json!([5_000, 30_000, 120_000])
+        );
+        assert_eq!(manifest["failure_actions_on_non_crash_failures"], true);
         assert!(fs::read(&archive).unwrap().starts_with(b"PK\x03\x04"));
         assert!(package_updater(&args, platform, "0.5.0", &root, &output).is_err());
         fs::remove_dir_all(root).unwrap();

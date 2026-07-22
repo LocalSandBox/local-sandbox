@@ -17,12 +17,15 @@ pub use package::{verify_bundle_root, PackagePolicy, PackageVerification, Publis
 #[cfg(feature = "coordinator-policy")]
 pub use policy::{
     cached_candidate, failed_target_decision, parse_retry_after_utc, retry_delay,
-    stream_exact_asset, validate_download_url, validate_helper_version_output,
-    FailedTargetDecision, HelperVersionOutput,
+    stream_exact_asset, validate_download_url, validate_helper_install_output,
+    validate_helper_version_output, FailedTargetDecision, HelperInstallOutput, HelperVersionOutput,
 };
 pub use state::{archive_file, create_json, load_json, remove_file_if_exists, write_json_atomic};
 #[cfg(windows)]
-pub use windows_trust::{verify_windows_file_publisher, verify_windows_package};
+pub use windows_trust::{
+    verify_windows_directory_protection, verify_windows_file_protection,
+    verify_windows_file_publisher, verify_windows_package,
+};
 
 pub const UPDATE_STATE_SCHEMA_VERSION: u32 = 1;
 

@@ -1,5 +1,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, Read};
+use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -11,7 +12,8 @@ use anyhow::{bail, Context, Result};
 use lsb_seawork_update::{
     cached_candidate, create_json, extract_zip_archive, failed_target_decision, load_json,
     parse_retry_after_utc, remove_file_if_exists, retry_delay, stream_exact_asset,
-    validate_download_url, validate_helper_version_output, verify_bundle_root,
+    validate_download_url, validate_helper_install_output, verify_bundle_root,
+    verify_windows_directory_protection, verify_windows_file_protection,
     verify_windows_file_publisher, verify_windows_package, write_json_atomic,
     CommittedStateEnvelope, FailedTargetDecision, FailedTargetState, HelperProtocol, PackagePolicy,
     ReleaseCandidate, ReleaseChannel, ReleaseSelector, TransactionEnvelope, TransactionPhase,
@@ -54,11 +56,12 @@ pub enum StartupRecovery {
 }
 
 pub fn inspect_startup(paths: &ServicePaths) -> StartupRecovery {
-    let transaction = match load_json::<TransactionEnvelope>(&paths.updates.current_transaction) {
-        Ok(transaction) if transaction.validate().is_ok() => transaction,
-        Err(error) if is_not_found(&error) => return StartupRecovery::None,
-        _ => return StartupRecovery::Quarantined,
-    };
+    let transaction =
+        match protected_load_json::<TransactionEnvelope>(&paths.updates.current_transaction) {
+            Ok(transaction) if transaction.validate().is_ok() => transaction,
+            Err(error) if is_not_found(&error) => return StartupRecovery::None,
+            _ => return StartupRecovery::Quarantined,
+        };
     if transaction.transaction.phase == TransactionPhase::Quarantined {
         return StartupRecovery::Quarantined;
     }
@@ -66,7 +69,7 @@ pub fn inspect_startup(paths: &ServicePaths) -> StartupRecovery {
         return StartupRecovery::Quarantined;
     };
     if transaction.transaction.phase.is_terminal() {
-        let committed = load_json::<CommittedStateEnvelope>(&paths.updates.committed)
+        let committed = protected_load_json::<CommittedStateEnvelope>(&paths.updates.committed)
             .ok()
             .filter(|state| state.validate().is_ok());
         let coherent = match transaction.transaction.phase {
@@ -227,6 +230,20 @@ impl Coordinator {
         channel: ReleaseChannel,
         stop: Arc<AtomicBool>,
     ) -> Result<Self> {
+        for path in [
+            paths.root.as_path(),
+            paths.updates.root.as_path(),
+            paths.updates.downloads.as_path(),
+            paths.updates.staging.as_path(),
+            paths
+                .updates
+                .current_transaction
+                .parent()
+                .context("fixed transaction path has no parent")?,
+            paths.updates.history.as_path(),
+        ] {
+            verify_windows_directory_protection(path)?;
+        }
         let status = load_status(&paths.updates.status).unwrap_or_default();
         status.validate()?;
         context.observe_update(
@@ -292,7 +309,7 @@ impl Coordinator {
     }
 
     fn transaction_recovery_pending(&self) -> bool {
-        match load_json::<TransactionEnvelope>(&self.paths.updates.current_transaction) {
+        match protected_load_json::<TransactionEnvelope>(&self.paths.updates.current_transaction) {
             Ok(transaction) => transaction.validate().is_ok(),
             Err(error) => !is_not_found(&error),
         }
@@ -303,7 +320,7 @@ impl Coordinator {
             bail!("service shutdown cancelled update check");
         }
         self.set_phase(UpdatePhase::UpdateChecking, None)?;
-        let committed: CommittedStateEnvelope = load_json(&self.paths.updates.committed)
+        let committed: CommittedStateEnvelope = protected_load_json(&self.paths.updates.committed)
             .context("automatic activation requires valid committed state")?;
         committed.validate()?;
         self.context
@@ -364,6 +381,7 @@ impl Coordinator {
             };
             let verification = verify_bundle_root(&staged_root, &policy)?;
             let target = verification.bundle_identity(&candidate.archive_sha256)?;
+            verify_windows_directory_protection(&staged_root)?;
             verify_windows_package(&staged_root, &verification, &compiled_publishers())?;
             if target.version != candidate.version
                 || target.ledger.writer_schema != committed.committed.current.ledger.writer_schema
@@ -545,11 +563,12 @@ impl Coordinator {
         &self,
         candidate: &ReleaseCandidate,
     ) -> Result<Option<(Option<String>, bool)>> {
-        let failed = match load_json::<FailedTargetState>(&self.paths.updates.failed_target) {
-            Ok(failed) => failed,
-            Err(error) if is_not_found(&error) => return Ok(None),
-            Err(error) => return Err(error).context("load protected failed-target state"),
-        };
+        let failed =
+            match protected_load_json::<FailedTargetState>(&self.paths.updates.failed_target) {
+                Ok(failed) => failed,
+                Err(error) if is_not_found(&error) => return Ok(None),
+                Err(error) => return Err(error).context("load protected failed-target state"),
+            };
         match failed_target_decision(candidate, &failed, time::OffsetDateTime::now_utc())? {
             FailedTargetDecision::Allowed => Ok(None),
             FailedTargetDecision::Cooldown { retry_after_utc } => {
@@ -786,6 +805,7 @@ impl GithubHttp {
         let mut output = OpenOptions::new()
             .create_new(true)
             .write(true)
+            .share_mode(0)
             .open(&partial)?;
         let result = (|| {
             let mut reader = BufReader::new(response.into_body().into_reader());
@@ -799,6 +819,7 @@ impl GithubHttp {
             output.sync_all()?;
             drop(output);
             fs::rename(&partial, &final_path)?;
+            sync_directory_metadata(downloads)?;
             Ok(final_path.clone())
         })();
         if result.is_err() {
@@ -827,6 +848,14 @@ fn retry_after_utc(response: &http::Response<ureq::Body>) -> Option<String> {
 }
 
 fn verify_helper(path: &Path) -> Result<()> {
+    let updater = path
+        .parent()
+        .context("fixed updater executable has no parent")?;
+    let product = updater
+        .parent()
+        .context("fixed updater directory has no parent")?;
+    verify_windows_directory_protection(product)?;
+    verify_windows_directory_protection(updater)?;
     verify_windows_file_publisher(path, &compiled_publishers())?;
     verify_helper_protocol(path)?;
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
@@ -848,7 +877,7 @@ fn verify_helper(path: &Path) -> Result<()> {
 
 fn verify_helper_protocol(path: &Path) -> Result<()> {
     let mut child = Command::new(path)
-        .args(["--version", "--json"])
+        .args(["--verify-install", "--json"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -876,12 +905,30 @@ fn verify_helper_protocol(path: &Path) -> Result<()> {
     let output = child
         .wait_with_output()
         .context("collect updater helper protocol query")?;
-    validate_helper_version_output(
+    validate_helper_install_output(
         &output.stdout,
         HELPER_SERVICE_NAME,
         REQUIRED_HELPER_PROTOCOL,
     )?;
     Ok(())
+}
+
+fn sync_directory_metadata(path: &Path) -> Result<()> {
+    use windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+    };
+
+    let directory = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    match directory.sync_all() {
+        Ok(()) => Ok(()),
+        Err(error) if error.raw_os_error() == Some(ERROR_INVALID_HANDLE as i32) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn start_helper() -> Result<()> {
@@ -947,11 +994,16 @@ fn known_folder(id: *const windows_sys::core::GUID) -> Result<PathBuf> {
 }
 
 fn load_status(path: &Path) -> Result<CoordinatorStatus> {
-    match load_json(path) {
+    match protected_load_json(path) {
         Ok(status) => Ok(status),
         Err(error) if is_not_found(&error) => Ok(CoordinatorStatus::default()),
         Err(error) => Err(error),
     }
+}
+
+fn protected_load_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
+    verify_windows_file_protection(path)?;
+    load_json(path)
 }
 
 fn is_not_found(error: &anyhow::Error) -> bool {
