@@ -1,10 +1,11 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('SignPe', 'SignTestNode', 'Catalog', 'Verify')]
+    [ValidateSet('SignPe', 'SignUpdaterPe', 'VerifyUpdaterPe', 'SignTestNode', 'Catalog', 'Verify')]
     [string]$Mode,
 
     [string]$ServiceBinary,
+    [string]$UpdaterBinary,
     [string]$ClientBinary,
     [string]$BundleRoot,
     [string]$PfxPath,
@@ -433,6 +434,22 @@ switch ($Mode) {
             throw 'ServiceBinary has an unexpected filename'
         }
         $result = Invoke-Sign $service
+        $result | ConvertTo-Json -Compress
+    }
+    'SignUpdaterPe' {
+        $updater = Resolve-ExistingFile $UpdaterBinary 'UpdaterBinary'
+        if ((Split-Path -Leaf $updater) -cne 'localsandbox-seawork-updater.exe') {
+            throw 'UpdaterBinary has an unexpected filename'
+        }
+        $result = Invoke-Sign $updater
+        $result | ConvertTo-Json -Compress
+    }
+    'VerifyUpdaterPe' {
+        $updater = Resolve-ExistingFile $UpdaterBinary 'UpdaterBinary'
+        if ((Split-Path -Leaf $updater) -cne 'localsandbox-seawork-updater.exe') {
+            throw 'UpdaterBinary has an unexpected filename'
+        }
+        $result = Assert-Signer $updater -RequireTimestamp:(-not $SkipTimestamp)
         $result | ConvertTo-Json -Compress
     }
     'SignTestNode' {
