@@ -1117,10 +1117,7 @@ mod tests {
 
   #[test]
   fn service_mount_mapping_accepts_only_direct_directory_mounts_with_flags_zero_or_one() {
-    let root = std::env::temp_dir().join(format!(
-      "lsb-node-service-mounts-{}",
-      std::process::id()
-    ));
+    let root = std::env::temp_dir().join(format!("lsb-node-service-mounts-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("workspace/output")).unwrap();
     let mapped = map_service_mounts(Some(vec![
@@ -1155,16 +1152,10 @@ mod tests {
       guestPath: guest_path.to_string(),
       flags,
     };
-    let overlay = map_service_mounts(Some(vec![mount(
-      "overlay",
-      "/workspace",
-      None,
-    )]))
-    .unwrap_err();
+    let overlay = map_service_mounts(Some(vec![mount("overlay", "/workspace", None)])).unwrap_err();
     assert!(overlay.reason.contains("[MOUNT_UNSUPPORTED]"));
     for flags in [None, Some(2.0), Some(0.5), Some(f64::NAN)] {
-      let error = map_service_mounts(Some(vec![mount("direct", "/workspace", flags)]))
-        .unwrap_err();
+      let error = map_service_mounts(Some(vec![mount("direct", "/workspace", flags)])).unwrap_err();
       assert!(error.reason.contains("[INVALID_REQUEST]"));
     }
     let duplicate = map_service_mounts(Some(vec![
