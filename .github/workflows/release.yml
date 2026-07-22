@@ -205,8 +205,10 @@ jobs:
             echo "SEAWORK_PUBLISHER_SUBJECT is required" >&2
             exit 1
           fi
-          if [[ ! "$TIMESTAMP_URL" =~ ^https://[^[:space:]]+$ ]]; then
-            echo "SEAWORK_TIMESTAMP_URL must be a non-empty HTTPS URL" >&2
+          # RFC 3161 responses are signed by the timestamp authority, and some
+          # authorities (including Sectigo) publish HTTP-only endpoints.
+          if [[ ! "$TIMESTAMP_URL" =~ ^https?://[^[:space:]]+$ ]]; then
+            echo "SEAWORK_TIMESTAMP_URL must be a non-empty HTTP(S) URL" >&2
             exit 1
           fi
           if [[ -z "$CODESIGN_PFX_BASE64" || -z "$CODESIGN_PASSWORD" ]]; then
