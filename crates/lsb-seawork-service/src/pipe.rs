@@ -381,6 +381,7 @@ impl Default for RuntimeUpdateObservation {
 }
 
 impl HealthContext {
+    #[cfg(test)]
     pub fn new(admissions_open: bool, quota_limits: QuotaLimits) -> Self {
         Self::with_admissions_controller(quota_limits, AdmissionController::new(admissions_open))
     }
