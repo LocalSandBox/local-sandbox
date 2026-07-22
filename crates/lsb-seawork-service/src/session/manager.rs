@@ -567,6 +567,7 @@ impl SessionManager {
     }
 
     #[cfg(windows)]
+    #[allow(clippy::too_many_arguments)]
     pub fn start_reserved_managed_vm(
         &self,
         session_id: ResourceHandle,

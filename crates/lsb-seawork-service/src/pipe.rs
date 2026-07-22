@@ -381,6 +381,7 @@ impl HealthContext {
         self
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn with_client_policy(
         mut self,
         maintenance: MaintenanceManager,

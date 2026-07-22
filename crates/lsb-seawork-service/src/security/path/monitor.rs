@@ -159,8 +159,10 @@ fn monitor_loop(
         if unsafe { ResetEvent(event.as_raw_handle() as HANDLE) } == 0 {
             return Err(std::io::Error::last_os_error()).context("reset host change event");
         }
-        let mut overlapped = OVERLAPPED::default();
-        overlapped.hEvent = event.as_raw_handle() as HANDLE;
+        let mut overlapped = OVERLAPPED {
+            hEvent: event.as_raw_handle() as HANDLE,
+            ..OVERLAPPED::default()
+        };
         let started = unsafe {
             ReadDirectoryChangesW(
                 directory.as_raw_handle() as HANDLE,

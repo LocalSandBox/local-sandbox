@@ -272,6 +272,7 @@ impl JsonLogger {
         })
     }
 
+    #[cfg(test)]
     pub fn write(&self, event_id: EventId, phase: &str, stable_code: &str) -> Result<()> {
         self.write_with_context(event_id, phase, stable_code, EventContext::EMPTY)
     }
