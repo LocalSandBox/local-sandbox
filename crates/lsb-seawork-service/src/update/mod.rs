@@ -172,13 +172,16 @@ impl CoordinatorStatus {
 
 pub struct CoordinatorHandle {
     stop: Arc<AtomicBool>,
-    finished: mpsc::Receiver<()>,
+    finished: Option<mpsc::Receiver<()>>,
 }
 
 impl CoordinatorHandle {
-    fn stop(&mut self) {
+    pub fn stop(&mut self) {
+        let Some(finished) = self.finished.take() else {
+            return;
+        };
         self.stop.store(true, Ordering::Release);
-        let _ = self.finished.recv_timeout(Duration::from_secs(5));
+        let _ = finished.recv_timeout(Duration::from_secs(5));
     }
 }
 
@@ -205,7 +208,10 @@ pub fn start(
         };
         coordinator.run();
     });
-    CoordinatorHandle { stop, finished }
+    CoordinatorHandle {
+        stop,
+        finished: Some(finished),
+    }
 }
 
 struct FinishedSignal(mpsc::Sender<()>);
@@ -405,17 +411,35 @@ impl Coordinator {
             }
         };
 
-        let fixed = FixedProductPaths::discover()?;
-        let helper = fixed.updater.join(HELPER_EXE);
-        verify_helper(&helper, required_helper_protocol)?;
+        let pre_handoff = (|| {
+            self.require_not_stopping("candidate activation")?;
+            let fixed = FixedProductPaths::discover()?;
+            let helper = fixed.updater.join(HELPER_EXE);
+            verify_helper(&helper, required_helper_protocol)?;
+            Ok::<_, anyhow::Error>((fixed, helper))
+        })();
+        let (fixed, helper) = match pre_handoff {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = remove_owned_staging(&self.paths.updates.staging, &transaction_id);
+                return Err(error);
+            }
+        };
 
-        let update_id = self.context.prepare_automatic_update(target.clone())?;
+        let update_id = match self.context.prepare_automatic_update(target.clone()) {
+            Ok(update_id) => update_id,
+            Err(error) => {
+                let _ = remove_owned_staging(&self.paths.updates.staging, &transaction_id);
+                return Err(error);
+            }
+        };
         let mut helper_owns_transaction = false;
         let handoff = (|| {
             self.set_phase(UpdatePhase::UpdateWaitingForIdle, Some(candidate.clone()))?;
             self.context
                 .admissions()
                 .wait_until_update_sealed(&self.stop)?;
+            self.require_not_stopping("durable helper handoff")?;
             self.set_phase(UpdatePhase::UpdateSealed, Some(candidate.clone()))?;
             let old_image = std::env::current_exe()?;
             let final_root = fixed.versions.join(&candidate.version);
@@ -442,6 +466,7 @@ impl Coordinator {
                 bail!("admissions changed before durable helper handoff");
             }
             create_json(&self.paths.updates.current_transaction, &transaction)?;
+            self.require_not_stopping("updater helper start")?;
             self.set_phase(UpdatePhase::UpdateHelperStarting, Some(candidate.clone()))?;
             start_helper()?;
             helper_owns_transaction = true;
@@ -463,6 +488,13 @@ impl Coordinator {
             .lock()
             .ok()
             .and_then(|status| status.etag.clone())
+    }
+
+    fn require_not_stopping(&self, operation: &str) -> Result<()> {
+        if self.stop.load(Ordering::Acquire) {
+            bail!("service shutdown cancelled update {operation}");
+        }
+        Ok(())
     }
 
     fn cached_candidate(
