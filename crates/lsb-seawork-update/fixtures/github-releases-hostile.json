@@ -1,0 +1,42 @@
+[
+  {
+    "id": 1,
+    "tag_name": "v0.7.0",
+    "draft": false,
+    "prerelease": false,
+    "immutable": false,
+    "assets": []
+  },
+  {
+    "id": 2,
+    "tag_name": "v0.8.0+alias",
+    "draft": false,
+    "prerelease": false,
+    "immutable": true,
+    "assets": []
+  },
+  {
+    "id": 3,
+    "tag_name": "v0.9.0-rc.1",
+    "draft": false,
+    "prerelease": false,
+    "immutable": true,
+    "assets": []
+  },
+  {
+    "id": 4,
+    "tag_name": "v1.0.0",
+    "draft": false,
+    "prerelease": false,
+    "immutable": true,
+    "assets": [
+      {
+        "name": "lsb-seawork-service-v1.0.0-windows-x86_64.zip",
+        "browser_download_url": "http://github.com/LocalSandBox/local-sandbox/releases/download/v1.0.0/lsb-seawork-service-v1.0.0-windows-x86_64.zip",
+        "state": "uploaded",
+        "size": 10,
+        "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    ]
+  }
+]
