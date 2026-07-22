@@ -79,6 +79,7 @@ impl CommittedStateEnvelope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FailedTargetState {
+    pub target_version: String,
     pub archive_sha256: String,
     pub rollback_count: u8,
     pub last_rollback_utc: String,
@@ -87,7 +88,10 @@ pub struct FailedTargetState {
 
 impl FailedTargetState {
     pub fn validate(&self) -> Result<()> {
-        if !is_lower_hex(&self.archive_sha256, 64)
+        let version = semver::Version::parse(&self.target_version)?;
+        if version.to_string() != self.target_version
+            || !version.build.is_empty()
+            || !is_lower_hex(&self.archive_sha256, 64)
             || self.rollback_count == 0
             || self.rollback_count > 3
             || self.suppressed != (self.rollback_count >= 3)
@@ -148,6 +152,7 @@ mod tests {
     #[test]
     fn exact_digest_is_suppressed_after_three_rollbacks() {
         let mut failed = FailedTargetState {
+            target_version: "0.5.1".to_string(),
             archive_sha256: "a".repeat(64),
             rollback_count: 1,
             last_rollback_utc: "2026-07-22T12:00:00Z".to_string(),

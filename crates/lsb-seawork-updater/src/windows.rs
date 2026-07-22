@@ -10,7 +10,7 @@ use anyhow::{bail, Context, Result};
 use lsb_seawork_update::{
     archive_file, load_json, verify_bundle_root, verify_windows_file_publisher,
     verify_windows_package, write_json_atomic, CommittedState, CommittedStateEnvelope,
-    PackagePolicy, TransactionEnvelope,
+    FailedTargetState, PackagePolicy, TransactionEnvelope,
 };
 use lsb_service_proto::{HealthState, UpdatePhase, PIPE_NAME, SERVICE_NAME, SUPPORTED};
 use windows_service::define_windows_service;
@@ -326,7 +326,7 @@ impl UpdateBackend for WindowsBackend {
     fn health_and_commit_target(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
         let update = &transaction.transaction;
         let runtime = self.connect_runtime()?;
-        runtime.block_on(async {
+        let result = runtime.block_on(async {
             let client = lsb_service_client::connect(lsb_service_client::ConnectOptions {
                 timeout: CONNECT_TIMEOUT,
             })
@@ -366,7 +366,14 @@ impl UpdateBackend for WindowsBackend {
                 anyhow::bail!("target failed post-commit READY health");
             }
             Ok::<_, anyhow::Error>(())
-        })
+        });
+        if let Err(error) = result {
+            self.record_failed_target(update).with_context(|| {
+                format!("record failed target after activation health failure: {error:#}")
+            })?;
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn finalize_commit(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
@@ -446,6 +453,31 @@ impl UpdateBackend for WindowsBackend {
             }
             Ok::<_, anyhow::Error>(())
         })
+    }
+}
+
+impl WindowsBackend {
+    fn record_failed_target(&self, update: &lsb_seawork_update::UpdateTransaction) -> Result<()> {
+        let now = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)?;
+        let failed = match load_json::<FailedTargetState>(&self.paths.failed_target) {
+            Ok(mut failed)
+                if failed.validate().is_ok()
+                    && failed.archive_sha256 == update.target_bundle_identity.archive_sha256 =>
+            {
+                failed.record_rollback(now)?;
+                failed
+            }
+            _ => FailedTargetState {
+                target_version: update.target_bundle_identity.version.clone(),
+                archive_sha256: update.target_bundle_identity.archive_sha256.clone(),
+                rollback_count: 1,
+                last_rollback_utc: now,
+                suppressed: false,
+            },
+        };
+        failed.validate()?;
+        write_json_atomic(&self.paths.failed_target, &failed)
     }
 }
 
@@ -708,6 +740,7 @@ fn set_event_message_path(path: &str) -> Result<()> {
 struct FixedPaths {
     updater_executable: PathBuf,
     committed: PathBuf,
+    failed_target: PathBuf,
     staging: PathBuf,
     transactions: PathBuf,
     current_transaction: PathBuf,
@@ -728,6 +761,7 @@ impl FixedPaths {
         Ok(Self {
             updater_executable: product.join("updater").join(UPDATER_EXE),
             committed: updates.join("committed.json"),
+            failed_target: updates.join("failed-target.json"),
             staging: updates.join("staging"),
             current_transaction: transactions.join("current.json"),
             history: updates.join("history"),

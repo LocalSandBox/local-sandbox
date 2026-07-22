@@ -25,6 +25,8 @@ pub mod session;
 #[cfg(windows)]
 mod status;
 #[cfg(windows)]
+mod update;
+#[cfg(windows)]
 pub mod windows;
 
 use anyhow::{bail, Result};
