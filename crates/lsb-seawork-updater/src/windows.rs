@@ -134,16 +134,107 @@ fn run_recovery(stop_rx: &std::sync::mpsc::Receiver<()>) -> Result<()> {
     let mut store = DiskStore {
         current: backend.paths.current_transaction.clone(),
     };
-    let outcome = recover_transaction(&mut transaction, &mut store, &mut backend)?;
+    let outcome = match recover_transaction(&mut transaction, &mut store, &mut backend) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let _ = report_update_event(
+                12,
+                "update_recovery_quarantine",
+                "UPDATE_RECOVERY_QUARANTINE",
+                &transaction.transaction.target_bundle_identity.version,
+                &transaction
+                    .transaction
+                    .target_bundle_identity
+                    .archive_sha256,
+            );
+            return Err(error);
+        }
+    };
     match outcome {
         RecoveryOutcome::Committed | RecoveryOutcome::RolledBack => {
+            let (event_id, phase, code) = if outcome == RecoveryOutcome::Committed {
+                (11, "update_committed", "UPDATE_COMMITTED")
+            } else {
+                (12, "update_rollback_complete", "UPDATE_ROLLBACK_COMPLETE")
+            };
+            let _ = report_update_event(
+                event_id,
+                phase,
+                code,
+                &transaction.transaction.target_bundle_identity.version,
+                &transaction
+                    .transaction
+                    .target_bundle_identity
+                    .archive_sha256,
+            );
             let history = backend
                 .paths
                 .history
                 .join(format!("{}.json", transaction.transaction.transaction_id));
             archive_file(&backend.paths.current_transaction, &history)?;
         }
-        RecoveryOutcome::Quarantined => {}
+        RecoveryOutcome::Quarantined => {
+            let _ = report_update_event(
+                12,
+                "update_recovery_quarantine",
+                "UPDATE_RECOVERY_QUARANTINE",
+                &transaction.transaction.target_bundle_identity.version,
+                &transaction
+                    .transaction
+                    .target_bundle_identity
+                    .archive_sha256,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn report_update_event(
+    event_id: u32,
+    phase: &str,
+    stable_code: &str,
+    version: &str,
+    digest: &str,
+) -> Result<()> {
+    use windows_sys::Win32::System::EventLog::{
+        DeregisterEventSource, RegisterEventSourceW, ReportEventW, EVENTLOG_INFORMATION_TYPE,
+        EVENTLOG_WARNING_TYPE,
+    };
+
+    let source = wide(OsStr::new(SERVICE_NAME));
+    let handle = unsafe { RegisterEventSourceW(ptr::null(), source.as_ptr()) };
+    if handle.is_null() {
+        return Err(io::Error::last_os_error()).context("register update Event Log source");
+    }
+    let digest_prefix = digest.get(..32).unwrap_or("");
+    let insertions =
+        [version, phase, stable_code, digest_prefix].map(|value| wide(OsStr::new(value)));
+    let insertion_pointers = insertions
+        .iter()
+        .map(|value| value.as_ptr())
+        .collect::<Vec<_>>();
+    let event_type = if event_id == 12 {
+        EVENTLOG_WARNING_TYPE
+    } else {
+        EVENTLOG_INFORMATION_TYPE
+    };
+    let reported = unsafe {
+        ReportEventW(
+            handle,
+            event_type,
+            0,
+            event_id,
+            ptr::null_mut(),
+            u16::try_from(insertion_pointers.len()).unwrap_or(0),
+            0,
+            insertion_pointers.as_ptr(),
+            ptr::null(),
+        )
+    };
+    let report_error = (reported == 0).then(io::Error::last_os_error);
+    unsafe { DeregisterEventSource(handle) };
+    if let Some(error) = report_error {
+        return Err(error).context("write update Event Log record");
     }
     Ok(())
 }
@@ -182,16 +273,17 @@ impl WindowsBackend {
         Ok(Self { paths })
     }
 
-    fn verify_package(&self, root: &Path, transaction: &TransactionEnvelope) -> Result<()> {
+    fn verify_package_identity(
+        &self,
+        root: &Path,
+        identity: &lsb_service_proto::BundleIdentity,
+    ) -> Result<()> {
         verify_windows_directory_protection(root)?;
-        let update = &transaction.transaction;
         let policy = PackagePolicy {
-            expected_version: &update.target_bundle_identity.version,
+            expected_version: &identity.version,
             supported_protocol: SUPPORTED,
-            ledger_writer_schema: update.old_bundle_identity.ledger.writer_schema,
-            service_configuration_revision: update
-                .target_bundle_identity
-                .service_configuration_revision,
+            ledger_writer_schema: identity.ledger.writer_schema,
+            service_configuration_revision: identity.service_configuration_revision,
             service_name: SERVICE_NAME,
             service_display_name: "LocalSandbox for SeaWork",
             service_account: "LocalSystem",
@@ -200,9 +292,9 @@ impl WindowsBackend {
             pipe_sddl: PIPE_SDDL,
         };
         let report = verify_bundle_root(root, &policy)?;
-        let identity = report.bundle_identity(&update.target_bundle_identity.archive_sha256)?;
-        if identity != update.target_bundle_identity {
-            bail!("verified package identity differs from the protected transaction target");
+        let observed = report.bundle_identity(&identity.archive_sha256)?;
+        if observed != *identity {
+            bail!("verified package identity differs from the protected transaction");
         }
         verify_windows_package(root, &report, &compiled_publishers())?;
         Ok(())
@@ -320,6 +412,11 @@ fn stop_service_and_confirm_process_exit(
 impl UpdateBackend for WindowsBackend {
     fn verify_handoff(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
         let update = &transaction.transaction;
+        let old_root = bundle_root_for_image(
+            &self.paths.versions,
+            &update.old_image_path,
+            &update.old_bundle_identity.version,
+        )?;
         if update.helper_protocol.major != HELPER_PROTOCOL_MAJOR
             || update.helper_protocol.minor > HELPER_PROTOCOL_MINOR
             || Path::new(&update.target_image_path)
@@ -346,6 +443,7 @@ impl UpdateBackend for WindowsBackend {
         if committed.committed.current != update.old_bundle_identity {
             bail!("transaction old identity differs from committed anti-rollback state");
         }
+        self.verify_package_identity(&old_root, &update.old_bundle_identity)?;
         self.require_main_command(&update.old_image_path)?;
         require_event_message_path(&update.old_event_message_path)?;
         let runtime = self.connect_runtime()?;
@@ -377,15 +475,15 @@ impl UpdateBackend for WindowsBackend {
             .versions
             .join(format!(".staging-{}", update.transaction_id));
         remove_incomplete_final_staging(&self.paths.versions, &temporary, &update.transaction_id)?;
-        self.verify_package(staged, transaction)?;
+        self.verify_package_identity(staged, &update.target_bundle_identity)?;
         if final_root.exists() {
-            return self.verify_package(final_root, transaction);
+            return self.verify_package_identity(final_root, &update.target_bundle_identity);
         }
         copy_new_tree(staged, &temporary)?;
         let result = (|| {
-            self.verify_package(&temporary, transaction)?;
+            self.verify_package_identity(&temporary, &update.target_bundle_identity)?;
             fs::rename(&temporary, final_root).context("atomically place verified version root")?;
-            self.verify_package(final_root, transaction)
+            self.verify_package_identity(final_root, &update.target_bundle_identity)
         })();
         if result.is_err() {
             let _ = fs::remove_dir_all(&temporary);
@@ -497,10 +595,20 @@ impl UpdateBackend for WindowsBackend {
     fn stop_target(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
         let update = &transaction.transaction;
         let command = current_main_command()?;
-        if command != service_command(&update.target_image_path)
-            && command != service_command(&update.old_image_path)
+        let event = query_event_message_path()?;
+        let old_command = service_command(&update.old_image_path);
+        let target_command = service_command(&update.target_image_path);
+        if !matches_transaction_value(&command, &old_command, &target_command)
+            || !matches_transaction_value(
+                &event,
+                &update.old_event_message_path,
+                &update.target_event_message_path,
+            )
         {
             bail!("refusing to stop a main service with unrelated ImagePath");
+        }
+        if command == old_command {
+            return Ok(());
         }
         let service = self.main_service(ServiceAccess::QUERY_STATUS | ServiceAccess::STOP)?;
         stop_service_and_confirm_process_exit(&service)
@@ -518,6 +626,12 @@ impl UpdateBackend for WindowsBackend {
 
     fn start_and_abort_old(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
         let update = &transaction.transaction;
+        let old_root = bundle_root_for_image(
+            &self.paths.versions,
+            &update.old_image_path,
+            &update.old_bundle_identity.version,
+        )?;
+        self.verify_package_identity(&old_root, &update.old_bundle_identity)?;
         self.require_main_command(&update.old_image_path)?;
         let service = self.main_service(ServiceAccess::QUERY_STATUS | ServiceAccess::START)?;
         if service.query_status()?.current_state == ServiceState::Stopped {
@@ -584,43 +698,58 @@ fn change_main_configuration(
     let current_event = query_event_message_path()?;
     let expected_command = service_command(expected_image);
     let replacement_command = service_command(replacement_image);
-    if current_command == replacement_command && current_event == replacement_event {
-        return Ok(());
+    if !matches_transaction_value(&current_command, &expected_command, &replacement_command)
+        || !matches_transaction_value(&current_event, expected_event, replacement_event)
+    {
+        bail!("SCM or Event Log path is outside the protected transaction identities");
     }
-    if current_command != expected_command || current_event != expected_event {
-        bail!("SCM and Event Log paths do not match one coherent transaction identity");
+    if current_command != replacement_command {
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+        let service = manager.open_service(
+            SERVICE_NAME,
+            ServiceAccess::QUERY_CONFIG | ServiceAccess::CHANGE_CONFIG,
+        )?;
+        let wide_command = wide(OsStr::new(&replacement_command));
+        let ok = unsafe {
+            ChangeServiceConfigW(
+                service.raw_handle(),
+                SERVICE_NO_CHANGE,
+                SERVICE_NO_CHANGE,
+                SERVICE_NO_CHANGE,
+                wide_command.as_ptr(),
+                ptr::null(),
+                ptr::null_mut(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error()).context("change exact main-service ImagePath");
+        }
     }
-    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
-    let service = manager.open_service(
-        SERVICE_NAME,
-        ServiceAccess::QUERY_CONFIG | ServiceAccess::CHANGE_CONFIG,
-    )?;
-    let wide_command = wide(OsStr::new(&replacement_command));
-    let ok = unsafe {
-        ChangeServiceConfigW(
-            service.raw_handle(),
-            SERVICE_NO_CHANGE,
-            SERVICE_NO_CHANGE,
-            SERVICE_NO_CHANGE,
-            wide_command.as_ptr(),
-            ptr::null(),
-            ptr::null_mut(),
-            ptr::null(),
-            ptr::null(),
-            ptr::null(),
-            ptr::null(),
-        )
-    };
-    if ok == 0 {
-        return Err(io::Error::last_os_error()).context("change exact main-service ImagePath");
+    if current_event != replacement_event {
+        set_event_message_path(replacement_event)?;
     }
-    set_event_message_path(replacement_event)?;
     if current_main_command()? != replacement_command
         || query_event_message_path()? != replacement_event
     {
         bail!("SCM or Event Log path did not persist the exact replacement");
     }
     Ok(())
+}
+
+fn matches_transaction_value(observed: &str, old: &str, target: &str) -> bool {
+    observed == old || observed == target
+}
+
+fn bundle_root_for_image(versions: &Path, image: &str, version: &str) -> Result<PathBuf> {
+    let expected = versions.join(version);
+    if Path::new(image) != expected.join("bin").join(MAIN_EXE) {
+        bail!("main-service image path is outside the fixed version root");
+    }
+    Ok(expected)
 }
 
 fn current_main_command() -> Result<String> {
