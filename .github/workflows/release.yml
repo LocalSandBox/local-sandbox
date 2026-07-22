@@ -1039,6 +1039,7 @@ jobs:
       version: ${{ needs.prepare.outputs.version }}
       npm-tag: ${{ needs.prepare.outputs.npm-tag }}
     permissions:
+      actions: read
       contents: read
       id-token: write
     secrets: inherit
