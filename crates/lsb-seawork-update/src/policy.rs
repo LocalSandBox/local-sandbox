@@ -176,7 +176,7 @@ pub fn bounded_retry_delay(deadline: OffsetDateTime, now: OffsetDateTime) -> Dur
 }
 
 pub fn transaction_requires_recovery(transaction: &crate::TransactionEnvelope) -> bool {
-    transaction.validate().is_ok() && !transaction.transaction.phase.is_terminal()
+    transaction.validate().is_err() || !transaction.transaction.phase.is_terminal()
 }
 
 pub fn validate_download_url(value: &str, initial: bool) -> Result<()> {
@@ -421,7 +421,10 @@ mod tests {
             .unwrap();
         assert!(!transaction_requires_recovery(&transaction));
         transaction.checksum_sha256 = "0".repeat(64);
-        assert!(!transaction_requires_recovery(&transaction));
+        assert!(
+            transaction_requires_recovery(&transaction),
+            "an existing invalid journal must fail closed rather than authorize discovery"
+        );
     }
 
     #[test]
