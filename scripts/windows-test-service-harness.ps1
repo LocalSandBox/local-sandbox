@@ -19,6 +19,7 @@ $serviceName = 'LocalSandboxSeaWork'
 $owner = 'local-sandbox-agent-install-smoke'
 $installStatePath = Join-Path $RunRoot 'installed-service-state.json'
 $clientHarnessSddl = 'O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)'
+$postRebootServiceWaitSeconds = 300
 
 function Invoke-Native {
     param([string] $Executable, [string[]] $Arguments, [string] $Label)
@@ -738,7 +739,9 @@ function Install-And-Smoke {
 
 function Smoke-Installed {
     $state = Read-InstallState
-    if ((Get-Service -Name $serviceName).Status -ne 'Running') { Wait-ServiceState 'Running' 120 }
+    if ((Get-Service -Name $serviceName).Status -ne 'Running') {
+        Wait-ServiceState 'Running' $postRebootServiceWaitSeconds
+    }
     $before = Get-CompatibilityResources
     Invoke-ClientSmoke $state -Mounts -Suffix 'post-reboot'
     Assert-CompatibleResourcesRestored $before $state.state_root
