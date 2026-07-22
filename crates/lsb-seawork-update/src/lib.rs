@@ -1,7 +1,9 @@
+mod archive;
 mod committed;
 mod discovery;
 mod journal;
 
+pub use archive::{extract_zip_archive, ArchiveExtraction};
 pub use committed::{CommittedState, CommittedStateEnvelope, FailedTargetState};
 pub use discovery::{ReleaseCandidate, ReleaseChannel, ReleaseSelector};
 pub use journal::{HelperProtocol, TransactionEnvelope, TransactionPhase, UpdateTransaction};
