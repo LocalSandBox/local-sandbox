@@ -103,12 +103,26 @@ if ($GitSha -notmatch '^[0-9a-f]{40}$') {
 
 $serviceItem = Get-Item -LiteralPath $serviceArchive
 $helperItem = Get-Item -LiteralPath $helperBinary
-$helperVersion = & $helperBinary --version --json | ConvertFrom-Json
+$helperInstall = & $helperBinary --verify-install --json | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or
-    $helperVersion.service_name -ne 'LocalSandboxSeaWorkUpdater' -or
-    [uint16]$helperVersion.helper_protocol_major -ne 1 -or
-    [uint16]$helperVersion.helper_protocol_minor -lt 1) {
-    throw 'Installed helper version/protocol query is incompatible'
+    $helperInstall.valid -ne $true -or
+    $null -ne $helperInstall.error -or
+    $helperInstall.service_name -ne 'LocalSandboxSeaWorkUpdater' -or
+    [uint16]$helperInstall.helper_protocol_major -ne 1 -or
+    [uint16]$helperInstall.helper_protocol_minor -lt 1) {
+    throw 'Installed helper self-check is incompatible'
+}
+$helperSignature = Get-AuthenticodeSignature -LiteralPath $helperBinary
+if ($helperSignature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
+    $null -eq $helperSignature.SignerCertificate -or
+    $null -eq $helperSignature.TimeStamperCertificate) {
+    throw 'Installed helper does not have a valid timestamped Authenticode signature'
+}
+$certificateSha = [Convert]::ToHexString(
+    [Security.Cryptography.SHA256]::HashData($helperSignature.SignerCertificate.RawData)
+).ToLowerInvariant()
+if ($certificateSha -cne $PublisherSha256) {
+    throw 'Installed helper signer differs from the accepted publisher SHA-256 identity'
 }
 $serviceSha = (Get-FileHash -LiteralPath $serviceArchive -Algorithm SHA256).Hash.ToLowerInvariant()
 $helperSha = (Get-FileHash -LiteralPath $helperBinary -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -157,7 +171,7 @@ foreach ($source in $resolvedEvidence) {
 }
 
 $manifest = [ordered]@{
-    schema_version = 1
+    schema_version = 2
     source_git_sha = $GitSha
     release_id = $ReleaseId
     release_tag = $ReleaseTag
@@ -173,9 +187,18 @@ $manifest = [ordered]@{
         size_bytes = [uint64]$helperItem.Length
     }
     helper_protocol = [ordered]@{
-        major = [uint16]$helperVersion.helper_protocol_major
-        minor = [uint16]$helperVersion.helper_protocol_minor
+        major = [uint16]$helperInstall.helper_protocol_major
+        minor = [uint16]$helperInstall.helper_protocol_minor
     }
+    helper_install = [ordered]@{
+        valid = [bool]$helperInstall.valid
+        service_name = [string]$helperInstall.service_name
+        helper_version = [string]$helperInstall.helper_version
+        helper_protocol_major = [uint16]$helperInstall.helper_protocol_major
+        helper_protocol_minor = [uint16]$helperInstall.helper_protocol_minor
+        error = $null
+    }
+    timestamped_authenticode_verified = $true
     publisher_sha256 = $PublisherSha256
     previous_bundle = $previousBundle
     candidate_bundle = $candidateBundle

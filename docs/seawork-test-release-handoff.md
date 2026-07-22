@@ -1078,3 +1078,8 @@ Signed Windows evidence must additionally prove schema-2 SCM policy enforcement,
 standard-user no-UAC behavior, protected directory/file rejection, exact old-process
 exit, pre-switch failure without forced workload loss, recovery from either half of an
 ImagePath/Event Log update, and full target/last-known-good re-verification on replay.
+
+The controlled-update evidence manifest is now schema 2 as well. Assembly requires
+and records the full successful helper install self-check plus independent valid
+timestamped Authenticode and exact publisher-certificate SHA-256 verification. SeaWork
+must not submit or accept a schema-1/version-query-only update evidence manifest.
