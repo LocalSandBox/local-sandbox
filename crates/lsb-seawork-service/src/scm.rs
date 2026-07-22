@@ -196,7 +196,7 @@ fn run_registered(
         Duration::from_secs(30),
     )?;
     let pipe = runtime.block_on(async { HealthPipe::bind(context.clone()) })?;
-    let _update_coordinator = match startup_recovery {
+    let mut update_coordinator = match startup_recovery {
         crate::update::StartupRecovery::None => Some(crate::update::start(
             context.clone(),
             paths.clone(),
@@ -229,6 +229,9 @@ fn run_registered(
     let control = match runtime.block_on(wait_for_runtime_exit(&mut control_rx, &mut pipe_task)) {
         RuntimeExit::Control(Some(control)) => control,
         RuntimeExit::Control(None) => {
+            if let Some(mut coordinator) = update_coordinator.take() {
+                coordinator.stop();
+            }
             drain_sessions(&context, &logger);
             let _ = shutdown_tx.send(());
             pipe_task.abort();
@@ -241,6 +244,9 @@ fn run_registered(
             anyhow::bail!("SCM control channel disconnected");
         }
         RuntimeExit::Pipe(result) => {
+            if let Some(mut coordinator) = update_coordinator.take() {
+                coordinator.stop();
+            }
             drain_sessions(&context, &logger);
             let _ = logger.write(EventId::ServiceFatalExit, "runtime", "PIPE_TASK_EXITED");
             match result {
@@ -250,6 +256,9 @@ fn run_registered(
             }
         }
     };
+    if let Some(mut coordinator) = update_coordinator.take() {
+        coordinator.stop();
+    }
     let wait_hint = if control == ServiceControl::Preshutdown {
         Duration::from_secs(60)
     } else {
