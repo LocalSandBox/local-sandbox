@@ -603,3 +603,143 @@ and downstream non-reboot acceptance matrix remain the required TR-6 implementat
 The SeaWork owner alone may append that evidence and mark the overall test release
 ready. Every reboot-dependent row remains recorded as pending, is deferred until the
 user re-authorizes reboot testing, and is not a current blocker.
+
+## 2026-07-22 — Reboot panic fix and interim validation checkpoint
+
+Status: **runtime defect fixed and validated on an interim signed tuple; final candidate
+evidence deliberately deferred because more source changes will follow**
+
+This entry supersedes the preceding statement that upstream reboot behavior had not
+been tested. It does not promote a new final artifact pin and does not change TR-6
+ownership. Per the user's handoff request, no final artifact fetch, final archive
+acceptance, or final full host-gate run was performed after this checkpoint.
+
+### Root cause and fix
+
+- The first delayed-auto service process consistently reached `RUNNING` and then died
+  during the first post-reboot `sandbox.start`. SCM recorded event 7031 and restarted
+  it after five seconds. Earlier service logs contained no normal stop or fatal event.
+- Diagnostic run `20260722t045000z-wprdiag2` attached the Microsoft-signed Sysinternals
+  ProcDump executable to first service PID 11380 and bounded WPR `GeneralProfile`
+  tracing around the one failing request. ProcDump reported unhandled `0xC0000409` and
+  wrote `service-termination.dmp`, 1,425,446 bytes, SHA-256
+  `7de00bb9d7d3f24665164b03c24e24ba06aef6a5c813b0fba8cd72ff9785b693`.
+  The bounded ETL is 581,959,680 bytes. Owned service cleanup passed and WPR reported
+  that it was no longer recording.
+- The matching PDB resolved the abort stack to
+  `sandbox.start -> SessionManager::begin_start_replay -> prune_start_replays ->
+  std::time::Instant::sub`. `prune_start_replays` computed
+  `Instant::now() - START_REPLAY_TTL`; on Windows, a machine uptime shorter than the
+  ten-minute TTL makes that subtraction panic. The production panic-abort build turns
+  the Rust panic into the observed fast-fail. This explains why pre-reboot tests passed
+  and the first short-uptime post-reboot request failed.
+- Commit `edf76bfd45f483d2ab18d9faca96e2cdad4c5720` replaces both vulnerable cutoff
+  calculations (`prune_start_replays` and `prune_retired`) with saturating elapsed-time
+  comparisons and preserves the original strict “older than TTL” boundary. Its focused
+  regression test covers an observed instant earlier than a stored timestamp. All 66
+  `lsb-seawork-service` tests, formatting, and diff checks pass.
+- Commit `91a9035` tested an Event Log best-effort hypothesis before the dump was
+  available. The same reboot failure disproved it, and commit `32c5a76` reverted it.
+  The diagnostics fail-closed contract is unchanged.
+
+### Interim signed evidence
+
+- Fresh construction run `20260722t045910z-65556-543cbc0e5c76`, synthetic snapshot
+  `543cbc0e5c76f5001632036256eb961aff2f52cb`, based on `edf76bf`, built and timestamped
+  a production-profile SeaWork tuple. Its pre-reboot matrix later stopped safely on a
+  transient external `httpbin.org` header-echo check after DNS, HTTP, HTTPS, and npm
+  metadata download had all passed; cleanup succeeded. The build/sign/archive evidence
+  remained valid for exact-tree reuse.
+- Exact verified-reuse reboot run `20260722t052350z-77334-4a1d7c20d297`, synthetic
+  snapshot `4a1d7c20d29796673766b319353d275e9fa08491`, passed the complete pre-reboot matrix,
+  a real reboot, delayed automatic service start, post-reboot mounted sandbox, normal
+  stop, and owned uninstall. `result-afterreboot.json` reports `passed`, exit 0;
+  `reboot-continuation` is `passed`; and the complete interim manifest SHA-256 is
+  `110d0d35ef708bc4c4c19498cd5474f7b3d51b0866bf0e1a0df696147a1e3885`.
+- The interim manifest records verified-reuse provenance from the fresh construction
+  run and pins these artifacts:
+  - service ZIP: SHA-256
+    `77b2a23538e1b527347de758bc42bd96eef904511b36393421832fe31f94d951`,
+    371,936,427 bytes;
+  - symbols ZIP: SHA-256
+    `c713144fe49e02133ed0c5e9017c528c6d66a958f46ec61b647c0a62c83ca3e3`,
+    2,455,588 bytes;
+  - `SHA256SUMS`: SHA-256
+    `eeafeabcf23a3355adbb0ae7db728716aa89fe4e4efe3c689e2c38b71baa2ee6`;
+  - Node main package: SHA-256
+    `30c6f063d823476284f3749d10dc8440037e4947b2976406d091d14c360c102b`;
+  - Node Windows platform package: SHA-256
+    `139ae4bd380c45c4ac8315d13a7bee2cee85c2fe216b28c2bad869098350a4f9`.
+- These hashes are an interim debugging/validation tuple only. They were intentionally
+  not fetched to macOS and must not be embedded by SeaWork or described as the final
+  candidate because additional LocalSandbox changes are expected.
+- The desktop session was `SGP\SG3937`. Validation used that existing user's filtered,
+  medium-integrity, non-admin token and proves privilege behavior only. The SSH account
+  is automation transport and must not be used as the interactive desktop login.
+  Separate-account and separate-profile behavior remain **not validated**.
+
+### Required final evidence run after the planned changes
+
+Do not run this sequence until the upcoming LocalSandbox changes are complete and
+committed. If the source tree changes at any point, discard reuse assumptions and begin
+again with a fresh construction run.
+
+1. Start from a clean `feat/lsb-win-service` worktree. Record `git rev-parse HEAD`,
+   `git rev-parse HEAD^{tree}`, and `git status --short`. Recheck that SeaWork remains
+   read-only; append drift only if downstream paths or API requirements changed.
+2. Verify the Windows host and protected assets without printing secrets:
+
+   ```bash
+   scripts/win-test verify
+   scripts/win-test verify-signing
+   scripts/win-test verify-runtime
+   ```
+
+3. Run the complete macOS and Node gates listed in `plan.md`, including formatting,
+   protocol/client/service/proxy tests, scoped Clippy, the frozen SeaWork parity check,
+   Node native build, API/package tests, and TypeScript check. Then run:
+
+   ```bash
+   scripts/win-test preflight
+   scripts/win-test suite service-fast
+   ```
+
+4. Because the final tree will differ from this interim tuple, build and validate a
+   fresh signed candidate through the canonical reboot suite; do **not** pass
+   `--reuse-candidate` on the first run:
+
+   ```bash
+   scripts/win-test reboot service-reboot
+   ```
+
+   After Windows restarts, sign into the desktop as `SGP\SG3937`. The harness must
+   detect that interactive session, wait for delayed automatic service start, execute
+   the post-reboot filtered-token mounted sandbox, and prove owned uninstall. Record
+   the run ID, synthetic snapshot SHA, base commit, tree SHA, publisher, and artifact
+   hashes.
+5. If an environmental check fails and the source tree, base commit, version, signer,
+   catalog, layout, and artifact hashes are unchanged, retry at no loss of accuracy with:
+
+   ```bash
+   scripts/win-test reboot service-reboot --reuse-candidate <fresh-run-id>
+   ```
+
+   Reuse must remain fail-closed and must repeat source/copy hashes, trusted PE/catalog
+   closure, structural bundle verification, and installed-layout verification. Never
+   reuse an artifact after any source change.
+6. Against the exact passing final tuple, run the remaining promotion gates:
+
+   ```bash
+   scripts/win-test suite archive-acceptance --reuse-candidate <passing-run-id>
+   scripts/win-test suite installed-service-smoke --reuse-candidate <passing-run-id>
+   scripts/win-test fetch <passing-run-id> <new-local-evidence-directory>
+   ```
+
+   Independently check the fetched sizes/SHA-256 values, ZIP integrity, embedded
+   manifest hashes, publisher identity, complete test-release manifest, and the exact
+   archive-acceptance/installed-service/reboot/uninstall result files. The fetch target
+   must be a new directory.
+7. Only then update `state.md` and append a new handoff entry that explicitly supersedes
+   this interim tuple. Mark the final LocalSandbox candidate complete only when every
+   final-tree gate passes. Preserve the qualification that the `SG3937` token proof is
+   not separate-account profile validation, and leave TR-6 for the SeaWork owner.

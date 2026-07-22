@@ -31,15 +31,17 @@ The sprint must produce a production-profile Windows service release candidate t
 - is accompanied by a pinned Node client artifact, machine-readable Windows evidence,
   and an executable SeaWork handoff.
 
-Reboot-dependent evidence in this end state is temporarily deferred by explicit user
-direction. It remains pending in `state.md` and does not block the currently authorized
-non-reboot scope.
+An interim reboot-fixed candidate has passed the real reboot path, but the user expects
+more source changes. Final candidate construction and the complete promotion evidence
+run are therefore deferred. The interim result is diagnostic/runtime evidence only;
+`state.md` and the handoff must keep the post-change final run visibly pending.
 
 There are two distinct completion states:
 
-1. **LocalSandbox release candidate complete** means every currently authorized
-   non-reboot in-repository gate in this plan has passed and the final handoff entry
-   contains exact artifacts and evidence. Deferred reboot evidence remains pending.
+1. **LocalSandbox release candidate complete** means every in-repository gate in this
+   plan has passed for the final source tree and the final handoff entry contains the
+   exact fetched artifacts and reboot evidence. The interim reboot-fixed tuple is not
+   this final candidate because additional changes are planned.
 2. **SeaWork test release ready** additionally requires SeaWork's proper NSIS installer
    and app adapter to consume those artifacts and pass the downstream matrix. NSIS is a
    mandatory critical-path gate, but its implementation remains SeaWork-owned. The
@@ -332,20 +334,20 @@ secrets or relying on a SeaWork source change.
   and ten sequential effect-shaped sandbox lifecycles.
 - [x] Run public DNS/HTTP/HTTPS, one package/metadata download, the scoped-secret probe,
   and private/link-local denial. Inspect redacted logs for absence of the test secret.
-- [ ] Reboot once with the service installed. Require delayed automatic service start,
+- [x] Reboot once with the service installed. Require delayed automatic service start,
   health, one post-reboot sandbox, normal stop, and owned-resource cleanup.
 - [x] For each failure, add the smallest regression test or harness assertion that would
   have caught it before applying the fix.
 
-Reboot validation is explicitly deferred by the user as of 2026-07-22. It remains a
-named pending test in `state.md` and the handoff, but does not block completion of the
-currently authorized non-reboot TR-0 through TR-5 scope. No post-reboot or separate-user-
-profile behavior is claimed.
+Interim reboot validation passed on 2026-07-22 at commit `edf76bf`, including delayed
+automatic start, a filtered-current-user mounted sandbox, normal stop, and owned
+cleanup. It proves the runtime fix but is not final promotion evidence because further
+source changes are planned. Separate-user-profile behavior was not tested or claimed.
 
-Gate: the Windows run manifest reports every currently authorized non-reboot happy-path
-case passed against one exact commit and signed artifact hash, with reboot continuation
-explicitly pending. No test uses the development identity, unsigned trust bypass,
-helper, or elevated normal client.
+Gate: the interim Windows run manifest reports every happy-path case, including reboot,
+passed against one exact commit and signed artifact hash. The same gate must be repeated
+for the future final tree before promotion. No test uses the development identity,
+unsigned trust bypass, helper, or elevated normal client.
 
 ### TR-4 — Produce the pinned LocalSandbox release candidate
 
@@ -390,6 +392,12 @@ for SeaWork to embed without rebuilding LocalSandbox source.
 Gate: a SeaWork coding agent can implement the downstream work from the handoff without
 choosing a new architecture or guessing an upstream API, artifact, identity, or test.
 
+Checkpoint note (2026-07-22): the runtime implementation and downstream handoff are
+complete through the interim reboot fix, but the user expects another source change set.
+Do not treat the earlier checked final-evidence items as promotion evidence for that
+future tree. The required fresh final run is deferred and specified in the append-only
+handoff.
+
 ### TR-6 — Implement and verify SeaWork NSIS/adapter integration (external, mandatory)
 
 Ownership: SeaWork. This remains on the critical path even though the local-only agent
@@ -406,8 +414,8 @@ preceding gate and leaves this milestone explicitly open for the downstream owne
 - [ ] Pass the downstream fresh-install, happy-path, fallback, update, repair, and
   uninstall non-reboot matrix and append exact evidence to the handoff.
 
-The downstream reboot row is also deferred by explicit user direction. Record it as
-pending and do not use it as a current TR-6 or release-readiness blocker.
+The downstream reboot row remains pending for the eventual final LocalSandbox tuple.
+The interim upstream reboot pass does not validate SeaWork's installer or adapter.
 
 Gate: only the SeaWork owner may mark the overall test release ready, after every TR-6
 non-reboot item passes against the exact LocalSandbox candidate. The deferred reboot
@@ -451,8 +459,10 @@ scripts/win-test suite release-candidate
 scripts/win-test suite installed-service-smoke
 scripts/win-test suite archive-acceptance --reuse-candidate <candidate-run-id>
 scripts/win-test suite installed-service-smoke --reuse-candidate <candidate-run-id>
-# Deferred by explicit user direction; do not run until reboot tests are re-authorized:
-scripts/win-test reboot service-reboot --reuse-candidate <candidate-run-id>
+# Deferred until the planned source changes are complete. Build fresh for a changed tree:
+scripts/win-test reboot service-reboot
+# Only an unchanged-tree retry may use exact verified reuse:
+scripts/win-test reboot service-reboot --reuse-candidate <same-tree-candidate-run-id>
 ```
 
 Record every final run ID and synthetic snapshot SHA. A passing ad hoc command without
