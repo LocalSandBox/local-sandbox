@@ -1,0 +1,20 @@
+justfile
+  s_4295b9feabbe21::t_454c152b56367a 85-97
+  s_4295b9feabbe21::t_b83090099775f4 84
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "2dbbee2360925ace744036f31bb097bfe5bc5f65",
+  "prompts": {},
+  "sessions": {
+    "s_4295b9feabbe21": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f888a-a79f-7be0-9079-31c6ba67e0d4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
