@@ -1,0 +1,50 @@
+crates/lsb-seawork-service/src/admission.rs
+  s_f467a00f62f93c::t_da22a717a642c7 75-78
+  s_f467a00f62f93c::t_5f145354b666f3 170-183
+  s_f467a00f62f93c::t_b00ee9870b88f3 1-74,79-164,169,184-207,209-300
+  s_f467a00f62f93c::t_45d3328316fcd8 165-168,208
+crates/lsb-seawork-service/src/rpc/sandbox.rs
+  s_f467a00f62f93c::t_a7cc68e11f1f46 107-108
+crates/lsb-seawork-service/src/main.rs
+  s_f467a00f62f93c::t_b00ee9870b88f3 1
+  s_f467a00f62f93c::t_50ae2e60cd0a9f 10
+crates/lsb-seawork-service/src/session/manager.rs
+  s_f467a00f62f93c::t_b64af9dd388bef 329,338-344,359-362
+  s_f467a00f62f93c::t_baa502247b89c1 555,564-570,590-594,629-633,656-661,669-673
+  s_f467a00f62f93c::t_eefea31095015f 10,55,67-75,175,180-183,190,194-196
+  s_f467a00f62f93c::t_99bc07149a2b3e 705-707,735,759-764
+  s_f467a00f62f93c::t_45d3328316fcd8 795-799,828-832
+  s_f467a00f62f93c::t_f5eca9824a8d32 800,833,862-867,891-894,1098-1103,1127-1130
+  s_f467a00f62f93c::t_c183c701df5894 197
+crates/lsb-seawork-service/src/scm.rs
+  s_f467a00f62f93c::t_cd5f56599f1dd8 130-131,134-135,146,156
+crates/lsb-seawork-service/src/pipe.rs
+  s_f467a00f62f93c::t_cadf8c4c3fdd64 29,344,362-367,369-370,420,428
+  s_f467a00f62f93c::t_45d3328316fcd8 361
+  s_f467a00f62f93c::t_bd6485cb141f3a 406-408
+  s_f467a00f62f93c::t_9867f0b58fc40c 2193
+crates/lsb-seawork-service/src/maintenance.rs
+  s_f467a00f62f93c::t_da22a717a642c7 129-131
+  s_f467a00f62f93c::t_7246f8b1babf06 413
+  s_f467a00f62f93c::t_83575de9414cb6 451-454,457-486
+  s_f467a00f62f93c::t_6a9efdeb9c2fb7 60,65-69,72,79-93,98,103,111-116,159-163,217,221-229,239,266,277,286
+  s_f467a00f62f93c::t_45d3328316fcd8 8,400-401,455-456,494
+  s_f467a00f62f93c::t_51be2ab425250e 377-383,388,393,402,415,422,447-448,496,506,508,510
+  s_f467a00f62f93c::t_6ec99d7658d3a9 449-450
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "359c1b67d244dfbe07cdac2258460ddd52111b6f",
+  "prompts": {},
+  "sessions": {
+    "s_f467a00f62f93c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f88c5-3e3b-7723-a390-0d43291a7df3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
