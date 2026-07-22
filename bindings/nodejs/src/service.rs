@@ -112,6 +112,44 @@ pub struct SeaWorkProtocolRange {
 
 #[allow(non_snake_case)]
 #[napi(object)]
+pub struct SeaWorkLedgerCompatibility {
+  pub readerMinSchema: u32,
+  pub readerMaxSchema: u32,
+  pub writerSchema: u32,
+}
+
+#[allow(non_snake_case)]
+#[napi(object)]
+pub struct SeaWorkBundleIdentity {
+  pub version: String,
+  pub bundleManifestSha256: String,
+  pub archiveSha256: String,
+  pub protocol: SeaWorkProtocolRange,
+  pub ledger: SeaWorkLedgerCompatibility,
+  pub serviceConfigurationRevision: u32,
+}
+
+#[allow(non_snake_case)]
+#[napi(object)]
+pub struct SeaWorkUpdateRetryState {
+  pub attemptCount: u32,
+  pub retryAfterUtc: Option<String>,
+  pub suppressed: bool,
+}
+
+#[allow(non_snake_case)]
+#[napi(object)]
+pub struct SeaWorkUpdateStatus {
+  pub phase: String,
+  pub current: Option<SeaWorkBundleIdentity>,
+  pub target: Option<SeaWorkBundleIdentity>,
+  pub activeUseCount: u32,
+  pub lastCheckCategory: Option<String>,
+  pub retry: SeaWorkUpdateRetryState,
+}
+
+#[allow(non_snake_case)]
+#[napi(object)]
 pub struct SeaWorkUninstallPreparation {
   pub clean: bool,
   pub quarantineIds: Vec<String>,
@@ -210,33 +248,53 @@ impl SeaWorkService {
   }
 
   #[napi]
-  pub async fn prepare_update(
-    &self,
-    target_bundle: String,
-    target_protocol_range: SeaWorkProtocolRange,
-  ) -> Result<String> {
+  pub async fn prepare_update(&self, target: SeaWorkBundleIdentity) -> Result<String> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
-      let range = lsb_service_proto::ProtocolRange {
-        major: u16::try_from(target_protocol_range.major)
-          .map_err(|_| napi::Error::from_reason("protocol major is out of range"))?,
-        min_minor: u16::try_from(target_protocol_range.minMinor)
-          .map_err(|_| napi::Error::from_reason("protocol minimum is out of range"))?,
-        max_minor: u16::try_from(target_protocol_range.maxMinor)
-          .map_err(|_| napi::Error::from_reason("protocol maximum is out of range"))?,
+      let identity = lsb_service_proto::BundleIdentity {
+        version: target.version,
+        bundle_manifest_sha256: target.bundleManifestSha256,
+        archive_sha256: target.archiveSha256,
+        protocol: map_protocol_range(target.protocol)?,
+        ledger: lsb_service_proto::LedgerCompatibility {
+          reader_min_schema: target.ledger.readerMinSchema,
+          reader_max_schema: target.ledger.readerMaxSchema,
+          writer_schema: target.ledger.writerSchema,
+        },
+        service_configuration_revision: target.serviceConfigurationRevision,
       };
       return self
         .client
-        .prepare_update(target_bundle, range)
+        .prepare_update(identity)
         .await
         .map_err(service_error);
     }
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     {
-      let _ = target_bundle;
-      let _ = target_protocol_range;
+      let _ = target;
       Err(unsupported_platform_error())
     }
+  }
+
+  #[napi]
+  pub async fn get_update_status(&self) -> Result<SeaWorkUpdateStatus> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return self
+      .client
+      .get_update_status()
+      .await
+      .map(map_update_status)
+      .map_err(service_error);
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    Err(unsupported_platform_error())
+  }
+
+  #[napi]
+  pub async fn check_for_update(&self) -> Result<()> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return self.client.check_for_update().await.map_err(service_error);
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    Err(unsupported_platform_error())
   }
 
   #[napi]
@@ -377,6 +435,92 @@ fn map_service_info(
       watch: info.capabilities.watch,
       ports: info.capabilities.ports,
     },
+  }
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn map_protocol_range(value: SeaWorkProtocolRange) -> Result<lsb_service_proto::ProtocolRange> {
+  Ok(lsb_service_proto::ProtocolRange {
+    major: u16::try_from(value.major)
+      .map_err(|_| napi::Error::from_reason("protocol major is out of range"))?,
+    min_minor: u16::try_from(value.minMinor)
+      .map_err(|_| napi::Error::from_reason("protocol minimum is out of range"))?,
+    max_minor: u16::try_from(value.maxMinor)
+      .map_err(|_| napi::Error::from_reason("protocol maximum is out of range"))?,
+  })
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn map_bundle_identity(value: lsb_service_proto::BundleIdentity) -> SeaWorkBundleIdentity {
+  SeaWorkBundleIdentity {
+    version: value.version,
+    bundleManifestSha256: value.bundle_manifest_sha256,
+    archiveSha256: value.archive_sha256,
+    protocol: SeaWorkProtocolRange {
+      major: u32::from(value.protocol.major),
+      minMinor: u32::from(value.protocol.min_minor),
+      maxMinor: u32::from(value.protocol.max_minor),
+    },
+    ledger: SeaWorkLedgerCompatibility {
+      readerMinSchema: value.ledger.reader_min_schema,
+      readerMaxSchema: value.ledger.reader_max_schema,
+      writerSchema: value.ledger.writer_schema,
+    },
+    serviceConfigurationRevision: value.service_configuration_revision,
+  }
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn map_update_status(value: lsb_service_proto::UpdateStatus) -> SeaWorkUpdateStatus {
+  SeaWorkUpdateStatus {
+    phase: update_phase_name(value.phase).to_string(),
+    current: value.current.map(map_bundle_identity),
+    target: value.target.map(map_bundle_identity),
+    activeUseCount: value.active_use_count,
+    lastCheckCategory: value
+      .last_check_category
+      .map(|category| update_category_name(category).to_string()),
+    retry: SeaWorkUpdateRetryState {
+      attemptCount: u32::from(value.retry.attempt_count),
+      retryAfterUtc: value.retry.retry_after_utc,
+      suppressed: value.retry.suppressed,
+    },
+  }
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn update_phase_name(value: lsb_service_proto::UpdatePhase) -> &'static str {
+  use lsb_service_proto::UpdatePhase;
+  match value {
+    UpdatePhase::UpdateIdle => "update_idle",
+    UpdatePhase::UpdateChecking => "update_checking",
+    UpdatePhase::UpdateNoCandidate => "update_no_candidate",
+    UpdatePhase::UpdateDownloading => "update_downloading",
+    UpdatePhase::UpdateVerifying => "update_verifying",
+    UpdatePhase::UpdateWaitingForIdle => "update_waiting_for_idle",
+    UpdatePhase::UpdateSealed => "update_sealed",
+    UpdatePhase::UpdateHelperStarting => "update_helper_starting",
+    UpdatePhase::UpdateActivationPending => "update_activation_pending",
+    UpdatePhase::UpdateRollbackPending => "update_rollback_pending",
+    UpdatePhase::UpdateFailedTargetSuppressed => "update_failed_target_suppressed",
+    UpdatePhase::UpdateRecoveryQuarantine => "update_recovery_quarantine",
+  }
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn update_category_name(value: lsb_service_proto::UpdateCheckCategory) -> &'static str {
+  use lsb_service_proto::UpdateCheckCategory;
+  match value {
+    UpdateCheckCategory::Network => "network",
+    UpdateCheckCategory::Tls => "tls",
+    UpdateCheckCategory::Http => "http",
+    UpdateCheckCategory::RateLimited => "rate_limited",
+    UpdateCheckCategory::MetadataInvalid => "metadata_invalid",
+    UpdateCheckCategory::NoCandidate => "no_candidate",
+    UpdateCheckCategory::Download => "download",
+    UpdateCheckCategory::Verification => "verification",
+    UpdateCheckCategory::HelperTooOld => "helper_too_old",
+    UpdateCheckCategory::Internal => "internal",
   }
 }
 

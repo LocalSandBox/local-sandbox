@@ -24,17 +24,18 @@ pub use frame::{
     decode_stream_payload, encode_stream_payload, Correlation, Frame, FrameHeader, FrameKind,
 };
 pub use message::{
-    parse_control, ArgvCommand, Cancel, CapabilityHealth, Close, CloseCode, Event, Health,
-    HealthState, Hello, HelloReply, Request, RequestOp, Response, ResponseValue, SelectedMount,
-    ServiceCommand, ServiceDirEntry, ServiceExposeHostSpec, ServiceFileStat, ServiceHostScope,
-    ServiceHttpsInterceptionSpec, ServiceInfo, ServiceMountSpec, ServiceNetworkSpec,
-    ServicePortSpec, ServiceRequestHeaderSpec, ServiceSecretSpec, ShellCommand, WatchChange,
-    WindowUpdate,
+    parse_control, ArgvCommand, BundleIdentity, Cancel, CapabilityHealth, Close, CloseCode, Event,
+    Health, HealthState, Hello, HelloReply, LedgerCompatibility, Request, RequestOp, Response,
+    ResponseValue, SelectedMount, ServiceCommand, ServiceDirEntry, ServiceExposeHostSpec,
+    ServiceFileStat, ServiceHostScope, ServiceHttpsInterceptionSpec, ServiceInfo, ServiceMountSpec,
+    ServiceNetworkSpec, ServicePortSpec, ServiceRequestHeaderSpec, ServiceSecretSpec, ShellCommand,
+    UpdateCheckCategory, UpdatePhase, UpdateRetryState, UpdateStatus, WatchChange, WindowUpdate,
 };
 pub use version::{
     negotiate, HexU64, ProtocolRange, ProtocolVersion, CANCELLATION_COMMIT_MIN_MINOR,
-    CLIENT_FEATURE_BITS, CURRENT, FEATURE_EXPOSE_HOST_RELAY, FEATURE_HTTPS_INTERCEPTION,
-    FEATURE_NETWORK_EGRESS, FEATURE_NETWORK_SECRETS, START_REPLAY_MIN_MINOR, SUPPORTED,
+    CLIENT_FEATURE_BITS, CONTROLLED_UPDATE_MIN_MINOR, CURRENT, FEATURE_EXPOSE_HOST_RELAY,
+    FEATURE_HTTPS_INTERCEPTION, FEATURE_NETWORK_EGRESS, FEATURE_NETWORK_SECRETS,
+    START_REPLAY_MIN_MINOR, SUPPORTED,
 };
 
 #[cfg(test)]

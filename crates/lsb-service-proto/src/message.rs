@@ -8,6 +8,102 @@ use crate::version::{HexU64, ProtocolRange};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct LedgerCompatibility {
+    pub reader_min_schema: u32,
+    pub reader_max_schema: u32,
+    pub writer_schema: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundleIdentity {
+    pub version: String,
+    pub bundle_manifest_sha256: String,
+    pub archive_sha256: String,
+    pub protocol: ProtocolRange,
+    pub ledger: LedgerCompatibility,
+    pub service_configuration_revision: u32,
+}
+
+impl BundleIdentity {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        validate_string(&self.version)?;
+        let version =
+            semver::Version::parse(&self.version).map_err(|_| ProtocolError::InvalidJson)?;
+        if version.to_string() != self.version || !version.build.is_empty() {
+            return Err(ProtocolError::InvalidJson);
+        }
+        validate_sha256(&self.bundle_manifest_sha256)?;
+        validate_sha256(&self.archive_sha256)?;
+        self.protocol.validate()?;
+        if self.ledger.reader_min_schema == 0
+            || self.ledger.reader_min_schema > self.ledger.reader_max_schema
+            || self.ledger.writer_schema == 0
+            || self.service_configuration_revision == 0
+        {
+            return Err(ProtocolError::InvalidJson);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdatePhase {
+    UpdateIdle,
+    UpdateChecking,
+    UpdateNoCandidate,
+    UpdateDownloading,
+    UpdateVerifying,
+    UpdateWaitingForIdle,
+    UpdateSealed,
+    UpdateHelperStarting,
+    UpdateActivationPending,
+    UpdateRollbackPending,
+    UpdateFailedTargetSuppressed,
+    UpdateRecoveryQuarantine,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateCheckCategory {
+    Network,
+    Tls,
+    Http,
+    RateLimited,
+    MetadataInvalid,
+    NoCandidate,
+    Download,
+    Verification,
+    HelperTooOld,
+    Internal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateRetryState {
+    pub attempt_count: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_utc: Option<String>,
+    pub suppressed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateStatus {
+    pub phase: UpdatePhase,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<BundleIdentity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<BundleIdentity>,
+    pub active_use_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_check_category: Option<UpdateCheckCategory>,
+    pub retry: UpdateRetryState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Hello {
     pub min_minor: u16,
     pub max_minor: u16,
@@ -145,18 +241,25 @@ impl Request {
         match &self.op {
             RequestOp::GetServiceInfo {}
             | RequestOp::HealthCheck {}
+            | RequestOp::GetUpdateStatus {}
+            | RequestOp::CheckForUpdate {}
             | RequestOp::CloseSession {}
             | RequestOp::PrepareUninstall {} => {}
             RequestOp::PrepareUpdate {
-                target_bundle,
-                target_protocol_range,
-            } => {
-                validate_string(target_bundle)?;
-                if target_bundle.is_empty() || target_bundle.len() > 128 {
-                    return Err(ProtocolError::InvalidJson);
+                target,
+                legacy_target_bundle,
+                legacy_target_protocol_range,
+            } => match (target, legacy_target_bundle, legacy_target_protocol_range) {
+                (Some(target), None, None) => target.validate()?,
+                (None, Some(bundle), Some(range)) => {
+                    validate_string(bundle)?;
+                    if bundle.is_empty() || bundle.len() > 128 {
+                        return Err(ProtocolError::InvalidJson);
+                    }
+                    range.validate()?;
                 }
-                target_protocol_range.validate()?;
-            }
+                _ => return Err(ProtocolError::InvalidJson),
+            },
             RequestOp::CommitUpdate { update_id } | RequestOp::AbortUpdate { update_id } => {
                 validate_resource_id(update_id)?;
             }
@@ -477,9 +580,23 @@ pub enum RequestOp {
         length: u32,
     },
     PrepareUpdate {
-        target_bundle: String,
-        target_protocol_range: ProtocolRange,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<BundleIdentity>,
+        #[serde(
+            default,
+            rename = "target_bundle",
+            skip_serializing_if = "Option::is_none"
+        )]
+        legacy_target_bundle: Option<String>,
+        #[serde(
+            default,
+            rename = "target_protocol_range",
+            skip_serializing_if = "Option::is_none"
+        )]
+        legacy_target_protocol_range: Option<ProtocolRange>,
     },
+    GetUpdateStatus {},
+    CheckForUpdate {},
     CommitUpdate {
         update_id: String,
     },
@@ -677,6 +794,10 @@ pub enum ResponseValue {
     UpdatePrepared {
         update_id: String,
     },
+    UpdateStatus {
+        status: UpdateStatus,
+    },
+    UpdateCheckScheduled {},
     UninstallPrepared {
         clean: bool,
         quarantine_ids: Vec<String>,
@@ -801,6 +922,17 @@ fn validate_legacy_start_hint(value: &str) -> Result<(), ProtocolError> {
 
 fn validate_resource_id(value: &str) -> Result<(), ProtocolError> {
     if value.len() != 32
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(ProtocolError::InvalidJson);
+    }
+    Ok(())
+}
+
+fn validate_sha256(value: &str) -> Result<(), ProtocolError> {
+    if value.len() != 64
         || !value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
@@ -1202,14 +1334,38 @@ mod tests {
 
     #[test]
     fn administrator_contracts_are_bounded_and_path_free() {
+        let target = BundleIdentity {
+            version: "0.5.0-rc.2".to_string(),
+            bundle_manifest_sha256: "a".repeat(64),
+            archive_sha256: "b".repeat(64),
+            protocol: SUPPORTED,
+            ledger: LedgerCompatibility {
+                reader_min_schema: 1,
+                reader_max_schema: 1,
+                writer_schema: 1,
+            },
+            service_configuration_revision: 2,
+        };
         let prepare = Request {
             deadline_ms: None,
             op: RequestOp::PrepareUpdate {
-                target_bundle: "0.4.7-windows-x86_64".to_string(),
-                target_protocol_range: SUPPORTED,
+                target: Some(target.clone()),
+                legacy_target_bundle: None,
+                legacy_target_protocol_range: None,
             },
         };
         prepare.validate().unwrap();
+        let mut invalid_target = target;
+        invalid_target.archive_sha256 = "A".repeat(64);
+        let invalid_prepare = Request {
+            deadline_ms: None,
+            op: RequestOp::PrepareUpdate {
+                target: Some(invalid_target),
+                legacy_target_bundle: None,
+                legacy_target_protocol_range: None,
+            },
+        };
+        assert_eq!(invalid_prepare.validate(), Err(ProtocolError::InvalidJson));
         let commit = Request {
             deadline_ms: None,
             op: RequestOp::CommitUpdate {

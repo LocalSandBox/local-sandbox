@@ -12,6 +12,8 @@ pub struct ServiceConfig {
     pub schema_version: u32,
     pub config_revision: u32,
     #[serde(default)]
+    pub update_channel: UpdateChannel,
+    #[serde(default)]
     pub quotas: Quotas,
     #[serde(default)]
     pub publisher_thumbprints: Vec<String>,
@@ -25,6 +27,14 @@ pub struct ServiceConfig {
     pub egress_allow: Vec<String>,
     #[serde(default)]
     pub upstream_proxy: Option<ServiceUpstreamProxyConfig>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateChannel {
+    #[default]
+    Stable,
+    Prerelease,
 }
 
 #[derive(Clone, PartialEq, Eq, Deserialize)]
@@ -96,6 +106,7 @@ impl Default for ServiceConfig {
         Self {
             schema_version: 1,
             config_revision: 1,
+            update_channel: UpdateChannel::Stable,
             quotas: Quotas::default(),
             publisher_thumbprints: Vec::new(),
             client_roots: Vec::new(),
@@ -139,6 +150,15 @@ impl ServiceConfig {
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != 1 {
             bail!("unsupported service config schema {}", self.schema_version);
+        }
+        if !matches!(self.config_revision, 1 | 2) {
+            bail!(
+                "unsupported service config revision {}",
+                self.config_revision
+            );
+        }
+        if self.config_revision == 1 && self.update_channel != UpdateChannel::Stable {
+            bail!("service config revision 1 implies the stable update channel");
         }
         let q = &self.quotas;
         if q.connections_global == 0
@@ -246,6 +266,41 @@ mod tests {
         config.quotas.sandboxes_global = 8;
         config.ports_enabled = true;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn update_channel_is_strict_and_revision_compatible() {
+        let revision_one: ServiceConfig =
+            serde_json::from_str(r#"{"schema_version":1,"config_revision":1}"#).unwrap();
+        assert_eq!(revision_one.update_channel, UpdateChannel::Stable);
+        revision_one.validate().unwrap();
+
+        let stable: ServiceConfig = serde_json::from_str(
+            r#"{"schema_version":1,"config_revision":2,"update_channel":"stable"}"#,
+        )
+        .unwrap();
+        assert_eq!(stable.update_channel, UpdateChannel::Stable);
+        stable.validate().unwrap();
+
+        let prerelease: ServiceConfig = serde_json::from_str(
+            r#"{"schema_version":1,"config_revision":2,"update_channel":"prerelease"}"#,
+        )
+        .unwrap();
+        assert_eq!(prerelease.update_channel, UpdateChannel::Prerelease);
+        prerelease.validate().unwrap();
+
+        let revision_one_prerelease: ServiceConfig = serde_json::from_str(
+            r#"{"schema_version":1,"config_revision":1,"update_channel":"prerelease"}"#,
+        )
+        .unwrap();
+        assert!(revision_one_prerelease.validate().is_err());
+        assert!(serde_json::from_str::<ServiceConfig>(
+            r#"{"schema_version":1,"config_revision":2,"update_channel":"preview"}"#,
+        )
+        .is_err());
+        let mut unsupported = ServiceConfig::default();
+        unsupported.config_revision = 3;
+        assert!(unsupported.validate().is_err());
     }
 
     #[test]

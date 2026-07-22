@@ -6,9 +6,10 @@ use std::time::Duration;
 
 use lsb_service_proto::limits::HEADER_LEN;
 use lsb_service_proto::{
-    decode_stream_payload, parse_control, Cancel, Correlation, ErrorEnvelope, Event, FrameHeader,
-    FrameKind, Health, Hello, HelloReply, HexU64, ProtocolVersion, Request, RequestOp, Response,
-    ResponseValue, ServiceInfo, WindowUpdate, CLIENT_FEATURE_BITS, CURRENT, SUPPORTED,
+    decode_stream_payload, parse_control, BundleIdentity, Cancel, Correlation, ErrorEnvelope,
+    Event, FrameHeader, FrameKind, Health, Hello, HelloReply, HexU64, ProtocolVersion, Request,
+    RequestOp, Response, ResponseValue, ServiceInfo, UpdateStatus, WindowUpdate,
+    CLIENT_FEATURE_BITS, CONTROLLED_UPDATE_MIN_MINOR, CURRENT, SUPPORTED,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::windows::named_pipe::NamedPipeClient;
@@ -194,15 +195,13 @@ impl ServiceClient {
         }
     }
 
-    pub async fn prepare_update(
-        &self,
-        target_bundle: impl Into<String>,
-        target_protocol_range: lsb_service_proto::ProtocolRange,
-    ) -> Result<String, ClientError> {
+    pub async fn prepare_update(&self, target: BundleIdentity) -> Result<String, ClientError> {
+        self.require_controlled_update_protocol()?;
         match self
             .request(RequestOp::PrepareUpdate {
-                target_bundle: target_bundle.into(),
-                target_protocol_range,
+                target: Some(target),
+                legacy_target_bundle: None,
+                legacy_target_protocol_range: None,
             })
             .await?
         {
@@ -212,6 +211,7 @@ impl ServiceClient {
     }
 
     pub async fn commit_update(&self, update_id: impl Into<String>) -> Result<(), ClientError> {
+        self.require_controlled_update_protocol()?;
         match self
             .request(RequestOp::CommitUpdate {
                 update_id: update_id.into(),
@@ -224,6 +224,7 @@ impl ServiceClient {
     }
 
     pub async fn abort_update(&self, update_id: impl Into<String>) -> Result<(), ClientError> {
+        self.require_controlled_update_protocol()?;
         match self
             .request(RequestOp::AbortUpdate {
                 update_id: update_id.into(),
@@ -232,6 +233,30 @@ impl ServiceClient {
         {
             ResponseValue::Empty {} => Ok(()),
             _ => Err(mismatched("AbortUpdate")),
+        }
+    }
+
+    pub async fn get_update_status(&self) -> Result<UpdateStatus, ClientError> {
+        self.require_controlled_update_protocol()?;
+        match self.request(RequestOp::GetUpdateStatus {}).await? {
+            ResponseValue::UpdateStatus { status } => Ok(status),
+            _ => Err(mismatched("GetUpdateStatus")),
+        }
+    }
+
+    pub async fn check_for_update(&self) -> Result<(), ClientError> {
+        self.require_controlled_update_protocol()?;
+        match self.request(RequestOp::CheckForUpdate {}).await? {
+            ResponseValue::UpdateCheckScheduled {} => Ok(()),
+            _ => Err(mismatched("CheckForUpdate")),
+        }
+    }
+
+    fn require_controlled_update_protocol(&self) -> Result<(), ClientError> {
+        if self.core.protocol.minor < CONTROLLED_UPDATE_MIN_MINOR {
+            Err(ClientError::IncompatibleProtocol)
+        } else {
+            Ok(())
         }
     }
 

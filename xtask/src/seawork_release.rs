@@ -17,7 +17,10 @@ use crate::context::copy_file;
 
 const BUNDLE_SCHEMA_VERSION: u32 = 1;
 const SERVICE_CONTRACT_SCHEMA_VERSION: u32 = 1;
-const SERVICE_CONFIGURATION_REVISION: u32 = 1;
+const SERVICE_CONFIGURATION_REVISION: u32 = 2;
+const UPDATER_PROTOCOL_MAJOR: u16 = 1;
+const UPDATER_PROTOCOL_MIN: u16 = 1;
+const UPDATER_PROTOCOL_MAX: u16 = 1;
 const LEDGER_SCHEMA_VERSION: u32 = 1;
 const MAX_BUNDLE_FILES: usize = 10_000;
 const MAX_BUNDLE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
@@ -115,6 +118,8 @@ struct ServiceContract {
     ipc: IpcConfiguration,
     filesystem: FilesystemConfiguration,
     health: HealthConfiguration,
+    update: UpdateConfiguration,
+    updater: UpdaterConfiguration,
     install_state_schema: u32,
 }
 
@@ -159,6 +164,46 @@ struct FilesystemConfiguration {
 struct HealthConfiguration {
     required_checks: Vec<&'static str>,
     ports_available_only_with_wfp_evidence: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateConfiguration {
+    enabled: bool,
+    repository: &'static str,
+    releases_api: &'static str,
+    archive_name_template: &'static str,
+    supported_channels: Vec<&'static str>,
+    default_channel: &'static str,
+    committed_state_path: String,
+    status_path: String,
+    transaction_path: String,
+    downloads_root: String,
+    staging_root: String,
+    history_root: String,
+}
+
+#[derive(Debug, Serialize)]
+struct UpdaterConfiguration {
+    name: &'static str,
+    display_name: &'static str,
+    binary_name: &'static str,
+    binary_path_template: &'static str,
+    binary_command_template: &'static str,
+    service_type: &'static str,
+    account: &'static str,
+    start: &'static str,
+    service_sid_type: &'static str,
+    service_object_sddl: &'static str,
+    protocol: UpdaterProtocolContract,
+    failure_restart_delays_ms: Vec<u32>,
+    failure_reset_period_seconds: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct UpdaterProtocolContract {
+    major: u16,
+    min: u16,
+    max: u16,
 }
 
 pub fn package_bundle(
@@ -654,18 +699,20 @@ fn write_u32(writer: &mut impl Write, value: u32) -> Result<()> {
 }
 
 fn service_contract(profile: ServiceProfile) -> ServiceContract {
-    let (name, event_source, pipe_name, state_root) = match profile {
+    let (name, event_source, pipe_name, state_root, updater_name) = match profile {
         ServiceProfile::Production => (
             "LocalSandboxSeaWork",
             "LocalSandboxSeaWork",
             r"\\.\pipe\LocalSandbox.SeaWork.v1",
             "%ProgramData%\\LocalSandbox\\SeaWork",
+            "LocalSandboxSeaWorkUpdater",
         ),
         ServiceProfile::Development => (
             "LocalSandboxSeaWorkDev",
             "LocalSandboxSeaWorkDev",
             r"\\.\pipe\LocalSandbox.SeaWork.Dev.v1",
             "%ProgramData%\\LocalSandbox\\SeaWorkDev",
+            "LocalSandboxSeaWorkUpdaterDev",
         ),
     };
     ServiceContract {
@@ -715,6 +762,45 @@ fn service_contract(profile: ServiceProfile) -> ServiceContract {
                 "managed_qemu",
             ],
             ports_available_only_with_wfp_evidence: true,
+        },
+        update: UpdateConfiguration {
+            enabled: profile == ServiceProfile::Production,
+            repository: "LocalSandBox/local-sandbox",
+            releases_api:
+                "https://api.github.com/repos/LocalSandBox/local-sandbox/releases",
+            archive_name_template: "lsb-seawork-service-v<VERSION>-windows-x86_64.zip",
+            supported_channels: vec!["stable", "prerelease"],
+            default_channel: "stable",
+            committed_state_path: format!("{state_root}\\updates\\committed.json"),
+            status_path: format!("{state_root}\\updates\\status.json"),
+            transaction_path: format!(
+                "{state_root}\\updates\\transactions\\current.json"
+            ),
+            downloads_root: format!("{state_root}\\updates\\downloads"),
+            staging_root: format!("{state_root}\\updates\\staging"),
+            history_root: format!("{state_root}\\updates\\history"),
+        },
+        updater: UpdaterConfiguration {
+            name: updater_name,
+            display_name: "LocalSandbox for SeaWork Updater",
+            binary_name: "localsandbox-seawork-updater.exe",
+            binary_path_template:
+                "%ProgramFiles%\\SeaWork\\LocalSandbox\\updater\\localsandbox-seawork-updater.exe",
+            binary_command_template:
+                "\"%ProgramFiles%\\SeaWork\\LocalSandbox\\updater\\localsandbox-seawork-updater.exe\" --service",
+            service_type: "SERVICE_WIN32_OWN_PROCESS",
+            account: "LocalSystem",
+            start: "automatic",
+            service_sid_type: "SERVICE_SID_TYPE_UNRESTRICTED",
+            service_object_sddl:
+                "O:SYG:SYD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00000005;;;IU)",
+            protocol: UpdaterProtocolContract {
+                major: UPDATER_PROTOCOL_MAJOR,
+                min: UPDATER_PROTOCOL_MIN,
+                max: UPDATER_PROTOCOL_MAX,
+            },
+            failure_restart_delays_ms: vec![5_000, 30_000, 120_000],
+            failure_reset_period_seconds: 86_400,
         },
         install_state_schema: 1,
     }
@@ -1028,6 +1114,12 @@ mod tests {
                 .binary_path_template,
             r#""%ProgramFiles%\SeaWork\LocalSandbox\versions\<version>\bin\localsandbox-seawork-service.exe" --service"#
         );
+        let updater = service_contract(ServiceProfile::Production).updater;
+        assert_eq!(updater.name, "LocalSandboxSeaWorkUpdater");
+        assert_eq!(
+            updater.binary_command_template,
+            r#""%ProgramFiles%\SeaWork\LocalSandbox\updater\localsandbox-seawork-updater.exe" --service"#
+        );
     }
 
     #[test]
@@ -1049,7 +1141,15 @@ mod tests {
         let development =
             serde_json::to_value(service_contract(ServiceProfile::Development)).unwrap();
         assert_eq!(production["service"]["name"], "LocalSandboxSeaWork");
+        assert_eq!(production["revision"], 2);
+        assert_eq!(production["update"]["default_channel"], "stable");
+        assert_eq!(
+            production["update"]["repository"],
+            "LocalSandBox/local-sandbox"
+        );
+        assert_eq!(production["updater"]["name"], "LocalSandboxSeaWorkUpdater");
         assert_eq!(development["service"]["name"], "LocalSandboxSeaWorkDev");
+        assert_eq!(development["update"]["enabled"], false);
         assert_eq!(
             development["ipc"]["pipe_name"],
             r"\\.\pipe\LocalSandbox.SeaWork.Dev.v1"

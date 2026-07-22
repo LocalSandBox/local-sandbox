@@ -10,4 +10,5 @@ development-service = []
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+semver = "1"
 zeroize = "1"

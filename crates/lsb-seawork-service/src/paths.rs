@@ -10,10 +10,22 @@ pub struct ServicePaths {
     pub product_ca_bundle: PathBuf,
     pub ledger: PathBuf,
     pub pending_update: PathBuf,
+    pub updates: UpdatePaths,
     pub users: PathBuf,
     pub quarantine: PathBuf,
     pub runtime: PathBuf,
     pub logs: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdatePaths {
+    pub root: PathBuf,
+    pub committed: PathBuf,
+    pub status: PathBuf,
+    pub downloads: PathBuf,
+    pub staging: PathBuf,
+    pub current_transaction: PathBuf,
+    pub history: PathBuf,
 }
 
 impl ServicePaths {
@@ -26,11 +38,21 @@ impl ServicePaths {
             bail!("ProgramData known-folder path is not absolute");
         }
         let root = program_data.join("LocalSandbox").join(STATE_DIRECTORY_NAME);
+        let update_root = root.join("updates");
         Ok(Self {
             config: root.join("config").join("service.json"),
             product_ca_bundle: root.join("config").join("product-ca.pem"),
             ledger: root.join("state").join("ledger"),
             pending_update: root.join("state").join("pending-update.json"),
+            updates: UpdatePaths {
+                committed: update_root.join("committed.json"),
+                status: update_root.join("status.json"),
+                downloads: update_root.join("downloads"),
+                staging: update_root.join("staging"),
+                current_transaction: update_root.join("transactions").join("current.json"),
+                history: update_root.join("history"),
+                root: update_root,
+            },
             users: root.join("state").join("users"),
             quarantine: root.join("state").join("quarantine"),
             runtime: root.join("runtime"),
@@ -47,6 +69,14 @@ impl ServicePaths {
             self.quarantine.as_path(),
             self.runtime.as_path(),
             self.logs.as_path(),
+            self.updates.root.as_path(),
+            self.updates.downloads.as_path(),
+            self.updates.staging.as_path(),
+            self.updates
+                .current_transaction
+                .parent()
+                .context("transaction path has no parent")?,
+            self.updates.history.as_path(),
         ] {
             std::fs::create_dir_all(path)
                 .with_context(|| format!("create protected service path {}", path.display()))?;
@@ -114,6 +144,12 @@ mod tests {
         assert!(paths.product_ca_bundle.starts_with(&paths.root));
         assert!(paths.ledger.starts_with(&paths.root));
         assert!(paths.pending_update.starts_with(&paths.root));
+        assert!(paths.updates.committed.starts_with(&paths.root));
+        assert!(paths.updates.status.starts_with(&paths.root));
+        assert!(paths.updates.downloads.starts_with(&paths.root));
+        assert!(paths.updates.staging.starts_with(&paths.root));
+        assert!(paths.updates.current_transaction.starts_with(&paths.root));
+        assert!(paths.updates.history.starts_with(&paths.root));
         assert!(paths.require_below_root(&base.join("elsewhere")).is_err());
     }
 }

@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use crate::{LEDGER_SCHEMA_VERSION, PIPE_NAME, PIPE_SDDL, SERVICE_NAME};
 
 const BUNDLE_SCHEMA_VERSION: u32 = 1;
-const SERVICE_CONFIGURATION_REVISION: u32 = 1;
+pub const SERVICE_CONFIGURATION_REVISION: u32 = 2;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_BUNDLE_FILES: usize = 10_000;
 const MAX_BUNDLE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
@@ -492,7 +492,7 @@ mod tests {
         }
         let contract = json!({
             "schema_version": 1,
-            "revision": 1,
+            "revision": SERVICE_CONFIGURATION_REVISION,
             "service": {
                 "name": SERVICE_NAME,
                 "display_name": "LocalSandbox for SeaWork",
@@ -548,7 +548,7 @@ mod tests {
                 "package_revision": QEMU_PACKAGE_REVISION,
                 "artifact_sha256": QEMU_ARTIFACT_SHA256
             },
-            "service_configuration_revision": 1,
+            "service_configuration_revision": SERVICE_CONFIGURATION_REVISION,
             "publisher": {
                 "subject": "CN=LocalSandbox Test",
                 "sha256_thumbprint": "ab".repeat(32)
