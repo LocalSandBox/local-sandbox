@@ -38,6 +38,7 @@ pub struct PublisherIdentity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageVerification {
     pub files_verified: usize,
+    pub catalog_members: Vec<String>,
     pub version: String,
     pub bundle_manifest_sha256: String,
     pub protocol: ProtocolRange,
@@ -205,8 +206,16 @@ pub fn verify_bundle_root(root: &Path, policy: &PackagePolicy<'_>) -> Result<Pac
         bail!("runtime VERSION does not match the expected bundle version");
     }
     require_amd64_pe(&root.join("bin/localsandbox-seawork-service.exe"))?;
+    let mut catalog_members = manifest
+        .files
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect::<Vec<_>>();
+    catalog_members.push("manifests/bundle.json".to_string());
+    catalog_members.sort();
     Ok(PackageVerification {
         files_verified: manifest.files.len(),
+        catalog_members,
         version: manifest.service_version,
         bundle_manifest_sha256: manifest_sha256,
         protocol,

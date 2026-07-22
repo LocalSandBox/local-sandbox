@@ -4,6 +4,8 @@ mod discovery;
 mod journal;
 mod package;
 mod state;
+#[cfg(windows)]
+mod windows_trust;
 
 pub use archive::{extract_zip_archive, ArchiveExtraction};
 pub use committed::{CommittedState, CommittedStateEnvelope, FailedTargetState};
@@ -11,6 +13,8 @@ pub use discovery::{ReleaseCandidate, ReleaseChannel, ReleaseSelector};
 pub use journal::{HelperProtocol, TransactionEnvelope, TransactionPhase, UpdateTransaction};
 pub use package::{verify_bundle_root, PackagePolicy, PackageVerification, PublisherIdentity};
 pub use state::{archive_file, create_json, load_json, remove_file_if_exists, write_json_atomic};
+#[cfg(windows)]
+pub use windows_trust::{verify_windows_file_publisher, verify_windows_package};
 
 pub const UPDATE_STATE_SCHEMA_VERSION: u32 = 1;
 
