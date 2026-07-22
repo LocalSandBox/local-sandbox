@@ -145,7 +145,7 @@ pub struct JsonLogger {
 #[cfg(windows)]
 pub struct ServiceLogger {
     json: JsonLogger,
-    event_log: WindowsEventLog,
+    event_log: Option<WindowsEventLog>,
 }
 
 #[cfg(windows)]
@@ -153,7 +153,11 @@ impl ServiceLogger {
     pub fn new(log_dir: &Path) -> Result<Self> {
         Ok(Self {
             json: JsonLogger::new(log_dir)?,
-            event_log: WindowsEventLog::register()?,
+            // The bounded JSON log is the authoritative service diagnostic
+            // sink. Windows Event Log can be temporarily unavailable during
+            // delayed automatic startup, so its registration must not make
+            // service availability depend on an auxiliary sink.
+            event_log: WindowsEventLog::register().ok(),
         })
     }
 
@@ -170,7 +174,12 @@ impl ServiceLogger {
     ) -> Result<()> {
         self.json
             .write_with_context(event_id, phase, stable_code, context)?;
-        self.event_log.write(event_id)?;
+        // ReportEventW may fail transiently while the Event Log service is
+        // still settling after boot. Preserve the JSON record and keep the
+        // sandbox service alive; later events continue attempting this sink.
+        if let Some(event_log) = &self.event_log {
+            let _ = event_log.write(event_id);
+        }
         Ok(())
     }
 }
