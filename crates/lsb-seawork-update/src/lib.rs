@@ -16,8 +16,8 @@ pub use journal::{HelperProtocol, TransactionEnvelope, TransactionPhase, UpdateT
 pub use package::{verify_bundle_root, PackagePolicy, PackageVerification, PublisherIdentity};
 #[cfg(feature = "coordinator-policy")]
 pub use policy::{
-    cached_candidate, failed_target_decision, parse_retry_after_utc, retry_delay,
-    stream_exact_asset, validate_download_url, validate_helper_install_output,
+    bounded_retry_delay, cached_candidate, failed_target_decision, parse_retry_after_utc,
+    retry_delay, stream_exact_asset, validate_download_url, validate_helper_install_output,
     validate_helper_version_output, FailedTargetDecision, HelperInstallOutput, HelperVersionOutput,
 };
 pub use state::{archive_file, create_json, load_json, remove_file_if_exists, write_json_atomic};

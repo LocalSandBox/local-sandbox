@@ -67,7 +67,7 @@ fn run_registered(
 
     let paths = ServicePaths::discover()?;
     paths.prepare()?;
-    let logger = ServiceLogger::new(&paths.logs)?;
+    let logger = std::sync::Arc::new(ServiceLogger::new(&paths.logs)?);
     logger.write(EventId::ServiceStartPending, "startup", "START_PENDING")?;
     advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
     let config = ServiceConfig::load_or_default(&paths.config)?;
@@ -201,6 +201,7 @@ fn run_registered(
             context.clone(),
             paths.clone(),
             config.update_channel,
+            logger.clone(),
         )),
         crate::update::StartupRecovery::OldService { .. }
         | crate::update::StartupRecovery::TargetService { .. } => {
@@ -209,6 +210,7 @@ fn run_registered(
                 context.clone(),
                 paths.clone(),
                 config.update_channel,
+                logger.clone(),
             ))
         }
         crate::update::StartupRecovery::Quarantined => None,

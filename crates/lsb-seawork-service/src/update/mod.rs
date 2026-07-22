@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use lsb_seawork_update::{
-    cached_candidate, create_json, extract_zip_archive, failed_target_decision, load_json,
-    parse_retry_after_utc, remove_file_if_exists, retry_delay, stream_exact_asset,
-    validate_download_url, validate_helper_install_output, verify_bundle_root,
+    bounded_retry_delay, cached_candidate, create_json, extract_zip_archive,
+    failed_target_decision, load_json, parse_retry_after_utc, remove_file_if_exists, retry_delay,
+    stream_exact_asset, validate_download_url, validate_helper_install_output, verify_bundle_root,
     verify_windows_directory_protection, verify_windows_file_protection,
     verify_windows_file_publisher, verify_windows_package, write_json_atomic,
     CommittedStateEnvelope, FailedTargetDecision, FailedTargetState, HelperProtocol, PackagePolicy,
@@ -26,6 +26,7 @@ use windows_service::service::{ServiceAccess, ServiceState, ServiceType};
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
 use crate::admission::AdmissionState;
+use crate::logging::ServiceLogger;
 use crate::paths::ServicePaths;
 use crate::pipe::HealthContext;
 use crate::{PIPE_NAME, PIPE_SDDL, SERVICE_NAME};
@@ -190,13 +191,14 @@ pub fn start(
     context: HealthContext,
     paths: ServicePaths,
     channel: ReleaseChannel,
+    logger: Arc<ServiceLogger>,
 ) -> CoordinatorHandle {
     let stop = Arc::new(AtomicBool::new(false));
     let (finished_tx, finished) = mpsc::channel();
     let thread_stop = stop.clone();
     std::thread::spawn(move || {
         let _finished = FinishedSignal(finished_tx);
-        let mut coordinator = match Coordinator::new(context, paths, channel, thread_stop) {
+        let mut coordinator = match Coordinator::new(context, paths, channel, thread_stop, logger) {
             Ok(coordinator) => coordinator,
             Err(_) => return,
         };
@@ -221,6 +223,7 @@ struct Coordinator {
     trigger: Arc<AtomicBool>,
     http: GithubHttp,
     status: Arc<Mutex<CoordinatorStatus>>,
+    logger: Arc<ServiceLogger>,
 }
 
 impl Coordinator {
@@ -229,6 +232,7 @@ impl Coordinator {
         paths: ServicePaths,
         channel: ReleaseChannel,
         stop: Arc<AtomicBool>,
+        logger: Arc<ServiceLogger>,
     ) -> Result<Self> {
         for path in [
             paths.root.as_path(),
@@ -260,30 +264,31 @@ impl Coordinator {
             trigger,
             http: GithubHttp::new()?,
             status: Arc::new(Mutex::new(status)),
+            logger,
         })
     }
 
     fn run(&mut self) {
         let first_delay = machine_jitter(Duration::from_secs(5 * 60), 10 * 60)
             .unwrap_or(Duration::from_secs(10 * 60));
-        let mut next = SystemTime::now() + first_delay;
+        let mut next = Instant::now() + first_delay;
         let mut recovering = false;
         while !self.stop.load(Ordering::Acquire) {
             if self.transaction_recovery_pending() {
                 recovering = true;
-                if SystemTime::now() >= next {
+                if Instant::now() >= next {
                     let _ = start_recovery_helper();
-                    next = SystemTime::now() + Duration::from_secs(5 * 60);
+                    next = Instant::now() + Duration::from_secs(5 * 60);
                 }
                 std::thread::sleep(Duration::from_secs(1));
                 continue;
             }
             if recovering {
                 recovering = false;
-                next = SystemTime::now() + first_delay;
+                next = Instant::now() + first_delay;
             }
             let manual = self.trigger.swap(false, Ordering::AcqRel);
-            if manual || SystemTime::now() >= next {
+            if manual || Instant::now() >= next {
                 let result = self.check_once();
                 if let Err(error) = result {
                     self.record_failure(&error);
@@ -294,7 +299,7 @@ impl Coordinator {
                     .ok()
                     .map(|status| status.retry.attempt_count)
                     .unwrap_or(1);
-                next = SystemTime::now()
+                next = Instant::now()
                     + if let Some(delay) = self.persisted_retry_delay() {
                         delay
                     } else if retry == 0 {
@@ -310,7 +315,9 @@ impl Coordinator {
 
     fn transaction_recovery_pending(&self) -> bool {
         match protected_load_json::<TransactionEnvelope>(&self.paths.updates.current_transaction) {
-            Ok(transaction) => transaction.validate().is_ok(),
+            Ok(transaction) => {
+                transaction.validate().is_ok() && !transaction.transaction.phase.is_terminal()
+            }
             Err(error) => !is_not_found(&error),
         }
     }
@@ -381,6 +388,7 @@ impl Coordinator {
             };
             let verification = verify_bundle_root(&staged_root, &policy)?;
             let target = verification.bundle_identity(&candidate.archive_sha256)?;
+            let required_helper_protocol = verification.required_helper_protocol;
             verify_windows_directory_protection(&staged_root)?;
             verify_windows_package(&staged_root, &verification, &compiled_publishers())?;
             if target.version != candidate.version
@@ -388,15 +396,19 @@ impl Coordinator {
             {
                 bail!("verified target is incompatible with committed service state");
             }
-            Ok::<_, anyhow::Error>(target)
+            Ok::<_, anyhow::Error>((target, required_helper_protocol))
         })();
-        let target = match verified_target {
+        let (target, required_helper_protocol) = match verified_target {
             Ok(target) => target,
             Err(error) => {
                 let _ = remove_owned_staging(&self.paths.updates.staging, &transaction_id);
                 return Err(error);
             }
         };
+
+        let fixed = FixedProductPaths::discover()?;
+        let helper = fixed.updater.join(HELPER_EXE);
+        verify_helper(&helper, required_helper_protocol)?;
 
         let update_id = self.context.prepare_automatic_update(target.clone())?;
         let mut helper_owns_transaction = false;
@@ -406,12 +418,10 @@ impl Coordinator {
                 .admissions()
                 .wait_until_update_sealed(&self.stop)?;
             self.set_phase(UpdatePhase::UpdateSealed, Some(candidate.clone()))?;
-            let fixed = FixedProductPaths::discover()?;
             let old_image = std::env::current_exe()?;
             let final_root = fixed.versions.join(&candidate.version);
             let target_image = final_root.join("bin").join(MAIN_EXE);
-            let helper = fixed.updater.join(HELPER_EXE);
-            verify_helper(&helper)?;
+            let helper_protocol = verify_helper(&helper, required_helper_protocol)?;
             let transaction = TransactionEnvelope::new(UpdateTransaction {
                 transaction_id: transaction_id.clone(),
                 update_id: update_id.clone(),
@@ -425,7 +435,7 @@ impl Coordinator {
                 target_event_message_path: path_string(&target_image)?,
                 staged_root: path_string(&staged_root)?,
                 final_version_root: path_string(&final_root)?,
-                helper_protocol: REQUIRED_HELPER_PROTOCOL,
+                helper_protocol,
                 attempt_count: 1,
                 last_error_category: None,
             })?;
@@ -488,6 +498,7 @@ impl Coordinator {
             status.last_check_category,
             status.retry.clone(),
         );
+        self.log_status(&status);
         Ok(())
     }
 
@@ -522,6 +533,7 @@ impl Coordinator {
             status.last_check_category,
             status.retry.clone(),
         );
+        self.log_status(&status);
         Ok(())
     }
 
@@ -546,6 +558,7 @@ impl Coordinator {
             status.last_check_category,
             status.retry.clone(),
         );
+        self.log_status(&status);
     }
 
     fn persisted_retry_delay(&self) -> Option<Duration> {
@@ -555,8 +568,10 @@ impl Coordinator {
             &time::format_description::well_known::Rfc3339,
         )
         .ok()?;
-        let seconds = (retry_after - time::OffsetDateTime::now_utc()).whole_seconds();
-        Some(Duration::from_secs(seconds.clamp(60, 24 * 60 * 60) as u64))
+        Some(bounded_retry_delay(
+            retry_after,
+            time::OffsetDateTime::now_utc(),
+        ))
     }
 
     fn failed_target_suppression(
@@ -606,7 +621,70 @@ impl Coordinator {
             status.last_check_category,
             status.retry.clone(),
         );
+        self.log_status(&status);
         Ok(())
+    }
+
+    fn log_status(&self, status: &CoordinatorStatus) {
+        let selected = status.selected.as_ref();
+        let _ = self.logger.write_update(
+            update_phase_token(status.phase),
+            status
+                .last_check_category
+                .map(update_category_code)
+                .unwrap_or_else(|| update_phase_code(status.phase)),
+            selected.map(|candidate| candidate.version.as_str()),
+            selected.map(|candidate| &candidate.archive_sha256[..32]),
+        );
+    }
+}
+
+fn update_phase_token(phase: UpdatePhase) -> &'static str {
+    match phase {
+        UpdatePhase::UpdateIdle => "update_idle",
+        UpdatePhase::UpdateChecking => "update_checking",
+        UpdatePhase::UpdateNoCandidate => "update_no_candidate",
+        UpdatePhase::UpdateDownloading => "update_downloading",
+        UpdatePhase::UpdateVerifying => "update_verifying",
+        UpdatePhase::UpdateWaitingForIdle => "update_waiting_for_idle",
+        UpdatePhase::UpdateSealed => "update_sealed",
+        UpdatePhase::UpdateHelperStarting => "update_helper_starting",
+        UpdatePhase::UpdateActivationPending => "update_activation_pending",
+        UpdatePhase::UpdateRollbackPending => "update_rollback_pending",
+        UpdatePhase::UpdateFailedTargetSuppressed => "update_failed_target_suppressed",
+        UpdatePhase::UpdateRecoveryQuarantine => "update_recovery_quarantine",
+    }
+}
+
+fn update_phase_code(phase: UpdatePhase) -> &'static str {
+    match phase {
+        UpdatePhase::UpdateIdle => "UPDATE_IDLE",
+        UpdatePhase::UpdateChecking => "UPDATE_CHECKING",
+        UpdatePhase::UpdateNoCandidate => "UPDATE_NO_CANDIDATE",
+        UpdatePhase::UpdateDownloading => "UPDATE_DOWNLOADING",
+        UpdatePhase::UpdateVerifying => "UPDATE_VERIFYING",
+        UpdatePhase::UpdateWaitingForIdle => "UPDATE_WAITING_FOR_IDLE",
+        UpdatePhase::UpdateSealed => "UPDATE_SEALED",
+        UpdatePhase::UpdateHelperStarting => "UPDATE_HELPER_STARTING",
+        UpdatePhase::UpdateActivationPending => "UPDATE_ACTIVATION_PENDING",
+        UpdatePhase::UpdateRollbackPending => "UPDATE_ROLLBACK_PENDING",
+        UpdatePhase::UpdateFailedTargetSuppressed => "UPDATE_FAILED_TARGET_SUPPRESSED",
+        UpdatePhase::UpdateRecoveryQuarantine => "UPDATE_RECOVERY_QUARANTINE",
+    }
+}
+
+fn update_category_code(category: UpdateCheckCategory) -> &'static str {
+    match category {
+        UpdateCheckCategory::Network => "UPDATE_NETWORK",
+        UpdateCheckCategory::Tls => "UPDATE_TLS",
+        UpdateCheckCategory::Http => "UPDATE_HTTP",
+        UpdateCheckCategory::RateLimited => "UPDATE_RATE_LIMITED",
+        UpdateCheckCategory::MetadataInvalid => "UPDATE_METADATA_INVALID",
+        UpdateCheckCategory::NoCandidate => "UPDATE_NO_CANDIDATE",
+        UpdateCheckCategory::Download => "UPDATE_DOWNLOAD_FAILED",
+        UpdateCheckCategory::Verification => "UPDATE_VERIFICATION_FAILED",
+        UpdateCheckCategory::HelperTooOld => "UPDATE_HELPER_TOO_OLD",
+        UpdateCheckCategory::Internal => "UPDATE_INTERNAL",
     }
 }
 
@@ -847,7 +925,7 @@ fn retry_after_utc(response: &http::Response<ureq::Body>) -> Option<String> {
     )
 }
 
-fn verify_helper(path: &Path) -> Result<()> {
+fn verify_helper(path: &Path, required_protocol: HelperProtocol) -> Result<HelperProtocol> {
     let updater = path
         .parent()
         .context("fixed updater executable has no parent")?;
@@ -857,7 +935,7 @@ fn verify_helper(path: &Path) -> Result<()> {
     verify_windows_directory_protection(product)?;
     verify_windows_directory_protection(updater)?;
     verify_windows_file_publisher(path, &compiled_publishers())?;
-    verify_helper_protocol(path)?;
+    let protocol = verify_helper_protocol(path, required_protocol)?;
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     let service = manager.open_service(HELPER_SERVICE_NAME, ServiceAccess::QUERY_CONFIG)?;
     let config = service.query_config()?;
@@ -872,10 +950,13 @@ fn verify_helper(path: &Path) -> Result<()> {
     {
         bail!("updater SCM configuration differs from compiled product policy");
     }
-    Ok(())
+    Ok(protocol)
 }
 
-fn verify_helper_protocol(path: &Path) -> Result<()> {
+fn verify_helper_protocol(
+    path: &Path,
+    required_protocol: HelperProtocol,
+) -> Result<HelperProtocol> {
     let mut child = Command::new(path)
         .args(["--verify-install", "--json"])
         .stdin(Stdio::null())
@@ -905,12 +986,12 @@ fn verify_helper_protocol(path: &Path) -> Result<()> {
     let output = child
         .wait_with_output()
         .context("collect updater helper protocol query")?;
-    validate_helper_install_output(
-        &output.stdout,
-        HELPER_SERVICE_NAME,
-        REQUIRED_HELPER_PROTOCOL,
-    )?;
-    Ok(())
+    let output =
+        validate_helper_install_output(&output.stdout, HELPER_SERVICE_NAME, required_protocol)?;
+    Ok(HelperProtocol {
+        major: output.helper_protocol_major,
+        minor: output.helper_protocol_minor,
+    })
 }
 
 fn sync_directory_metadata(path: &Path) -> Result<()> {
@@ -952,7 +1033,7 @@ fn start_helper() -> Result<()> {
 
 pub fn start_recovery_helper() -> Result<()> {
     let fixed = FixedProductPaths::discover()?;
-    verify_helper(&fixed.updater.join(HELPER_EXE))?;
+    verify_helper(&fixed.updater.join(HELPER_EXE), REQUIRED_HELPER_PROTOCOL)?;
     start_helper()
 }
 
@@ -1115,7 +1196,7 @@ fn classify_error(error: &anyhow::Error) -> UpdateCheckCategory {
         || text.contains("metadata")
     {
         UpdateCheckCategory::MetadataInvalid
-    } else if text.contains("helper protocol") || text.contains("updater scm configuration") {
+    } else if text.contains("helper protocol is incompatible") {
         UpdateCheckCategory::HelperTooOld
     } else {
         UpdateCheckCategory::Internal

@@ -170,14 +170,53 @@ impl ServiceLogger {
     ) -> Result<()> {
         self.json
             .write_with_context(event_id, phase, stable_code, context)?;
-        self.event_log.write(event_id)?;
+        self.event_log.write(
+            event_id,
+            phase,
+            stable_code,
+            env!("CARGO_PKG_VERSION"),
+            context.resource_id,
+        )?;
+        Ok(())
+    }
+
+    pub fn write_update(
+        &self,
+        phase: &str,
+        stable_code: &str,
+        target_version: Option<&str>,
+        digest_prefix: Option<&str>,
+    ) -> Result<()> {
+        if target_version.is_some_and(|version| {
+            version.is_empty()
+                || version.len() > 128
+                || !version
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+        }) {
+            bail!("update diagnostic version is invalid");
+        }
+        let context = EventContext {
+            resource_type: digest_prefix.map(|_| "update_target"),
+            resource_id: digest_prefix,
+            ..EventContext::EMPTY
+        };
+        self.json
+            .write_with_context(EventId::UpdateState, phase, stable_code, context)?;
+        self.event_log.write(
+            EventId::UpdateState,
+            phase,
+            stable_code,
+            target_version.unwrap_or(env!("CARGO_PKG_VERSION")),
+            digest_prefix,
+        )?;
         Ok(())
     }
 }
 
 #[cfg(windows)]
 struct WindowsEventLog {
-    handle: windows_sys::Win32::Foundation::HANDLE,
+    source: Vec<u16>,
 }
 
 #[cfg(windows)]
@@ -201,10 +240,21 @@ impl WindowsEventLog {
                 std::io::Error::last_os_error()
             );
         }
-        Ok(Self { handle })
+        unsafe {
+            windows_sys::Win32::System::EventLog::DeregisterEventSource(handle);
+        }
+        Ok(Self { source })
     }
 
-    fn write(&self, event_id: EventId) -> Result<()> {
+    fn write(
+        &self,
+        event_id: EventId,
+        phase: &str,
+        stable_code: &str,
+        version: &str,
+        digest_prefix: Option<&str>,
+    ) -> Result<()> {
+        use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::System::EventLog::{
             ReportEventW, EVENTLOG_ERROR_TYPE, EVENTLOG_INFORMATION_TYPE, EVENTLOG_WARNING_TYPE,
         };
@@ -214,32 +264,49 @@ impl WindowsEventLog {
             Severity::Warning => EVENTLOG_WARNING_TYPE,
             Severity::Error => EVENTLOG_ERROR_TYPE,
         };
+        let insertions = [version, phase, stable_code, digest_prefix.unwrap_or("")].map(|value| {
+            std::ffi::OsStr::new(value)
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect::<Vec<_>>()
+        });
+        let insertion_pointers = insertions
+            .iter()
+            .map(|value| value.as_ptr())
+            .collect::<Vec<_>>();
+        let handle = unsafe {
+            windows_sys::Win32::System::EventLog::RegisterEventSourceW(
+                std::ptr::null(),
+                self.source.as_ptr(),
+            )
+        };
+        if handle.is_null() {
+            bail!(
+                "RegisterEventSourceW failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
         let reported = unsafe {
             ReportEventW(
-                self.handle,
+                handle,
                 event_type,
                 0,
                 event_id as u32,
                 std::ptr::null_mut(),
+                u16::try_from(insertion_pointers.len()).unwrap_or(0),
                 0,
-                0,
-                std::ptr::null(),
+                insertion_pointers.as_ptr(),
                 std::ptr::null(),
             )
         };
-        if reported == 0 {
-            bail!("ReportEventW failed: {}", std::io::Error::last_os_error());
+        let report_error = (reported == 0).then(std::io::Error::last_os_error);
+        unsafe {
+            windows_sys::Win32::System::EventLog::DeregisterEventSource(handle);
+        }
+        if let Some(error) = report_error {
+            bail!("ReportEventW failed: {error}");
         }
         Ok(())
-    }
-}
-
-#[cfg(windows)]
-impl Drop for WindowsEventLog {
-    fn drop(&mut self) {
-        unsafe {
-            windows_sys::Win32::System::EventLog::DeregisterEventSource(self.handle);
-        }
     }
 }
 

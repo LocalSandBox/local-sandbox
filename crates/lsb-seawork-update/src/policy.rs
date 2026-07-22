@@ -98,6 +98,11 @@ pub fn retry_delay(attempt: u8) -> Duration {
     Duration::from_secs(5 * 60 * (1u64 << exponent))
 }
 
+pub fn bounded_retry_delay(deadline: OffsetDateTime, now: OffsetDateTime) -> Duration {
+    let seconds = (deadline - now).whole_seconds().clamp(60, 24 * 60 * 60);
+    Duration::from_secs(seconds as u64)
+}
+
 pub fn validate_download_url(value: &str, initial: bool) -> Result<()> {
     let url = url::Url::parse(value)?;
     let allowed = [
@@ -331,6 +336,19 @@ mod tests {
                 .unwrap()
         );
         assert!(parse_retry_after_utc(None, Some("1"), now).is_none());
+        assert_eq!(
+            bounded_retry_delay(now + time::Duration::seconds(120), now),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            bounded_retry_delay(now - time::Duration::hours(1), now),
+            Duration::from_secs(60),
+            "an expired deadline or a wall-clock rollback must not create a tight loop"
+        );
+        assert_eq!(
+            bounded_retry_delay(now + time::Duration::days(2), now),
+            Duration::from_secs(24 * 60 * 60)
+        );
     }
 
     #[test]

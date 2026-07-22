@@ -44,6 +44,7 @@ pub struct PackageVerification {
     pub protocol: ProtocolRange,
     pub ledger: LedgerCompatibility,
     pub service_configuration_revision: u32,
+    pub required_helper_protocol: crate::HelperProtocol,
     pub publisher: PublisherIdentity,
 }
 
@@ -190,7 +191,7 @@ pub fn verify_bundle_root(root: &Path, policy: &PackagePolicy<'_>) -> Result<Pac
         bail!("bundle contains missing or unlisted payload files");
     }
 
-    verify_service_contract(root, policy)?;
+    let required_helper_protocol = verify_service_contract(root, policy)?;
     verify_json_manifest(
         &root.join("manifests/runtime-dependencies.json"),
         "runtime dependency report",
@@ -221,6 +222,7 @@ pub fn verify_bundle_root(root: &Path, policy: &PackagePolicy<'_>) -> Result<Pac
         protocol,
         ledger,
         service_configuration_revision: manifest.service_configuration_revision,
+        required_helper_protocol,
         publisher,
     })
 }
@@ -335,7 +337,10 @@ fn require_mandatory_paths(paths: &BTreeSet<String>) -> Result<()> {
     Ok(())
 }
 
-fn verify_service_contract(root: &Path, policy: &PackagePolicy<'_>) -> Result<()> {
+fn verify_service_contract(
+    root: &Path,
+    policy: &PackagePolicy<'_>,
+) -> Result<crate::HelperProtocol> {
     let path = root.join("manifests/service-contract.json");
     let bytes = read_bounded_file(&path, MAX_MANIFEST_BYTES, "service contract")?;
     let contract: serde_json::Value = serde_json::from_slice(&bytes)?;
@@ -366,7 +371,30 @@ fn verify_service_contract(root: &Path, policy: &PackagePolicy<'_>) -> Result<()
     {
         bail!("service contract schema or security policy is incompatible");
     }
-    Ok(())
+    let major = contract
+        .pointer("/updater/protocol/major")
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u16::try_from(value).ok())
+        .context("service contract updater protocol major is invalid")?;
+    let minimum = contract
+        .pointer("/updater/protocol/min")
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u16::try_from(value).ok())
+        .context("service contract updater protocol minimum is invalid")?;
+    let maximum = contract
+        .pointer("/updater/protocol/max")
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u16::try_from(value).ok())
+        .context("service contract updater protocol maximum is invalid")?;
+    let required = crate::HelperProtocol {
+        major,
+        minor: minimum,
+    };
+    required.validate()?;
+    if maximum < minimum {
+        bail!("service contract updater protocol range is invalid");
+    }
+    Ok(required)
 }
 
 fn verify_json_manifest(path: &Path, label: &str) -> Result<()> {
@@ -573,6 +601,10 @@ mod tests {
         let identity = report.bundle_identity(&"c".repeat(64)).unwrap();
         assert_eq!(identity.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(identity.bundle_manifest_sha256.len(), 64);
+        assert_eq!(
+            report.required_helper_protocol,
+            crate::HelperProtocol { major: 1, minor: 1 }
+        );
 
         let image = root.join("runtime/Image");
         fs::write(&image, b"tampered").unwrap();
@@ -597,6 +629,20 @@ mod tests {
         let mut incompatible = policy();
         incompatible.pipe_name = r"\\.\pipe\forged";
         assert!(verify_bundle_root(&root, &incompatible).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn service_contract_binds_a_valid_minimum_helper_protocol() {
+        let root = test_root();
+        write_fixture(&root);
+        let path = root.join("manifests/service-contract.json");
+        let mut contract: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        contract["updater"]["protocol"]["min"] = json!(2);
+        contract["updater"]["protocol"]["max"] = json!(1);
+        fs::write(&path, serde_json::to_vec_pretty(&contract).unwrap()).unwrap();
+        assert!(verify_service_contract(&root, &policy()).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -645,6 +691,13 @@ mod tests {
                 "pipe_name": policy.pipe_name,
                 "pipe_sddl": policy.pipe_sddl,
                 "remote_clients_allowed": false
+            },
+            "updater": {
+                "protocol": {
+                    "major": 1,
+                    "min": 1,
+                    "max": 1
+                }
             }
         });
         fs::write(
