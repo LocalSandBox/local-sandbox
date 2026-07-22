@@ -67,6 +67,7 @@ fn run_registered(
 
     let paths = ServicePaths::discover()?;
     paths.prepare()?;
+    verify_protected_configuration(&paths)?;
     let logger = std::sync::Arc::new(ServiceLogger::new(&paths.logs)?);
     logger.write(EventId::ServiceStartPending, "startup", "START_PENDING")?;
     advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
@@ -304,6 +305,23 @@ fn run_registered(
     }
     let _ = logger.write(EventId::ServiceStopped, "shutdown", "STOPPED");
     status_handle.set_service_status(status::stopped())?;
+    Ok(())
+}
+
+fn verify_protected_configuration(paths: &ServicePaths) -> Result<()> {
+    for directory in [
+        paths.root.as_path(),
+        paths.config.parent().context("config path has no parent")?,
+    ] {
+        lsb_seawork_update::verify_windows_directory_protection(directory)?;
+    }
+    for file in [&paths.config, &paths.product_ca_bundle] {
+        match std::fs::symlink_metadata(file) {
+            Ok(_) => lsb_seawork_update::verify_windows_file_protection(file)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
     Ok(())
 }
 
