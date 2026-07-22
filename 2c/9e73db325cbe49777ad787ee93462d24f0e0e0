@@ -1,0 +1,21 @@
+.github/workflows/release.yml
+  s_53a8c4ead2f035::t_72078a367f0035 501,509-510,568-569,602-603
+scripts/sign-seawork-service.ps1
+  s_53a8c4ead2f035::t_72078a367f0035 18,150,161-167,396
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "2c9e73db325cbe49777ad787ee93462d24f0e0e0",
+  "prompts": {},
+  "sessions": {
+    "s_53a8c4ead2f035": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f88f0-119b-7ca3-b84d-5364f86d7229",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}

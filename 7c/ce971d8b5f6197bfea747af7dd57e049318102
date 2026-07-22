@@ -1,0 +1,19 @@
+.github/workflows/release.yml
+  s_1bd4a9ea3848dd::t_023d5c5d843883 208-211
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "7cce971d8b5f6197bfea747af7dd57e049318102",
+  "prompts": {},
+  "sessions": {
+    "s_1bd4a9ea3848dd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f88d1-03c3-7983-8855-e02928ddf164",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
