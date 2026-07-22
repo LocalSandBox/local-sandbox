@@ -1083,3 +1083,34 @@ The controlled-update evidence manifest is now schema 2 as well. Assembly requir
 and records the full successful helper install self-check plus independent valid
 timestamped Authenticode and exact publisher-certificate SHA-256 verification. SeaWork
 must not submit or accept a schema-1/version-query-only update evidence manifest.
+
+## 2026-07-22 — Reduced controlled-upgrade acceptance profile
+
+Status: **minimum acceptance scope simplified; signed SeaWork-installed execution
+remains downstream**
+
+This append-only entry supersedes only the exhaustive controlled-upgrade result and
+crash/reboot matrix described in the earlier 2026-07-22 entries. It does not relax
+artifact signing, immutable identity, publisher, helper self-check, SCM/ACL, no-UAC,
+or exact previous/candidate bundle requirements.
+
+For this task, `--require-complete` requires these five passing cases:
+
+- stable-channel discovery;
+- indefinite busy-to-idle waiting;
+- successful activation and commit (the happy path);
+- unhealthy-target rollback; and
+- untrusted or incompatible candidate rejection before SCM mutation.
+
+It also requires one real-reboot recovery pass at the durable
+`image_path_changed` phase. The remaining recognized cases and durable phases may be
+retained as useful additional evidence, but prerelease selection, a separate idle race,
+failed-target suppression, SeaWork repair/uninstall, helper-crash injection, and a
+reboot at every phase are not blockers for this reduced gate.
+
+LocalSandbox's `scripts/win-test suite update-fast` runs the service baseline plus the
+controlled-update, updater, and evidence-tool tests and Clippy natively on Windows. Its
+evidence explicitly records that no signed installation or controlled update was
+executed. SeaWork still owns installing/repairing the helper from the pinned immutable
+release tuple and running the signed production-profile cases above against the real
+SCM entries; record that final evidence in a later append-only handoff entry.

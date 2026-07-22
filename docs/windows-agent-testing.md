@@ -32,6 +32,7 @@ scripts/win-test run -- cargo check -p lsb-seawork-service --locked
 
 # Run a named repository suite.
 scripts/win-test suite service-fast
+scripts/win-test suite update-fast
 
 # Provision the two external signing inputs without adding them to a snapshot.
 SEAWORK_WINDOWS_PFX_PATH=/absolute/private/SeaWork-CodeSign.pfx \
@@ -139,6 +140,9 @@ The test-release suites are:
 
 - `service-fast`: focused Rust tests, scoped Clippy, Node compilation, API-shape tests,
   and declaration typechecking;
+- `update-fast`: `service-fast` plus native Windows controlled-update/updater/xtask
+  tests and Clippy. This is a source gate: it does not install a signed helper, mutate
+  SCM, execute an update, or claim the signed acceptance profile;
 - `release-candidate`: production-profile static-CRT build, trusted timestamped PE and
   catalog signing, closed archives, and a fetch manifest;
 - `installed-service-smoke`: candidate construction plus an owned production-identity
