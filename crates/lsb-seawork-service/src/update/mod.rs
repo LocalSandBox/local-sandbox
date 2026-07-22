@@ -10,14 +10,15 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use lsb_seawork_update::{
-    bounded_retry_delay, cached_candidate, create_json, extract_zip_archive,
-    failed_target_decision, load_json, parse_retry_after_utc, remove_file_if_exists, retry_delay,
-    stream_exact_asset, validate_download_url, validate_helper_install_output, verify_bundle_root,
-    verify_windows_directory_protection, verify_windows_file_protection,
+    bounded_retry_delay, cached_candidate, classify_release_response, create_json,
+    extract_zip_archive, failed_target_decision, load_json, parse_retry_after_utc,
+    remove_file_if_exists, retry_delay, stream_exact_asset, transaction_requires_recovery,
+    validate_download_url, validate_helper_install_output, validate_release_page,
+    verify_bundle_root, verify_windows_directory_protection, verify_windows_file_protection,
     verify_windows_file_publisher, verify_windows_package, write_json_atomic,
     CommittedStateEnvelope, FailedTargetDecision, FailedTargetState, HelperProtocol, PackagePolicy,
-    ReleaseCandidate, ReleaseChannel, ReleaseSelector, TransactionEnvelope, TransactionPhase,
-    UpdateTransaction,
+    ReleaseCandidate, ReleaseChannel, ReleaseResponseStatus, ReleaseSelector, TransactionEnvelope,
+    TransactionPhase, UpdateTransaction,
 };
 use lsb_service_proto::{UpdateCheckCategory, UpdatePhase, UpdateRetryState, SUPPORTED};
 use serde::{Deserialize, Serialize};
@@ -315,9 +316,7 @@ impl Coordinator {
 
     fn transaction_recovery_pending(&self) -> bool {
         match protected_load_json::<TransactionEnvelope>(&self.paths.updates.current_transaction) {
-            Ok(transaction) => {
-                transaction.validate().is_ok() && !transaction.transaction.phase.is_terminal()
-            }
+            Ok(transaction) => transaction_requires_recovery(&transaction),
             Err(error) => !is_not_found(&error),
         }
     }
@@ -765,29 +764,34 @@ impl GithubHttp {
             }
             let mut response = request.call()?;
             let status = response.status().as_u16();
-            if page == 1 && status == 304 {
-                return Ok(ReleasePages {
-                    pages,
-                    etag: etag.map(str::to_string),
-                    not_modified: true,
-                });
-            }
-            if matches!(status, 403 | 429) {
-                return Err(RateLimited {
-                    retry_after_utc: retry_after_utc(&response),
+            match classify_release_response(page, status, etag)? {
+                ReleaseResponseStatus::Success => {}
+                ReleaseResponseStatus::NotModified { etag } => {
+                    return Ok(ReleasePages {
+                        pages,
+                        etag: Some(etag),
+                        not_modified: true,
+                    });
                 }
-                .into());
-            }
-            if status != 200 {
-                return Err(HttpStatusFailure {
-                    status,
-                    retry_after_utc: retry_after_utc(&response),
+                ReleaseResponseStatus::RateLimited => {
+                    return Err(RateLimited {
+                        retry_after_utc: retry_after_utc(&response),
+                    }
+                    .into());
                 }
-                .into());
+                ReleaseResponseStatus::HttpFailure { status } => {
+                    return Err(HttpStatusFailure {
+                        status,
+                        retry_after_utc: retry_after_utc(&response),
+                    }
+                    .into());
+                }
             }
-            if page == 1 {
-                observed_etag = header(&response, "etag");
-            }
+            let response_etag = if page == 1 {
+                header(&response, "etag")
+            } else {
+                None
+            };
             let body = response
                 .body_mut()
                 .with_config()
@@ -797,12 +801,13 @@ impl GithubHttp {
                 .as_array()
                 .context("GitHub releases response is not an array")?
                 .len();
-            pages.push(body);
-            if count < 50 {
-                break;
+            let progress = validate_release_page(page, count, response_etag.as_deref())?;
+            if page == 1 {
+                observed_etag = progress.etag;
             }
-            if page == 10 {
-                bail!("GitHub release pagination exceeds the compiled limit");
+            pages.push(body);
+            if progress.complete {
+                break;
             }
         }
         Ok(ReleasePages {

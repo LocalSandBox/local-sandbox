@@ -12,6 +12,78 @@ use crate::{FailedTargetState, ReleaseCandidate, ReleaseChannel};
 
 const FAILED_TARGET_COOLDOWN_SECONDS: i64 = 24 * 60 * 60;
 const MAX_HELPER_VERSION_OUTPUT_BYTES: usize = 4 * 1024;
+const MAX_RELEASE_PAGES: usize = 10;
+const RELEASES_PER_PAGE: usize = 50;
+const MAX_ETAG_BYTES: usize = 512;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReleaseResponseStatus {
+    Success,
+    NotModified { etag: String },
+    RateLimited,
+    HttpFailure { status: u16 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleasePageProgress {
+    pub etag: Option<String>,
+    pub complete: bool,
+}
+
+pub fn classify_release_response(
+    page: usize,
+    status: u16,
+    conditional_etag: Option<&str>,
+) -> Result<ReleaseResponseStatus> {
+    if !(1..=MAX_RELEASE_PAGES).contains(&page) {
+        bail!("GitHub release page is outside the compiled limit");
+    }
+    match status {
+        200 => Ok(ReleaseResponseStatus::Success),
+        304 if page == 1 => {
+            let etag = conditional_etag.context("unconditional GitHub response returned 304")?;
+            validate_etag(etag)?;
+            Ok(ReleaseResponseStatus::NotModified {
+                etag: etag.to_string(),
+            })
+        }
+        403 | 429 => Ok(ReleaseResponseStatus::RateLimited),
+        _ => Ok(ReleaseResponseStatus::HttpFailure { status }),
+    }
+}
+
+pub fn validate_release_page(
+    page: usize,
+    release_count: usize,
+    response_etag: Option<&str>,
+) -> Result<ReleasePageProgress> {
+    if !(1..=MAX_RELEASE_PAGES).contains(&page) || release_count > RELEASES_PER_PAGE {
+        bail!("GitHub release pagination exceeds the compiled limit");
+    }
+    let etag = if page == 1 {
+        response_etag
+            .map(validate_etag)
+            .transpose()?
+            .map(str::to_string)
+    } else {
+        None
+    };
+    let complete = release_count < RELEASES_PER_PAGE;
+    if page == MAX_RELEASE_PAGES && !complete {
+        bail!("GitHub release pagination exceeds the compiled limit");
+    }
+    Ok(ReleasePageProgress { etag, complete })
+}
+
+fn validate_etag(value: &str) -> Result<&str> {
+    if value.is_empty()
+        || value.len() > MAX_ETAG_BYTES
+        || value.bytes().any(|byte| byte.is_ascii_control())
+    {
+        bail!("GitHub release ETag is invalid");
+    }
+    Ok(value)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -101,6 +173,10 @@ pub fn retry_delay(attempt: u8) -> Duration {
 pub fn bounded_retry_delay(deadline: OffsetDateTime, now: OffsetDateTime) -> Duration {
     let seconds = (deadline - now).whole_seconds().clamp(60, 24 * 60 * 60);
     Duration::from_secs(seconds as u64)
+}
+
+pub fn transaction_requires_recovery(transaction: &crate::TransactionEnvelope) -> bool {
+    transaction.validate().is_ok() && !transaction.transaction.phase.is_terminal()
 }
 
 pub fn validate_download_url(value: &str, initial: bool) -> Result<()> {
@@ -268,6 +344,84 @@ mod tests {
         ] {
             assert!(validate_download_url(url, false).is_err());
         }
+    }
+
+    #[test]
+    fn conditional_etag_and_pagination_responses_are_deterministic() {
+        assert_eq!(
+            classify_release_response(1, 304, Some("\"immutable-etag\"")).unwrap(),
+            ReleaseResponseStatus::NotModified {
+                etag: "\"immutable-etag\"".to_string()
+            }
+        );
+        assert!(classify_release_response(1, 304, None).is_err());
+        assert_eq!(
+            classify_release_response(1, 429, None).unwrap(),
+            ReleaseResponseStatus::RateLimited
+        );
+        assert_eq!(
+            classify_release_response(2, 503, None).unwrap(),
+            ReleaseResponseStatus::HttpFailure { status: 503 }
+        );
+
+        let first = validate_release_page(1, 50, Some("W/\"page-one\"")).unwrap();
+        assert_eq!(first.etag.as_deref(), Some("W/\"page-one\""));
+        assert!(!first.complete);
+        assert!(
+            validate_release_page(2, 49, Some("ignored-on-later-pages"))
+                .unwrap()
+                .complete
+        );
+        assert!(validate_release_page(10, 50, None).is_err());
+        assert!(validate_release_page(1, 0, Some(&"x".repeat(513))).is_err());
+        assert!(classify_release_response(0, 200, None).is_err());
+    }
+
+    #[test]
+    fn only_valid_nonterminal_transactions_schedule_recovery() {
+        use lsb_service_proto::{BundleIdentity, LedgerCompatibility, ProtocolRange};
+
+        let identity = |version: &str, digest: char| BundleIdentity {
+            version: version.to_string(),
+            bundle_manifest_sha256: digest.to_string().repeat(64),
+            archive_sha256: digest.to_string().repeat(64),
+            protocol: ProtocolRange {
+                major: 1,
+                min_minor: 1,
+                max_minor: 6,
+            },
+            ledger: LedgerCompatibility {
+                reader_min_schema: 1,
+                reader_max_schema: 1,
+                writer_schema: 1,
+            },
+            service_configuration_revision: 2,
+        };
+        let mut transaction = crate::TransactionEnvelope::new(crate::UpdateTransaction {
+            transaction_id: "1".repeat(32),
+            update_id: "2".repeat(32),
+            phase: crate::TransactionPhase::Prepared,
+            created_utc: "2026-07-22T12:00:00Z".to_string(),
+            old_bundle_identity: identity("0.5.0", 'a'),
+            target_bundle_identity: identity("0.5.1", 'b'),
+            old_image_path: r"C:\Program Files\SeaWork\LocalSandbox\versions\0.5.0\bin\localsandbox-seawork-service.exe".to_string(),
+            target_image_path: r"C:\Program Files\SeaWork\LocalSandbox\versions\0.5.1\bin\localsandbox-seawork-service.exe".to_string(),
+            old_event_message_path: r"C:\Program Files\SeaWork\LocalSandbox\versions\0.5.0\bin\localsandbox-seawork-service.exe".to_string(),
+            target_event_message_path: r"C:\Program Files\SeaWork\LocalSandbox\versions\0.5.1\bin\localsandbox-seawork-service.exe".to_string(),
+            staged_root: r"C:\ProgramData\LocalSandbox\SeaWork\updates\staging\11111111111111111111111111111111\LocalSandbox".to_string(),
+            final_version_root: r"C:\Program Files\SeaWork\LocalSandbox\versions\0.5.1".to_string(),
+            helper_protocol: crate::HelperProtocol { major: 1, minor: 1 },
+            attempt_count: 1,
+            last_error_category: None,
+        }).unwrap();
+        assert!(transaction_requires_recovery(&transaction));
+
+        transaction
+            .transition(crate::TransactionPhase::Quarantined)
+            .unwrap();
+        assert!(!transaction_requires_recovery(&transaction));
+        transaction.checksum_sha256 = "0".repeat(64);
+        assert!(!transaction_requires_recovery(&transaction));
     }
 
     #[test]

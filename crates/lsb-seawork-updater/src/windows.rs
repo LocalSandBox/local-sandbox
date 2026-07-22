@@ -1343,3 +1343,57 @@ fn compiled_publishers() -> Vec<String> {
         .map(str::to_string)
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transaction_configuration_accepts_only_old_target_or_mixed_replay_values() {
+        assert!(matches_transaction_value("old", "old", "target"));
+        assert!(matches_transaction_value("target", "old", "target"));
+        assert!(!matches_transaction_value("unrelated", "old", "target"));
+    }
+
+    #[test]
+    fn image_roots_are_derived_only_from_the_fixed_versions_root() {
+        let versions = Path::new(r"C:\Program Files\SeaWork\LocalSandbox\versions");
+        let image = r"C:\Program Files\SeaWork\LocalSandbox\versions\0.5.1\bin\localsandbox-seawork-service.exe";
+        assert_eq!(
+            bundle_root_for_image(versions, image, "0.5.1").unwrap(),
+            versions.join("0.5.1")
+        );
+        assert!(bundle_root_for_image(
+            versions,
+            r"C:\Program Files\SeaWork\LocalSandbox\updater\localsandbox-seawork-service.exe",
+            "0.5.1"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn generated_failure_actions_are_exact() {
+        let actions = expected_failure_actions();
+        assert_eq!(
+            actions.reset_period,
+            ServiceFailureResetPeriod::After(Duration::from_secs(86_400))
+        );
+        assert_eq!(
+            actions.actions.unwrap(),
+            vec![
+                ServiceAction {
+                    action_type: ServiceActionType::Restart,
+                    delay: Duration::from_secs(5),
+                },
+                ServiceAction {
+                    action_type: ServiceActionType::Restart,
+                    delay: Duration::from_secs(30),
+                },
+                ServiceAction {
+                    action_type: ServiceActionType::Restart,
+                    delay: Duration::from_secs(120),
+                },
+            ]
+        );
+    }
+}

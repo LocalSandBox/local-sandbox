@@ -16,9 +16,11 @@ pub use journal::{HelperProtocol, TransactionEnvelope, TransactionPhase, UpdateT
 pub use package::{verify_bundle_root, PackagePolicy, PackageVerification, PublisherIdentity};
 #[cfg(feature = "coordinator-policy")]
 pub use policy::{
-    bounded_retry_delay, cached_candidate, failed_target_decision, parse_retry_after_utc,
-    retry_delay, stream_exact_asset, validate_download_url, validate_helper_install_output,
-    validate_helper_version_output, FailedTargetDecision, HelperInstallOutput, HelperVersionOutput,
+    bounded_retry_delay, cached_candidate, classify_release_response, failed_target_decision,
+    parse_retry_after_utc, retry_delay, stream_exact_asset, transaction_requires_recovery,
+    validate_download_url, validate_helper_install_output, validate_helper_version_output,
+    validate_release_page, FailedTargetDecision, HelperInstallOutput, HelperVersionOutput,
+    ReleasePageProgress, ReleaseResponseStatus,
 };
 pub use state::{archive_file, create_json, load_json, remove_file_if_exists, write_json_atomic};
 #[cfg(windows)]
