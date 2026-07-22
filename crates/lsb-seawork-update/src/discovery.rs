@@ -19,7 +19,8 @@ pub enum ReleaseChannel {
     Prerelease,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReleaseCandidate {
     pub release_id: u64,
     pub version: String,
@@ -28,6 +29,29 @@ pub struct ReleaseCandidate {
     pub asset_url: String,
     pub asset_size: u64,
     pub archive_sha256: String,
+}
+
+impl ReleaseCandidate {
+    pub fn validate(&self) -> Result<()> {
+        let version = parse_canonical_version(&self.version)?;
+        let tag = format!("v{version}");
+        let expected_name = format!("lsb-seawork-service-v{version}-windows-x86_64.zip");
+        if self.release_id == 0
+            || self.prerelease != !version.pre.is_empty()
+            || self.asset_name != expected_name
+            || self.asset_size == 0
+            || self.asset_size > MAX_ARCHIVE_BYTES
+            || self.archive_sha256.len() != 64
+            || !self
+                .archive_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || !valid_asset_url(&self.asset_url, &tag, &expected_name)
+        {
+            bail!("release candidate is invalid");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,18 +188,17 @@ fn candidate_from_release(release: GithubRelease) -> Result<Option<(Version, Rel
     if sha256.len() != 64 || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Ok(None);
     }
-    Ok(Some((
-        version.clone(),
-        ReleaseCandidate {
-            release_id: release.id,
-            version: version.to_string(),
-            prerelease: release.prerelease,
-            asset_name: expected_name,
-            asset_url: asset.browser_download_url,
-            asset_size: asset.size,
-            archive_sha256: sha256.to_ascii_lowercase(),
-        },
-    )))
+    let candidate = ReleaseCandidate {
+        release_id: release.id,
+        version: version.to_string(),
+        prerelease: release.prerelease,
+        asset_name: expected_name,
+        asset_url: asset.browser_download_url,
+        asset_size: asset.size,
+        archive_sha256: sha256.to_ascii_lowercase(),
+    };
+    candidate.validate()?;
+    Ok(Some((version.clone(), candidate)))
 }
 
 fn parse_canonical_version(value: &str) -> Result<Version> {
@@ -273,6 +296,23 @@ mod tests {
         assert!(selector
             .select(ReleaseChannel::Prerelease, "0.5.0", "0.5.0")
             .is_err());
+    }
+
+    #[test]
+    fn persisted_candidate_revalidates_all_immutable_fields() {
+        let mut selector = ReleaseSelector::new();
+        selector
+            .push_page(include_bytes!("../fixtures/github-releases-valid.json"))
+            .unwrap();
+        let candidate = selector
+            .select(ReleaseChannel::Stable, "0.5.0", "0.5.0")
+            .unwrap()
+            .unwrap();
+        candidate.validate().unwrap();
+
+        let mut tampered = candidate;
+        tampered.asset_url = "https://github.com/other/release.zip".to_string();
+        assert!(tampered.validate().is_err());
     }
 
     #[test]

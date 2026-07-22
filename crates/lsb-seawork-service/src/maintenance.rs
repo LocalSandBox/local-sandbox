@@ -104,6 +104,46 @@ impl MaintenanceManager {
         self.admissions.clone()
     }
 
+    pub fn restore_activation_pending(
+        &self,
+        update_id: &str,
+        target: &BundleIdentity,
+    ) -> Result<()> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("maintenance state poisoned"))?;
+        let pending = require_pending_id(&state, update_id)?;
+        if &pending.target != target {
+            bail!("startup transaction target differs from pending update");
+        }
+        self.admissions.mark_activation_pending()
+    }
+
+    pub fn restore_update_sealed(&self, update_id: &str, target: &BundleIdentity) -> Result<()> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("maintenance state poisoned"))?;
+        let pending = require_pending_id(&state, update_id)?;
+        if &pending.target != target {
+            bail!("startup transaction target differs from pending update");
+        }
+        drop(state);
+        let restored = self.admissions.begin_update_waiting()?;
+        if restored != AdmissionState::UpdateSealed {
+            bail!("recovered old service does not have zero-use sealed admissions");
+        }
+        Ok(())
+    }
+
+    pub fn quarantine_recovery(&self) {
+        self.admissions.quarantine();
+        if let Ok(mut state) = self.state.lock() {
+            *state = MaintenanceState::Quarantined;
+        }
+    }
+
     pub fn stable_code(&self) -> &'static str {
         match self.state.lock() {
             Ok(state) => match &*state {
@@ -413,6 +453,30 @@ mod tests {
         assert_eq!(restarted.stable_code(), "UPDATE_SEALED");
         restarted.abort_update(&update_id).unwrap();
         assert!(restarted.admissions.accepts_work());
+    }
+
+    #[test]
+    fn target_restart_restores_exact_activation_pending_state() {
+        let path = path("activation-recovery");
+        let _ = std::fs::remove_file(&path);
+        let (sessions, manager) = setup(path.clone());
+        let target = target("0.5.0-rc.2");
+        let update_id = manager.prepare_update(&sessions, target.clone()).unwrap();
+
+        let restarted =
+            MaintenanceManager::load(path.clone(), true, AdmissionController::new(true));
+        restarted
+            .restore_activation_pending(&update_id, &target)
+            .unwrap();
+        assert_eq!(restarted.stable_code(), "UPDATE_PENDING");
+        assert!(!restarted.admissions.accepts_work());
+
+        let mut contradictory = target.clone();
+        contradictory.archive_sha256 = "c".repeat(64);
+        assert!(restarted
+            .restore_activation_pending(&update_id, &contradictory)
+            .is_err());
+        restarted.abort_update(&update_id).unwrap();
     }
 
     #[test]

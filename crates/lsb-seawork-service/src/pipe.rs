@@ -9,10 +9,11 @@ use anyhow::{bail, Context, Result};
 use lsb_service_proto::frame::HEADER_VERSION;
 use lsb_service_proto::limits::{HEADER_LEN, MAX_STREAM_PAYLOAD, STREAM_SEQUENCE_LEN};
 use lsb_service_proto::{
-    encode_stream_payload, negotiate, parse_control, Cancel, CapabilityHealth, Correlation,
-    ErrorCode, ErrorEnvelope, Event, FrameHeader, FrameKind, Health, HealthState, Hello,
-    HelloReply, HexU64, ProtocolRange, Request, RequestOp, Response, ResponseValue, ServiceInfo,
-    WindowUpdate, CANCELLATION_COMMIT_MIN_MINOR, CONTROLLED_UPDATE_MIN_MINOR, CURRENT,
+    encode_stream_payload, negotiate, parse_control, BundleIdentity, Cancel, CapabilityHealth,
+    Correlation, ErrorCode, ErrorEnvelope, Event, FrameHeader, FrameKind, Health, HealthState,
+    Hello, HelloReply, HexU64, ProtocolRange, Request, RequestOp, Response, ResponseValue,
+    ServiceInfo, UpdateCheckCategory, UpdatePhase, UpdateRetryState, WindowUpdate,
+    CANCELLATION_COMMIT_MIN_MINOR, CONTROLLED_UPDATE_MIN_MINOR, CURRENT,
     FEATURE_HTTPS_INTERCEPTION, FEATURE_NETWORK_EGRESS, FEATURE_NETWORK_SECRETS,
     START_REPLAY_MIN_MINOR, SUPPORTED,
 };
@@ -348,12 +349,35 @@ pub struct HealthContext {
     requests: Arc<Semaphore>,
     maintenance: Option<MaintenanceManager>,
     update_check_requested: Arc<AtomicBool>,
+    committed_identity: Arc<Mutex<Option<BundleIdentity>>>,
+    update_observation: Arc<Mutex<RuntimeUpdateObservation>>,
     client_roots: Vec<String>,
     maintenance_roots: Vec<String>,
     publisher_thumbprints: Vec<String>,
     protected_egress_allow: Vec<String>,
     product_ca_bundle_pem: Vec<u8>,
     upstream_proxy: Option<lsb_proxy::UpstreamProxyConfig>,
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeUpdateObservation {
+    phase: UpdatePhase,
+    last_check_category: Option<UpdateCheckCategory>,
+    retry: UpdateRetryState,
+}
+
+impl Default for RuntimeUpdateObservation {
+    fn default() -> Self {
+        Self {
+            phase: UpdatePhase::UpdateIdle,
+            last_check_category: None,
+            retry: UpdateRetryState {
+                attempt_count: 0,
+                retry_after_utc: None,
+                suppressed: false,
+            },
+        }
+    }
 }
 
 impl HealthContext {
@@ -373,6 +397,8 @@ impl HealthContext {
             requests: Arc::new(Semaphore::new(crate::ipc::pipe::MAX_REQUESTS_GLOBAL)),
             maintenance: None,
             update_check_requested: Arc::new(AtomicBool::new(false)),
+            committed_identity: Arc::new(Mutex::new(None)),
+            update_observation: Arc::new(Mutex::new(RuntimeUpdateObservation::default())),
             client_roots: Vec::new(),
             maintenance_roots: Vec::new(),
             publisher_thumbprints: Vec::new(),
@@ -389,6 +415,11 @@ impl HealthContext {
 
     pub fn with_whpx(mut self, whpx: HealthState) -> Self {
         self.whpx = whpx;
+        self
+    }
+
+    pub fn with_committed_identity(mut self, identity: Option<BundleIdentity>) -> Self {
+        self.committed_identity = Arc::new(Mutex::new(identity));
         self
     }
 
@@ -427,6 +458,49 @@ impl HealthContext {
     pub fn begin_shutdown(&self) -> Result<usize> {
         self.admissions.quarantine();
         self.sessions.drain_all()
+    }
+
+    pub fn update_trigger(&self) -> Arc<AtomicBool> {
+        self.update_check_requested.clone()
+    }
+
+    pub fn prepare_automatic_update(&self, target: BundleIdentity) -> Result<String> {
+        self.maintenance
+            .as_ref()
+            .context("maintenance manager is unavailable")?
+            .prepare_update(&self.sessions, target)
+    }
+
+    pub fn abort_automatic_update(&self, update_id: &str) -> Result<()> {
+        self.maintenance
+            .as_ref()
+            .context("maintenance manager is unavailable")?
+            .abort_update(update_id)
+    }
+
+    pub fn admissions(&self) -> AdmissionController {
+        self.admissions.clone()
+    }
+
+    pub fn observe_update(
+        &self,
+        phase: UpdatePhase,
+        last_check_category: Option<UpdateCheckCategory>,
+        retry: UpdateRetryState,
+    ) {
+        if let Ok(mut observation) = self.update_observation.lock() {
+            *observation = RuntimeUpdateObservation {
+                phase,
+                last_check_category,
+                retry,
+            };
+        }
+    }
+
+    pub fn set_committed_identity(&self, identity: BundleIdentity) {
+        if let Ok(mut current) = self.committed_identity.lock() {
+            *current = Some(identity);
+        }
     }
 
     fn maintenance_authorized(&self, identity: &ClientIdentity) -> bool {
@@ -1646,9 +1720,20 @@ async fn dispatch_request(
                 .as_ref()
                 .context("maintenance manager is unavailable")?;
             let active_use_count = context.sessions.counts().1.try_into().unwrap_or(u32::MAX);
-            ResponseValue::UpdateStatus {
-                status: maintenance.update_status(None, active_use_count),
+            let current = context
+                .committed_identity
+                .lock()
+                .ok()
+                .and_then(|identity| identity.clone());
+            let mut status = maintenance.update_status(current, active_use_count);
+            if status.phase == UpdatePhase::UpdateIdle {
+                if let Ok(observation) = context.update_observation.lock() {
+                    status.phase = observation.phase;
+                    status.last_check_category = observation.last_check_category;
+                    status.retry = observation.retry.clone();
+                }
             }
+            ResponseValue::UpdateStatus { status }
         }
         RequestOp::CheckForUpdate {} => {
             context

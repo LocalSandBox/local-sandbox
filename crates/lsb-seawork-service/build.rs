@@ -6,6 +6,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=LSB_COMPILE_EVENT_MESSAGES");
     println!("cargo:rerun-if-env-changed=LSB_WINDOWS_MC_PATH");
     println!("cargo:rerun-if-env-changed=LSB_WINDOWS_RC_PATH");
+    compile_publisher_policy();
 
     if std::env::var_os("LSB_COMPILE_EVENT_MESSAGES").is_none() {
         return;
@@ -52,6 +53,43 @@ fn main() {
         "cargo:rustc-link-arg-bin=localsandbox-seawork-service={}",
         compiled.display()
     );
+}
+
+fn compile_publisher_policy() {
+    const CURRENT: &str = "SEAWORK_PUBLISHER_SHA256";
+    const PREVIOUS: &str = "SEAWORK_PUBLISHER_SHA256_PREVIOUS";
+    println!("cargo:rerun-if-env-changed={CURRENT}");
+    println!("cargo:rerun-if-env-changed={PREVIOUS}");
+    let current = std::env::var(CURRENT).unwrap_or_default();
+    let previous = std::env::var(PREVIOUS).unwrap_or_default();
+    for (name, value) in [(CURRENT, &current), (PREVIOUS, &previous)] {
+        if !value.is_empty()
+            && (value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        {
+            panic!("{name} must be one SHA-256 certificate thumbprint");
+        }
+    }
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let profile = std::env::var("PROFILE").unwrap_or_default();
+    if target.contains("windows") && profile == "release" && current.is_empty() {
+        panic!("Windows release service requires {CURRENT}");
+    }
+    if !previous.is_empty() && current.is_empty() {
+        panic!("{PREVIOUS} requires {CURRENT}");
+    }
+    if !previous.is_empty() && previous.eq_ignore_ascii_case(&current) {
+        panic!("current and previous SeaWork publisher thumbprints must differ");
+    }
+    let policy = if previous.is_empty() {
+        current.to_ascii_lowercase()
+    } else {
+        format!(
+            "{},{}",
+            current.to_ascii_lowercase(),
+            previous.to_ascii_lowercase()
+        )
+    };
+    println!("cargo:rustc-env=LSB_COMPILED_SEAWORK_PUBLISHERS_SHA256={policy}");
 }
 
 fn required_tool(variable: &str) -> PathBuf {

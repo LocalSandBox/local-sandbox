@@ -128,12 +128,32 @@ fn run_registered(
         .build()
         .context("create service async runtime")?;
     let initial_admissions = reconciliation.admissions_open && engine.is_some();
+    let committed_identity = lsb_seawork_update::load_json::<
+        lsb_seawork_update::CommittedStateEnvelope,
+    >(&paths.updates.committed)
+    .ok()
+    .filter(|state| state.validate().is_ok())
+    .map(|state| state.committed.current);
     let admissions = crate::admission::AdmissionController::new(initial_admissions);
     let maintenance = MaintenanceManager::load(
         paths.pending_update.clone(),
         initial_admissions,
         admissions.clone(),
     );
+    let startup_recovery = crate::update::inspect_startup(&paths);
+    let recovery_restored = match &startup_recovery {
+        crate::update::StartupRecovery::None => true,
+        crate::update::StartupRecovery::OldService { update_id, target } => {
+            maintenance.restore_update_sealed(update_id, target).is_ok()
+        }
+        crate::update::StartupRecovery::TargetService { update_id, target } => maintenance
+            .restore_activation_pending(update_id, target)
+            .is_ok(),
+        crate::update::StartupRecovery::Quarantined => false,
+    };
+    if !recovery_restored {
+        maintenance.quarantine_recovery();
+    }
     let whpx = crate::windows::whpx::health_state();
     if whpx != lsb_service_proto::HealthState::Ready {
         logger.write(
@@ -157,6 +177,7 @@ fn run_registered(
     )
     .with_engine(engine)
     .with_whpx(whpx)
+    .with_committed_identity(committed_identity)
     .with_client_policy(
         maintenance,
         config.client_roots.clone(),
@@ -175,6 +196,23 @@ fn run_registered(
         Duration::from_secs(30),
     )?;
     let pipe = runtime.block_on(async { HealthPipe::bind(context.clone()) })?;
+    let _update_coordinator = match startup_recovery {
+        crate::update::StartupRecovery::None => Some(crate::update::start(
+            context.clone(),
+            paths.clone(),
+            config.update_channel,
+        )),
+        crate::update::StartupRecovery::OldService { .. }
+        | crate::update::StartupRecovery::TargetService { .. } => {
+            let _ = crate::update::start_recovery_helper();
+            Some(crate::update::start(
+                context.clone(),
+                paths.clone(),
+                config.update_channel,
+            ))
+        }
+        crate::update::StartupRecovery::Quarantined => None,
+    };
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let mut pipe_task = runtime.spawn(pipe.run(shutdown_rx));
 

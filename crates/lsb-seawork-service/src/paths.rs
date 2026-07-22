@@ -22,6 +22,7 @@ pub struct UpdatePaths {
     pub root: PathBuf,
     pub committed: PathBuf,
     pub status: PathBuf,
+    pub failed_target: PathBuf,
     pub downloads: PathBuf,
     pub staging: PathBuf,
     pub current_transaction: PathBuf,
@@ -47,6 +48,7 @@ impl ServicePaths {
             updates: UpdatePaths {
                 committed: update_root.join("committed.json"),
                 status: update_root.join("status.json"),
+                failed_target: update_root.join("failed-target.json"),
                 downloads: update_root.join("downloads"),
                 staging: update_root.join("staging"),
                 current_transaction: update_root.join("transactions").join("current.json"),

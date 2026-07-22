@@ -1,4 +1,6 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use anyhow::{bail, Result};
 
@@ -191,6 +193,30 @@ impl AdmissionController {
         if let Ok(mut inner) = self.shared.inner.lock() {
             inner.state = AdmissionState::Quarantined;
             self.shared.changed.notify_all();
+        }
+    }
+
+    pub fn wait_until_update_sealed(&self, cancelled: &AtomicBool) -> Result<()> {
+        let mut inner = self
+            .shared
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("admission controller poisoned"))?;
+        loop {
+            match inner.state {
+                AdmissionState::UpdateSealed if inner.active_use_count == 0 => return Ok(()),
+                AdmissionState::UpdateWaitingForIdle => {}
+                _ => bail!("service left update waiting state before helper handoff"),
+            }
+            if cancelled.load(Ordering::Acquire) {
+                bail!("update wait cancelled by service shutdown");
+            }
+            let waited = self
+                .shared
+                .changed
+                .wait_timeout(inner, Duration::from_secs(1))
+                .map_err(|_| anyhow::anyhow!("admission controller poisoned"))?;
+            inner = waited.0;
         }
     }
 }
