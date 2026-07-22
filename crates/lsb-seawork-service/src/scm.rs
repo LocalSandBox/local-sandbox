@@ -312,10 +312,23 @@ fn verify_protected_configuration(paths: &ServicePaths) -> Result<()> {
     for directory in [
         paths.root.as_path(),
         paths.config.parent().context("config path has no parent")?,
+        paths
+            .pending_update
+            .parent()
+            .context("pending update path has no parent")?,
+        paths.updates.root.as_path(),
     ] {
         lsb_seawork_update::verify_windows_directory_protection(directory)?;
     }
-    for file in [&paths.config, &paths.product_ca_bundle] {
+    for file in [
+        &paths.config,
+        &paths.product_ca_bundle,
+        &paths.pending_update,
+        &paths.updates.committed,
+        &paths.updates.status,
+        &paths.updates.failed_target,
+        &paths.updates.current_transaction,
+    ] {
         match std::fs::symlink_metadata(file) {
             Ok(_) => lsb_seawork_update::verify_windows_file_protection(file)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
