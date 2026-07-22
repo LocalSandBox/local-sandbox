@@ -1,0 +1,23 @@
+bindings/nodejs/index.d.ts
+  s_f467a00f62f93c::t_ac6ef249adba6a 171-173,442-450,472-477,529-542
+  s_f467a00f62f93c::t_1c39ec9b8177fd 543
+bindings/nodejs/test/api-shape.spec.ts
+  s_f467a00f62f93c::t_00fe00aebfd4b0 83,101,114
+  s_f467a00f62f93c::t_ac6ef249adba6a 84-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "804317352a612c1675afd0db4500c4db87edbdee",
+  "prompts": {},
+  "sessions": {
+    "s_f467a00f62f93c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f88c5-3e3b-7723-a390-0d43291a7df3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
