@@ -1178,3 +1178,43 @@ and `controlled_update_exercised: false`. Completing those two fields requires
 SeaWork's signed helper installation and a second immutable signed service release; it
 must use the reduced acceptance profile already recorded above rather than the original
 exhaustive failure matrix.
+
+## 2026-07-22 — Signed updater release smoke
+
+Status: **signed LocalSandbox updater artifact verified; immutable paired release and
+SeaWork SCM installation remain open**
+
+- LocalSandbox source commit: `1710881f498982c3e619b742bb34f911a87a56ca`.
+- Windows run: `20260722t120241z-68950-6443b7110b5c`; synthetic snapshot:
+  `6443b7110b5cb73a02076b4a48765f288ff22c99`.
+- The Windows laptop built `localsandbox-seawork-updater.exe` for
+  `x86_64-pc-windows-msvc` in the release profile with static CRT, applied a trusted
+  timestamped company signature, and reverified the exact publisher certificate.
+- Publisher subject: `CN=SeaWork, O=Sea`; publisher certificate SHA-256:
+  `a036eabbb783a31846eb340a725717d741fd330d9c78c2e3bd35dc1c59dc40d7`.
+- Signed helper PE SHA-256:
+  `3eab0b5ef47f7d606882a72c14c19581a56e1c46d0ffe697b916edb02f8f31bb`.
+  Its version mode returned `0.5.0-rc.1`, service identity
+  `LocalSandboxSeaWorkUpdater`, and helper protocol 1.1. Its non-installed self-check
+  failed closed with `INSTALL_INVALID`.
+- Deterministic updater ZIP SHA-256:
+  `15632a75d935e9963041b45f44ac2b2891bc0b86e4812b99e0c22ae93e6d6f24`;
+  manifest SHA-256:
+  `a24a713a4035636a1987f1599f650b52253edddf3a33b2481dcf2685e8ee2aa6`;
+  `SHA256SUMS` SHA-256:
+  `5817339f8e02b18d8f697dd22efd0954089963ef160eb299036a5865d71329ae`.
+- The fetched two-entry ZIP contains only the signed helper and
+  `manifests/updater.json`. The external schema-2 manifest binds the exact PE digest,
+  publisher, protocol, SCM identity/command/DACL/start/recovery policy, and all
+  `SHA256SUMS` entries revalidated locally.
+- Evidence JSON SHA-256:
+  `db4beb7a5874f18c23d7566ee128258ad18871b01086e16d24674388894ad50b`;
+  fetch-manifest SHA-256:
+  `2f03e429223c23445b83913b7612b6b64b7d6d7950df6d12027e171ad31a9014`.
+
+This artifact is hardware/signing/package evidence, not authorization for SeaWork to
+pin it by itself. It has not been published in an immutable release with the matching
+service archive, and the smoke intentionally records `scm_installation_exercised:
+false`. SeaWork must consume a same-version immutable service/updater pair, install and
+self-check this helper shape under the generated protected policy, and then run the
+reduced controlled-activation acceptance profile.
