@@ -28,7 +28,7 @@ lsb-proxy = { version = "0.5.0-rc.1", path = "crates/lsb-proxy" }
 lsb-sdk = { version = "0.5.0-rc.1", path = "crates/lsb-sdk" }
 lsb-service-client = { version = "0.5.0-rc.1", path = "crates/lsb-service-client" }
 lsb-service-proto = { version = "0.5.0-rc.1", path = "crates/lsb-service-proto" }
-lsb-seawork-update = { version = "0.5.0-rc.1", path = "crates/lsb-seawork-update" }
+lsb-seawork-update = { version = "0.5.0-rc.1", path = "crates/lsb-seawork-update", default-features = false }
 lsb-seawork-updater = { version = "0.5.0-rc.1", path = "crates/lsb-seawork-updater" }
 lsb-store = { version = "0.5.0-rc.1", path = "crates/lsb-store" }
 lsb-vm = { version = "0.5.0-rc.1", path = "crates/lsb-vm" }

@@ -1,16 +1,21 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, Read, Write};
+use std::io::{BufReader, Read};
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Context, Result};
 use lsb_seawork_update::{
-    create_json, extract_zip_archive, load_json, remove_file_if_exists, verify_bundle_root,
+    cached_candidate, create_json, extract_zip_archive, failed_target_decision, load_json,
+    parse_retry_after_utc, remove_file_if_exists, retry_delay, stream_exact_asset,
+    validate_download_url, validate_helper_version_output, verify_bundle_root,
     verify_windows_file_publisher, verify_windows_package, write_json_atomic,
-    CommittedStateEnvelope, FailedTargetState, HelperProtocol, PackagePolicy, ReleaseCandidate,
-    ReleaseChannel, ReleaseSelector, TransactionEnvelope, TransactionPhase, UpdateTransaction,
+    CommittedStateEnvelope, FailedTargetDecision, FailedTargetState, HelperProtocol, PackagePolicy,
+    ReleaseCandidate, ReleaseChannel, ReleaseSelector, TransactionEnvelope, TransactionPhase,
+    UpdateTransaction,
 };
 use lsb_service_proto::{UpdateCheckCategory, UpdatePhase, UpdateRetryState, SUPPORTED};
 use serde::{Deserialize, Serialize};
@@ -32,7 +37,8 @@ const HELPER_SERVICE_NAME: &str = "LocalSandboxSeaWorkUpdater";
 const HELPER_EXE: &str = "localsandbox-seawork-updater.exe";
 const MAIN_EXE: &str = "localsandbox-seawork-service.exe";
 const STATUS_SCHEMA: u32 = 1;
-const FAILED_TARGET_COOLDOWN: Duration = Duration::from_secs(24 * 60 * 60);
+const REQUIRED_HELPER_PROTOCOL: HelperProtocol = HelperProtocol { major: 1, minor: 1 };
+const HELPER_VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub enum StartupRecovery {
     None,
@@ -401,7 +407,7 @@ impl Coordinator {
                 target_event_message_path: path_string(&target_image)?,
                 staged_root: path_string(&staged_root)?,
                 final_version_root: path_string(&final_root)?,
-                helper_protocol: HelperProtocol { major: 1, minor: 1 },
+                helper_protocol: REQUIRED_HELPER_PROTOCOL,
                 attempt_count: 1,
                 last_error_category: None,
             })?;
@@ -442,20 +448,12 @@ impl Coordinator {
             .map_err(|_| anyhow::anyhow!("coordinator status poisoned"))?
             .selected
             .clone();
-        let Some(candidate) = candidate else {
-            return Ok(None);
-        };
-        candidate.validate()?;
-        let candidate_version = semver::Version::parse(&candidate.version)?;
-        let baseline = semver::Version::parse(&committed.committed.current.version)?.max(
-            semver::Version::parse(&committed.committed.highest_committed_version)?,
-        );
-        if candidate_version <= baseline
-            || (self.channel == ReleaseChannel::Stable && candidate.prerelease)
-        {
-            return Ok(None);
-        }
-        Ok(Some(candidate))
+        cached_candidate(
+            candidate.as_ref(),
+            self.channel,
+            &committed.committed.current.version,
+            &committed.committed.highest_committed_version,
+        )
     }
 
     fn set_phase(&self, phase: UpdatePhase, selected: Option<ReleaseCandidate>) -> Result<()> {
@@ -552,29 +550,13 @@ impl Coordinator {
             Err(error) if is_not_found(&error) => return Ok(None),
             Err(error) => return Err(error).context("load protected failed-target state"),
         };
-        failed.validate()?;
-        if semver::Version::parse(&candidate.version)?
-            > semver::Version::parse(&failed.target_version)?
-            || candidate.archive_sha256 != failed.archive_sha256
-        {
-            return Ok(None);
+        match failed_target_decision(candidate, &failed, time::OffsetDateTime::now_utc())? {
+            FailedTargetDecision::Allowed => Ok(None),
+            FailedTargetDecision::Cooldown { retry_after_utc } => {
+                Ok(Some((Some(retry_after_utc), false)))
+            }
+            FailedTargetDecision::Suppressed => Ok(Some((None, true))),
         }
-        if failed.suppressed {
-            return Ok(Some((None, true)));
-        }
-        let rollback = time::OffsetDateTime::parse(
-            &failed.last_rollback_utc,
-            &time::format_description::well_known::Rfc3339,
-        )?;
-        let retry_after =
-            rollback + time::Duration::seconds(FAILED_TARGET_COOLDOWN.as_secs() as i64);
-        if retry_after > time::OffsetDateTime::now_utc() {
-            return Ok(Some((
-                Some(retry_after.format(&time::format_description::well_known::Rfc3339)?),
-                false,
-            )));
-        }
-        Ok(None)
     }
 
     fn record_suppressed(
@@ -807,31 +789,13 @@ impl GithubHttp {
             .open(&partial)?;
         let result = (|| {
             let mut reader = BufReader::new(response.into_body().into_reader());
-            let mut hasher = Sha256::new();
-            let mut count = 0u64;
-            let mut buffer = vec![0u8; 64 * 1024];
-            loop {
-                if stop.load(Ordering::Acquire) {
-                    bail!("service shutdown cancelled update download");
-                }
-                let read = reader.read(&mut buffer)?;
-                if read == 0 {
-                    break;
-                }
-                count = count
-                    .checked_add(read as u64)
-                    .context("download size overflow")?;
-                if count > candidate.asset_size {
-                    bail!("download exceeds immutable declared asset size");
-                }
-                output.write_all(&buffer[..read])?;
-                hasher.update(&buffer[..read]);
-            }
-            if count != candidate.asset_size
-                || format!("{:x}", hasher.finalize()) != candidate.archive_sha256
-            {
-                bail!("download size or digest differs from immutable release metadata");
-            }
+            stream_exact_asset(
+                &mut reader,
+                &mut output,
+                candidate.asset_size,
+                &candidate.archive_sha256,
+                || stop.load(Ordering::Acquire),
+            )?;
             output.sync_all()?;
             drop(output);
             fs::rename(&partial, &final_path)?;
@@ -853,52 +817,18 @@ fn header(response: &http::Response<ureq::Body>, name: &str) -> Option<String> {
 }
 
 fn retry_after_utc(response: &http::Response<ureq::Body>) -> Option<String> {
-    let now = time::OffsetDateTime::now_utc();
-    let retry = header(response, "retry-after").and_then(|value| {
-        value
-            .parse::<u64>()
-            .ok()
-            .and_then(|seconds| i64::try_from(seconds.min(24 * 60 * 60)).ok())
-            .map(|seconds| now + time::Duration::seconds(seconds))
-            .or_else(|| {
-                time::OffsetDateTime::parse(&value, &time::format_description::well_known::Rfc2822)
-                    .ok()
-            })
-    });
-    let reset = header(response, "x-ratelimit-reset")
-        .and_then(|value| value.parse::<i64>().ok())
-        .and_then(|seconds| time::OffsetDateTime::from_unix_timestamp(seconds).ok());
-    retry
-        .or(reset)
-        .filter(|deadline| *deadline > now)
-        .and_then(|deadline| {
-            deadline
-                .format(&time::format_description::well_known::Rfc3339)
-                .ok()
-        })
-}
-
-fn validate_download_url(value: &str, initial: bool) -> Result<()> {
-    let url = url::Url::parse(value)?;
-    let allowed = [
-        "github.com",
-        "objects.githubusercontent.com",
-        "github-releases.githubusercontent.com",
-        "release-assets.githubusercontent.com",
-    ];
-    if url.scheme() != "https"
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.host_str().is_none_or(|host| !allowed.contains(&host))
-        || (initial && url.host_str() != Some("github.com"))
-    {
-        bail!("release asset URL violates compiled redirect policy");
-    }
-    Ok(())
+    let retry_after = header(response, "retry-after");
+    let reset = header(response, "x-ratelimit-reset");
+    parse_retry_after_utc(
+        retry_after.as_deref(),
+        reset.as_deref(),
+        time::OffsetDateTime::now_utc(),
+    )
 }
 
 fn verify_helper(path: &Path) -> Result<()> {
     verify_windows_file_publisher(path, &compiled_publishers())?;
+    verify_helper_protocol(path)?;
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     let service = manager.open_service(HELPER_SERVICE_NAME, ServiceAccess::QUERY_CONFIG)?;
     let config = service.query_config()?;
@@ -913,6 +843,44 @@ fn verify_helper(path: &Path) -> Result<()> {
     {
         bail!("updater SCM configuration differs from compiled product policy");
     }
+    Ok(())
+}
+
+fn verify_helper_protocol(path: &Path) -> Result<()> {
+    let mut child = Command::new(path)
+        .args(["--version", "--json"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+        .spawn()
+        .context("start updater helper protocol query")?;
+    let deadline = Instant::now() + HELPER_VERSION_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .context("poll updater helper protocol query")?
+        {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("helper protocol query exceeded its fixed timeout");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    if !status.success() {
+        bail!("helper protocol query failed with status {status}");
+    }
+    let output = child
+        .wait_with_output()
+        .context("collect updater helper protocol query")?;
+    validate_helper_version_output(
+        &output.stdout,
+        HELPER_SERVICE_NAME,
+        REQUIRED_HELPER_PROTOCOL,
+    )?;
     Ok(())
 }
 
@@ -1102,11 +1070,6 @@ fn classify_error(error: &anyhow::Error) -> UpdateCheckCategory {
     }
 }
 
-fn retry_delay(attempt: u8) -> Duration {
-    let exponent = attempt.saturating_sub(1).min(6);
-    Duration::from_secs(5 * 60 * (1u64 << exponent))
-}
-
 fn machine_jitter(base: Duration, range_seconds: u64) -> Result<Duration> {
     let machine = machine_guid()?;
     let digest = Sha256::digest(machine.as_bytes());
@@ -1155,34 +1118,6 @@ fn machine_guid() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn redirect_policy_is_fixed_https_and_host_bounded() {
-        assert!(validate_download_url(
-            "https://github.com/LocalSandBox/local-sandbox/releases/download/v1/a.zip",
-            true
-        )
-        .is_ok());
-        assert!(validate_download_url(
-            "https://release-assets.githubusercontent.com/github-production-release-asset/x",
-            false
-        )
-        .is_ok());
-        for url in [
-            "http://github.com/a",
-            "https://evil.example/a",
-            "https://user@github.com/a",
-        ] {
-            assert!(validate_download_url(url, false).is_err());
-        }
-    }
-
-    #[test]
-    fn retry_is_exponential_and_bounded() {
-        assert_eq!(retry_delay(1), Duration::from_secs(5 * 60));
-        assert_eq!(retry_delay(2), Duration::from_secs(10 * 60));
-        assert_eq!(retry_delay(10), Duration::from_secs(320 * 60));
-    }
 
     #[test]
     fn coordinator_status_rejects_unbounded_etag() {

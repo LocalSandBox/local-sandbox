@@ -37,7 +37,7 @@ impl ReleaseCandidate {
         let tag = format!("v{version}");
         let expected_name = format!("lsb-seawork-service-v{version}-windows-x86_64.zip");
         if self.release_id == 0
-            || self.prerelease != !version.pre.is_empty()
+            || self.prerelease == version.pre.is_empty()
             || self.asset_name != expected_name
             || self.asset_size == 0
             || self.asset_size > MAX_ARCHIVE_BYTES
@@ -156,7 +156,7 @@ fn candidate_from_release(release: GithubRelease) -> Result<Option<(Version, Rel
         Ok(version) => version,
         Err(_) => return Ok(None),
     };
-    if release.tag_name != format!("v{version}") || release.prerelease != !version.pre.is_empty() {
+    if release.tag_name != format!("v{version}") || release.prerelease == version.pre.is_empty() {
         return Ok(None);
     }
     let expected_name = format!("lsb-seawork-service-v{version}-windows-x86_64.zip");

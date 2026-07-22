@@ -95,7 +95,7 @@ fn extract_owned_zip_archive(archive_path: &Path, destination: &Path) -> Result<
 }
 
 fn plan_entries<R: Read + std::io::Seek>(archive: &mut ZipArchive<R>) -> Result<Vec<EntryPlan>> {
-    if archive.len() == 0 || archive.len() > MAX_ARCHIVE_ENTRIES {
+    if archive.is_empty() || archive.len() > MAX_ARCHIVE_ENTRIES {
         bail!("ZIP entry count is outside the compiled limit");
     }
     let mut plans = Vec::with_capacity(archive.len());
