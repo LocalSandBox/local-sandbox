@@ -1,0 +1,19 @@
+crates/lsb-seawork-service/src/logging.rs
+  s_d92cdce887f5bb::t_85c1db8f8cad71 148,156-160,177-182
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "91a9035713beaf1e5d7afec2417287894a5801a0",
+  "prompts": {},
+  "sessions": {
+    "s_d92cdce887f5bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8394-92d0-7cb1-8d01-69ea3e68cf62",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
