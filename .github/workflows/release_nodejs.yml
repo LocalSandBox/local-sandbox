@@ -18,6 +18,27 @@ on:
     secrets:
       NPM_TOKEN:
         required: true
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Validated release commit"
+        required: true
+        type: string
+      version:
+        description: "Release version without the v prefix"
+        required: true
+        type: string
+      npm-tag:
+        description: "npm distribution tag"
+        required: true
+        type: choice
+        options:
+          - next
+          - latest
+      source_run_id:
+        description: "Workflow run containing the validated native artifacts"
+        required: true
+        type: string
 
 env:
   COREPACK_INTEGRITY_KEYS: 0
@@ -27,6 +48,7 @@ jobs:
     name: Publish npm packages
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       id-token: write
     defaults:
@@ -46,10 +68,20 @@ jobs:
       - run: yarn install --immutable
 
       - name: Download native artifacts
+        if: inputs.source_run_id == ''
         uses: actions/download-artifact@v7
         with:
           pattern: bindings-nodejs-*
           path: bindings/nodejs/artifacts
+
+      - name: Download native artifacts from source run
+        if: inputs.source_run_id != ''
+        uses: actions/download-artifact@v7
+        with:
+          pattern: bindings-nodejs-*
+          path: bindings/nodejs/artifacts
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run_id }}
 
       - name: Move native artifacts
         run: yarn artifacts
