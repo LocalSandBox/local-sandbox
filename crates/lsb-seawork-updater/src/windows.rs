@@ -128,9 +128,27 @@ fn run_recovery(stop_rx: &std::sync::mpsc::Receiver<()>) -> Result<()> {
         match protected_load_json(&backend.paths.current_transaction) {
             Ok(transaction) => transaction,
             Err(error) if is_not_found(&error) => return Ok(()),
-            Err(error) => return Err(error).context("load current protected update transaction"),
+            Err(error) => {
+                let _ = report_update_event(
+                    12,
+                    "update_recovery_quarantine",
+                    "UPDATE_JOURNAL_UNREADABLE",
+                    env!("CARGO_PKG_VERSION"),
+                    "",
+                );
+                return Err(error).context("load current protected update transaction");
+            }
         };
-    transaction.validate()?;
+    if let Err(error) = transaction.validate() {
+        let _ = report_update_event(
+            12,
+            "update_recovery_quarantine",
+            "UPDATE_JOURNAL_INVALID",
+            env!("CARGO_PKG_VERSION"),
+            "",
+        );
+        return Err(error).context("validate current protected update transaction");
+    }
     let mut store = DiskStore {
         current: backend.paths.current_transaction.clone(),
     };
