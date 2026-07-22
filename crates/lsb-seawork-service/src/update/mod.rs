@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use lsb_seawork_update::{
     bounded_retry_delay, cached_candidate, classify_release_response, create_json,
-    extract_zip_archive, failed_target_decision, load_json, parse_retry_after_utc,
-    remove_file_if_exists, retry_delay, stream_exact_asset, validate_download_url,
-    validate_helper_install_output, validate_release_page, verify_bundle_root,
-    verify_windows_directory_protection, verify_windows_file_protection,
+    download_cache_digest, extract_zip_archive, failed_target_decision, is_update_transaction_id,
+    load_json, parse_retry_after_utc, remove_file_if_exists, retry_delay, stream_exact_asset,
+    validate_download_url, validate_helper_install_output, validate_release_page,
+    verify_bundle_root, verify_windows_directory_protection, verify_windows_file_protection,
     verify_windows_file_publisher, verify_windows_package, write_json_atomic,
     CommittedStateEnvelope, FailedTargetDecision, FailedTargetState, HelperProtocol, PackagePolicy,
     ReleaseCandidate, ReleaseChannel, ReleaseResponseStatus, ReleaseSelector, TransactionEnvelope,
@@ -331,6 +331,7 @@ impl Coordinator {
         if self.stop.load(Ordering::Acquire) {
             bail!("service shutdown cancelled update check");
         }
+        prune_staging_root(&self.paths.updates.staging)?;
         self.set_phase(UpdatePhase::UpdateChecking, None)?;
         let committed: CommittedStateEnvelope = protected_load_json(&self.paths.updates.committed)
             .context("automatic activation requires valid committed state")?;
@@ -855,6 +856,7 @@ impl GithubHttp {
         downloads: &Path,
         stop: &AtomicBool,
     ) -> Result<PathBuf> {
+        prune_download_cache(downloads, &candidate.archive_sha256)?;
         let final_path = downloads.join(format!("{}.zip", candidate.archive_sha256));
         match fs::symlink_metadata(&final_path) {
             Ok(metadata) if regular_non_reparse(&metadata) => {
@@ -942,6 +944,59 @@ impl GithubHttp {
         }
         result
     }
+}
+
+fn prune_download_cache(downloads: &Path, retained_digest: &str) -> Result<()> {
+    let mut removed = false;
+    for entry in fs::read_dir(downloads)? {
+        let entry = entry?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("download cache entry name is not Unicode"))?;
+        let digest =
+            download_cache_digest(&name).context("download cache contains an unexpected entry")?;
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if !regular_non_reparse(&metadata) {
+            bail!("download cache entry is not a regular non-reparse file");
+        }
+        if digest != retained_digest {
+            fs::remove_file(entry.path())?;
+            removed = true;
+        }
+    }
+    if removed {
+        sync_directory_metadata(downloads)?;
+    }
+    Ok(())
+}
+
+fn prune_staging_root(staging: &Path) -> Result<()> {
+    let mut removed = false;
+    for entry in fs::read_dir(staging)? {
+        let entry = entry?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("update staging entry name is not Unicode"))?;
+        if !is_update_transaction_id(&name) {
+            bail!("update staging contains an unexpected entry");
+        }
+        let metadata = fs::symlink_metadata(entry.path())?;
+        use std::os::windows::fs::MetadataExt;
+        if !metadata.is_dir()
+            || metadata.file_type().is_symlink()
+            || metadata.file_attributes() & 0x400 != 0
+        {
+            bail!("update staging entry is not a regular non-reparse directory");
+        }
+        fs::remove_dir_all(entry.path())?;
+        removed = true;
+    }
+    if removed {
+        sync_directory_metadata(staging)?;
+    }
+    Ok(())
 }
 
 fn header(response: &http::Response<ureq::Body>, name: &str) -> Option<String> {

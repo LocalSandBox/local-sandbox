@@ -16,11 +16,11 @@ pub use journal::{HelperProtocol, TransactionEnvelope, TransactionPhase, UpdateT
 pub use package::{verify_bundle_root, PackagePolicy, PackageVerification, PublisherIdentity};
 #[cfg(feature = "coordinator-policy")]
 pub use policy::{
-    bounded_retry_delay, cached_candidate, classify_release_response, failed_target_decision,
-    parse_retry_after_utc, retry_delay, stream_exact_asset, validate_download_url,
-    validate_helper_install_output, validate_helper_version_output, validate_release_page,
-    FailedTargetDecision, HelperInstallOutput, HelperVersionOutput, ReleasePageProgress,
-    ReleaseResponseStatus,
+    bounded_retry_delay, cached_candidate, classify_release_response, download_cache_digest,
+    failed_target_decision, parse_retry_after_utc, retry_delay, stream_exact_asset,
+    validate_download_url, validate_helper_install_output, validate_helper_version_output,
+    validate_release_page, FailedTargetDecision, HelperInstallOutput, HelperVersionOutput,
+    ReleasePageProgress, ReleaseResponseStatus,
 };
 pub use state::{archive_file, create_json, load_json, remove_file_if_exists, write_json_atomic};
 #[cfg(windows)]
@@ -31,6 +31,10 @@ pub use windows_trust::{
 
 pub const UPDATE_STATE_SCHEMA_VERSION: u32 = 1;
 
+pub fn is_update_transaction_id(value: &str) -> bool {
+    is_lower_hex(value, 32)
+}
+
 fn is_lower_hex(value: &str, length: usize) -> bool {
     value.len() == length
         && value
@@ -39,7 +43,7 @@ fn is_lower_hex(value: &str, length: usize) -> bool {
 }
 
 fn validate_id(value: &str) -> anyhow::Result<()> {
-    if !is_lower_hex(value, 32) {
+    if !is_update_transaction_id(value) {
         anyhow::bail!("identifier must be 32 lowercase hexadecimal characters");
     }
     Ok(())
