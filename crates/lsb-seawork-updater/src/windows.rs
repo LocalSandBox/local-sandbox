@@ -277,6 +277,7 @@ impl WindowsBackend {
         &self,
         root: &Path,
         identity: &lsb_service_proto::BundleIdentity,
+        helper_protocol: lsb_seawork_update::HelperProtocol,
     ) -> Result<()> {
         verify_windows_directory_protection(root)?;
         let policy = PackagePolicy {
@@ -292,6 +293,11 @@ impl WindowsBackend {
             pipe_sddl: PIPE_SDDL,
         };
         let report = verify_bundle_root(root, &policy)?;
+        if report.required_helper_protocol.major != helper_protocol.major
+            || report.required_helper_protocol.minor > helper_protocol.minor
+        {
+            bail!("verified package requires an incompatible updater helper protocol");
+        }
         let observed = report.bundle_identity(&identity.archive_sha256)?;
         if observed != *identity {
             bail!("verified package identity differs from the protected transaction");
@@ -443,7 +449,11 @@ impl UpdateBackend for WindowsBackend {
         if committed.committed.current != update.old_bundle_identity {
             bail!("transaction old identity differs from committed anti-rollback state");
         }
-        self.verify_package_identity(&old_root, &update.old_bundle_identity)?;
+        self.verify_package_identity(
+            &old_root,
+            &update.old_bundle_identity,
+            update.helper_protocol,
+        )?;
         self.require_main_command(&update.old_image_path)?;
         require_event_message_path(&update.old_event_message_path)?;
         let runtime = self.connect_runtime()?;
@@ -475,15 +485,31 @@ impl UpdateBackend for WindowsBackend {
             .versions
             .join(format!(".staging-{}", update.transaction_id));
         remove_incomplete_final_staging(&self.paths.versions, &temporary, &update.transaction_id)?;
-        self.verify_package_identity(staged, &update.target_bundle_identity)?;
+        self.verify_package_identity(
+            staged,
+            &update.target_bundle_identity,
+            update.helper_protocol,
+        )?;
         if final_root.exists() {
-            return self.verify_package_identity(final_root, &update.target_bundle_identity);
+            return self.verify_package_identity(
+                final_root,
+                &update.target_bundle_identity,
+                update.helper_protocol,
+            );
         }
         copy_new_tree(staged, &temporary)?;
         let result = (|| {
-            self.verify_package_identity(&temporary, &update.target_bundle_identity)?;
+            self.verify_package_identity(
+                &temporary,
+                &update.target_bundle_identity,
+                update.helper_protocol,
+            )?;
             fs::rename(&temporary, final_root).context("atomically place verified version root")?;
-            self.verify_package_identity(final_root, &update.target_bundle_identity)
+            self.verify_package_identity(
+                final_root,
+                &update.target_bundle_identity,
+                update.helper_protocol,
+            )
         })();
         if result.is_err() {
             let _ = fs::remove_dir_all(&temporary);
@@ -499,6 +525,11 @@ impl UpdateBackend for WindowsBackend {
 
     fn change_to_target(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
         let update = &transaction.transaction;
+        self.verify_package_identity(
+            Path::new(&update.final_version_root),
+            &update.target_bundle_identity,
+            update.helper_protocol,
+        )?;
         change_main_configuration(
             &update.old_image_path,
             &update.target_image_path,
@@ -508,7 +539,13 @@ impl UpdateBackend for WindowsBackend {
     }
 
     fn start_target(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
-        self.require_main_command(&transaction.transaction.target_image_path)?;
+        let update = &transaction.transaction;
+        self.verify_package_identity(
+            Path::new(&update.final_version_root),
+            &update.target_bundle_identity,
+            update.helper_protocol,
+        )?;
+        self.require_main_command(&update.target_image_path)?;
         let service = self.main_service(ServiceAccess::QUERY_STATUS | ServiceAccess::START)?;
         if service.query_status()?.current_state == ServiceState::Stopped {
             service.start::<&OsStr>(&[])?;
@@ -518,12 +555,19 @@ impl UpdateBackend for WindowsBackend {
 
     fn health_and_commit_target(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
         let update = &transaction.transaction;
+        self.verify_package_identity(
+            Path::new(&update.final_version_root),
+            &update.target_bundle_identity,
+            update.helper_protocol,
+        )?;
+        self.require_main_command(&update.target_image_path)?;
         let runtime = self.connect_runtime()?;
         let result = runtime.block_on(async {
             let client = lsb_service_client::connect(lsb_service_client::ConnectOptions {
                 timeout: CONNECT_TIMEOUT,
             })
             .await?;
+            let mut committed_recovery = false;
             for observation in 0..2 {
                 let info = client.get_service_info().await?;
                 let health = client.health_check().await?;
@@ -536,9 +580,20 @@ impl UpdateBackend for WindowsBackend {
                     && status.phase == UpdatePhase::UpdateIdle
                     && status.target.is_none()
                 {
-                    return Ok::<_, anyhow::Error>(());
-                }
-                if info.service_version != update.target_bundle_identity.version
+                    let committed: CommittedStateEnvelope =
+                        protected_load_json(&self.paths.committed)?;
+                    committed.validate()?;
+                    if committed.committed.current != update.target_bundle_identity
+                        && committed.committed.current != update.old_bundle_identity
+                    {
+                        anyhow::bail!(
+                            "READY target contradicts protected committed update identities"
+                        );
+                    }
+                    committed_recovery = true;
+                } else if committed_recovery {
+                    anyhow::bail!("target committed recovery observations are inconsistent");
+                } else if info.service_version != update.target_bundle_identity.version
                     || info.bundle_version != update.target_bundle_identity.version
                     || health.admissions_open
                     || health.bundle != HealthState::Ready
@@ -553,9 +608,21 @@ impl UpdateBackend for WindowsBackend {
                     tokio::time::sleep(Duration::from_secs(2)).await;
                 }
             }
+            if committed_recovery {
+                return Ok::<_, anyhow::Error>(());
+            }
             client.commit_update(update.update_id.clone()).await?;
+            let info = client.get_service_info().await?;
             let health = client.health_check().await?;
-            if !health.ready || !health.admissions_open || health.stable_code != "READY" {
+            let status = client.get_update_status().await?;
+            if info.service_version != update.target_bundle_identity.version
+                || info.bundle_version != update.target_bundle_identity.version
+                || !health.ready
+                || !health.admissions_open
+                || health.stable_code != "READY"
+                || status.phase != UpdatePhase::UpdateIdle
+                || status.target.is_some()
+            {
                 anyhow::bail!("target failed post-commit READY health");
             }
             Ok::<_, anyhow::Error>(())
@@ -631,7 +698,11 @@ impl UpdateBackend for WindowsBackend {
             &update.old_image_path,
             &update.old_bundle_identity.version,
         )?;
-        self.verify_package_identity(&old_root, &update.old_bundle_identity)?;
+        self.verify_package_identity(
+            &old_root,
+            &update.old_bundle_identity,
+            update.helper_protocol,
+        )?;
         self.require_main_command(&update.old_image_path)?;
         let service = self.main_service(ServiceAccess::QUERY_STATUS | ServiceAccess::START)?;
         if service.query_status()?.current_state == ServiceState::Stopped {
