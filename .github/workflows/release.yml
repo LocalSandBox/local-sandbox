@@ -703,7 +703,8 @@ jobs:
               -not [IO.Path]::IsPathFullyQualified($env:SEAWORK_WINDOWS_EVIDENCE_ROOT)) {
             throw 'SEAWORK_WINDOWS_EVIDENCE_ROOT must be a protected absolute runner path'
           }
-          $payload = @(Get-ChildItem -LiteralPath 'target/release-candidate' -File -Filter 'lsb-seawork-service-v*-windows-x86_64.zip')
+          $candidateOut = Join-Path 'target/release-candidate' 'out'
+          $payload = @(Get-ChildItem -LiteralPath $candidateOut -File -Filter 'lsb-seawork-service-v*-windows-x86_64.zip')
           if ($payload.Count -ne 1) {
             throw 'expected exactly one signed SeaWork service payload archive'
           }
