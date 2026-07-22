@@ -2,32 +2,46 @@ use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
-use std::os::windows::io::OwnedHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use lsb_seawork_update::{
-    archive_file, load_json, verify_bundle_root, verify_windows_file_publisher,
-    verify_windows_package, write_json_atomic, CommittedState, CommittedStateEnvelope,
-    FailedTargetState, PackagePolicy, TransactionEnvelope,
+    archive_file, load_json, verify_bundle_root, verify_windows_directory_protection,
+    verify_windows_file_protection, verify_windows_file_publisher, verify_windows_package,
+    write_json_atomic, CommittedState, CommittedStateEnvelope, FailedTargetState, PackagePolicy,
+    TransactionEnvelope,
 };
 use lsb_service_proto::{HealthState, UpdatePhase, PIPE_NAME, SERVICE_NAME, SUPPORTED};
 use windows_service::define_windows_service;
 use windows_service::service::{
-    ServiceAccess, ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState,
-    ServiceStatus, ServiceType,
+    ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceControlAccept,
+    ServiceExitCode, ServiceFailureActions, ServiceFailureResetPeriod, ServiceSidType,
+    ServiceStartType, ServiceState, ServiceStatus, ServiceType,
 };
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 use windows_service::service_dispatcher;
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0,
+    CloseHandle, LocalFree, GENERIC_READ, GENERIC_WRITE, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0,
+};
+use windows_sys::Win32::Security::Authorization::{
+    ConvertSecurityDescriptorToStringSecurityDescriptorW,
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+};
+use windows_sys::Win32::Security::{
+    DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+    PSECURITY_DESCRIPTOR,
 };
 use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, SYNCHRONIZE};
-use windows_sys::Win32::System::Services::{ChangeServiceConfigW, SERVICE_NO_CHANGE};
-use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
+use windows_sys::Win32::System::Services::{
+    ChangeServiceConfigW, QueryServiceObjectSecurity, SERVICE_NO_CHANGE,
+};
+use windows_sys::Win32::System::Threading::{
+    CreateMutexW, OpenProcess, ReleaseMutex, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+};
 
 use crate::recovery::{recover_transaction, RecoveryOutcome, TransactionStore, UpdateBackend};
 use crate::relative::{self, Kind};
@@ -42,7 +56,15 @@ const EVENT_MESSAGE_VALUE: &str = "EventMessageFile";
 const PIPE_SDDL: &str =
     "O:SYG:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;IU)(A;;0x00000002;;;IU)S:(ML;;NW;;;ME)";
 const STATE_TIMEOUT: Duration = Duration::from_secs(120);
+const MAIN_STOP_TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const UPDATER_SERVICE_SDDL: &str = "O:SYG:SYD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00000005;;;IU)";
+const FAILURE_RESET: Duration = Duration::from_secs(86_400);
+const FAILURE_DELAYS: [Duration; 3] = [
+    Duration::from_secs(5),
+    Duration::from_secs(30),
+    Duration::from_secs(120),
+];
 
 define_windows_service!(ffi_service_main, service_main);
 
@@ -53,6 +75,7 @@ pub fn dispatch() -> Result<()> {
 
 pub fn verify_install() -> Result<()> {
     let paths = FixedPaths::discover()?;
+    verify_fixed_directories(&paths)?;
     require_exact_current_executable(&paths.updater_executable)?;
     verify_updater_service_config(&paths.updater_executable)?;
     verify_windows_file_publisher(&paths.updater_executable, &compiled_publishers())?;
@@ -92,6 +115,7 @@ fn run_service() -> Result<()> {
 
 fn run_recovery(stop_rx: &std::sync::mpsc::Receiver<()>) -> Result<()> {
     let paths = FixedPaths::discover()?;
+    verify_fixed_directories(&paths)?;
     require_exact_current_executable(&paths.updater_executable)?;
     verify_updater_service_config(&paths.updater_executable)?;
     verify_windows_file_publisher(&paths.updater_executable, &compiled_publishers())?;
@@ -99,16 +123,17 @@ fn run_recovery(stop_rx: &std::sync::mpsc::Receiver<()>) -> Result<()> {
     if stop_rx.try_recv().is_ok() {
         return Ok(());
     }
-    let mut transaction: TransactionEnvelope = match load_json(&paths.current_transaction) {
-        Ok(transaction) => transaction,
-        Err(error) if is_not_found(&error) => return Ok(()),
-        Err(error) => return Err(error).context("load current protected update transaction"),
-    };
+    let mut backend = WindowsBackend::new(paths)?;
+    let mut transaction: TransactionEnvelope =
+        match protected_load_json(&backend.paths.current_transaction) {
+            Ok(transaction) => transaction,
+            Err(error) if is_not_found(&error) => return Ok(()),
+            Err(error) => return Err(error).context("load current protected update transaction"),
+        };
     transaction.validate()?;
     let mut store = DiskStore {
-        current: paths.current_transaction.clone(),
+        current: backend.paths.current_transaction.clone(),
     };
-    let mut backend = WindowsBackend::new(paths)?;
     let outcome = recover_transaction(&mut transaction, &mut store, &mut backend)?;
     match outcome {
         RecoveryOutcome::Committed | RecoveryOutcome::RolledBack => {
@@ -131,6 +156,11 @@ fn is_not_found(error: &anyhow::Error) -> bool {
     })
 }
 
+fn protected_load_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
+    verify_windows_file_protection(path)?;
+    load_json(path)
+}
+
 struct DiskStore {
     current: PathBuf,
 }
@@ -148,14 +178,12 @@ struct WindowsBackend {
 
 impl WindowsBackend {
     fn new(paths: FixedPaths) -> Result<Self> {
-        require_regular_directory(&paths.transactions)?;
-        require_regular_directory(&paths.history)?;
-        require_regular_directory(&paths.versions)?;
+        verify_fixed_directories(&paths)?;
         Ok(Self { paths })
     }
 
     fn verify_package(&self, root: &Path, transaction: &TransactionEnvelope) -> Result<()> {
-        require_regular_directory(root)?;
+        verify_windows_directory_protection(root)?;
         let update = &transaction.transaction;
         let policy = PackagePolicy {
             expected_version: &update.target_bundle_identity.version,
@@ -226,6 +254,69 @@ impl WindowsBackend {
     }
 }
 
+fn verify_fixed_directories(paths: &FixedPaths) -> Result<()> {
+    for path in [
+        &paths.product,
+        &paths.updater,
+        &paths.versions,
+        &paths.state_root,
+        &paths.updates,
+        &paths.staging,
+        &paths.transactions,
+        &paths.history,
+    ] {
+        verify_windows_directory_protection(path)?;
+    }
+    Ok(())
+}
+
+fn stop_service_and_confirm_process_exit(
+    service: &windows_service::service::Service,
+) -> Result<()> {
+    let initial = service.query_status()?;
+    let process = match initial.process_id {
+        Some(process_id) => {
+            let raw = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, process_id) };
+            if raw.is_null() {
+                if service.query_status()?.current_state == ServiceState::Stopped {
+                    None
+                } else {
+                    bail!(
+                        "pin main service process {process_id} failed: {}",
+                        std::io::Error::last_os_error()
+                    );
+                }
+            } else {
+                Some(unsafe { OwnedHandle::from_raw_handle(raw as _) })
+            }
+        }
+        None => None,
+    };
+    if initial.current_state != ServiceState::Stopped {
+        service.stop()?;
+    }
+    let deadline = Instant::now() + MAIN_STOP_TIMEOUT;
+    loop {
+        if service.query_status()?.current_state == ServiceState::Stopped {
+            break;
+        }
+        if Instant::now() >= deadline {
+            bail!("LocalSandboxSeaWork did not stop within the generated preshutdown bound");
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    if let Some(process) = process {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let wait_ms = u32::try_from(remaining.as_millis()).unwrap_or(u32::MAX);
+        if unsafe { WaitForSingleObject(process.as_raw_handle() as HANDLE, wait_ms) }
+            != WAIT_OBJECT_0
+        {
+            bail!("main service process remained live after SCM reported stopped");
+        }
+    }
+    Ok(())
+}
+
 impl UpdateBackend for WindowsBackend {
     fn verify_handoff(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
         let update = &transaction.transaction;
@@ -250,7 +341,7 @@ impl UpdateBackend for WindowsBackend {
         {
             bail!("transaction paths or helper protocol differ from compiled product policy");
         }
-        let committed: CommittedStateEnvelope = load_json(&self.paths.committed)?;
+        let committed: CommittedStateEnvelope = protected_load_json(&self.paths.committed)?;
         committed.validate()?;
         if committed.committed.current != update.old_bundle_identity {
             bail!("transaction old identity differs from committed anti-rollback state");
@@ -281,14 +372,15 @@ impl UpdateBackend for WindowsBackend {
         let update = &transaction.transaction;
         let staged = Path::new(&update.staged_root);
         let final_root = Path::new(&update.final_version_root);
-        self.verify_package(staged, transaction)?;
-        if final_root.exists() {
-            return self.verify_package(final_root, transaction);
-        }
         let temporary = self
             .paths
             .versions
             .join(format!(".staging-{}", update.transaction_id));
+        remove_incomplete_final_staging(&self.paths.versions, &temporary, &update.transaction_id)?;
+        self.verify_package(staged, transaction)?;
+        if final_root.exists() {
+            return self.verify_package(final_root, transaction);
+        }
         copy_new_tree(staged, &temporary)?;
         let result = (|| {
             self.verify_package(&temporary, transaction)?;
@@ -304,10 +396,7 @@ impl UpdateBackend for WindowsBackend {
     fn stop_old_service(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
         self.require_main_command(&transaction.transaction.old_image_path)?;
         let service = self.main_service(ServiceAccess::QUERY_STATUS | ServiceAccess::STOP)?;
-        if service.query_status()?.current_state != ServiceState::Stopped {
-            service.stop()?;
-        }
-        self.wait_main_state(ServiceState::Stopped)
+        stop_service_and_confirm_process_exit(&service)
     }
 
     fn change_to_target(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
@@ -385,7 +474,7 @@ impl UpdateBackend for WindowsBackend {
 
     fn finalize_commit(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
         let update = &transaction.transaction;
-        let mut committed: CommittedStateEnvelope = load_json(&self.paths.committed)?;
+        let mut committed: CommittedStateEnvelope = protected_load_json(&self.paths.committed)?;
         committed.validate()?;
         if committed.committed.current == update.target_bundle_identity {
             return Ok(());
@@ -414,10 +503,7 @@ impl UpdateBackend for WindowsBackend {
             bail!("refusing to stop a main service with unrelated ImagePath");
         }
         let service = self.main_service(ServiceAccess::QUERY_STATUS | ServiceAccess::STOP)?;
-        if service.query_status()?.current_state != ServiceState::Stopped {
-            service.stop()?;
-        }
-        self.wait_main_state(ServiceState::Stopped)
+        stop_service_and_confirm_process_exit(&service)
     }
 
     fn restore_old_configuration(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
@@ -467,7 +553,7 @@ impl WindowsBackend {
     fn record_failed_target(&self, update: &lsb_seawork_update::UpdateTransaction) -> Result<()> {
         let now = time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)?;
-        let failed = match load_json::<FailedTargetState>(&self.paths.failed_target) {
+        let failed = match protected_load_json::<FailedTargetState>(&self.paths.failed_target) {
             Ok(mut failed)
                 if failed.validate().is_ok()
                     && failed.archive_sha256 == update.target_bundle_identity.archive_sha256 =>
@@ -554,7 +640,10 @@ fn service_command(executable: &str) -> String {
 
 fn verify_updater_service_config(expected_executable: &Path) -> Result<()> {
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
-    let service = manager.open_service(UPDATER_SERVICE_NAME, ServiceAccess::QUERY_CONFIG)?;
+    let service = manager.open_service(
+        UPDATER_SERVICE_NAME,
+        ServiceAccess::QUERY_CONFIG | ServiceAccess::READ_CONTROL,
+    )?;
     let config = service.query_config()?;
     let expected = service_command(
         expected_executable
@@ -562,7 +651,10 @@ fn verify_updater_service_config(expected_executable: &Path) -> Result<()> {
             .context("compiled updater path is not Unicode")?,
     );
     if config.service_type != ServiceType::OWN_PROCESS
+        || config.start_type != ServiceStartType::AutoStart
         || config.executable_path.as_os_str() != OsStr::new(&expected)
+        || config.display_name.as_os_str() != OsStr::new("LocalSandbox for SeaWork Updater")
+        || !config.dependencies.is_empty()
         || config
             .account_name
             .as_deref()
@@ -571,7 +663,126 @@ fn verify_updater_service_config(expected_executable: &Path) -> Result<()> {
     {
         bail!("LocalSandboxSeaWorkUpdater SCM identity is incompatible");
     }
+    if service.get_config_service_sid_info()? != ServiceSidType::Unrestricted
+        || !service.get_failure_actions_on_non_crash_failures()?
+        || service.get_failure_actions()? != expected_failure_actions()
+    {
+        bail!("LocalSandboxSeaWorkUpdater SCM recovery policy is incompatible");
+    }
+    verify_updater_service_security(&service)?;
     Ok(())
+}
+
+fn expected_failure_actions() -> ServiceFailureActions {
+    ServiceFailureActions {
+        reset_period: ServiceFailureResetPeriod::After(FAILURE_RESET),
+        reboot_msg: None,
+        command: None,
+        actions: Some(
+            FAILURE_DELAYS
+                .into_iter()
+                .map(|delay| ServiceAction {
+                    action_type: ServiceActionType::Restart,
+                    delay,
+                })
+                .collect(),
+        ),
+    }
+}
+
+fn verify_updater_service_security(service: &windows_service::service::Service) -> Result<()> {
+    let information =
+        OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+    let mut required = 0u32;
+    unsafe {
+        QueryServiceObjectSecurity(
+            service.raw_handle(),
+            information,
+            std::ptr::null_mut(),
+            0,
+            &mut required,
+        )
+    };
+    if required == 0 || required > 64 * 1024 {
+        bail!("LocalSandboxSeaWorkUpdater SCM security descriptor size is invalid");
+    }
+    let mut actual = vec![0u8; required as usize];
+    if unsafe {
+        QueryServiceObjectSecurity(
+            service.raw_handle(),
+            information,
+            actual.as_mut_ptr().cast(),
+            required,
+            &mut required,
+        )
+    } == 0
+    {
+        bail!(
+            "query LocalSandboxSeaWorkUpdater SCM security failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    let expected_wide = OsStr::new(UPDATER_SERVICE_SDDL)
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let mut expected: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            expected_wide.as_ptr(),
+            SDDL_REVISION_1,
+            &mut expected,
+            std::ptr::null_mut(),
+        )
+    } == 0
+        || expected.is_null()
+    {
+        bail!("compile generated updater SCM security policy failed");
+    }
+    let _expected = LocalAllocation(expected.cast());
+    let actual_sddl = normalized_sddl(actual.as_mut_ptr().cast(), information)?;
+    let expected_sddl = normalized_sddl(expected, information)?;
+    if actual_sddl != expected_sddl {
+        bail!("LocalSandboxSeaWorkUpdater SCM DACL differs from generated policy");
+    }
+    Ok(())
+}
+
+fn normalized_sddl(descriptor: PSECURITY_DESCRIPTOR, information: u32) -> Result<String> {
+    let mut raw = std::ptr::null_mut();
+    let mut length = 0u32;
+    if unsafe {
+        ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            descriptor,
+            SDDL_REVISION_1,
+            information,
+            &mut raw,
+            &mut length,
+        )
+    } == 0
+        || raw.is_null()
+        || length == 0
+        || length > 4096
+    {
+        bail!("normalize updater SCM security descriptor failed");
+    }
+    let _raw = LocalAllocation(raw.cast());
+    let units = unsafe { std::slice::from_raw_parts(raw, length as usize) };
+    let end = units
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(units.len());
+    String::from_utf16(&units[..end]).context("updater SCM security descriptor is not Unicode")
+}
+
+struct LocalAllocation(*mut std::ffi::c_void);
+
+impl Drop for LocalAllocation {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { LocalFree(self.0) };
+        }
+    }
 }
 
 fn require_exact_current_executable(expected: &Path) -> Result<()> {
@@ -580,6 +791,35 @@ fn require_exact_current_executable(expected: &Path) -> Result<()> {
         bail!("updater is not running from its fixed protected product path");
     }
     require_regular_file(expected)
+}
+
+fn remove_incomplete_final_staging(
+    versions: &Path,
+    temporary: &Path,
+    transaction_id: &str,
+) -> Result<()> {
+    let expected_name = format!(".staging-{transaction_id}");
+    if temporary.parent() != Some(versions)
+        || temporary.file_name() != Some(OsStr::new(&expected_name))
+        || transaction_id.len() != 32
+        || !transaction_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        bail!("transaction-owned final staging path is not exact");
+    }
+    match fs::symlink_metadata(temporary) {
+        Ok(metadata) => {
+            reject_reparse(&metadata)?;
+            if !metadata.is_dir() {
+                bail!("transaction-owned final staging path is not a directory");
+            }
+            fs::remove_dir_all(temporary)?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
 }
 
 fn copy_new_tree(source: &Path, destination: &Path) -> Result<()> {
@@ -788,7 +1028,11 @@ fn set_event_message_path(path: &str) -> Result<()> {
 }
 
 struct FixedPaths {
+    product: PathBuf,
+    updater: PathBuf,
     updater_executable: PathBuf,
+    state_root: PathBuf,
+    updates: PathBuf,
     committed: PathBuf,
     failed_target: PathBuf,
     staging: PathBuf,
@@ -802,20 +1046,23 @@ impl FixedPaths {
     fn discover() -> Result<Self> {
         let program_data = known_folder(&windows_sys::Win32::UI::Shell::FOLDERID_ProgramData)?;
         let program_files = known_folder(&windows_sys::Win32::UI::Shell::FOLDERID_ProgramFiles)?;
-        let updates = program_data
-            .join("LocalSandbox")
-            .join("SeaWork")
-            .join("updates");
+        let state_root = program_data.join("LocalSandbox").join("SeaWork");
+        let updates = state_root.join("updates");
         let transactions = updates.join("transactions");
         let product = program_files.join("SeaWork").join("LocalSandbox");
+        let updater = product.join("updater");
         Ok(Self {
-            updater_executable: product.join("updater").join(UPDATER_EXE),
+            updater_executable: updater.join(UPDATER_EXE),
             committed: updates.join("committed.json"),
             failed_target: updates.join("failed-target.json"),
             staging: updates.join("staging"),
             current_transaction: transactions.join("current.json"),
             history: updates.join("history"),
             versions: product.join("versions"),
+            product,
+            updater,
+            state_root,
+            updates,
             transactions,
         })
     }

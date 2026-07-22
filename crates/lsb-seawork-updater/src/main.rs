@@ -63,7 +63,10 @@ fn main() -> Result<()> {
                     helper_version: env!("CARGO_PKG_VERSION"),
                     helper_protocol_major: HELPER_PROTOCOL_MAJOR,
                     helper_protocol_minor: HELPER_PROTOCOL_MINOR,
-                    error: verification.as_ref().err().map(ToString::to_string),
+                    error: verification
+                        .as_ref()
+                        .err()
+                        .map(|_| "INSTALL_INVALID".to_string()),
                 })?
             );
             verification

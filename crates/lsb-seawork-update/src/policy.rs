@@ -22,17 +22,60 @@ pub struct HelperVersionOutput {
     pub helper_protocol_minor: u16,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HelperInstallOutput {
+    pub valid: bool,
+    pub service_name: String,
+    pub helper_version: String,
+    pub helper_protocol_major: u16,
+    pub helper_protocol_minor: u16,
+    pub error: Option<String>,
+}
+
 pub fn validate_helper_version_output(
     bytes: &[u8],
     expected_service_name: &str,
     required_protocol: crate::HelperProtocol,
 ) -> Result<HelperVersionOutput> {
-    required_protocol.validate()?;
     if bytes.is_empty() || bytes.len() > MAX_HELPER_VERSION_OUTPUT_BYTES {
         bail!("helper protocol version output is outside bounds");
     }
     let output: HelperVersionOutput =
         serde_json::from_slice(bytes).context("parse helper protocol version output")?;
+    validate_helper_identity(&output, expected_service_name, required_protocol)?;
+    Ok(output)
+}
+
+pub fn validate_helper_install_output(
+    bytes: &[u8],
+    expected_service_name: &str,
+    required_protocol: crate::HelperProtocol,
+) -> Result<HelperInstallOutput> {
+    if bytes.is_empty() || bytes.len() > MAX_HELPER_VERSION_OUTPUT_BYTES {
+        bail!("helper protocol install output is outside bounds");
+    }
+    let output: HelperInstallOutput =
+        serde_json::from_slice(bytes).context("parse helper protocol install output")?;
+    let version = HelperVersionOutput {
+        service_name: output.service_name.clone(),
+        helper_version: output.helper_version.clone(),
+        helper_protocol_major: output.helper_protocol_major,
+        helper_protocol_minor: output.helper_protocol_minor,
+    };
+    validate_helper_identity(&version, expected_service_name, required_protocol)?;
+    if !output.valid || output.error.is_some() {
+        bail!("helper protocol installation is not valid");
+    }
+    Ok(output)
+}
+
+fn validate_helper_identity(
+    output: &HelperVersionOutput,
+    expected_service_name: &str,
+    required_protocol: crate::HelperProtocol,
+) -> Result<()> {
+    required_protocol.validate()?;
     if output.service_name != expected_service_name
         || Version::parse(&output.helper_version).is_err()
         || output.helper_protocol_major != required_protocol.major
@@ -40,7 +83,7 @@ pub fn validate_helper_version_output(
     {
         bail!("helper protocol is incompatible with compiled product policy");
     }
-    Ok(output)
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,6 +295,27 @@ mod tests {
             required
         )
         .is_err());
+    }
+
+    #[test]
+    fn helper_install_requires_a_strict_successful_self_check() {
+        let required = crate::HelperProtocol { major: 1, minor: 1 };
+        let valid = br#"{
+            "valid":true,
+            "service_name":"LocalSandboxSeaWorkUpdater",
+            "helper_version":"0.5.0",
+            "helper_protocol_major":1,
+            "helper_protocol_minor":1,
+            "error":null
+        }"#;
+        assert!(validate_helper_install_output(valid, HELPER_SERVICE, required).is_ok());
+        for invalid in [
+            br#"{"valid":false,"service_name":"LocalSandboxSeaWorkUpdater","helper_version":"0.5.0","helper_protocol_major":1,"helper_protocol_minor":1,"error":"SCM mismatch"}"#.as_slice(),
+            br#"{"valid":true,"service_name":"LocalSandboxSeaWorkUpdater","helper_version":"0.5.0","helper_protocol_major":1,"helper_protocol_minor":1,"error":"contradictory"}"#.as_slice(),
+            br#"{"valid":true,"service_name":"LocalSandboxSeaWorkUpdater","helper_version":"0.5.0","helper_protocol_major":1,"helper_protocol_minor":1,"error":null,"extra":true}"#.as_slice(),
+        ] {
+            assert!(validate_helper_install_output(invalid, HELPER_SERVICE, required).is_err());
+        }
     }
 
     #[test]

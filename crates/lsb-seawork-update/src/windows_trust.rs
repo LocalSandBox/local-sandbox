@@ -36,7 +36,8 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_APPEND_DATA, FILE_DELETE_CHILD,
-    FILE_SHARE_READ, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, WRITE_DAC, WRITE_OWNER,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+    FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, WRITE_DAC, WRITE_OWNER,
 };
 use windows_sys::Win32::System::SystemServices::{
     ACCESS_ALLOWED_ACE_TYPE, ACCESS_ALLOWED_CALLBACK_ACE_TYPE,
@@ -77,6 +78,33 @@ pub fn verify_windows_file_publisher(
         bail!("signed file publisher is outside the compiled allowlist");
     }
     Ok(signer)
+}
+
+pub fn verify_windows_file_protection(path: &Path) -> Result<()> {
+    let file = pin_file(path)?;
+    require_protected_handle(&file)
+}
+
+pub fn verify_windows_directory_protection(path: &Path) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    use std::os::windows::fs::MetadataExt;
+    if !metadata.is_dir()
+        || metadata.file_type().is_symlink()
+        || metadata.file_attributes() & 0x400 != 0
+    {
+        bail!("protected package directory is not a regular non-reparse directory");
+    }
+    let directory = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .with_context(|| format!("pin protected package directory {}", path.display()))?;
+    let pinned = directory.metadata()?;
+    if !pinned.is_dir() || pinned.file_attributes() & 0x400 != 0 {
+        bail!("pinned package directory has an unsafe type or reparse attribute");
+    }
+    require_protected_handle(&directory)
 }
 
 pub fn verify_windows_package(
