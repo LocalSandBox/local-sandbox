@@ -1,0 +1,22 @@
+crates/lsb-seawork-update/src/lib.rs
+  s_f467a00f62f93c::t_06849510ab59cb 20-23
+crates/lsb-seawork-service/src/update/mod.rs
+  s_f467a00f62f93c::t_277b58ccace3fa 278,317
+  s_f467a00f62f93c::t_06849510ab59cb 15-17,319
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "7766068596b2e242a66ed81fb808853c55e79020",
+  "prompts": {},
+  "sessions": {
+    "s_f467a00f62f93c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f88c5-3e3b-7723-a390-0d43291a7df3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
