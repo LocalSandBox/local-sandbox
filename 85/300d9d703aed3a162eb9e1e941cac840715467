@@ -1,0 +1,43 @@
+crates/lsb-seawork-update/fixtures/github-releases-hostile.json
+  s_f467a00f62f93c::t_93696542bbd143 1-42
+crates/lsb-seawork-update/src/discovery.rs
+  s_f467a00f62f93c::t_5219156789e00e 135,138,150-154,190
+  s_f467a00f62f93c::t_93696542bbd143 1-134,136-137,139-149,155-189,191-300
+crates/lsb-seawork-update/Cargo.toml
+  s_f467a00f62f93c::t_3b355b5ce93657 1-13
+crates/lsb-seawork-service/Cargo.toml
+  s_f467a00f62f93c::t_93696542bbd143 18
+crates/lsb-seawork-update/src/journal.rs
+  s_f467a00f62f93c::t_3b355b5ce93657 1-221,227-271,281-287,294-299,301-315
+  s_f467a00f62f93c::t_97eaab97f9ec41 222-226,272-280,288-293,300
+crates/lsb-seawork-service/src/config.rs
+  s_f467a00f62f93c::t_93696542bbd143 4
+crates/lsb-seawork-update/src/lib.rs
+  s_f467a00f62f93c::t_97eaab97f9ec41 7
+  s_f467a00f62f93c::t_93696542bbd143 2,6
+  s_f467a00f62f93c::t_3b355b5ce93657 1,3-5,8-63
+Cargo.toml
+  s_f467a00f62f93c::t_3b355b5ce93657 13,30
+crates/lsb-seawork-update/src/committed.rs
+  s_f467a00f62f93c::t_3b355b5ce93657 1-167
+crates/lsb-seawork-update/fixtures/github-releases-valid.json
+  s_f467a00f62f93c::t_93696542bbd143 1-34
+Cargo.lock
+  s_f467a00f62f93c::t_d149d9aa80caf3 1047,1059-1070
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "85300d9d703aed3a162eb9e1e941cac840715467",
+  "prompts": {},
+  "sessions": {
+    "s_f467a00f62f93c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f88c5-3e3b-7723-a390-0d43291a7df3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
