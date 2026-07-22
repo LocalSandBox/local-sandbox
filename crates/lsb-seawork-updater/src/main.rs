@@ -1,6 +1,8 @@
 #[cfg(any(windows, test))]
 mod recovery;
 #[cfg(windows)]
+mod relative;
+#[cfg(windows)]
 mod windows;
 
 use anyhow::{bail, Result};

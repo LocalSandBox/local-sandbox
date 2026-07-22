@@ -1,7 +1,8 @@
 use std::ffi::{OsStr, OsString};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::os::windows::io::OwnedHandle;
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::time::{Duration, Instant};
@@ -21,11 +22,15 @@ use windows_service::service::{
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 use windows_service::service_dispatcher;
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0,
+};
+use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, SYNCHRONIZE};
 use windows_sys::Win32::System::Services::{ChangeServiceConfigW, SERVICE_NO_CHANGE};
 use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 
 use crate::recovery::{recover_transaction, RecoveryOutcome, TransactionStore, UpdateBackend};
+use crate::relative::{self, Kind};
 use crate::{HELPER_PROTOCOL_MAJOR, HELPER_PROTOCOL_MINOR, UPDATER_SERVICE_NAME};
 
 const UPDATER_EXE: &str = "localsandbox-seawork-updater.exe";
@@ -579,45 +584,88 @@ fn require_exact_current_executable(expected: &Path) -> Result<()> {
 
 fn copy_new_tree(source: &Path, destination: &Path) -> Result<()> {
     require_regular_directory(source)?;
-    if fs::symlink_metadata(destination).is_ok() {
+    let source_handle = relative::open_directory(source, GENERIC_READ | SYNCHRONIZE)?;
+    let destination_parent = destination
+        .parent()
+        .context("transaction-owned final staging has no parent")?;
+    let destination_name = destination
+        .file_name()
+        .context("transaction-owned final staging has no name")?;
+    let destination_parent_handle = relative::open_directory(
+        destination_parent,
+        GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE,
+    )?;
+    let Some((destination_handle, _)) = relative::create_relative(
+        &destination_parent_handle,
+        destination_name,
+        GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE,
+        Kind::Directory,
+    )?
+    else {
         bail!("transaction-owned final staging directory already exists");
-    }
-    fs::create_dir(destination)?;
-    let result = copy_directory_contents(source, destination, 0);
+    };
+    let result =
+        copy_directory_contents(source, &source_handle, destination, &destination_handle, 0);
     if result.is_err() {
         let _ = fs::remove_dir_all(destination);
     }
     result
 }
 
-fn copy_directory_contents(source: &Path, destination: &Path, depth: usize) -> Result<()> {
+fn copy_directory_contents(
+    source: &Path,
+    source_handle: &OwnedHandle,
+    destination: &Path,
+    destination_handle: &OwnedHandle,
+    depth: usize,
+) -> Result<()> {
     if depth > 32 {
         bail!("candidate directory depth exceeds the compiled limit");
     }
     for entry in fs::read_dir(source)? {
         let entry = entry?;
-        let source_path = entry.path();
-        let destination_path = destination.join(entry.file_name());
-        let metadata = fs::symlink_metadata(&source_path)?;
-        reject_reparse(&metadata)?;
-        if metadata.is_dir() {
-            fs::create_dir(&destination_path)?;
-            copy_directory_contents(&source_path, &destination_path, depth + 1)?;
-        } else if metadata.is_file() {
-            let mut reader = File::open(&source_path)?;
-            let file = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&destination_path)?;
+        let name = entry.file_name();
+        let (source_child, info) =
+            relative::open_relative(source_handle, &name, GENERIC_READ | SYNCHRONIZE)?;
+        let is_directory = info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0;
+        let destination_path = destination.join(&name);
+        if is_directory {
+            let Some((destination_child, _)) = relative::create_relative(
+                destination_handle,
+                &name,
+                GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE,
+                Kind::Directory,
+            )?
+            else {
+                bail!("handle-relative update destination entry already exists");
+            };
+            copy_directory_contents(
+                &entry.path(),
+                &source_child,
+                &destination_path,
+                &destination_child,
+                depth + 1,
+            )?;
+        } else {
+            let Some((destination_child, _)) = relative::create_relative(
+                destination_handle,
+                &name,
+                GENERIC_WRITE | SYNCHRONIZE,
+                Kind::File,
+            )?
+            else {
+                bail!("handle-relative update destination entry already exists");
+            };
+            let mut reader = File::from(source_child);
+            let file = File::from(destination_child);
             let mut writer = BufWriter::new(file);
             let copied = io::copy(&mut reader, &mut writer)?;
-            if copied != metadata.len() {
+            let expected = u64::from(info.nFileSizeHigh) << 32 | u64::from(info.nFileSizeLow);
+            if copied != expected {
                 bail!("candidate file changed while copied");
             }
             writer.flush()?;
             writer.get_ref().sync_all()?;
-        } else {
-            bail!("candidate contains a nonregular entry");
         }
     }
     Ok(())
@@ -677,7 +725,7 @@ fn query_event_message_path() -> Result<String> {
     if first != 0 || bytes == 0 || bytes > 4096 {
         bail!("query EventMessageFile size failed with {first}");
     }
-    let mut buffer = vec![0u16; (bytes as usize + 1) / 2];
+    let mut buffer = vec![0u16; (bytes as usize).div_ceil(2)];
     let result = unsafe {
         RegGetValueW(
             HKEY_LOCAL_MACHINE,
