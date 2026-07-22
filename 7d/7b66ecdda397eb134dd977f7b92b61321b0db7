@@ -1,0 +1,69 @@
+xtask/src/seawork_release.rs
+  s_f467a00f62f93c::t_61cd4b8e9c431d 203,225-233,290,305-314
+  s_f467a00f62f93c::t_6ce7599556cc62 1363-1366
+  s_f467a00f62f93c::t_07a45779dfbd8b 1278-1281,1361-1362,1367-1371
+  s_f467a00f62f93c::t_2cd9ff6c72a71a 930
+crates/lsb-seawork-update/src/policy.rs
+  s_f467a00f62f93c::t_c8deb50af3e9f1 301-320
+  s_f467a00f62f93c::t_27484dcebc0bd7 25-35,46-78,86
+  s_db7bcbac0b3256::t_4dc957c31675ef 300
+crates/lsb-seawork-update/src/lib.rs
+  s_f467a00f62f93c::t_27484dcebc0bd7 20
+  s_f467a00f62f93c::t_6ce7599556cc62 21
+  s_f467a00f62f93c::t_a33a29fe00310a 25,28
+  s_f467a00f62f93c::t_4675d257cee56f 26-27
+crates/lsb-seawork-update/src/windows_trust.rs
+  s_f467a00f62f93c::t_4675d257cee56f 83-87,108
+  s_f467a00f62f93c::t_a33a29fe00310a 39-40,88-107
+  s_f467a00f62f93c::t_779ee37828c164 109
+crates/lsb-seawork-updater/src/windows.rs
+  s_f467a00f62f93c::t_5e9bdab85b26ac 273-319
+  s_f467a00f62f93c::t_35a46f494e89e5 30-36,39-41,690-747,751-769,776-784
+  s_f467a00f62f93c::t_5c919c2af78be8 379-383
+  s_f467a00f62f93c::t_6ce7599556cc62 28,61,127-132,771-774,805-807
+  s_f467a00f62f93c::t_92c74bd604bd5e 12-15,126,135,344,477,556
+  s_f467a00f62f93c::t_ddbc0e3fcbec6c 656
+  s_f467a00f62f93c::t_a1d6681481c5f7 5,29,42-44,59,399,506
+  s_f467a00f62f93c::t_74c9bafea3a8a2 20-22,62-67,643-646,654,657,666-689,785
+  s_f467a00f62f93c::t_dc6e964da6862e 78,118,181,257-270
+  s_f467a00f62f93c::t_dec641fbd7939e 186
+  s_f467a00f62f93c::t_bc5c6684c60326 770,775
+  s_f467a00f62f93c::t_fc1a4c84ba8eda 271,786,796-804,808-824
+  s_f467a00f62f93c::t_f73b6d2578ac0e 159-163,1031-1032,1034-1035,1049-1050,1053,1055,1062-1065
+  s_f467a00f62f93c::t_d58df581e2f4a8 272
+  s_f467a00f62f93c::t_2e81359871d392 787
+crates/lsb-seawork-updater/src/main.rs
+  s_f467a00f62f93c::t_ddbc0e3fcbec6c 66-69
+crates/lsb-seawork-service/src/update/mod.rs
+  s_f467a00f62f93c::t_78a6388fa720f3 72,312,323,997,1004-1006
+  s_f467a00f62f93c::t_f9e442cfecebda 234-237,243
+  s_f467a00f62f93c::t_75ad8efbb47943 16,857-858
+  s_f467a00f62f93c::t_6ce7599556cc62 59-64,566-571,851-856
+  s_f467a00f62f93c::t_1071fa358564a1 233,238-242,244-246,384
+  s_f467a00f62f93c::t_509362d517383a 3,15,808,822,880,908,916-931
+  s_f467a00f62f93c::t_f390857e66ce5d 932-933,1007-1008
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "7d7b66ecdda397eb134dd977f7b92b61321b0db7",
+  "prompts": {},
+  "sessions": {
+    "s_db7bcbac0b3256": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8921-1ccf-7d20-bd01-ed802a6accbf",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    },
+    "s_f467a00f62f93c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f88c5-3e3b-7723-a390-0d43291a7df3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
