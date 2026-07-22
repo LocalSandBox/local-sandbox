@@ -1,6 +1,6 @@
 [package]
 name = "lsb-service-client"
-version = "0.4.7-test.1"
+version.workspace = true
 edition = "2021"
 publish = false
 build = "build.rs"
@@ -10,7 +10,7 @@ development-service = ["lsb-service-proto/development-service"]
 
 [dependencies]
 getrandom = "0.3"
-lsb-service-proto = { path = "../lsb-service-proto" }
+lsb-service-proto.workspace = true
 serde = "1"
 serde_json = "1"
 zeroize = "1"

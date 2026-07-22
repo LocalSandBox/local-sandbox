@@ -344,7 +344,7 @@ fn archive_bundle(
         sha256_file(&symbols)?,
         symbols_name
     );
-    let sums_path = output_dir.join("SHA256SUMS");
+    let sums_path = output_dir.join(format!("lsb-seawork-service-v{version}-SHA256SUMS"));
     if sums_path.exists() {
         bail!("refusing to overwrite {}", sums_path.display());
     }
@@ -1191,12 +1191,13 @@ mod tests {
         let first_symbols = fs::read(&symbols).unwrap();
         assert!(first_archive.starts_with(b"PK\x03\x04"));
         assert!(first_symbols.starts_with(b"PK\x03\x04"));
-        assert!(fs::read_to_string(output.join("SHA256SUMS"))
+        let sums = output.join("lsb-seawork-service-v0.4.6-SHA256SUMS");
+        assert!(fs::read_to_string(&sums)
             .unwrap()
             .contains("lsb-seawork-service-v0.4.6-windows-x86_64.zip"));
         fs::remove_file(&archive).unwrap();
         fs::remove_file(&symbols).unwrap();
-        fs::remove_file(output.join("SHA256SUMS")).unwrap();
+        fs::remove_file(sums).unwrap();
         archive_bundle(&archive_args, platform, "0.4.6", &root, &output).unwrap();
         assert_eq!(fs::read(&archive).unwrap(), first_archive);
         assert_eq!(fs::read(&symbols).unwrap(), first_symbols);

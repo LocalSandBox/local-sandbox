@@ -28,6 +28,7 @@ fn main() -> Result<()> {
         "build-kernel" => kernel::build_kernel(&rest),
         "prepare-rootfs" => rootfs::prepare_rootfs(&rest),
         "package-release" => release::package_release(&rest),
+        "release" => release::release(&rest),
         "verify-seawork-parity" => seawork_parity::verify(&rest),
         "verify-windows-evidence" => windows_evidence::verify(&rest),
         _ => {
@@ -47,6 +48,9 @@ fn print_usage() {
     eprintln!("  cargo run -p xtask -- build-kernel [--platform <id>]");
     eprintln!("  cargo run -p xtask -- prepare-rootfs [--platform <id>]");
     eprintln!("  cargo run -p xtask -- package-release --artifact <cli|os-image|seawork-service> --version <v> [--platform <id>] [--output-dir <dir>] [--mode stage|archive] [--service-profile production|development]");
+    eprintln!("  cargo run -p xtask -- release <current|channel>");
+    eprintln!("  cargo run -p xtask -- release prepare <patch|minor|major|SEMVER>");
+    eprintln!("  cargo run -p xtask -- release verify [--version <SEMVER>]");
     eprintln!(
         "  cargo run -p xtask -- verify-seawork-parity [--contract <path>] [--seawork-repo <path>]"
     );

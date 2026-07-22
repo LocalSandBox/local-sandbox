@@ -448,6 +448,36 @@ cp -r skills/lsb .claude/skills/lsb
 
 Once installed, agents will use `lsb run` whenever they need sandboxed execution.
 
+## Releasing
+
+Releases are prepared and published by the manually dispatched `Release`
+workflow. The workflow creates the version-only release commit directly on
+`main`, validates and builds that exact commit, tags it, optionally publishes
+the Rust crates, publishes the Node.js package, and makes the staged GitHub
+release public last.
+
+```sh
+# Defaults to the next patch release.
+just release
+
+# Other supported selectors.
+just release minor
+just release major
+just release 0.5.2
+```
+
+Configure the `release` GitHub environment to require the desired approval and
+allow the workflow token to push the release commit to protected `main`. The
+repository must provide an `NPM_TOKEN` secret. Crates.io publishing is disabled
+by default and becomes active when the optional `CARGO_REGISTRY_TOKEN`
+repository secret is configured. To retry a partially completed release,
+dispatch its exact version (for example, `just release 0.5.2`); already-created
+tags, packages, and releases are checked and safely reused.
+
+The canonical version is `workspace.package.version` in the root `Cargo.toml`.
+For local diagnostics, `cargo run -p xtask -- release verify` checks every Rust
+and Node.js manifest plus `Cargo.lock` for version drift.
+
 ## Credits
 
 This repository is a hard fork of [`superhq-ai/shuru`](https://github.com/superhq-ai/shuru).

@@ -1,6 +1,6 @@
 [package]
 name = "lsb-seawork-service"
-version = "0.4.7-test.1"
+version.workspace = true
 edition = "2021"
 publish = false
 build = "build.rs"
@@ -14,15 +14,15 @@ crossbeam-channel = "0.5"
 getrandom = "0.3"
 # Keep the service cross-buildable from non-Windows release hosts without MASM.
 blake3 = { version = "1", features = ["pure"] }
-lsb-service-proto = { path = "../lsb-service-proto" }
+lsb-service-proto.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 zeroize = "1"
-lsb-proxy = { path = "../lsb-proxy" }
+lsb-proxy.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-lsb-vm = { path = "../lsb-vm" }
+lsb-vm.workspace = true
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 windows-service = "0.8.1"
 windows-sys = { version = "0.61.2", features = [

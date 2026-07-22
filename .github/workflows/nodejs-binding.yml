@@ -1,6 +1,25 @@
 name: Node.js Binding
 
 on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Commit to validate and build"
+        required: false
+        type: string
+      seawork_publisher_sha256:
+        description: "Current production SeaWork signing certificate SHA-256 thumbprint"
+        required: false
+        type: string
+      seawork_publisher_sha256_previous:
+        description: "Optional previous production SeaWork signing certificate SHA-256 thumbprint"
+        required: false
+        type: string
+      production_release:
+        description: "Require explicitly supplied production publisher policy"
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main]
     paths:
@@ -32,6 +51,7 @@ on:
 env:
   MACOSX_DEPLOYMENT_TARGET: "14.0"
   COREPACK_INTEGRITY_KEYS: 0
+  SEAWORK_NONPRODUCTION_TEST_PUBLISHER_SHA256: "1111111111111111111111111111111111111111111111111111111111111111"
 
 jobs:
   lint:
@@ -42,6 +62,8 @@ jobs:
         working-directory: bindings/nodejs
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -66,11 +88,16 @@ jobs:
             target: x86_64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+    env:
+      SEAWORK_PUBLISHER_SHA256: ${{ inputs.seawork_publisher_sha256 || vars.SEAWORK_PUBLISHER_SHA256 }}
+      SEAWORK_PUBLISHER_SHA256_PREVIOUS: ${{ inputs.seawork_publisher_sha256_previous || vars.SEAWORK_PUBLISHER_SHA256_PREVIOUS }}
     defaults:
       run:
         working-directory: bindings/nodejs
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -80,6 +107,35 @@ jobs:
           targets: ${{ matrix.target }}
       - run: cmake --version
       - run: yarn install --immutable
+      - name: Validate Windows service publisher policy
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        env:
+          CONFIGURED_PUBLISHER_SHA256: ${{ inputs.seawork_publisher_sha256 }}
+          PRODUCTION_RELEASE: ${{ inputs.production_release }}
+        run: |
+          if ($env:PRODUCTION_RELEASE -eq 'true' -and
+              [string]::IsNullOrWhiteSpace($env:CONFIGURED_PUBLISHER_SHA256)) {
+            throw 'production Node builds require an explicitly supplied SeaWork publisher thumbprint'
+          }
+          $publisher = $env:SEAWORK_PUBLISHER_SHA256
+          if ([string]::IsNullOrWhiteSpace($publisher)) {
+            $publisher = $env:SEAWORK_NONPRODUCTION_TEST_PUBLISHER_SHA256
+            "SEAWORK_PUBLISHER_SHA256=$publisher" |
+              Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+          if ($publisher -notmatch '^[0-9A-Fa-f]{64}$') {
+            throw 'SEAWORK_PUBLISHER_SHA256 must be one SHA-256 certificate thumbprint'
+          }
+          $previous = $env:SEAWORK_PUBLISHER_SHA256_PREVIOUS
+          if (-not [string]::IsNullOrWhiteSpace($previous)) {
+            if ($previous -notmatch '^[0-9A-Fa-f]{64}$') {
+              throw 'SEAWORK_PUBLISHER_SHA256_PREVIOUS must be one SHA-256 certificate thumbprint'
+            }
+            if ($previous -ieq $publisher) {
+              throw 'current and previous SeaWork publisher thumbprints must differ'
+            }
+          }
       - run: yarn napi build --target ${{ matrix.target }} --platform --release --js index.js --dts index.d.ts
       - run: yarn patch-loader
       - name: Validate Windows service API

@@ -2,7 +2,7 @@
 authors = ["SuperHQ", "LocalSandBox"]
 edition = "2021"
 name = "lsb-nodejs"
-version = "0.4.7-test.1"
+version = "0.4.7"
 description = "Native Node.js bindings for lsb microVM sandboxes"
 license = "Apache-2.0"
 repository = "https://github.com/LocalSandBox/local-sandbox.git"

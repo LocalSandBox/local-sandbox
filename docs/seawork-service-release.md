@@ -29,7 +29,7 @@ lsb-seawork-service-v<VERSION>-windows-x86_64-symbols.zip
   LocalSandbox/bin/localsandbox-seawork-service.pdb
   LocalSandbox/manifests/source-map.json
 
-SHA256SUMS
+lsb-seawork-service-v<VERSION>-SHA256SUMS
 ```
 
 The payload ZIP is deterministic after signing. `bundle.json` is a sorted,
@@ -41,10 +41,11 @@ imports a Visual C++ redistributable or any DLL not supplied by Windows.
 
 ## Release workflow
 
-The service jobs in `.github/workflows/release.yml` run only when the repository
-variable `SEAWORK_SERVICE_SIGNING_ENABLED` is exactly `true`. When disabled,
-the existing CLI and OS-image release remains independent and no unsigned
-service artifact is published.
+The manual workflow in `.github/workflows/release.yml` first prepares or resumes
+one version commit on `main`; all release jobs check out that exact SHA. The
+service jobs run only when `SEAWORK_SERVICE_SIGNING_ENABLED` is exactly `true`.
+When disabled, the existing CLI, OS-image, crates.io, npm, and GitHub release
+flow continues and no unsigned service artifact is published.
 
 Configure these repository variables:
 
@@ -53,9 +54,11 @@ Configure these repository variables:
 | `SEAWORK_SERVICE_SIGNING_ENABLED` | `true` only after production signing and clean-machine gates are ready |
 | `SEAWORK_PUBLISHER_SUBJECT` | Exact Authenticode certificate subject |
 | `SEAWORK_PUBLISHER_SHA256` | Lowercase SHA-256 certificate thumbprint |
+| `SEAWORK_PUBLISHER_SHA256_PREVIOUS` | Optional previous thumbprint trusted by the Node client during rotation |
 | `SEAWORK_TIMESTAMP_URL` | Organization-approved RFC 3161 timestamp URL |
+| `SEAWORK_WINDOWS_EVIDENCE_ROOT` | Protected absolute root on the evidence runner |
 
-Configure these repository secrets:
+Configure these secrets in the protected `seawork-service-signing` environment:
 
 | Name | Value |
 | --- | --- |
@@ -67,7 +70,16 @@ PDB, signs and timestamps the PE, records runtime and Cargo dependencies,
 generates the SPDX/license inventory, stages the closed bundle, creates and
 signs the catalog, builds deterministic payload/symbol ZIPs, verifies the
 installed-layout bundle, emits checksums, creates GitHub artifact attestations,
-and publishes the assets. Signing secrets exist only below `RUNNER_TEMP`.
+and stages the assets through the workflow's single draft GitHub release path.
+Signing secrets exist only in the signing environment and below `RUNNER_TEMP`.
+
+Each invocation explicitly selects `service_evidence=skip|required`. `required`
+binds complete Windows evidence to the prepared commit and exact payload ZIP
+digest before tagging. `skip` permits promotion after hosted verification, but
+records `skipped-by-operator` in the step summary, a release-status JSON
+sidecar, and the release notes; such a release is never described as
+Windows-evidence-qualified. Prerelease npm packages use the `next` dist-tag and
+the corresponding GitHub release is a prerelease and is not marked latest.
 
 Local manual signing may use
 `scripts/sign-seawork-service.ps1 -AllowUntrustedTestCertificate -SkipTimestamp`
@@ -267,17 +279,18 @@ Publisher rotation is an overlap, not an in-place pin bypass:
 - Session 0 WHPX/QEMU boot/exec/stop, crash/reboot reconciliation, and enterprise
   Defender/EDR/GPO/proxy/VPN policy evidence are signed off. Mounts and host
   ports remain disabled; SMB and WFP evidence is required before enabling them.
-- The exact signed payload ZIP has a complete `full` Windows evidence manifest under
-  the protected self-hosted runner root. The `seawork-service-production` environment
-  is approved only after that matrix finishes; CI rehashes the ZIP, validates and
-  retains the redacted evidence, and the publish job cannot run if the gate is skipped,
-  missing, incomplete, or bound to another commit/artifact.
+- If `service_evidence=required`, the exact signed payload ZIP has a complete
+  `full` Windows evidence manifest under the protected self-hosted runner root.
+  CI rehashes the ZIP, validates and retains the redacted evidence, and tagging
+  cannot proceed if evidence is missing, incomplete, or bound to another
+  commit/artifact. If the operator selects `skip`, the release status and notes
+  explicitly record that the artifact is not Windows-evidence-qualified.
 
 ## External release blockers
 
 This repository cannot manufacture the following evidence in an unelevated
-developer shell. They remain hard release blockers and are tracked in `state.md`
-and `docs/windows-service-feasibility.md`:
+developer shell. They remain blockers whenever `service_evidence=required` and
+are tracked in `state.md` and `docs/windows-service-feasibility.md`:
 
 - Production-trusted organization signing identity, RFC 3161 timestamp, and
   clean-machine chain/thumbprint verification.
@@ -290,5 +303,5 @@ and `docs/windows-service-feasibility.md`:
 
 The repository variable `SEAWORK_WINDOWS_EVIDENCE_ROOT` must name a protected absolute
 path on runners labeled `self-hosted`, `Windows`, `X64`, and `seawork-service`. It is a
-location contract, not evidence: the exact `GITHUB_SHA` and downloaded payload digest
-select the only acceptable manifest below it.
+location contract, not evidence: the exact prepared release SHA and downloaded
+payload digest select the only acceptable manifest below it.

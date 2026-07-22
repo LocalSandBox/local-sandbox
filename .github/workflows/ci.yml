@@ -1,6 +1,12 @@
 name: CI
 
 on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Commit to validate"
+        required: false
+        type: string
   push:
     branches: [main]
   pull_request:
@@ -15,14 +21,19 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo fmt --all -- --check
+      - run: cargo run -p xtask -- release verify
 
   rust-check:
     name: macOS Rust check
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-apple-darwin
@@ -42,6 +53,8 @@ jobs:
       CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
@@ -60,7 +73,9 @@ jobs:
           foreach ($path in @(
             '.\scripts\sign-seawork-service.ps1',
             '.\scripts\prepare-seawork-release-metadata.ps1',
-            '.\scripts\inspect-seawork-service-dependencies.ps1'
+            '.\scripts\inspect-seawork-service-dependencies.ps1',
+            '.\scripts\verify-seawork-event-messages.ps1',
+            '.\scripts\assemble-windows-evidence.ps1'
           )) {
             $errors = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile(

@@ -1,6 +1,6 @@
 [package]
 name = "lsb-service-spike"
-version = "0.4.7-test.1"
+version.workspace = true
 edition = "2021"
 publish = false
 
@@ -10,7 +10,7 @@ windows-session0-spike = []
 
 [dependencies]
 anyhow = "1"
-lsb-sdk = { path = "../lsb-sdk" }
+lsb-sdk.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "time"] }

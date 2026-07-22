@@ -1,6 +1,6 @@
 [package]
 name = "lsb-platform"
-version = "0.4.7-test.1"
+version.workspace = true
 edition = "2021"
 description = "Platform abstraction and metadata for lsb"
 license = "Apache-2.0"
@@ -11,7 +11,7 @@ anyhow = "1"
 blake3 = "1"
 crossbeam-channel = "0.5"
 getrandom = "0.3"
-lsb-proto = { version = "0.4.7-test.1", path = "../lsb-proto" }
+lsb-proto.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

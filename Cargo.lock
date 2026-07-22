@@ -933,7 +933,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-cli"
-version = "0.4.7-test.1"
+version = "0.4.7"
 dependencies = [
  "anyhow",
  "base64",
@@ -956,7 +956,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-guest"
-version = "0.4.7-test.1"
+version = "0.4.7"
 dependencies = [
  "blake3",
  "libc",
@@ -966,7 +966,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-platform"
-version = "0.4.7-test.1"
+version = "0.4.7"
 dependencies = [
  "anyhow",
  "blake3",
@@ -986,7 +986,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-proto"
-version = "0.4.7-test.1"
+version = "0.4.7"
 dependencies = [
  "blake3",
  "serde",
@@ -995,7 +995,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-proxy"
-version = "0.4.7-test.1"
+version = "0.4.7"
 dependencies = [
  "anyhow",
  "boring",
@@ -1018,7 +1018,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-sdk"
-version = "0.4.7-test.1"
+version = "0.4.7"
 dependencies = [
  "anyhow",
  "flate2",
@@ -1037,7 +1037,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-seawork-service"
-version = "0.4.7-test.1"
+version = "0.4.7"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1057,7 +1057,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-service-client"
-version = "0.4.7-test.1"
+version = "0.4.7"
 dependencies = [
  "getrandom 0.3.4",
  "lsb-service-proto",
@@ -1071,7 +1071,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-service-proto"
-version = "0.4.7-test.1"
+version = "0.4.7"
 dependencies = [
  "serde",
  "serde_json",
@@ -1080,7 +1080,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-service-spike"
-version = "0.4.7-test.1"
+version = "0.4.7"
 dependencies = [
  "anyhow",
  "lsb-sdk",
@@ -1093,7 +1093,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-store"
-version = "0.4.7-test.1"
+version = "0.4.7"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1108,7 +1108,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-vm"
-version = "0.4.7-test.1"
+version = "0.4.7"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1535,6 +1535,7 @@ version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",
@@ -1793,6 +1794,30 @@ dependencies = [
  "rustls",
  "tokio",
 ]
+
+[[package]]
+name = "toml_datetime"
+version = "0.6.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22cddaf88f4fbc13c51aebbf5f8eceb5c7c5a9da2ac40a13519eb5b0a0e8f11c"
+
+[[package]]
+name = "toml_edit"
+version = "0.22.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41fe8c660ae4257887cf66394862d21dbca4a6ddd26f04a3560410406a2f819a"
+dependencies = [
+ "indexmap",
+ "toml_datetime",
+ "toml_write",
+ "winnow",
+]
+
+[[package]]
+name = "toml_write"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "tracing"
@@ -2148,6 +2173,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
+name = "winnow"
+version = "0.7.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "wit-bindgen"
 version = "0.51.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2266,9 +2300,11 @@ dependencies = [
  "flate2",
  "lsb-platform",
  "lsb-service-proto",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
+ "toml_edit",
 ]
 
 [[package]]

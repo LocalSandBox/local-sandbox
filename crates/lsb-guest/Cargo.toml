@@ -1,6 +1,6 @@
 [package]
 name = "lsb-guest"
-version = "0.4.7-test.1"
+version.workspace = true
 edition = "2021"
 
 [[bin]]
@@ -9,6 +9,6 @@ path = "src/main.rs"
 
 [dependencies]
 blake3 = "1"
-lsb-proto = { path = "../lsb-proto" }
+lsb-proto.workspace = true
 libc = "0.2"
 serde_json = "1"
