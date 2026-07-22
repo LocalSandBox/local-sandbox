@@ -880,6 +880,23 @@ jobs:
         with:
           name: seawork-service-release-status
           path: artifacts/
+      - name: Normalize SeaWork artifact layout
+        if: ${{ vars.SEAWORK_SERVICE_SIGNING_ENABLED == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -d artifacts/out ]]; then
+            shopt -s nullglob
+            for source in artifacts/out/*; do
+              target="artifacts/$(basename "$source")"
+              if [[ -e "$target" ]]; then
+                echo "SeaWork artifact layout collision: $target" >&2
+                exit 1
+              fi
+              mv "$source" "$target"
+            done
+            rmdir artifacts/out
+          fi
       - name: Validate SeaWork release artifact tuple
         if: ${{ vars.SEAWORK_SERVICE_SIGNING_ENABLED == 'true' }}
         env:
