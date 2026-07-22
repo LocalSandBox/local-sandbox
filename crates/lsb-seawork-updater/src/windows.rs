@@ -25,7 +25,8 @@ use windows_service::service_control_handler::{self, ServiceControlHandlerResult
 use windows_service::service_dispatcher;
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, LocalFree, GENERIC_READ, GENERIC_WRITE, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0,
+    CloseHandle, LocalFree, ERROR_INVALID_HANDLE, GENERIC_READ, GENERIC_WRITE, HANDLE,
+    WAIT_ABANDONED, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSecurityDescriptorToStringSecurityDescriptorW,
@@ -35,7 +36,9 @@ use windows_sys::Win32::Security::{
     DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
     PSECURITY_DESCRIPTOR,
 };
-use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, SYNCHRONIZE};
+use windows_sys::Win32::Storage::FileSystem::{
+    FlushFileBuffers, FILE_ATTRIBUTE_DIRECTORY, SYNCHRONIZE,
+};
 use windows_sys::Win32::System::Services::{
     ChangeServiceConfigW, QueryServiceObjectSecurity, SERVICE_NO_CHANGE,
 };
@@ -523,6 +526,10 @@ impl UpdateBackend for WindowsBackend {
                 update.helper_protocol,
             )?;
             fs::rename(&temporary, final_root).context("atomically place verified version root")?;
+            sync_directory_handle(&relative::open_directory(
+                &self.paths.versions,
+                GENERIC_READ | SYNCHRONIZE,
+            )?)?;
             self.verify_package_identity(
                 final_root,
                 &update.target_bundle_identity,
@@ -1160,7 +1167,21 @@ fn copy_directory_contents(
             writer.get_ref().sync_all()?;
         }
     }
-    Ok(())
+    sync_directory_handle(destination_handle)
+}
+
+fn sync_directory_handle(directory: &OwnedHandle) -> Result<()> {
+    if unsafe { FlushFileBuffers(directory.as_raw_handle() as HANDLE) } != 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(ERROR_INVALID_HANDLE as i32) {
+        // Windows filesystems may reject FlushFileBuffers for directory handles.
+        // The handle still pins the non-reparse directory through the operation.
+        Ok(())
+    } else {
+        Err(error).context("flush copied update directory metadata")
+    }
 }
 
 fn require_regular_file(path: &Path) -> Result<()> {
