@@ -80,20 +80,25 @@ test('SeaWork service declarations expose only remote sandbox inputs', (t) => {
     declarations,
     /startSandbox\(options: ServiceSandboxStartOptions\): Promise<RemoteSandbox>/,
   )
-  t.regex(
-    declarations,
-    /prepareUpdate\(targetBundle: string, targetProtocolRange: SeaWorkProtocolRange\): Promise<string>/,
-  )
+  t.regex(declarations, /prepareUpdate\(target: SeaWorkBundleIdentity\): Promise<string>/)
+  t.regex(declarations, /getUpdateStatus\(\): Promise<SeaWorkUpdateStatus>/)
+  t.regex(declarations, /checkForUpdate\(\): Promise<void>/)
+  t.regex(declarations, /export interface SeaWorkBundleIdentity/)
+  t.regex(declarations, /bundleManifestSha256: string/)
+  t.regex(declarations, /archiveSha256: string/)
+  t.regex(declarations, /serviceConfigurationRevision: number/)
+  t.regex(declarations, /export interface SeaWorkLedgerCompatibility/)
+  t.regex(declarations, /writerSchema: number/)
+  t.regex(declarations, /export interface SeaWorkUpdateStatus/)
+  t.regex(declarations, /activeUseCount: number/)
+  t.regex(declarations, /export interface SeaWorkUpdateRetryState/)
   t.regex(declarations, /commitUpdate\(updateId: string\): Promise<void>/)
   t.regex(declarations, /abortUpdate\(updateId: string\): Promise<void>/)
   t.regex(declarations, /prepareUninstall\(\): Promise<SeaWorkUninstallPreparation>/)
   t.regex(declarations, /start\(opts\?: SeaWorkStartOptions[^)]*\): Promise<SeaWorkSandbox>/)
   t.regex(declarations, /export declare class SeaWorkSandbox/)
   t.regex(declarations, /readFile\(path: string\): Promise<Buffer>/)
-  t.regex(
-    declarations,
-    /writeFile\(path: string, content: string \| Uint8Array\): Promise<void>/,
-  )
+  t.regex(declarations, /writeFile\(path: string, content: string \| Uint8Array\): Promise<void>/)
   t.regex(
     declarations,
     /spawn\(command: string \| Array<string>, opts\?: SeaWorkExecOptions[^)]*\): Promise<SeaWorkProcess>/,
@@ -106,10 +111,7 @@ test('SeaWork service declarations expose only remote sandbox inputs', (t) => {
   t.regex(declarations, /export declare class SeaWorkExecOperation/)
   t.regex(declarations, /cancel\(\): Promise<void>/)
   t.regex(declarations, /complete\(\): Promise<ExecResult>/)
-  t.regex(
-    declarations,
-    /watch\(path: string, opts\?: WatchOptions[^)]*\): Promise<SeaWorkWatch>/,
-  )
+  t.regex(declarations, /watch\(path: string, opts\?: WatchOptions[^)]*\): Promise<SeaWorkWatch>/)
   t.regex(declarations, /export declare class SeaWorkWatch/)
   t.regex(declarations, /next\(\): Promise<FileChangeEvent \| null>/)
   t.regex(declarations, /nextStdout\(\): Promise<Buffer \| null>/)

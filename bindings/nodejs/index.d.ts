@@ -168,7 +168,9 @@ export declare class SeaWorkService {
   getServiceInfo(): Promise<SeaWorkServiceInfo>
   healthCheck(): Promise<SeaWorkServiceHealth>
   health(): Promise<SeaWorkHealth>
-  prepareUpdate(targetBundle: string, targetProtocolRange: SeaWorkProtocolRange): Promise<string>
+  prepareUpdate(target: SeaWorkBundleIdentity): Promise<string>
+  getUpdateStatus(): Promise<SeaWorkUpdateStatus>
+  checkForUpdate(): Promise<void>
   commitUpdate(updateId: string): Promise<void>
   abortUpdate(updateId: string): Promise<void>
   prepareUninstall(): Promise<SeaWorkUninstallPreparation>
@@ -437,6 +439,15 @@ export interface SandboxInitResult {
   fixes: Array<SandboxFixResult>
 }
 
+export interface SeaWorkBundleIdentity {
+  version: string
+  bundleManifestSha256: string
+  archiveSha256: string
+  protocol: SeaWorkProtocolRange
+  ledger: SeaWorkLedgerCompatibility
+  serviceConfigurationRevision: number
+}
+
 export interface SeaWorkCapabilities {
   directMount: boolean
   directMountBackends: Array<'pinned-ro' | 'staged-sync' | 'compat-smb-direct'>
@@ -456,6 +467,12 @@ export interface SeaWorkHealth {
   admissionsOpen: boolean
   stableCode: string
   bundleReady: boolean
+}
+
+export interface SeaWorkLedgerCompatibility {
+  readerMinSchema: number
+  readerMaxSchema: number
+  writerSchema: number
 }
 
 export interface SeaWorkNegotiatedProtocol {
@@ -507,6 +524,21 @@ export interface SeaWorkStartOptions {
 export interface SeaWorkUninstallPreparation {
   clean: boolean
   quarantineIds: Array<string>
+}
+
+export interface SeaWorkUpdateRetryState {
+  attemptCount: number
+  retryAfterUtc?: string
+  suppressed: boolean
+}
+
+export interface SeaWorkUpdateStatus {
+  phase: string
+  current?: SeaWorkBundleIdentity
+  target?: SeaWorkBundleIdentity
+  activeUseCount: number
+  lastCheckCategory?: string
+  retry: SeaWorkUpdateRetryState
 }
 
 /** Secret value that is only exposed to requests for the listed hosts. */
