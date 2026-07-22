@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use sha2::{Digest, Sha256};
 
 use crate::ledger::schema::ResourceRecord;
 use crate::paths::ServicePaths;
@@ -180,6 +181,16 @@ impl ServiceEngineConfig {
 
     pub fn bundle_version(&self) -> &str {
         &self.bundle_version
+    }
+
+    pub fn bundle_manifest_sha256(&self) -> Result<String> {
+        let manifest = self.bundle_root.join("manifests").join("bundle.json");
+        let bytes = std::fs::read(&manifest)
+            .with_context(|| format!("read signed bundle manifest {}", manifest.display()))?;
+        if bytes.is_empty() || bytes.len() > 1024 * 1024 {
+            bail!("signed bundle manifest size is outside the supported range");
+        }
+        Ok(format!("{:x}", Sha256::digest(bytes)))
     }
 }
 

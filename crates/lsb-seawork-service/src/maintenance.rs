@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
-use lsb_service_proto::{ProtocolRange, SUPPORTED};
+use lsb_service_proto::{BundleIdentity, UpdatePhase, UpdateRetryState, UpdateStatus, SUPPORTED};
 use serde::{Deserialize, Serialize};
 
 use crate::ledger::atomic;
@@ -17,9 +17,7 @@ const MAX_PENDING_SIZE: u64 = 64 * 1024;
 struct PendingUpdate {
     schema_version: u32,
     update_id: String,
-    target_bundle: String,
-    target_protocol_range: ProtocolRange,
-    ledger_writer_schema: u32,
+    target: BundleIdentity,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -30,17 +28,15 @@ struct PendingUninstall {
 
 impl PendingUpdate {
     fn validate(&self) -> Result<()> {
-        if self.schema_version != 1
+        if self.schema_version != 2
             || self.update_id.len() != 32
             || !self
                 .update_id
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            || self.target_bundle.is_empty()
-            || self.target_bundle.len() > 128
-            || self.target_protocol_range.validate().is_err()
-            || self.target_protocol_range.major != SUPPORTED.major
-            || self.ledger_writer_schema != LEDGER_SCHEMA_VERSION
+            || self.target.validate().is_err()
+            || self.target.protocol.major != SUPPORTED.major
+            || self.target.ledger.writer_schema != LEDGER_SCHEMA_VERSION
         {
             bail!("pending update record is invalid");
         }
@@ -105,22 +101,20 @@ impl MaintenanceManager {
     pub fn prepare_update(
         &self,
         sessions: &SessionManager,
-        target_bundle: String,
-        target_protocol_range: ProtocolRange,
+        target: BundleIdentity,
     ) -> Result<String> {
-        if target_protocol_range.validate().is_err()
-            || target_protocol_range.major != SUPPORTED.major
+        if target.validate().is_err()
+            || target.protocol.major != SUPPORTED.major
+            || target.ledger.writer_schema != LEDGER_SCHEMA_VERSION
         {
-            bail!("target protocol range is incompatible");
+            bail!("target bundle identity is incompatible");
         }
         let mut state = self
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("maintenance state poisoned"))?;
         if let MaintenanceState::Pending(pending) = &*state {
-            if pending.target_bundle == target_bundle
-                && pending.target_protocol_range == target_protocol_range
-            {
+            if pending.target == target {
                 return Ok(pending.update_id.clone());
             }
             bail!("another update is already pending");
@@ -129,11 +123,9 @@ impl MaintenanceManager {
             bail!("service is not available for update preparation");
         }
         let pending = PendingUpdate {
-            schema_version: 1,
+            schema_version: 2,
             update_id: random_id()?,
-            target_bundle,
-            target_protocol_range,
-            ledger_writer_schema: LEDGER_SCHEMA_VERSION,
+            target,
         };
         pending.validate()?;
         atomic::write_value(&self.pending_path, &pending)?;
@@ -147,16 +139,23 @@ impl MaintenanceManager {
     pub fn commit_update(
         &self,
         update_id: &str,
-        running_bundle: &str,
-        running_protocol_range: ProtocolRange,
+        running_version: &str,
+        running_bundle_manifest_sha256: &str,
+        running_protocol_range: lsb_service_proto::ProtocolRange,
+        running_ledger_writer_schema: u32,
+        running_service_configuration_revision: u32,
     ) -> Result<()> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("maintenance state poisoned"))?;
         let pending = require_pending_id(&state, update_id)?;
-        if pending.target_bundle != running_bundle
-            || pending.target_protocol_range != running_protocol_range
+        if pending.target.version != running_version
+            || pending.target.bundle_manifest_sha256 != running_bundle_manifest_sha256
+            || pending.target.protocol != running_protocol_range
+            || pending.target.ledger.writer_schema != running_ledger_writer_schema
+            || pending.target.service_configuration_revision
+                != running_service_configuration_revision
         {
             bail!("running service does not match the pending update target");
         }
@@ -180,6 +179,37 @@ impl MaintenanceManager {
             &self.admissions,
             self.initial_admissions,
         )
+    }
+
+    pub fn update_status(
+        &self,
+        current: Option<BundleIdentity>,
+        active_use_count: u32,
+    ) -> UpdateStatus {
+        let (phase, target) = match self.state.lock() {
+            Ok(state) => match &*state {
+                MaintenanceState::Active => (UpdatePhase::UpdateIdle, None),
+                MaintenanceState::Pending(pending) => (
+                    UpdatePhase::UpdateWaitingForIdle,
+                    Some(pending.target.clone()),
+                ),
+                MaintenanceState::Uninstalling => (UpdatePhase::UpdateIdle, None),
+                MaintenanceState::Quarantined => (UpdatePhase::UpdateRecoveryQuarantine, None),
+            },
+            Err(_) => (UpdatePhase::UpdateRecoveryQuarantine, None),
+        };
+        UpdateStatus {
+            phase,
+            current,
+            target,
+            active_use_count,
+            last_check_category: None,
+            retry: UpdateRetryState {
+                attempt_count: 0,
+                retry_after_utc: None,
+                suppressed: false,
+            },
+        }
     }
 
     pub fn prepare_uninstall(&self, sessions: &SessionManager) -> Result<bool> {
@@ -295,30 +325,86 @@ mod tests {
             .join("pending-update.json")
     }
 
+    fn target(version: &str) -> BundleIdentity {
+        BundleIdentity {
+            version: version.to_string(),
+            bundle_manifest_sha256: "a".repeat(64),
+            archive_sha256: "b".repeat(64),
+            protocol: SUPPORTED,
+            ledger: lsb_service_proto::LedgerCompatibility {
+                reader_min_schema: LEDGER_SCHEMA_VERSION,
+                reader_max_schema: LEDGER_SCHEMA_VERSION,
+                writer_schema: LEDGER_SCHEMA_VERSION,
+            },
+            service_configuration_revision: 2,
+        }
+    }
+
     #[test]
     fn pending_update_is_durable_idempotent_and_abortable() {
         let path = path("pending.json");
         let _ = std::fs::remove_file(&path);
         let sessions = SessionManager::new(QuotaLimits::default());
         let manager = MaintenanceManager::load(path.clone(), true);
+        let target_bundle = target("0.5.0-rc.2");
         let update_id = manager
-            .prepare_update(&sessions, "next".to_string(), SUPPORTED)
+            .prepare_update(&sessions, target_bundle.clone())
             .unwrap();
         assert!(!manager.admissions.load(Ordering::Acquire));
         assert_eq!(
             manager
-                .prepare_update(&sessions, "next".to_string(), SUPPORTED)
+                .prepare_update(&sessions, target_bundle.clone())
                 .unwrap(),
             update_id
         );
         let restarted = MaintenanceManager::load(path.clone(), true);
         assert_eq!(restarted.stable_code(), "UPDATE_PENDING");
         assert!(restarted
-            .commit_update(&update_id, "old", SUPPORTED)
+            .commit_update(
+                &update_id,
+                "0.5.0-rc.3",
+                &target_bundle.bundle_manifest_sha256,
+                target_bundle.protocol,
+                target_bundle.ledger.writer_schema,
+                target_bundle.service_configuration_revision,
+            )
             .is_err());
         assert_eq!(restarted.stable_code(), "UPDATE_PENDING");
         restarted.abort_update(&update_id).unwrap();
         assert!(restarted.admissions.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn commit_requires_the_complete_exact_bundle_identity() {
+        let path = path("exact-identity");
+        let _ = std::fs::remove_file(&path);
+        let sessions = SessionManager::new(QuotaLimits::default());
+        let manager = MaintenanceManager::load(path.clone(), true);
+        let target = target("0.5.0-rc.2");
+        let update_id = manager.prepare_update(&sessions, target.clone()).unwrap();
+        let mut wrong_digest = target.clone();
+        wrong_digest.bundle_manifest_sha256 = "c".repeat(64);
+        assert!(manager
+            .commit_update(
+                &update_id,
+                &wrong_digest.version,
+                &wrong_digest.bundle_manifest_sha256,
+                wrong_digest.protocol,
+                wrong_digest.ledger.writer_schema,
+                wrong_digest.service_configuration_revision,
+            )
+            .is_err());
+        manager
+            .commit_update(
+                &update_id,
+                &target.version,
+                &target.bundle_manifest_sha256,
+                target.protocol,
+                target.ledger.writer_schema,
+                target.service_configuration_revision,
+            )
+            .unwrap();
+        assert!(manager.admissions.load(Ordering::Acquire));
     }
 
     #[test]

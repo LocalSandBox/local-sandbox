@@ -4,11 +4,11 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::ProtocolError;
 
-pub const CURRENT: ProtocolVersion = ProtocolVersion { major: 1, minor: 5 };
+pub const CURRENT: ProtocolVersion = ProtocolVersion { major: 1, minor: 6 };
 pub const SUPPORTED: ProtocolRange = ProtocolRange {
     major: 1,
     min_minor: 0,
-    max_minor: 5,
+    max_minor: 6,
 };
 
 pub const FEATURE_NETWORK_EGRESS: u64 = 1 << 0;
@@ -17,6 +17,7 @@ pub const FEATURE_HTTPS_INTERCEPTION: u64 = 1 << 2;
 pub const FEATURE_EXPOSE_HOST_RELAY: u64 = 1 << 3;
 pub const START_REPLAY_MIN_MINOR: u16 = 4;
 pub const CANCELLATION_COMMIT_MIN_MINOR: u16 = 5;
+pub const CONTROLLED_UPDATE_MIN_MINOR: u16 = 6;
 pub const CLIENT_FEATURE_BITS: u64 = FEATURE_NETWORK_EGRESS
     | FEATURE_NETWORK_SECRETS
     | FEATURE_HTTPS_INTERCEPTION
@@ -125,6 +126,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(selected.minor, 2);
+    }
+
+    #[test]
+    fn controlled_update_has_a_dedicated_minor_gate() {
+        let selected = negotiate(
+            SUPPORTED,
+            ProtocolRange {
+                major: 1,
+                min_minor: CONTROLLED_UPDATE_MIN_MINOR,
+                max_minor: CONTROLLED_UPDATE_MIN_MINOR,
+            },
+        )
+        .unwrap();
+        assert_eq!(selected.minor, CONTROLLED_UPDATE_MIN_MINOR);
     }
 
     #[test]

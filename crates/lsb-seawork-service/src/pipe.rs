@@ -12,8 +12,9 @@ use lsb_service_proto::{
     encode_stream_payload, negotiate, parse_control, Cancel, CapabilityHealth, Correlation,
     ErrorCode, ErrorEnvelope, Event, FrameHeader, FrameKind, Health, HealthState, Hello,
     HelloReply, HexU64, ProtocolRange, Request, RequestOp, Response, ResponseValue, ServiceInfo,
-    WindowUpdate, CANCELLATION_COMMIT_MIN_MINOR, CURRENT, FEATURE_HTTPS_INTERCEPTION,
-    FEATURE_NETWORK_EGRESS, FEATURE_NETWORK_SECRETS, START_REPLAY_MIN_MINOR, SUPPORTED,
+    WindowUpdate, CANCELLATION_COMMIT_MIN_MINOR, CONTROLLED_UPDATE_MIN_MINOR, CURRENT,
+    FEATURE_HTTPS_INTERCEPTION, FEATURE_NETWORK_EGRESS, FEATURE_NETWORK_SECRETS,
+    START_REPLAY_MIN_MINOR, SUPPORTED,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 #[cfg(test)]
@@ -345,6 +346,7 @@ pub struct HealthContext {
     engine: Option<ServiceEngineConfig>,
     requests: Arc<Semaphore>,
     maintenance: Option<MaintenanceManager>,
+    update_check_requested: Arc<AtomicBool>,
     client_roots: Vec<String>,
     maintenance_roots: Vec<String>,
     publisher_thumbprints: Vec<String>,
@@ -362,6 +364,7 @@ impl HealthContext {
             engine: None,
             requests: Arc::new(Semaphore::new(crate::ipc::pipe::MAX_REQUESTS_GLOBAL)),
             maintenance: None,
+            update_check_requested: Arc::new(AtomicBool::new(false)),
             client_roots: Vec::new(),
             maintenance_roots: Vec::new(),
             publisher_thumbprints: Vec::new(),
@@ -987,6 +990,16 @@ where
                 continue;
             }
         }
+        if is_controlled_update(&request.op) && selected.minor < CONTROLLED_UPDATE_MIN_MINOR {
+            write_error(
+                writer,
+                selected,
+                frame.header.correlation,
+                ErrorCode::IncompatibleProtocol,
+            )
+            .await?;
+            continue;
+        }
         if matches!(request.op, RequestOp::CloseSession {}) {
             connection
                 .lock()
@@ -1137,9 +1150,22 @@ fn is_health_or_maintenance(op: &RequestOp) -> bool {
         RequestOp::GetServiceInfo {}
             | RequestOp::HealthCheck {}
             | RequestOp::PrepareUpdate { .. }
+            | RequestOp::GetUpdateStatus {}
+            | RequestOp::CheckForUpdate {}
             | RequestOp::CommitUpdate { .. }
             | RequestOp::AbortUpdate { .. }
             | RequestOp::PrepareUninstall {}
+    )
+}
+
+fn is_controlled_update(op: &RequestOp) -> bool {
+    matches!(
+        op,
+        RequestOp::PrepareUpdate { .. }
+            | RequestOp::GetUpdateStatus {}
+            | RequestOp::CheckForUpdate {}
+            | RequestOp::CommitUpdate { .. }
+            | RequestOp::AbortUpdate { .. }
     )
 }
 
@@ -1277,6 +1303,8 @@ async fn dispatch_request(
     if matches!(
         request.op,
         RequestOp::PrepareUpdate { .. }
+            | RequestOp::GetUpdateStatus {}
+            | RequestOp::CheckForUpdate {}
             | RequestOp::CommitUpdate { .. }
             | RequestOp::AbortUpdate { .. }
             | RequestOp::PrepareUninstall {}
@@ -1590,31 +1618,53 @@ async fn dispatch_request(
             request_cancellation.clone(),
         )),
         RequestOp::PrepareUpdate {
-            target_bundle,
-            target_protocol_range,
+            target,
+            legacy_target_bundle: _,
+            legacy_target_protocol_range: _,
         } => {
             let maintenance = context
                 .maintenance
                 .as_ref()
                 .context("maintenance manager is unavailable")?;
-            let update_id = maintenance_value!(maintenance.prepare_update(
-                &context.sessions,
-                target_bundle,
-                target_protocol_range,
-            ));
+            let target = target.context("controlled update target is unavailable")?;
+            let update_id =
+                maintenance_value!(maintenance.prepare_update(&context.sessions, target));
             ResponseValue::UpdatePrepared { update_id }
+        }
+        RequestOp::GetUpdateStatus {} => {
+            let maintenance = context
+                .maintenance
+                .as_ref()
+                .context("maintenance manager is unavailable")?;
+            let active_use_count = context.sessions.counts().1.try_into().unwrap_or(u32::MAX);
+            ResponseValue::UpdateStatus {
+                status: maintenance.update_status(None, active_use_count),
+            }
+        }
+        RequestOp::CheckForUpdate {} => {
+            context
+                .update_check_requested
+                .store(true, Ordering::Release);
+            ResponseValue::UpdateCheckScheduled {}
         }
         RequestOp::CommitUpdate { update_id } => {
             let maintenance = context
                 .maintenance
                 .as_ref()
                 .context("maintenance manager is unavailable")?;
-            let running_bundle = context
+            let engine = context
                 .engine
                 .as_ref()
-                .context("service engine is unavailable")?
-                .bundle_version();
-            maintenance_value!(maintenance.commit_update(&update_id, running_bundle, SUPPORTED,));
+                .context("service engine is unavailable")?;
+            let manifest_sha256 = engine.bundle_manifest_sha256()?;
+            maintenance_value!(maintenance.commit_update(
+                &update_id,
+                engine.bundle_version(),
+                &manifest_sha256,
+                SUPPORTED,
+                LEDGER_SCHEMA_VERSION,
+                crate::bundle::SERVICE_CONFIGURATION_REVISION,
+            ));
             ResponseValue::Empty {}
         }
         RequestOp::AbortUpdate { update_id } => {
