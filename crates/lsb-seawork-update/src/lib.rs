@@ -3,6 +3,8 @@ mod committed;
 mod discovery;
 mod journal;
 mod package;
+#[cfg(feature = "coordinator-policy")]
+mod policy;
 mod state;
 #[cfg(windows)]
 mod windows_trust;
@@ -12,6 +14,12 @@ pub use committed::{CommittedState, CommittedStateEnvelope, FailedTargetState};
 pub use discovery::{ReleaseCandidate, ReleaseChannel, ReleaseSelector};
 pub use journal::{HelperProtocol, TransactionEnvelope, TransactionPhase, UpdateTransaction};
 pub use package::{verify_bundle_root, PackagePolicy, PackageVerification, PublisherIdentity};
+#[cfg(feature = "coordinator-policy")]
+pub use policy::{
+    cached_candidate, failed_target_decision, parse_retry_after_utc, retry_delay,
+    stream_exact_asset, validate_download_url, validate_helper_version_output,
+    FailedTargetDecision, HelperVersionOutput,
+};
 pub use state::{archive_file, create_json, load_json, remove_file_if_exists, write_json_atomic};
 #[cfg(windows)]
 pub use windows_trust::{verify_windows_file_publisher, verify_windows_package};

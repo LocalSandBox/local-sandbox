@@ -16,14 +16,12 @@ http = "1"
 # Keep the service cross-buildable from non-Windows release hosts without MASM.
 blake3 = { version = "1", features = ["pure"] }
 lsb-service-proto.workspace = true
-lsb-seawork-update.workspace = true
+lsb-seawork-update = { workspace = true, features = ["coordinator-policy"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-semver = "1"
 sha2 = "0.10"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 ureq = { version = "3", default-features = true }
-url = "2"
 zeroize = "1"
 lsb-proxy.workspace = true
 
