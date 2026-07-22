@@ -1,0 +1,19 @@
+crates/lsb-seawork-service/src/pipe.rs
+  s_75ebd9b1961452::t_7031a3b7fa0355 384
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "759e8cb458b2c8971457b20ad2d969f9a5463f9d",
+  "prompts": {},
+  "sessions": {
+    "s_75ebd9b1961452": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f89ee-107f-73c1-b286-0e59583e3949",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
