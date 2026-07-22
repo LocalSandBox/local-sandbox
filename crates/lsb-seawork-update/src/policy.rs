@@ -234,6 +234,17 @@ pub fn cached_candidate(
     Ok(Some(candidate.clone()))
 }
 
+pub fn download_cache_digest(name: &str) -> Option<&str> {
+    let digest = name
+        .strip_suffix(".zip")
+        .or_else(|| name.strip_suffix(".partial"))?;
+    (digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then_some(digest)
+}
+
 pub fn failed_target_decision(
     candidate: &ReleaseCandidate,
     failed: &FailedTargetState,
@@ -478,6 +489,27 @@ mod tests {
         )
         .unwrap()
         .is_none());
+    }
+
+    #[test]
+    fn download_cache_names_are_exact_digest_addresses() {
+        let digest = "a".repeat(64);
+        assert_eq!(
+            download_cache_digest(&format!("{digest}.zip")),
+            Some(digest.as_str())
+        );
+        assert_eq!(
+            download_cache_digest(&format!("{digest}.partial")),
+            Some(digest.as_str())
+        );
+        for name in [
+            format!("{}.zip", "a".repeat(63)),
+            format!("{}.ZIP", digest),
+            format!("{}.zip.bak", digest),
+            format!("{}.zip", "A".repeat(64)),
+        ] {
+            assert_eq!(download_cache_digest(&name), None);
+        }
     }
 
     #[test]
