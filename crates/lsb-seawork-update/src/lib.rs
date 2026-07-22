@@ -2,11 +2,13 @@ mod archive;
 mod committed;
 mod discovery;
 mod journal;
+mod package;
 
 pub use archive::{extract_zip_archive, ArchiveExtraction};
 pub use committed::{CommittedState, CommittedStateEnvelope, FailedTargetState};
 pub use discovery::{ReleaseCandidate, ReleaseChannel, ReleaseSelector};
 pub use journal::{HelperProtocol, TransactionEnvelope, TransactionPhase, UpdateTransaction};
+pub use package::{verify_bundle_root, PackagePolicy, PackageVerification, PublisherIdentity};
 
 pub const UPDATE_STATE_SCHEMA_VERSION: u32 = 1;
 
