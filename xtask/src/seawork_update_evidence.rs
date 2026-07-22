@@ -8,7 +8,7 @@ use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_EVIDENCE_FILES: usize = 256;
 const MAX_DURATION_MS: u64 = 24 * 60 * 60 * 1000;
@@ -52,6 +52,8 @@ struct Manifest {
     service_archive: Artifact,
     helper_binary: Artifact,
     helper_protocol: HelperProtocol,
+    helper_install: HelperInstallEvidence,
+    timestamped_authenticode_verified: bool,
     publisher_sha256: String,
     previous_bundle: BundleIdentity,
     candidate_bundle: BundleIdentity,
@@ -74,6 +76,17 @@ struct Artifact {
 struct HelperProtocol {
     major: u16,
     minor: u16,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HelperInstallEvidence {
+    valid: bool,
+    service_name: String,
+    helper_version: String,
+    helper_protocol_major: u16,
+    helper_protocol_minor: u16,
+    error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -231,6 +244,16 @@ fn validate_shape(path: &Path, manifest: &Manifest, require_complete: bool) -> R
         || manifest.service_archive.sha256 != manifest.candidate_bundle.archive_sha256
         || manifest.helper_protocol.major != 1
         || manifest.helper_protocol.minor < 1
+        || !manifest.helper_install.valid
+        || manifest.helper_install.error.is_some()
+        || manifest.helper_install.service_name != "LocalSandboxSeaWorkUpdater"
+        || !Version::parse(&manifest.helper_install.helper_version).is_ok_and(|version| {
+            version.to_string() == manifest.helper_install.helper_version
+                && version.build.is_empty()
+        })
+        || manifest.helper_install.helper_protocol_major != manifest.helper_protocol.major
+        || manifest.helper_install.helper_protocol_minor != manifest.helper_protocol.minor
+        || !manifest.timestamped_authenticode_verified
         || manifest.previous_bundle.protocol_major != manifest.candidate_bundle.protocol_major
         || manifest.previous_bundle.protocol_max_minor
             < manifest.candidate_bundle.protocol_min_minor
@@ -539,7 +562,7 @@ mod tests {
             .map(|phase| json!({"phase": phase, "helper_crash": "passed", "reboot": "passed", "evidence": [evidence_ref]}))
             .collect::<Vec<_>>();
         let manifest = json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "source_git_sha": git,
             "release_id": 7,
             "release_tag": "v0.5.1",
@@ -547,6 +570,15 @@ mod tests {
             "service_archive": {"name": "lsb-seawork-service-v0.5.1-windows-x86_64.zip", "sha256": service_sha, "size_bytes": 7},
             "helper_binary": {"name": "localsandbox-seawork-updater.exe", "sha256": helper_sha, "size_bytes": 8},
             "helper_protocol": {"major": 1, "minor": 1},
+            "helper_install": {
+                "valid": true,
+                "service_name": "LocalSandboxSeaWorkUpdater",
+                "helper_version": "0.5.1",
+                "helper_protocol_major": 1,
+                "helper_protocol_minor": 1,
+                "error": null
+            },
+            "timestamped_authenticode_verified": true,
             "publisher_sha256": "4".repeat(64),
             "previous_bundle": {"version": "0.5.0", "archive_sha256": "5".repeat(64), "manifest_sha256": "6".repeat(64), "protocol_major": 1, "protocol_min_minor": 1, "protocol_max_minor": 6, "configuration_revision": 2, "ledger_writer_schema": 1},
             "candidate_bundle": {"version": "0.5.1", "archive_sha256": service_sha, "manifest_sha256": "7".repeat(64), "protocol_major": 1, "protocol_min_minor": 1, "protocol_max_minor": 6, "configuration_revision": 2, "ledger_writer_schema": 1},

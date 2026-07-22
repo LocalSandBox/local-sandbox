@@ -14,7 +14,7 @@ This is a source and operator contract only. It does not change
 `.github/workflows/release.yml`, and an unsigned local or cross-compiled run is not
 Windows acceptance evidence.
 
-The manifest binds one immutable GitHub release ID/tag, the exact service archive and
+Manifest schema 2 binds one immutable GitHub release ID/tag, the exact service archive and
 preinstalled helper binary and queried helper protocol, the exact accepted publisher SHA-256 identity, the source
 commit, the previous and candidate bundle identities, and hashed runner/policy
 identities. The validator rehashes every retained evidence file and, when supplied,
@@ -76,6 +76,10 @@ cargo run -p xtask --locked -- verify-seawork-update-evidence `
   --helper <exact-installed-helper-exe> `
   --require-complete
 ```
+
+Before assembly, the script requires the helper's complete `--verify-install --json`
+self-check, a valid timestamped Authenticode signature, and an exact signer-certificate
+SHA-256 match with `-PublisherSha256`; a version-only helper query is not evidence.
 
 The Windows operator must obtain the cases using the exact signed production-profile
 tuple and the SeaWork-installed SCM entries. Helper termination is injected only after
