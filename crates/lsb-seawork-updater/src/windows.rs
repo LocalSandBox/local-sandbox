@@ -629,7 +629,14 @@ impl UpdateBackend for WindowsBackend {
                     anyhow::bail!("target committed recovery observations are inconsistent");
                 } else if info.service_version != update.target_bundle_identity.version
                     || info.bundle_version != update.target_bundle_identity.version
+                    || info.protocol != update.target_bundle_identity.protocol
+                    || u32::from(info.ledger_schema.major)
+                        != update.target_bundle_identity.ledger.writer_schema
+                    || info.ledger_schema.min_minor != 0
+                    || info.ledger_schema.max_minor != 0
+                    || health.ready
                     || health.admissions_open
+                    || health.stable_code != "UPDATE_PENDING"
                     || health.bundle != HealthState::Ready
                     || health.whpx != HealthState::Ready
                     || health.smb != HealthState::Ready
@@ -651,6 +658,11 @@ impl UpdateBackend for WindowsBackend {
             let status = client.get_update_status().await?;
             if info.service_version != update.target_bundle_identity.version
                 || info.bundle_version != update.target_bundle_identity.version
+                || info.protocol != update.target_bundle_identity.protocol
+                || u32::from(info.ledger_schema.major)
+                    != update.target_bundle_identity.ledger.writer_schema
+                || info.ledger_schema.min_minor != 0
+                || info.ledger_schema.max_minor != 0
                 || !health.ready
                 || !health.admissions_open
                 || health.stable_code != "READY"
