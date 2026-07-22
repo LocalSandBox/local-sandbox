@@ -25,6 +25,7 @@ const LEDGER_SCHEMA_VERSION: u32 = 1;
 const MAX_BUNDLE_FILES: usize = 10_000;
 const MAX_BUNDLE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const MAX_SERVICE_BINARY_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_UPDATER_BINARY_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ServiceProfile {
@@ -176,6 +177,7 @@ struct UpdateConfiguration {
     default_channel: &'static str,
     committed_state_path: String,
     status_path: String,
+    failed_target_path: String,
     transaction_path: String,
     downloads_root: String,
     staging_root: String,
@@ -189,6 +191,7 @@ struct UpdaterConfiguration {
     binary_name: &'static str,
     binary_path_template: &'static str,
     binary_command_template: &'static str,
+    artifact_name_template: &'static str,
     service_type: &'static str,
     account: &'static str,
     start: &'static str,
@@ -206,6 +209,20 @@ struct UpdaterProtocolContract {
     max: u16,
 }
 
+#[derive(Debug, Serialize)]
+struct UpdaterArtifactManifest {
+    schema_version: u32,
+    version: String,
+    target: &'static str,
+    binary_name: &'static str,
+    binary_sha256: String,
+    publisher_subject: String,
+    publisher_sha256_thumbprint: String,
+    protocol: UpdaterProtocolContract,
+    service_name: &'static str,
+    command_template: &'static str,
+}
+
 pub fn package_bundle(
     args: &[String],
     platform: &PlatformSpec,
@@ -218,6 +235,92 @@ pub fn package_bundle(
         "archive" => archive_bundle(args, platform, version, workspace_root, output_dir),
         mode => bail!("unsupported SeaWork service packaging mode: {mode}"),
     }
+}
+
+pub fn package_updater(
+    args: &[String],
+    platform: &PlatformSpec,
+    raw_version: &str,
+    workspace_root: &Path,
+    output_dir: &Path,
+) -> Result<()> {
+    if platform.id != "windows-x86_64" {
+        bail!("the SeaWork updater artifact supports only windows-x86_64");
+    }
+    let version = normalize_version(raw_version)?;
+    let binary = input_file(args, "--updater-binary", workspace_root)?;
+    if binary.file_name().and_then(|name| name.to_str()) != Some("localsandbox-seawork-updater.exe")
+    {
+        bail!("--updater-binary must name localsandbox-seawork-updater.exe");
+    }
+    let size = fs::metadata(&binary)?.len();
+    if size == 0 || size > MAX_UPDATER_BINARY_BYTES {
+        bail!("updater binary size is outside the supported range");
+    }
+    require_amd64_pe(&binary)?;
+    let publisher_subject = required_flag_value(args, "--publisher-subject")?.trim();
+    if publisher_subject.is_empty() || publisher_subject.len() > 512 {
+        bail!("--publisher-subject must be between 1 and 512 characters");
+    }
+    let publisher_sha256_thumbprint =
+        normalize_sha256_thumbprint(required_flag_value(args, "--publisher-thumbprint")?)?;
+
+    let stem = format!("lsb-seawork-updater-v{version}-windows-x86_64");
+    let archive_name = format!("{stem}.zip");
+    let manifest_name = format!("{stem}-manifest.json");
+    let archive = output_dir.join(&archive_name);
+    let manifest_path = output_dir.join(&manifest_name);
+    let sums_path = output_dir.join(format!("lsb-seawork-updater-v{version}-SHA256SUMS"));
+    for output in [&archive, &manifest_path, &sums_path] {
+        if output.exists() {
+            bail!("refusing to overwrite {}", output.display());
+        }
+    }
+    let manifest = UpdaterArtifactManifest {
+        schema_version: 1,
+        version,
+        target: "x86_64-pc-windows-msvc",
+        binary_name: "localsandbox-seawork-updater.exe",
+        binary_sha256: sha256_file(&binary)?,
+        publisher_subject: publisher_subject.to_string(),
+        publisher_sha256_thumbprint,
+        protocol: UpdaterProtocolContract {
+            major: UPDATER_PROTOCOL_MAJOR,
+            min: UPDATER_PROTOCOL_MIN,
+            max: UPDATER_PROTOCOL_MAX,
+        },
+        service_name: "LocalSandboxSeaWorkUpdater",
+        command_template:
+            "\"%ProgramFiles%\\SeaWork\\LocalSandbox\\updater\\localsandbox-seawork-updater.exe\" --service",
+    };
+    write_json(&manifest_path, &manifest)?;
+    write_deterministic_zip(
+        &archive,
+        vec![
+            ZipInput {
+                name: "localsandbox-seawork-updater.exe".to_string(),
+                source: binary,
+            },
+            ZipInput {
+                name: "manifests/updater.json".to_string(),
+                source: manifest_path.clone(),
+            },
+        ],
+    )?;
+    fs::write(
+        &sums_path,
+        format!(
+            "{}  {}\n{}  {}\n",
+            sha256_file(&archive)?,
+            archive_name,
+            sha256_file(&manifest_path)?,
+            manifest_name
+        ),
+    )?;
+    println!("created {}", archive.display());
+    println!("created {}", manifest_path.display());
+    println!("created {}", sums_path.display());
+    Ok(())
 }
 
 pub fn stage_bundle(
@@ -773,6 +876,7 @@ fn service_contract(profile: ServiceProfile) -> ServiceContract {
             default_channel: "stable",
             committed_state_path: format!("{state_root}\\updates\\committed.json"),
             status_path: format!("{state_root}\\updates\\status.json"),
+            failed_target_path: format!("{state_root}\\updates\\failed-target.json"),
             transaction_path: format!(
                 "{state_root}\\updates\\transactions\\current.json"
             ),
@@ -788,6 +892,8 @@ fn service_contract(profile: ServiceProfile) -> ServiceContract {
                 "%ProgramFiles%\\SeaWork\\LocalSandbox\\updater\\localsandbox-seawork-updater.exe",
             binary_command_template:
                 "\"%ProgramFiles%\\SeaWork\\LocalSandbox\\updater\\localsandbox-seawork-updater.exe\" --service",
+            artifact_name_template:
+                "lsb-seawork-updater-v<VERSION>-windows-x86_64.zip",
             service_type: "SERVICE_WIN32_OWN_PROCESS",
             account: "LocalSystem",
             start: "automatic",
@@ -1196,6 +1302,39 @@ mod tests {
             require_service_profile_binary(&development_binary, ServiceProfile::Production)
                 .is_err()
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn updater_artifact_is_digest_bound_and_deterministic() {
+        let root = test_root();
+        let inputs = root.join("inputs");
+        let output = root.join("output");
+        fs::create_dir_all(&inputs).unwrap();
+        fs::create_dir_all(&output).unwrap();
+        let binary = inputs.join("localsandbox-seawork-updater.exe");
+        fs::write(&binary, fake_amd64_pe(ServiceProfile::Production)).unwrap();
+        let args = vec![
+            "--updater-binary".into(),
+            binary.display().to_string(),
+            "--publisher-subject".into(),
+            "CN=LocalSandbox Test".into(),
+            "--publisher-thumbprint".into(),
+            "ab".repeat(32),
+        ];
+        let platform = lsb_platform::platform_by_id("windows-x86_64").unwrap();
+        package_updater(&args, platform, "v0.5.0", &root, &output).unwrap();
+
+        let stem = "lsb-seawork-updater-v0.5.0-windows-x86_64";
+        let archive = output.join(format!("{stem}.zip"));
+        let manifest_path = output.join(format!("{stem}-manifest.json"));
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        assert_eq!(manifest["version"], "0.5.0");
+        assert_eq!(manifest["binary_sha256"], sha256_file(&binary).unwrap());
+        assert_eq!(manifest["service_name"], "LocalSandboxSeaWorkUpdater");
+        assert!(fs::read(&archive).unwrap().starts_with(b"PK\x03\x04"));
+        assert!(package_updater(&args, platform, "0.5.0", &root, &output).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -18,6 +18,8 @@ const RELEASE_CRATES: &[&str] = &[
     "lsb-proxy",
     "lsb-sdk",
     "lsb-seawork-service",
+    "lsb-seawork-update",
+    "lsb-seawork-updater",
     "lsb-service-client",
     "lsb-service-proto",
     "lsb-service-spike",
@@ -31,6 +33,8 @@ const VERSIONED_WORKSPACE_DEPENDENCIES: &[&str] = &[
     "lsb-sdk",
     "lsb-service-client",
     "lsb-service-proto",
+    "lsb-seawork-update",
+    "lsb-seawork-updater",
     "lsb-store",
     "lsb-vm",
 ];
@@ -42,6 +46,8 @@ const WORKSPACE_MANIFESTS: &[&str] = &[
     "crates/lsb-proxy/Cargo.toml",
     "crates/lsb-sdk/Cargo.toml",
     "crates/lsb-seawork-service/Cargo.toml",
+    "crates/lsb-seawork-update/Cargo.toml",
+    "crates/lsb-seawork-updater/Cargo.toml",
     "crates/lsb-service-client/Cargo.toml",
     "crates/lsb-service-proto/Cargo.toml",
     "crates/lsb-service-spike/Cargo.toml",
@@ -391,6 +397,9 @@ pub fn package_release(args: &[String]) -> Result<()> {
         "seawork-service" => {
             crate::seawork_release::package_bundle(args, platform, version, &root, &output_dir)
         }
+        "seawork-updater" => {
+            crate::seawork_release::package_updater(args, platform, version, &root, &output_dir)
+        }
         other => bail!("unsupported --artifact value: {other}"),
     }
 }
@@ -543,6 +552,8 @@ mod tests {
 
         for crate_name in [
             "lsb-seawork-service",
+            "lsb-seawork-update",
+            "lsb-seawork-updater",
             "lsb-service-client",
             "lsb-service-proto",
             "lsb-service-spike",

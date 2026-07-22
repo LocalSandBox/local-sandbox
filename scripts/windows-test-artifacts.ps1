@@ -27,6 +27,9 @@ function Test-AllowlistedName {
         $Name -eq 'seawork-test-release-manifest.json' -or
         $Name -eq 'SHA256SUMS' -or
         $Name -match '^lsb-seawork-service-v[0-9A-Za-z.+-]+-windows-x86_64(-symbols)?\.zip$' -or
+        $Name -match '^lsb-seawork-updater-v[0-9A-Za-z.+-]+-windows-x86_64\.zip$' -or
+        $Name -match '^lsb-seawork-updater-v[0-9A-Za-z.+-]+-windows-x86_64-manifest\.json$' -or
+        $Name -match '^lsb-seawork-updater-v[0-9A-Za-z.+-]+-SHA256SUMS$' -or
         $Name -match '^[A-Za-z0-9][A-Za-z0-9._+-]{0,120}\.tgz$' -or
         $Name -match '^evidence-[a-z0-9][a-z0-9._-]{0,80}\.json$' -or
         $Name -match '^result-(normal|beforereboot|afterreboot)\.json$'
