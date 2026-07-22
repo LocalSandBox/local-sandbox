@@ -773,6 +773,7 @@ jobs:
   tag:
     name: Tag validated commit
     needs: [prepare, ci, nodejs-build, build-os-image, build-cli, validate-managed-qemu, service-ready]
+    if: ${{ always() && needs.prepare.result == 'success' && needs.ci.result == 'success' && needs.nodejs-build.result == 'success' && needs.build-os-image.result == 'success' && needs.build-cli.result == 'success' && needs.validate-managed-qemu.result == 'success' && needs.service-ready.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
