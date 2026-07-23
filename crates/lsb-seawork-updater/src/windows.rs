@@ -40,7 +40,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     FlushFileBuffers, FILE_ATTRIBUTE_DIRECTORY, SYNCHRONIZE,
 };
 use windows_sys::Win32::System::Services::{
-    ChangeServiceConfigW, QueryServiceObjectSecurity, SERVICE_ALL_ACCESS, SERVICE_NO_CHANGE,
+    ChangeServiceConfigW, QueryServiceConfig2W, QueryServiceObjectSecurity, SERVICE_ALL_ACCESS,
+    SERVICE_CONFIG_DELAYED_AUTO_START_INFO, SERVICE_DELAYED_AUTO_START_INFO, SERVICE_NO_CHANGE,
 };
 use windows_sys::Win32::System::Threading::{
     CreateMutexW, OpenProcess, ReleaseMutex, WaitForSingleObject, PROCESS_SYNCHRONIZE,
@@ -942,6 +943,7 @@ fn verify_updater_service_config(expected_executable: &Path) -> Result<()> {
         bail!("LocalSandboxSeaWorkUpdater SCM identity is incompatible");
     }
     if service.get_config_service_sid_info()? != ServiceSidType::Unrestricted
+        || query_service_delayed_auto_start(&service)?
         || !service.get_failure_actions_on_non_crash_failures()?
         || service.get_failure_actions()? != expected_failure_actions()
     {
@@ -949,6 +951,25 @@ fn verify_updater_service_config(expected_executable: &Path) -> Result<()> {
     }
     verify_updater_service_security(&service)?;
     Ok(())
+}
+
+fn query_service_delayed_auto_start(service: &windows_service::service::Service) -> Result<bool> {
+    let mut information = SERVICE_DELAYED_AUTO_START_INFO::default();
+    let mut required = 0u32;
+    if unsafe {
+        QueryServiceConfig2W(
+            service.raw_handle(),
+            SERVICE_CONFIG_DELAYED_AUTO_START_INFO,
+            (&mut information as *mut SERVICE_DELAYED_AUTO_START_INFO).cast(),
+            std::mem::size_of::<SERVICE_DELAYED_AUTO_START_INFO>() as u32,
+            &mut required,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error())
+            .context("query LocalSandboxSeaWorkUpdater delayed auto-start");
+    }
+    Ok(information.fDelayedAutostart != 0)
 }
 
 fn expected_failure_actions() -> ServiceFailureActions {
@@ -1490,7 +1511,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires an elevated Windows token to create a temporary SCM service"]
-    fn manifest_sddl_round_trips_through_scm_with_mapped_generic_rights() {
+    fn manifest_sddl_and_delayed_start_round_trip_through_scm() {
         use windows_service::service::{ServiceErrorControl, ServiceInfo};
         use windows_sys::Win32::System::Services::SetServiceObjectSecurity;
 
@@ -1504,7 +1525,7 @@ mod tests {
             name: service_name.clone().into(),
             display_name: service_name.into(),
             service_type: ServiceType::OWN_PROCESS,
-            start_type: ServiceStartType::OnDemand,
+            start_type: ServiceStartType::AutoStart,
             error_control: ServiceErrorControl::Normal,
             executable_path: PathBuf::from(r"C:\Windows\System32\cmd.exe"),
             launch_arguments: vec![],
@@ -1515,7 +1536,11 @@ mod tests {
         let service = manager
             .create_service(
                 &info,
-                ServiceAccess::READ_CONTROL | ServiceAccess::WRITE_DAC | ServiceAccess::DELETE,
+                ServiceAccess::QUERY_CONFIG
+                    | ServiceAccess::CHANGE_CONFIG
+                    | ServiceAccess::READ_CONTROL
+                    | ServiceAccess::WRITE_DAC
+                    | ServiceAccess::DELETE,
             )
             .unwrap();
         struct DeleteService<'a>(&'a windows_service::service::Service);
@@ -1551,6 +1576,11 @@ mod tests {
         );
 
         verify_service_security(&service, UPDATER_SERVICE_SDDL, DACL_SECURITY_INFORMATION).unwrap();
+        assert!(!query_service_delayed_auto_start(&service).unwrap());
+        service.set_delayed_auto_start(true).unwrap();
+        assert!(query_service_delayed_auto_start(&service).unwrap());
+        service.set_delayed_auto_start(false).unwrap();
+        assert!(!query_service_delayed_auto_start(&service).unwrap());
     }
 
     #[test]
