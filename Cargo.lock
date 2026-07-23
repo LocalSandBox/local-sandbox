@@ -940,7 +940,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-cli"
-version = "0.5.0-rc.2"
+version = "0.5.0-rc.3"
 dependencies = [
  "anyhow",
  "base64",
@@ -963,7 +963,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-guest"
-version = "0.5.0-rc.2"
+version = "0.5.0-rc.3"
 dependencies = [
  "blake3",
  "libc",
@@ -973,7 +973,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-platform"
-version = "0.5.0-rc.2"
+version = "0.5.0-rc.3"
 dependencies = [
  "anyhow",
  "blake3",
@@ -993,7 +993,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-proto"
-version = "0.5.0-rc.2"
+version = "0.5.0-rc.3"
 dependencies = [
  "blake3",
  "serde",
@@ -1002,7 +1002,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-proxy"
-version = "0.5.0-rc.2"
+version = "0.5.0-rc.3"
 dependencies = [
  "anyhow",
  "boring",
@@ -1025,7 +1025,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-sdk"
-version = "0.5.0-rc.2"
+version = "0.5.0-rc.3"
 dependencies = [
  "anyhow",
  "flate2",
@@ -1044,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-seawork-service"
-version = "0.5.0-rc.2"
+version = "0.5.0-rc.3"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1068,7 +1068,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-seawork-update"
-version = "0.5.0-rc.2"
+version = "0.5.0-rc.3"
 dependencies = [
  "anyhow",
  "getrandom 0.3.4",
@@ -1085,7 +1085,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-seawork-updater"
-version = "0.5.0-rc.2"
+version = "0.5.0-rc.3"
 dependencies = [
  "anyhow",
  "lsb-seawork-update",
@@ -1102,7 +1102,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-service-client"
-version = "0.5.0-rc.2"
+version = "0.5.0-rc.3"
 dependencies = [
  "getrandom 0.3.4",
  "lsb-service-proto",
@@ -1116,7 +1116,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-service-proto"
-version = "0.5.0-rc.2"
+version = "0.5.0-rc.3"
 dependencies = [
  "semver",
  "serde",
@@ -1126,7 +1126,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-service-spike"
-version = "0.5.0-rc.2"
+version = "0.5.0-rc.3"
 dependencies = [
  "anyhow",
  "lsb-sdk",
@@ -1139,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-store"
-version = "0.5.0-rc.2"
+version = "0.5.0-rc.3"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1154,7 +1154,7 @@ dependencies = [
 
 [[package]]
 name = "lsb-vm"
-version = "0.5.0-rc.2"
+version = "0.5.0-rc.3"
 dependencies = [
  "anyhow",
  "blake3",
