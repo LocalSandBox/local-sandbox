@@ -1,0 +1,33 @@
+scripts/windows-test-suites/update-fast.ps1
+  s_f85a786c40bc76::t_477f191ee7cd20 50
+  s_f85a786c40bc76::t_88f23c753a8608 47-49,51-55
+  s_f82cae72dd08bb::t_db561fe2eb4dd6 46
+crates/lsb-seawork-updater/src/windows.rs
+  s_f85a786c40bc76::t_88f23c753a8608 43,65-71,974-981,1011,1029-1030,1039-1076,1491-1493,1495-1517,1519-1547,1549-1552,1554
+  s_f85a786c40bc76::t_e31cdba696a931 36-37,1494,1518,1548,1553
+  s_f85a786c40bc76::t_8c6e57bd9fc15b 1555
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "267a666ba90f7f86205824a19959e6830317883b",
+  "prompts": {},
+  "sessions": {
+    "s_f82cae72dd08bb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8b0e-d2e9-79f2-a59a-6b9993d5d617",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    },
+    "s_f85a786c40bc76": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8ed7-39e1-7b80-87d5-b14a49febb39",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
