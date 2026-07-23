@@ -1013,6 +1013,7 @@ jobs:
       - name: Validate staged GitHub release tuple
         if: ${{ vars.SEAWORK_SERVICE_SIGNING_ENABLED == 'true' }}
         env:
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
           IS_PRERELEASE: ${{ needs.prepare.outputs.is-prerelease }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
@@ -1078,6 +1079,7 @@ jobs:
     steps:
       - name: Publish draft release
         env:
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
           IS_PRERELEASE: ${{ needs.prepare.outputs.is-prerelease }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
