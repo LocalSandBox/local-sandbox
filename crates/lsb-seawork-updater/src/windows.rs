@@ -33,14 +33,14 @@ use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
 use windows_sys::Win32::Security::{
-    DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
-    PSECURITY_DESCRIPTOR,
+    GetAce, GetSecurityDescriptorDacl, MapGenericMask, DACL_SECURITY_INFORMATION, GENERIC_MAPPING,
+    GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FlushFileBuffers, FILE_ATTRIBUTE_DIRECTORY, SYNCHRONIZE,
 };
 use windows_sys::Win32::System::Services::{
-    ChangeServiceConfigW, QueryServiceObjectSecurity, SERVICE_NO_CHANGE,
+    ChangeServiceConfigW, QueryServiceObjectSecurity, SERVICE_ALL_ACCESS, SERVICE_NO_CHANGE,
 };
 use windows_sys::Win32::System::Threading::{
     CreateMutexW, OpenProcess, ReleaseMutex, WaitForSingleObject, PROCESS_SYNCHRONIZE,
@@ -62,6 +62,13 @@ const STATE_TIMEOUT: Duration = Duration::from_secs(120);
 const MAIN_STOP_TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const UPDATER_SERVICE_SDDL: &str = "O:SYG:SYD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00000005;;;IU)";
+// https://learn.microsoft.com/windows/win32/services/service-security-and-access-rights
+const SERVICE_GENERIC_MAPPING: GENERIC_MAPPING = GENERIC_MAPPING {
+    GenericRead: 0x0002_008d,
+    GenericWrite: 0x0002_0002,
+    GenericExecute: 0x0002_0170,
+    GenericAll: SERVICE_ALL_ACCESS,
+};
 const FAILURE_RESET: Duration = Duration::from_secs(86_400);
 const FAILURE_DELAYS: [Duration; 3] = [
     Duration::from_secs(5),
@@ -964,6 +971,14 @@ fn expected_failure_actions() -> ServiceFailureActions {
 fn verify_updater_service_security(service: &windows_service::service::Service) -> Result<()> {
     let information =
         OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+    verify_service_security(service, UPDATER_SERVICE_SDDL, information)
+}
+
+fn verify_service_security(
+    service: &windows_service::service::Service,
+    expected_sddl: &str,
+    information: u32,
+) -> Result<()> {
     let mut required = 0u32;
     unsafe {
         QueryServiceObjectSecurity(
@@ -993,7 +1008,7 @@ fn verify_updater_service_security(service: &windows_service::service::Service) 
             std::io::Error::last_os_error()
         );
     }
-    let expected_wide = OsStr::new(UPDATER_SERVICE_SDDL)
+    let expected_wide = OsStr::new(expected_sddl)
         .encode_wide()
         .chain(Some(0))
         .collect::<Vec<_>>();
@@ -1011,10 +1026,50 @@ fn verify_updater_service_security(service: &windows_service::service::Service) 
         bail!("compile generated updater SCM security policy failed");
     }
     let _expected = LocalAllocation(expected.cast());
+    map_generic_service_rights(actual.as_mut_ptr().cast())?;
+    map_generic_service_rights(expected)?;
     let actual_sddl = normalized_sddl(actual.as_mut_ptr().cast(), information)?;
     let expected_sddl = normalized_sddl(expected, information)?;
     if actual_sddl != expected_sddl {
         bail!("LocalSandboxSeaWorkUpdater SCM DACL differs from generated policy");
+    }
+    Ok(())
+}
+
+fn map_generic_service_rights(descriptor: PSECURITY_DESCRIPTOR) -> Result<()> {
+    let mut dacl_present = 0;
+    let mut dacl_defaulted = 0;
+    let mut dacl = std::ptr::null_mut();
+    if unsafe {
+        GetSecurityDescriptorDacl(
+            descriptor,
+            &mut dacl_present,
+            &mut dacl,
+            &mut dacl_defaulted,
+        )
+    } == 0
+    {
+        bail!("read updater SCM DACL for generic-rights mapping failed");
+    }
+    if dacl_present == 0 || dacl.is_null() {
+        bail!("updater SCM security descriptor has no DACL");
+    }
+    let ace_count = unsafe { (*dacl).AceCount };
+    for index in 0..u32::from(ace_count) {
+        let mut ace = std::ptr::null_mut();
+        if unsafe { GetAce(dacl, index, &mut ace) } == 0 || ace.is_null() {
+            bail!("read updater SCM DACL ACE for generic-rights mapping failed");
+        }
+        let header = ace.cast::<windows_sys::Win32::Security::ACE_HEADER>();
+        if unsafe { (*header).AceSize } < 8 {
+            bail!("updater SCM DACL contains a short ACE");
+        }
+        let mask = unsafe {
+            ace.cast::<u8>()
+                .add(std::mem::size_of::<windows_sys::Win32::Security::ACE_HEADER>())
+                .cast::<u32>()
+        };
+        unsafe { MapGenericMask(mask, &SERVICE_GENERIC_MAPPING) };
     }
     Ok(())
 }
@@ -1432,6 +1487,71 @@ fn compiled_publishers() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires an elevated Windows token to create a temporary SCM service"]
+    fn manifest_sddl_round_trips_through_scm_with_mapped_generic_rights() {
+        use windows_service::service::{ServiceErrorControl, ServiceInfo};
+        use windows_sys::Win32::System::Services::SetServiceObjectSecurity;
+
+        let manager = ServiceManager::local_computer(
+            None::<&str>,
+            ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
+        )
+        .unwrap();
+        let service_name = format!("LocalSandboxSeaWorkUpdaterAclTest{}", std::process::id());
+        let info = ServiceInfo {
+            name: service_name.clone().into(),
+            display_name: service_name.into(),
+            service_type: ServiceType::OWN_PROCESS,
+            start_type: ServiceStartType::OnDemand,
+            error_control: ServiceErrorControl::Normal,
+            executable_path: PathBuf::from(r"C:\Windows\System32\cmd.exe"),
+            launch_arguments: vec![],
+            dependencies: vec![],
+            account_name: None,
+            account_password: None,
+        };
+        let service = manager
+            .create_service(
+                &info,
+                ServiceAccess::READ_CONTROL | ServiceAccess::WRITE_DAC | ServiceAccess::DELETE,
+            )
+            .unwrap();
+        struct DeleteService<'a>(&'a windows_service::service::Service);
+        impl Drop for DeleteService<'_> {
+            fn drop(&mut self) {
+                self.0.delete().unwrap();
+            }
+        }
+        let _delete = DeleteService(&service);
+
+        let manifest_wide = OsStr::new(UPDATER_SERVICE_SDDL)
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let mut manifest: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        assert_ne!(
+            unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    manifest_wide.as_ptr(),
+                    SDDL_REVISION_1,
+                    &mut manifest,
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        let _manifest = LocalAllocation(manifest.cast());
+        assert_ne!(
+            unsafe {
+                SetServiceObjectSecurity(service.raw_handle(), DACL_SECURITY_INFORMATION, manifest)
+            },
+            0
+        );
+
+        verify_service_security(&service, UPDATER_SERVICE_SDDL, DACL_SECURITY_INFORMATION).unwrap();
+    }
 
     #[test]
     fn transaction_configuration_accepts_only_old_target_or_mixed_replay_values() {

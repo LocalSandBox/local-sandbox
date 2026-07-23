@@ -44,6 +44,16 @@ Invoke-Native cargo @(
 ) 'controlled-update Rust tests'
 
 Invoke-Native cargo @(
+    'test',
+    '-p', 'lsb-seawork-updater',
+    '--locked',
+    'windows::tests::manifest_sddl_round_trips_through_scm_with_mapped_generic_rights',
+    '--',
+    '--ignored',
+    '--exact'
+) 'updater SCM DACL round-trip integration test'
+
+Invoke-Native cargo @(
     'clippy',
     '-p', 'lsb-seawork-update',
     '-p', 'lsb-seawork-updater',
