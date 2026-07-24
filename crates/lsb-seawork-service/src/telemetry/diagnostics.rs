@@ -1,0 +1,676 @@
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
+
+use anyhow::{bail, Context, Result};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+
+use super::CommonContext;
+
+const SMALL_FILES: &[&str] = &[
+    "boot.status.json",
+    "preflight.json",
+    "qemu.argv.redacted.txt",
+    "qemu.status.json",
+];
+const ROLLING_FILES: &[&str] = &["qemu.stderr.log", "qemu.stdout.log", "serial.log"];
+const GENERATED_METADATA_RESERVE: u64 = 64 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiagnosticLimits {
+    pub small_file_bytes: u64,
+    pub rolling_file_bytes: u64,
+    pub service_log_bytes: u64,
+    pub total_bytes: u64,
+}
+
+impl Default for DiagnosticLimits {
+    fn default() -> Self {
+        Self {
+            small_file_bytes: 256 * 1024,
+            rolling_file_bytes: 2 * 1024 * 1024,
+            service_log_bytes: 2 * 1024 * 1024,
+            total_bytes: 10 * 1024 * 1024,
+        }
+    }
+}
+
+impl DiagnosticLimits {
+    fn validate(self) -> Result<Self> {
+        if self.small_file_bytes == 0
+            || self.rolling_file_bytes == 0
+            || self.service_log_bytes == 0
+            || self.total_bytes == 0
+            || self.small_file_bytes > self.total_bytes
+            || self.rolling_file_bytes > self.total_bytes
+            || self.service_log_bytes > self.total_bytes
+            || self.total_bytes <= GENERATED_METADATA_RESERVE
+        {
+            bail!("diagnostic limits must be non-zero and fit the total incident limit");
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attachment {
+    pub path: PathBuf,
+    pub filename: String,
+    pub content_type: &'static str,
+}
+
+#[derive(Debug, Clone)]
+pub struct IncidentMetadata {
+    pub event_id: String,
+    pub timestamp_utc: String,
+    pub stable_error_code: String,
+    pub correlation_id: Option<String>,
+    pub resource_id: Option<String>,
+    pub failure_phase: String,
+    pub common_context: CommonContext,
+}
+
+#[derive(Debug)]
+pub struct IncidentSnapshot {
+    pub event_id: String,
+    pub directory: PathBuf,
+    pub attachments: Vec<Attachment>,
+    pub total_bytes: u64,
+}
+
+impl IncidentSnapshot {
+    pub fn remove(self) -> Result<()> {
+        fs::remove_dir_all(&self.directory).context("remove accepted telemetry incident snapshot")
+    }
+
+    pub fn retain_bounded(self, policy: RetentionPolicy) -> Result<()> {
+        let root = self
+            .directory
+            .parent()
+            .context("telemetry incident directory has no parent")?;
+        prune_retained_incidents(root, policy)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetentionPolicy {
+    pub max_count: usize,
+    pub max_age: Duration,
+}
+
+impl Default for RetentionPolicy {
+    fn default() -> Self {
+        Self {
+            max_count: 20,
+            max_age: Duration::from_secs(7 * 24 * 60 * 60),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct IncidentManifest<'a> {
+    schema_version: u32,
+    event_id: &'a str,
+    timestamp_utc: &'a str,
+    stable_error_code: &'a str,
+    correlation_id: &'a Option<String>,
+    resource_id: &'a Option<String>,
+    failure_phase: &'a str,
+    total_bytes: u64,
+    files: Vec<FileRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct FileRecord {
+    name: String,
+    source_path: String,
+    status: FileStatus,
+    source_bytes: Option<u64>,
+    captured_bytes: u64,
+    sha256: Option<String>,
+    truncated: bool,
+    changed_during_capture: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum FileStatus {
+    Captured,
+    Missing,
+    Unavailable,
+    TotalLimitReached,
+}
+
+pub fn collect_incident(
+    incident_root: &Path,
+    instance_dir: &Path,
+    service_log: Option<&Path>,
+    metadata: &IncidentMetadata,
+    limits: DiagnosticLimits,
+) -> Result<IncidentSnapshot> {
+    let limits = limits.validate()?;
+    validate_event_id(&metadata.event_id)?;
+    let directory = incident_root.join(&metadata.event_id);
+    if directory.exists() {
+        bail!("telemetry incident directory already exists");
+    }
+    fs::create_dir_all(&directory).context("create telemetry incident directory")?;
+
+    let result = collect_into(&directory, instance_dir, service_log, metadata, limits);
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&directory);
+    }
+    result
+}
+
+fn collect_into(
+    directory: &Path,
+    instance_dir: &Path,
+    service_log: Option<&Path>,
+    metadata: &IncidentMetadata,
+    limits: DiagnosticLimits,
+) -> Result<IncidentSnapshot> {
+    let mut records = Vec::new();
+    let mut attachments = Vec::new();
+    let mut total_bytes = 0u64;
+    let source_total_limit = limits.total_bytes - GENERATED_METADATA_RESERVE;
+
+    for name in SMALL_FILES {
+        capture_file(
+            &instance_dir.join(name),
+            name,
+            false,
+            limits.small_file_bytes,
+            source_total_limit,
+            directory,
+            &mut total_bytes,
+            &mut records,
+            &mut attachments,
+        );
+    }
+    for name in ROLLING_FILES {
+        capture_file(
+            &instance_dir.join(name),
+            name,
+            true,
+            limits.rolling_file_bytes,
+            source_total_limit,
+            directory,
+            &mut total_bytes,
+            &mut records,
+            &mut attachments,
+        );
+    }
+    if let Some(service_log) = service_log {
+        capture_file(
+            service_log,
+            "service.tail.jsonl",
+            true,
+            limits.service_log_bytes,
+            source_total_limit,
+            directory,
+            &mut total_bytes,
+            &mut records,
+            &mut attachments,
+        );
+    }
+
+    let machine = serde_json::to_vec_pretty(&metadata.common_context)
+        .context("serialize telemetry machine context")?;
+    write_bounded_generated(
+        directory,
+        "machine.json",
+        &machine,
+        limits.total_bytes,
+        &mut total_bytes,
+        &mut attachments,
+    )?;
+
+    let manifest = IncidentManifest {
+        schema_version: 1,
+        event_id: &metadata.event_id,
+        timestamp_utc: &metadata.timestamp_utc,
+        stable_error_code: &metadata.stable_error_code,
+        correlation_id: &metadata.correlation_id,
+        resource_id: &metadata.resource_id,
+        failure_phase: &metadata.failure_phase,
+        total_bytes,
+        files: records,
+    };
+    let manifest_bytes =
+        serde_json::to_vec_pretty(&manifest).context("serialize telemetry incident manifest")?;
+    write_atomic_bounded(
+        directory,
+        "incident.json",
+        &manifest_bytes,
+        limits.total_bytes,
+        &mut total_bytes,
+    )?;
+    attachments.push(Attachment {
+        path: directory.join("incident.json"),
+        filename: "incident.json".to_string(),
+        content_type: "application/json",
+    });
+
+    Ok(IncidentSnapshot {
+        event_id: metadata.event_id.clone(),
+        directory: directory.to_path_buf(),
+        attachments,
+        total_bytes,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn capture_file(
+    source: &Path,
+    destination_name: &str,
+    tail: bool,
+    per_file_limit: u64,
+    total_limit: u64,
+    directory: &Path,
+    total_bytes: &mut u64,
+    records: &mut Vec<FileRecord>,
+    attachments: &mut Vec<Attachment>,
+) {
+    let source_path = source.display().to_string();
+    let before = match fs::metadata(source) {
+        Ok(metadata) if metadata.is_file() => metadata,
+        Ok(_) => {
+            records.push(unavailable_record(destination_name, source_path));
+            return;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            records.push(FileRecord {
+                name: destination_name.to_string(),
+                source_path,
+                status: FileStatus::Missing,
+                source_bytes: None,
+                captured_bytes: 0,
+                sha256: None,
+                truncated: false,
+                changed_during_capture: false,
+            });
+            return;
+        }
+        Err(_) => {
+            records.push(unavailable_record(destination_name, source_path));
+            return;
+        }
+    };
+    let available = total_limit.saturating_sub(*total_bytes);
+    if available == 0 {
+        records.push(FileRecord {
+            name: destination_name.to_string(),
+            source_path,
+            status: FileStatus::TotalLimitReached,
+            source_bytes: Some(before.len()),
+            captured_bytes: 0,
+            sha256: None,
+            truncated: before.len() > 0,
+            changed_during_capture: false,
+        });
+        return;
+    }
+    let capture_limit = per_file_limit.min(available);
+    let destination = directory.join(destination_name);
+    let captured = copy_bounded(source, &destination, tail, capture_limit);
+    let (captured_bytes, hash) = match captured {
+        Ok(value) => value,
+        Err(_) => {
+            let _ = fs::remove_file(&destination);
+            records.push(unavailable_record(destination_name, source_path));
+            return;
+        }
+    };
+    let after = fs::metadata(source).ok();
+    let changed = after.as_ref().is_none_or(|metadata| {
+        metadata.len() != before.len() || metadata.modified().ok() != before.modified().ok()
+    });
+    *total_bytes = total_bytes.saturating_add(captured_bytes);
+    records.push(FileRecord {
+        name: destination_name.to_string(),
+        source_path,
+        status: FileStatus::Captured,
+        source_bytes: Some(before.len()),
+        captured_bytes,
+        sha256: Some(hash),
+        truncated: before.len() > captured_bytes,
+        changed_during_capture: changed,
+    });
+    attachments.push(Attachment {
+        path: destination,
+        filename: destination_name.to_string(),
+        content_type: content_type(destination_name),
+    });
+}
+
+fn copy_bounded(
+    source: &Path,
+    destination: &Path,
+    tail: bool,
+    limit: u64,
+) -> Result<(u64, String)> {
+    let mut input = File::open(source).context("open diagnostic source")?;
+    let length = input.metadata().context("inspect diagnostic source")?.len();
+    if tail && length > limit {
+        input
+            .seek(SeekFrom::Start(length - limit))
+            .context("seek diagnostic tail")?;
+    }
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .context("create diagnostic snapshot file")?;
+    let mut remaining = limit;
+    let mut captured = 0u64;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    while remaining > 0 {
+        let requested = usize::try_from(remaining.min(buffer.len() as u64)).unwrap_or(buffer.len());
+        let read = input
+            .read(&mut buffer[..requested])
+            .context("read diagnostic source")?;
+        if read == 0 {
+            break;
+        }
+        output
+            .write_all(&buffer[..read])
+            .context("write diagnostic snapshot")?;
+        hasher.update(&buffer[..read]);
+        let read = read as u64;
+        captured += read;
+        remaining -= read;
+    }
+    output
+        .sync_all()
+        .context("flush diagnostic snapshot file")?;
+    Ok((captured, format!("{:x}", hasher.finalize())))
+}
+
+fn write_bounded_generated(
+    directory: &Path,
+    name: &str,
+    bytes: &[u8],
+    total_limit: u64,
+    total_bytes: &mut u64,
+    attachments: &mut Vec<Attachment>,
+) -> Result<()> {
+    write_atomic_bounded(directory, name, bytes, total_limit, total_bytes)?;
+    attachments.push(Attachment {
+        path: directory.join(name),
+        filename: name.to_string(),
+        content_type: content_type(name),
+    });
+    Ok(())
+}
+
+fn write_atomic_bounded(
+    directory: &Path,
+    name: &str,
+    bytes: &[u8],
+    total_limit: u64,
+    total_bytes: &mut u64,
+) -> Result<()> {
+    let length = u64::try_from(bytes.len()).context("generated diagnostic file is too large")?;
+    if total_bytes.saturating_add(length) > total_limit {
+        bail!("generated diagnostic metadata exceeds total incident limit");
+    }
+    let pending = directory.join(format!(".{name}.pending"));
+    let destination = directory.join(name);
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&pending)
+        .context("create pending diagnostic metadata")?;
+    output
+        .write_all(bytes)
+        .context("write diagnostic metadata")?;
+    output.sync_all().context("flush diagnostic metadata")?;
+    fs::rename(&pending, &destination).context("commit diagnostic metadata")?;
+    *total_bytes += length;
+    Ok(())
+}
+
+fn unavailable_record(name: &str, source_path: String) -> FileRecord {
+    FileRecord {
+        name: name.to_string(),
+        source_path,
+        status: FileStatus::Unavailable,
+        source_bytes: None,
+        captured_bytes: 0,
+        sha256: None,
+        truncated: false,
+        changed_during_capture: false,
+    }
+}
+
+fn content_type(name: &str) -> &'static str {
+    if name.ends_with(".json") {
+        "application/json"
+    } else {
+        "text/plain"
+    }
+}
+
+fn validate_event_id(event_id: &str) -> Result<()> {
+    if event_id.len() != 32 || !event_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("telemetry event ID must be 32 hexadecimal characters");
+    }
+    Ok(())
+}
+
+fn prune_retained_incidents(root: &Path, policy: RetentionPolicy) -> Result<()> {
+    if policy.max_count == 0 || policy.max_age.is_zero() {
+        bail!("telemetry retention limits must be non-zero");
+    }
+    let now = SystemTime::now();
+    let mut incidents = Vec::new();
+    for entry in fs::read_dir(root).context("list retained telemetry incidents")? {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if validate_event_id(name).is_err() {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        incidents.push((
+            metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+            entry.path(),
+        ));
+    }
+    incidents.sort_by_key(|(modified, _)| *modified);
+    let excess = incidents.len().saturating_sub(policy.max_count);
+    for (index, (modified, path)) in incidents.into_iter().enumerate() {
+        let expired = now
+            .duration_since(modified)
+            .is_ok_and(|age| age > policy.max_age);
+        if index < excess || expired {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    fn temporary_root(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "lsbs-telemetry-{label}-{}",
+            crate::session::ResourceHandle::random().unwrap()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn metadata() -> IncidentMetadata {
+        IncidentMetadata {
+            event_id: "0123456789abcdef0123456789abcdef".to_string(),
+            timestamp_utc: "2026-07-25T00:00:00Z".to_string(),
+            stable_error_code: "SANDBOX_BOOT_FAILED".to_string(),
+            correlation_id: Some("correlation-1".to_string()),
+            resource_id: Some("sandbox-1".to_string()),
+            failure_phase: "boot".to_string(),
+            common_context: CommonContext::collect("commit", Some("digest".to_string()), None),
+        }
+    }
+
+    #[test]
+    fn collects_allowlist_and_records_missing_files() {
+        let root = temporary_root("allowlist");
+        let instance = root.join("instance");
+        fs::create_dir(&instance).unwrap();
+        fs::write(instance.join("boot.status.json"), br#"{"ready":false}"#).unwrap();
+        fs::write(instance.join("secret.txt"), b"must not be captured").unwrap();
+
+        let snapshot = collect_incident(
+            &root.join("incidents"),
+            &instance,
+            None,
+            &metadata(),
+            DiagnosticLimits::default(),
+        )
+        .unwrap();
+        let manifest = fs::read_to_string(snapshot.directory.join("incident.json")).unwrap();
+        assert!(manifest.contains("\"status\": \"missing\""));
+        assert!(snapshot.directory.join("boot.status.json").is_file());
+        assert!(!snapshot.directory.join("secret.txt").exists());
+        assert!(snapshot.directory.join("machine.json").is_file());
+        snapshot.remove().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn tails_rolling_logs_and_preserves_non_utf8_bytes() {
+        let root = temporary_root("tail");
+        let instance = root.join("instance");
+        fs::create_dir(&instance).unwrap();
+        let bytes = [b'a', b'b', b'c', 0xff, b'd', b'e', b'f'];
+        fs::write(instance.join("qemu.stderr.log"), bytes).unwrap();
+        let limits = DiagnosticLimits {
+            rolling_file_bytes: 4,
+            ..DiagnosticLimits::default()
+        };
+
+        let snapshot = collect_incident(
+            &root.join("incidents"),
+            &instance,
+            None,
+            &metadata(),
+            limits,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(snapshot.directory.join("qemu.stderr.log")).unwrap(),
+            [0xff, b'd', b'e', b'f']
+        );
+        let manifest = fs::read_to_string(snapshot.directory.join("incident.json")).unwrap();
+        assert!(manifest.contains("\"truncated\": true"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn total_limit_stops_optional_files_without_exceeding_bound() {
+        let root = temporary_root("total");
+        let instance = root.join("instance");
+        fs::create_dir(&instance).unwrap();
+        fs::write(instance.join("boot.status.json"), vec![b'a'; 64 * 1024]).unwrap();
+        fs::write(instance.join("preflight.json"), vec![b'b'; 64 * 1024]).unwrap();
+        let limits = DiagnosticLimits {
+            small_file_bytes: 64 * 1024,
+            rolling_file_bytes: 64 * 1024,
+            service_log_bytes: 64 * 1024,
+            total_bytes: 128 * 1024,
+        };
+
+        let snapshot = collect_incident(
+            &root.join("incidents"),
+            &instance,
+            None,
+            &metadata(),
+            limits,
+        )
+        .unwrap();
+        assert!(snapshot.total_bytes <= limits.total_bytes);
+        let manifest = fs::read_to_string(snapshot.directory.join("incident.json")).unwrap();
+        assert!(manifest.contains("\"status\": \"total_limit_reached\""));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_limits_and_duplicate_event_ids_fail_without_overwrite() {
+        let root = temporary_root("bounds");
+        let instance = root.join("instance");
+        fs::create_dir(&instance).unwrap();
+        assert!(collect_incident(
+            &root.join("incidents"),
+            &instance,
+            None,
+            &metadata(),
+            DiagnosticLimits {
+                small_file_bytes: 0,
+                ..DiagnosticLimits::default()
+            },
+        )
+        .is_err());
+        collect_incident(
+            &root.join("incidents"),
+            &instance,
+            None,
+            &metadata(),
+            DiagnosticLimits::default(),
+        )
+        .unwrap();
+        assert!(collect_incident(
+            &root.join("incidents"),
+            &instance,
+            None,
+            &metadata(),
+            DiagnosticLimits::default(),
+        )
+        .is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejected_snapshots_are_retained_under_a_count_bound() {
+        let root = temporary_root("retention");
+        let instance = root.join("instance");
+        fs::create_dir(&instance).unwrap();
+        let incidents = root.join("incidents");
+        for index in 0..3 {
+            let mut metadata = metadata();
+            metadata.event_id = format!("{index:032x}");
+            collect_incident(
+                &incidents,
+                &instance,
+                None,
+                &metadata,
+                DiagnosticLimits::default(),
+            )
+            .unwrap()
+            .retain_bounded(RetentionPolicy {
+                max_count: 2,
+                max_age: Duration::from_secs(60),
+            })
+            .unwrap();
+        }
+        assert_eq!(fs::read_dir(&incidents).unwrap().count(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+}

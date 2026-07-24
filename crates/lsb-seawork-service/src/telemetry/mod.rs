@@ -1,10 +1,14 @@
 mod context;
+mod diagnostics;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 pub use context::{CommonContext, COMPONENT, SERVICE_NAME};
+pub use diagnostics::{
+    collect_incident, Attachment, DiagnosticLimits, IncidentMetadata, RetentionPolicy,
+};
 
 pub const TRANSACTION_SERVICE_STARTUP: &str = "service.startup";
 pub const TRANSACTION_SANDBOX_START: &str = "sandbox.start";
@@ -50,6 +54,7 @@ impl Breadcrumb {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FailureEvent {
+    pub event_id: Option<String>,
     pub operation: &'static str,
     pub stable_error_code: &'static str,
     pub level: Level,
@@ -60,6 +65,7 @@ pub struct FailureEvent {
     pub phase: Option<&'static str>,
     pub tags: BTreeMap<String, String>,
     pub contexts: BTreeMap<String, serde_json::Value>,
+    pub attachments: Vec<Attachment>,
 }
 
 impl FailureEvent {
@@ -70,6 +76,7 @@ impl FailureEvent {
         summary: impl Into<String>,
     ) -> Self {
         Self {
+            event_id: None,
             operation,
             stable_error_code,
             level,
@@ -80,6 +87,7 @@ impl FailureEvent {
             phase: None,
             tags: BTreeMap::new(),
             contexts: BTreeMap::new(),
+            attachments: Vec::new(),
         }
     }
 
@@ -89,6 +97,11 @@ impl FailureEvent {
             self.operation.to_string(),
             self.stable_error_code.to_string(),
         ]
+    }
+
+    pub fn with_event_id(mut self, event_id: impl Into<String>) -> Self {
+        self.event_id = Some(event_id.into());
+        self
     }
 
     pub fn with_correlation_id(mut self, correlation_id: impl Into<String>) -> Self {
@@ -108,6 +121,11 @@ impl FailureEvent {
 
     pub fn retryable(mut self, retryable: bool) -> Self {
         self.retryable = retryable;
+        self
+    }
+
+    pub fn with_attachments(mut self, attachments: Vec<Attachment>) -> Self {
+        self.attachments = attachments;
         self
     }
 }
@@ -145,7 +163,7 @@ impl SpanDescription {
 pub trait Adapter: Send + Sync {
     fn breadcrumb(&self, breadcrumb: Breadcrumb) -> Result<(), ()>;
     fn capture_failure(&self, event: FailureEvent) -> Result<Option<String>, ()>;
-    fn start_span(&self, span: SpanDescription) -> Result<Option<u64>, ()>;
+    fn start_span(&self, parent_id: Option<u64>, span: SpanDescription) -> Result<Option<u64>, ()>;
     fn finish_span(&self, span_id: u64, status: SpanStatus) -> Result<(), ()>;
     fn flush(&self, timeout: Duration) -> Result<(), ()>;
 }
@@ -179,7 +197,7 @@ impl Telemetry {
     }
 
     pub fn start_span(&self, span: SpanDescription) -> SpanGuard {
-        let span_id = self.adapter.start_span(span).ok().flatten();
+        let span_id = self.adapter.start_span(None, span).ok().flatten();
         SpanGuard {
             adapter: self.adapter.clone(),
             span_id,
@@ -190,6 +208,12 @@ impl Telemetry {
     pub fn flush(&self, timeout: Duration) {
         let _ = self.adapter.flush(timeout);
     }
+
+    pub fn new_event_id(&self) -> Option<String> {
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes).ok()?;
+        Some(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+    }
 }
 
 pub struct SpanGuard {
@@ -199,6 +223,15 @@ pub struct SpanGuard {
 }
 
 impl SpanGuard {
+    pub fn start_child(&self, span: SpanDescription) -> SpanGuard {
+        let span_id = self.adapter.start_span(self.span_id, span).ok().flatten();
+        SpanGuard {
+            adapter: self.adapter.clone(),
+            span_id,
+            status: SpanStatus::InternalError,
+        }
+    }
+
     pub fn set_status(&mut self, status: SpanStatus) {
         self.status = status;
     }
@@ -232,7 +265,11 @@ impl Adapter for NoopAdapter {
         Ok(None)
     }
 
-    fn start_span(&self, _span: SpanDescription) -> Result<Option<u64>, ()> {
+    fn start_span(
+        &self,
+        _parent_id: Option<u64>,
+        _span: SpanDescription,
+    ) -> Result<Option<u64>, ()> {
         Ok(None)
     }
 
@@ -267,7 +304,7 @@ mod tests {
     struct FakeState {
         breadcrumbs: Vec<Breadcrumb>,
         events: Vec<FailureEvent>,
-        spans: Vec<(u64, SpanDescription)>,
+        spans: Vec<(u64, Option<u64>, SpanDescription)>,
         finished: Vec<(u64, SpanStatus)>,
         flushes: Vec<Duration>,
         fail_calls: bool,
@@ -293,17 +330,25 @@ mod tests {
             if state.fail_calls {
                 return Err(());
             }
+            let event_id = event
+                .event_id
+                .clone()
+                .unwrap_or_else(|| "event-1".to_string());
             state.events.push(event);
-            Ok(Some("event-1".to_string()))
+            Ok(Some(event_id))
         }
 
-        fn start_span(&self, span: SpanDescription) -> Result<Option<u64>, ()> {
+        fn start_span(
+            &self,
+            parent_id: Option<u64>,
+            span: SpanDescription,
+        ) -> Result<Option<u64>, ()> {
             let mut state = self.state.lock().unwrap();
             if state.fail_calls {
                 return Err(());
             }
             let id = state.spans.len() as u64 + 1;
-            state.spans.push((id, span));
+            state.spans.push((id, parent_id, span));
             Ok(Some(id))
         }
 
@@ -355,6 +400,25 @@ mod tests {
         assert_eq!(state.spans.len(), 1);
         assert_eq!(state.finished, vec![(1, SpanStatus::Ok)]);
         assert_eq!(state.flushes, vec![Duration::from_millis(50)]);
+    }
+
+    #[test]
+    fn child_span_records_its_parent() {
+        let adapter = Arc::new(FakeAdapter::default());
+        let telemetry = Telemetry::new(adapter.clone());
+        let transaction =
+            telemetry.start_span(SpanDescription::transaction(TRANSACTION_SERVICE_STARTUP));
+        transaction
+            .start_child(SpanDescription::child(
+                "bundle.verify",
+                "bundle verification",
+            ))
+            .finish(SpanStatus::Ok);
+        transaction.finish(SpanStatus::Ok);
+
+        let state = adapter.state.lock().unwrap();
+        assert_eq!(state.spans[0].1, None);
+        assert_eq!(state.spans[1].1, Some(1));
     }
 
     #[test]

@@ -20,6 +20,8 @@ const FORCED_JOB_STOP_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct ManagedVmSpec {
+    pub correlation_id: String,
+    pub resource_id: String,
     pub instance_dir: PathBuf,
     pub rootfs_image: PathBuf,
     pub cpus: usize,
@@ -203,6 +205,7 @@ impl ManagedVm {
         spec: ManagedVmSpec,
         session_cancellation: CancellationToken,
         startup_cancellation: CancellationToken,
+        telemetry: crate::telemetry::Telemetry,
     ) -> Result<Self> {
         validate_spec(engine, &spec)?;
         let image_relative_path = engine.qemu_image_relative_path()?;
@@ -229,6 +232,7 @@ impl ManagedVm {
                     thread_containment,
                     receiver,
                     ready,
+                    telemetry,
                 )
             })
             .context("spawn managed VM thread")?;
@@ -473,6 +477,7 @@ fn run(
     process_containment: Arc<SandboxJob>,
     commands: mpsc::Receiver<Command>,
     ready: mpsc::SyncSender<Result<()>>,
+    telemetry: crate::telemetry::Telemetry,
 ) {
     if session_cancellation.is_cancelled() || startup_cancellation.is_cancelled() {
         let _ = cleanup_instance(&engine, &spec);
@@ -481,6 +486,9 @@ fn run(
     }
     let result = build_and_start(&engine, &mut spec, process_containment.clone());
     let Ok((sandbox, proxy_handle)) = result else {
+        if let Err(error) = &result {
+            capture_vm_failure(&telemetry, &engine, &spec, error, "boot");
+        }
         let _ = cleanup_instance(&engine, &spec);
         let _ = ready.send(result.map(|_| ()));
         return;
@@ -589,6 +597,61 @@ fn run(
                 return;
             }
         }
+    }
+}
+
+fn capture_vm_failure(
+    telemetry: &crate::telemetry::Telemetry,
+    engine: &ServiceEngineConfig,
+    spec: &ManagedVmSpec,
+    error: &anyhow::Error,
+    phase: &'static str,
+) {
+    let Some(event_id) = telemetry.new_event_id() else {
+        return;
+    };
+    let metadata = crate::telemetry::IncidentMetadata {
+        event_id: event_id.clone(),
+        timestamp_utc: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|_| "unknown".to_string()),
+        stable_error_code: "SANDBOX_BOOT_FAILED".to_string(),
+        correlation_id: Some(spec.correlation_id.clone()),
+        resource_id: Some(spec.resource_id.clone()),
+        failure_phase: phase.to_string(),
+        common_context: crate::telemetry::CommonContext::collect(
+            option_env!("GITHUB_SHA").unwrap_or("unknown"),
+            None,
+            None,
+        ),
+    };
+    let snapshot = crate::telemetry::collect_incident(
+        &engine.telemetry_root().join("incidents"),
+        &spec.instance_dir,
+        None,
+        &metadata,
+        crate::telemetry::DiagnosticLimits::default(),
+    );
+    let Ok(snapshot) = snapshot else {
+        return;
+    };
+    let captured = telemetry.capture_failure(
+        crate::telemetry::FailureEvent::new(
+            "sandbox.start",
+            "SANDBOX_BOOT_FAILED",
+            crate::telemetry::Level::Error,
+            error.to_string(),
+        )
+        .with_event_id(event_id)
+        .with_correlation_id(&spec.correlation_id)
+        .with_resource_id(&spec.resource_id)
+        .with_phase(phase)
+        .with_attachments(snapshot.attachments.clone()),
+    );
+    if captured.is_some() {
+        let _ = snapshot.remove();
+    } else {
+        let _ = snapshot.retain_bounded(crate::telemetry::RetentionPolicy::default());
     }
 }
 
@@ -988,6 +1051,8 @@ mod tests {
         )
         .unwrap();
         let spec = ManagedVmSpec {
+            correlation_id: "correlation".to_string(),
+            resource_id: "sandbox".to_string(),
             instance_dir: PathBuf::from(r"C:\Users\caller\instance"),
             rootfs_image: PathBuf::from(r"C:\Users\caller\instance\rootfs.ext4"),
             cpus: 100,
@@ -1001,6 +1066,8 @@ mod tests {
     #[test]
     fn managed_vm_job_limits_include_fixed_overhead_and_process_cap() {
         let spec = ManagedVmSpec {
+            correlation_id: "correlation".to_string(),
+            resource_id: "sandbox".to_string(),
             instance_dir: PathBuf::from(r"C:\ProgramData\LocalSandbox\instance"),
             rootfs_image: PathBuf::from(r"C:\ProgramData\LocalSandbox\instance\rootfs.ext4"),
             cpus: 2,

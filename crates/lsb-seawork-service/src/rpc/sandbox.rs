@@ -50,6 +50,8 @@ pub async fn start(
             .with_data("correlation_id", correlation_id.clone()),
     );
     let result = start_inner(
+        telemetry.clone(),
+        correlation_id.clone(),
         engine,
         sessions,
         session_id,
@@ -82,6 +84,8 @@ pub async fn start(
 
 #[allow(clippy::too_many_arguments)]
 async fn start_inner(
+    telemetry: Telemetry,
+    correlation_id: String,
     engine: Option<ServiceEngineConfig>,
     sessions: SessionManager,
     session_id: ResourceHandle,
@@ -197,6 +201,7 @@ async fn start_inner(
             &identity,
             sandbox_id,
             PrepareInstanceOptions {
+                correlation_id,
                 cpus,
                 memory_mib,
                 disk_mib,
@@ -230,6 +235,7 @@ async fn start_inner(
             transaction,
             spec,
             cancellation,
+            telemetry,
         );
         match started {
             Ok(handle) => {
@@ -493,13 +499,17 @@ fn finish_operation(
             if let Some(resource_id) = resource_id {
                 event = event.with_resource_id(resource_id);
             }
-            telemetry.capture_failure(event);
+            if !(operation == TRANSACTION_SANDBOX_START && *error == ErrorCode::ServiceUnavailable)
+            {
+                telemetry.capture_failure(event);
+            }
             span.finish(status);
         }
     }
 }
 
 struct PrepareInstanceOptions {
+    correlation_id: String,
     cpus: u16,
     memory_mib: u32,
     disk_mib: u32,
@@ -557,6 +567,8 @@ fn prepare_instance(
             .set_len(requested_bytes)
             .context("size managed rootfs")?;
         Ok(ManagedVmSpec {
+            correlation_id: options.correlation_id,
+            resource_id: sandbox_id.to_string(),
             instance_dir: instance_dir.clone(),
             rootfs_image,
             cpus: usize::from(options.cpus),

@@ -615,6 +615,7 @@ impl SessionManager {
         transaction: crate::resource::transaction::ResourceTransaction,
         spec: ManagedVmSpec,
         startup_cancellation: CancellationToken,
+        telemetry: crate::telemetry::Telemetry,
     ) -> Result<ResourceHandle> {
         let cancellation = {
             let state = self
@@ -642,6 +643,7 @@ impl SessionManager {
             spec,
             cancellation,
             startup_cancellation,
+            telemetry,
         );
         let mut state = self
             .state

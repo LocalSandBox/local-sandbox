@@ -82,7 +82,7 @@ fn run_registered(
     let config = ServiceConfig::load_or_default(&paths.config)?;
     let product_ca_bundle_pem = crate::config::load_product_ca_bundle(&paths.product_ca_bundle)?;
     advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
-    let bundle_span = telemetry.start_span(SpanDescription::child(
+    let bundle_span = startup_span.start_child(SpanDescription::child(
         "bundle.verify",
         "bundle/config verification",
     ));
@@ -125,7 +125,7 @@ fn run_registered(
         }
     };
     advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
-    let ledger_span = telemetry.start_span(SpanDescription::child(
+    let ledger_span = startup_span.start_child(SpanDescription::child(
         "ledger.reconcile",
         "ledger load/recovery/reconciliation",
     ));
