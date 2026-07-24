@@ -9,12 +9,15 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use lsb_seawork_update::{
-    archive_file, load_json, verify_bundle_root, verify_windows_directory_protection,
-    verify_windows_file_protection, verify_windows_file_publisher, verify_windows_package,
-    write_json_atomic, CommittedState, CommittedStateEnvelope, FailedTargetState, PackagePolicy,
-    TransactionEnvelope,
+    archive_file, is_update_transaction_id, load_json, verify_bundle_root,
+    verify_windows_directory_protection, verify_windows_file_protection,
+    verify_windows_file_publisher, verify_windows_package, write_json_atomic, CommittedState,
+    CommittedStateEnvelope, FailedTargetState, PackagePolicy, TransactionEnvelope,
+    UpdateTransaction,
 };
-use lsb_service_proto::{HealthState, UpdatePhase, PIPE_NAME, SERVICE_NAME, SUPPORTED};
+use lsb_service_proto::{
+    BundleIdentity, HealthState, UpdatePhase, PIPE_NAME, SERVICE_NAME, SUPPORTED,
+};
 use windows_service::define_windows_service;
 use windows_service::service::{
     ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceControlAccept,
@@ -111,12 +114,16 @@ fn run_service() -> Result<()> {
     status_handle.set_service_status(service_status(ServiceState::StartPending, 1, 120))?;
     status_handle.set_service_status(service_status(ServiceState::Running, 0, 0))?;
     let result = run_recovery(&stop_rx);
-    let exit = if result.is_ok() { 0 } else { 1 };
+    let exit_code = if result.is_ok() {
+        ServiceExitCode::NO_ERROR
+    } else {
+        ServiceExitCode::ServiceSpecific(1)
+    };
     status_handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: ServiceState::Stopped,
         controls_accepted: ServiceControlAccept::empty(),
-        exit_code: ServiceExitCode::ServiceSpecific(exit),
+        exit_code,
         checkpoint: 0,
         wait_hint: Duration::ZERO,
         process_id: None,
@@ -196,6 +203,24 @@ fn run_recovery(stop_rx: &std::sync::mpsc::Receiver<()>) -> Result<()> {
                     .target_bundle_identity
                     .archive_sha256,
             );
+            if outcome == RecoveryOutcome::Committed
+                && remove_completed_staging(
+                    &backend.paths.staging,
+                    &transaction.transaction.transaction_id,
+                )
+                .is_err()
+            {
+                let _ = report_update_event(
+                    12,
+                    "update_cleanup_warning",
+                    "UPDATE_STAGING_CLEANUP_FAILED",
+                    &transaction.transaction.target_bundle_identity.version,
+                    &transaction
+                        .transaction
+                        .target_bundle_identity
+                        .archive_sha256,
+                );
+            }
             let history = backend
                 .paths
                 .history
@@ -294,12 +319,31 @@ impl TransactionStore for DiskStore {
 
 struct WindowsBackend {
     paths: FixedPaths,
+    verified_target: Option<VerifiedTarget>,
+}
+
+#[derive(Debug)]
+struct VerifiedTarget {
+    transaction_id: String,
+    final_version_root: String,
+    identity: BundleIdentity,
+}
+
+impl VerifiedTarget {
+    fn matches(&self, update: &UpdateTransaction) -> bool {
+        self.transaction_id == update.transaction_id
+            && self.final_version_root == update.final_version_root
+            && self.identity == update.target_bundle_identity
+    }
 }
 
 impl WindowsBackend {
     fn new(paths: FixedPaths) -> Result<Self> {
         verify_fixed_directories(&paths)?;
-        Ok(Self { paths })
+        Ok(Self {
+            paths,
+            verified_target: None,
+        })
     }
 
     fn verify_package_identity(
@@ -332,6 +376,32 @@ impl WindowsBackend {
             bail!("verified package identity differs from the protected transaction");
         }
         verify_windows_package(root, &report, &compiled_publishers())?;
+        Ok(())
+    }
+
+    fn remember_verified_target(&mut self, update: &UpdateTransaction) {
+        self.verified_target = Some(VerifiedTarget {
+            transaction_id: update.transaction_id.clone(),
+            final_version_root: update.final_version_root.clone(),
+            identity: update.target_bundle_identity.clone(),
+        });
+    }
+
+    fn ensure_target_verified(&mut self, update: &UpdateTransaction) -> Result<()> {
+        if self
+            .verified_target
+            .as_ref()
+            .is_some_and(|verified| verified.matches(update))
+        {
+            return Ok(());
+        }
+        self.verify_package_identity(
+            Path::new(&update.final_version_root),
+            &update.target_bundle_identity,
+            update.helper_protocol,
+        )
+        .context("verify final target after updater recovery")?;
+        self.remember_verified_target(update);
         Ok(())
     }
 
@@ -447,11 +517,6 @@ fn stop_service_and_confirm_process_exit(
 impl UpdateBackend for WindowsBackend {
     fn verify_handoff(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
         let update = &transaction.transaction;
-        let old_root = bundle_root_for_image(
-            &self.paths.versions,
-            &update.old_image_path,
-            &update.old_bundle_identity.version,
-        )?;
         if update.helper_protocol.major != HELPER_PROTOCOL_MAJOR
             || update.helper_protocol.minor > HELPER_PROTOCOL_MINOR
             || Path::new(&update.target_image_path)
@@ -478,11 +543,6 @@ impl UpdateBackend for WindowsBackend {
         if committed.committed.current != update.old_bundle_identity {
             bail!("transaction old identity differs from committed anti-rollback state");
         }
-        self.verify_package_identity(
-            &old_root,
-            &update.old_bundle_identity,
-            update.helper_protocol,
-        )?;
         self.require_main_command(&update.old_image_path)?;
         require_event_message_path(&update.old_event_message_path)?;
         let runtime = self.connect_runtime()?;
@@ -491,8 +551,12 @@ impl UpdateBackend for WindowsBackend {
                 timeout: CONNECT_TIMEOUT,
             })
             .await?;
+            let info = client.get_service_info().await?;
             let status = client.get_update_status().await?;
-            if status.target.as_ref() != Some(&update.target_bundle_identity)
+            if info.service_version != update.old_bundle_identity.version
+                || info.bundle_version != update.old_bundle_identity.version
+                || info.protocol != update.old_bundle_identity.protocol
+                || status.target.as_ref() != Some(&update.target_bundle_identity)
                 || status.active_use_count != 0
                 || !matches!(
                     status.phase,
@@ -522,22 +586,22 @@ impl UpdateBackend for WindowsBackend {
         )
         .context("verify transaction staging package")?;
         if final_root.exists() {
-            return self
-                .verify_package_identity(
-                    final_root,
-                    &update.target_bundle_identity,
-                    update.helper_protocol,
-                )
-                .context("verify existing final-version package");
-        }
-        copy_new_tree(staged, &temporary).context("copy package into final-version staging")?;
-        let result = (|| {
             self.verify_package_identity(
-                &temporary,
+                final_root,
                 &update.target_bundle_identity,
                 update.helper_protocol,
             )
-            .context("verify copied final-version staging package")?;
+            .context("verify existing final-version package")?;
+            self.remember_verified_target(update);
+            return Ok(());
+        }
+        copy_new_tree(staged, &temporary).context("copy package into final-version staging")?;
+        let result = (|| {
+            // The helper fully verified the protected source immediately before this bounded
+            // create-new copy. copy_new_tree pins every source entry, rejects destination
+            // collisions/reparse points, checks every copied byte count, and flushes every file.
+            // The target service independently verifies the installed tree before reaching
+            // RUNNING, so another complete read here adds no necessary trust boundary.
             fs::rename(&temporary, final_root)
                 .context("atomically place verified final-version root")?;
             sync_directory_handle(&relative::open_directory(
@@ -545,20 +609,21 @@ impl UpdateBackend for WindowsBackend {
                 GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE,
             )?)
             .context("flush versions directory after final-version rename")?;
-            self.verify_package_identity(
-                final_root,
-                &update.target_bundle_identity,
-                update.helper_protocol,
-            )
-            .context("verify renamed final-version package")
+            // The same-volume atomic rename preserves the verified directory object. Recheck
+            // only its protected final root; later transitions reuse this in-process proof.
+            verify_windows_directory_protection(final_root)
+                .context("verify renamed final-version root protection")
         })();
-        if result.is_err() {
+        if let Err(error) = result {
             let _ = fs::remove_dir_all(&temporary);
+            return Err(error);
         }
-        result
+        self.remember_verified_target(update);
+        Ok(())
     }
 
     fn stop_old_service(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
+        self.ensure_target_verified(&transaction.transaction)?;
         self.require_main_command(&transaction.transaction.old_image_path)?;
         let service = self.main_service(ServiceAccess::QUERY_STATUS | ServiceAccess::STOP)?;
         stop_service_and_confirm_process_exit(&service)
@@ -566,11 +631,7 @@ impl UpdateBackend for WindowsBackend {
 
     fn change_to_target(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
         let update = &transaction.transaction;
-        self.verify_package_identity(
-            Path::new(&update.final_version_root),
-            &update.target_bundle_identity,
-            update.helper_protocol,
-        )?;
+        self.ensure_target_verified(update)?;
         change_main_configuration(
             &update.old_image_path,
             &update.target_image_path,
@@ -581,11 +642,7 @@ impl UpdateBackend for WindowsBackend {
 
     fn start_target(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
         let update = &transaction.transaction;
-        self.verify_package_identity(
-            Path::new(&update.final_version_root),
-            &update.target_bundle_identity,
-            update.helper_protocol,
-        )?;
+        self.ensure_target_verified(update)?;
         self.require_main_command(&update.target_image_path)?;
         let result = (|| {
             let service = self.main_service(ServiceAccess::QUERY_STATUS | ServiceAccess::START)?;
@@ -605,11 +662,7 @@ impl UpdateBackend for WindowsBackend {
 
     fn health_and_commit_target(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
         let update = &transaction.transaction;
-        self.verify_package_identity(
-            Path::new(&update.final_version_root),
-            &update.target_bundle_identity,
-            update.helper_protocol,
-        )?;
+        self.ensure_target_verified(update)?;
         self.require_main_command(&update.target_image_path)?;
         let runtime = self.connect_runtime()?;
         let result = runtime.block_on(async {
@@ -1155,6 +1208,39 @@ fn require_exact_current_executable(expected: &Path) -> Result<()> {
     require_regular_file(expected)
 }
 
+fn completed_staging_path(staging: &Path, transaction_id: &str) -> Result<PathBuf> {
+    if !is_update_transaction_id(transaction_id) {
+        bail!("completed transaction staging identifier is invalid");
+    }
+    let owned = staging.join(transaction_id);
+    if owned.parent() != Some(staging) || owned.file_name() != Some(OsStr::new(transaction_id)) {
+        bail!("completed transaction staging path is not exact");
+    }
+    Ok(owned)
+}
+
+fn remove_completed_staging(staging: &Path, transaction_id: &str) -> Result<()> {
+    verify_windows_directory_protection(staging)?;
+    let owned = completed_staging_path(staging, transaction_id)?;
+    match fs::symlink_metadata(&owned) {
+        Ok(metadata) => {
+            reject_reparse(&metadata)?;
+            if !metadata.is_dir() {
+                bail!("completed transaction staging path is not a directory");
+            }
+            fs::remove_dir_all(&owned)?;
+            sync_directory_handle(&relative::open_directory(
+                staging,
+                GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE,
+            )?)
+            .context("flush staging directory after completed transaction cleanup")?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
 fn remove_incomplete_final_staging(
     versions: &Path,
     temporary: &Path,
@@ -1526,6 +1612,87 @@ fn compiled_publishers() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lsb_seawork_update::HelperProtocol;
+    use lsb_service_proto::{LedgerCompatibility, ProtocolRange};
+
+    fn test_identity(version: &str, manifest_byte: char) -> BundleIdentity {
+        BundleIdentity {
+            version: version.to_string(),
+            bundle_manifest_sha256: manifest_byte.to_string().repeat(64),
+            archive_sha256: "b".repeat(64),
+            protocol: ProtocolRange {
+                major: 1,
+                min_minor: 0,
+                max_minor: 6,
+            },
+            ledger: LedgerCompatibility {
+                reader_min_schema: 1,
+                reader_max_schema: 1,
+                writer_schema: 1,
+            },
+            service_configuration_revision: 2,
+        }
+    }
+
+    fn test_update() -> UpdateTransaction {
+        let old = test_identity("0.5.0-rc.3", 'c');
+        let target = test_identity("0.5.0-rc.4", 'd');
+        UpdateTransaction {
+            transaction_id: "1".repeat(32),
+            update_id: "2".repeat(32),
+            phase: lsb_seawork_update::TransactionPhase::HelperStarted,
+            created_utc: "2026-07-24T00:00:00Z".to_string(),
+            old_bundle_identity: old,
+            target_bundle_identity: target,
+            old_image_path: r"C:\versions\0.5.0-rc.3\bin\service.exe".to_string(),
+            target_image_path: r"C:\versions\0.5.0-rc.4\bin\service.exe".to_string(),
+            old_event_message_path: r"C:\versions\0.5.0-rc.3\bin\service.exe".to_string(),
+            target_event_message_path: r"C:\versions\0.5.0-rc.4\bin\service.exe".to_string(),
+            staged_root: r"C:\staging\1\LocalSandbox".to_string(),
+            final_version_root: r"C:\versions\0.5.0-rc.4".to_string(),
+            helper_protocol: HelperProtocol { major: 1, minor: 1 },
+            attempt_count: 1,
+            last_error_category: None,
+        }
+    }
+
+    #[test]
+    fn verified_target_cache_is_bound_to_exact_transaction_root_and_identity() {
+        let update = test_update();
+        let mut verified = VerifiedTarget {
+            transaction_id: update.transaction_id.clone(),
+            final_version_root: update.final_version_root.clone(),
+            identity: update.target_bundle_identity.clone(),
+        };
+        assert!(verified.matches(&update));
+
+        verified.transaction_id = "3".repeat(32);
+        assert!(!verified.matches(&update));
+        verified.transaction_id = update.transaction_id.clone();
+        verified.final_version_root = r"C:\versions\other".to_string();
+        assert!(!verified.matches(&update));
+        verified.final_version_root = update.final_version_root.clone();
+        verified.identity.bundle_manifest_sha256 = "e".repeat(64);
+        assert!(!verified.matches(&update));
+    }
+
+    #[test]
+    fn completed_staging_path_accepts_only_an_exact_transaction_child() {
+        let staging = Path::new(r"C:\ProgramData\LocalSandbox\SeaWork\updates\staging");
+        let transaction_id = "a".repeat(32);
+        assert_eq!(
+            completed_staging_path(staging, &transaction_id).unwrap(),
+            staging.join(&transaction_id)
+        );
+        for invalid in [
+            "",
+            "a",
+            "A123456789abcdef0123456789abcdef",
+            "../0123456789abcdef0123456789abcdef",
+        ] {
+            assert!(completed_staging_path(staging, invalid).is_err());
+        }
+    }
 
     #[test]
     #[ignore = "requires an elevated Windows token to create a temporary SCM service"]

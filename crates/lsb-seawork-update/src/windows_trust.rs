@@ -132,24 +132,24 @@ pub fn verify_windows_package(
         allowed_publishers_sha256,
     )?;
 
-    let admin = CatalogAdmin::sha256()?;
-    for relative in &report.catalog_members {
-        let member_path = relative
-            .split('/')
-            .fold(root.to_path_buf(), |path, part| path.join(part));
-        let member =
-            pin_file(&member_path).with_context(|| format!("pin catalog member {relative}"))?;
-        require_protected_handle(&member)?;
-        // WinTrust cannot map a zero-length file and returns ERROR_FILE_INVALID even when the
-        // empty-file hash is present in the signed catalog. The catalog-authenticated bundle
-        // manifest already binds every member's path, size, and SHA-256, and structural
-        // verification checked those values before reaching this platform verification step.
-        if member.metadata()?.len() == 0 {
-            continue;
-        }
-        verify_catalog_member(&admin, &catalog_path, &member_path, &member)
-            .with_context(|| format!("verify signed catalog member {relative}"))?;
+    // The signed catalog authenticates the bundle manifest, and structural verification has
+    // already proved that every package path, size, and SHA-256 matches that manifest. Verifying
+    // every file independently through WinTrust repeats the same trust statement thousands of
+    // times without strengthening the chain. Authenticate the root manifest once instead.
+    const BUNDLE_MANIFEST: &str = "manifests/bundle.json";
+    if !report
+        .catalog_members
+        .iter()
+        .any(|relative| relative == BUNDLE_MANIFEST)
+    {
+        bail!("verified package does not bind its bundle manifest into the signed catalog");
     }
+    let admin = CatalogAdmin::sha256()?;
+    let manifest_path = root.join("manifests").join("bundle.json");
+    let manifest = pin_file(&manifest_path).context("pin catalog-authenticated bundle manifest")?;
+    require_protected_handle(&manifest)?;
+    verify_catalog_member(&admin, &catalog_path, &manifest_path, &manifest)
+        .context("verify catalog-authenticated bundle manifest")?;
 
     let service_path = root.join("bin/localsandbox-seawork-service.exe");
     let service = pin_file(&service_path)?;
