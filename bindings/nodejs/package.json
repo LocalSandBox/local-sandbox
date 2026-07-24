@@ -1,6 +1,6 @@
 {
   "name": "@local-sandbox/lsb-nodejs",
-  "version": "0.5.0-rc.3",
+  "version": "0.5.0-rc.4",
   "description": "Native Node.js bindings for lsb microVM sandboxes",
   "main": "index.js",
   "types": "index.d.ts",
