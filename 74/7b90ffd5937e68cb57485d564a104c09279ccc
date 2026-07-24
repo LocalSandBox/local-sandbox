@@ -1,0 +1,46 @@
+crates/lsb-seawork-service/src/telemetry/mod.rs
+  s_f5954235260de2::t_d57b601a257d9e 10
+  s_f5954235260de2::t_bcadd9df691425 2,9,11,68,90,126-128
+  s_f5954235260de2::t_f9416ef18f0b1b 130,166,200,216,226-234,268-272,307,341-345,351,405-411,416-422
+  s_f5954235260de2::t_75161015133bd8 412-415
+  s_f5954235260de2::t_ba115257b090d0 57,79,102-106,129,211-215,333-336,338
+  s_f5954235260de2::t_208dc2579c089a 423
+crates/lsb-seawork-service/src/session/manager.rs
+  s_f5954235260de2::t_181cc2b5d3e5c5 618,646
+crates/lsb-seawork-service/src/engine.rs
+  s_f5954235260de2::t_ba115257b090d0 24,133,153-156
+crates/lsb-seawork-service/src/scm.rs
+  s_f5954235260de2::t_f9416ef18f0b1b 85,128
+crates/lsb-seawork-service/src/rpc/sandbox.rs
+  s_f5954235260de2::t_082f1ec8cba285 53-54,87-88,204,238,512,570-571
+  s_f5954235260de2::t_d57b601a257d9e 503-505
+  s_f5954235260de2::t_bd6e449f9be395 502
+crates/lsb-seawork-service/src/telemetry/diagnostics.rs
+  s_f5954235260de2::t_a86dfdad76a1ad 592-593,610-611
+  s_f5954235260de2::t_d57b601a257d9e 4,87-109,461-501
+  s_f5954235260de2::t_666fd196e0d5d0 649-675
+  s_f5954235260de2::t_75161015133bd8 18,161,329,349-354,570-577,601-608
+  s_f5954235260de2::t_bcadd9df691425 1-3,5-17,20-48,50-86,110-160,162-177,179-185,187-198,200-211,213-328,330-348,355-460,502-569,578-591,594,599-600,609,612-648,676
+  s_f5954235260de2::t_958a42372a444e 19,49,178,186,199,212,595-598
+crates/lsb-seawork-service/src/resource/vm.rs
+  s_f5954235260de2::t_7d297c9ae01df5 1054-1055,1069-1070
+  s_f5954235260de2::t_380341126d7b63 23-24,208,235,480,489-491,603-652
+  s_f5954235260de2::t_d57b601a257d9e 653-654
+  s_f5954235260de2::t_458a18875ed99c 655-657
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "747b90ffd5937e68cb57485d564a104c09279ccc",
+  "prompts": {},
+  "sessions": {
+    "s_f5954235260de2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f9536-6d3c-7362-b9e4-0c9292ef97b3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
