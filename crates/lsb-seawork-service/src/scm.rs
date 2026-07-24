@@ -60,10 +60,6 @@ fn run_registered(
     status_handle: &service_control_handler::ServiceStatusHandle,
     mut control_rx: tokio::sync::mpsc::UnboundedReceiver<ServiceControl>,
 ) -> Result<()> {
-    let telemetry = Telemetry::disabled();
-    let startup_span =
-        telemetry.start_span(SpanDescription::transaction(TRANSACTION_SERVICE_STARTUP));
-    telemetry.breadcrumb(Breadcrumb::lifecycle("service", "start"));
     let mut startup_checkpoint = 1u32;
     status_handle.set_service_status(status::pending(
         ServiceState::StartPending,
@@ -75,6 +71,37 @@ fn run_registered(
 
     let paths = ServicePaths::discover()?;
     paths.prepare()?;
+    let (run_state, previous_run) = crate::telemetry::RunState::begin(
+        &paths.runtime,
+        time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|_| "unknown".to_string()),
+    )
+    .map(|(state, previous)| (Some(std::sync::Arc::new(state)), previous))
+    .unwrap_or((None, None));
+    let telemetry = run_state.map_or_else(Telemetry::disabled, |run_state| {
+        Telemetry::disabled().with_run_state(run_state)
+    });
+    let startup_span =
+        telemetry.start_span(SpanDescription::transaction(TRANSACTION_SERVICE_STARTUP));
+    telemetry.breadcrumb(Breadcrumb::lifecycle("service", "start"));
+    if let Some(previous) = previous_run {
+        let mut event = FailureEvent::new(
+            "service.startup",
+            "UNCLEAN_PREVIOUS_EXIT",
+            Level::Error,
+            format!(
+                "previous service run ended during {}",
+                previous.current_phase
+            ),
+        )
+        .with_correlation_id(&previous.run_id);
+        event.contexts.insert(
+            "previous_run".to_string(),
+            serde_json::to_value(&previous).unwrap_or(serde_json::Value::Null),
+        );
+        telemetry.capture_failure(event);
+    }
     verify_protected_configuration(&paths)?;
     let logger = std::sync::Arc::new(ServiceLogger::new(&paths.logs)?);
     logger.write(EventId::ServiceStartPending, "startup", "START_PENDING")?;
@@ -334,6 +361,7 @@ fn run_registered(
     }
     let _ = logger.write(EventId::ServiceStopped, "shutdown", "STOPPED");
     telemetry.breadcrumb(Breadcrumb::lifecycle("service", "stopped"));
+    telemetry.close_run();
     telemetry.flush(Duration::from_secs(2));
     status_handle.set_service_status(status::stopped())?;
     Ok(())

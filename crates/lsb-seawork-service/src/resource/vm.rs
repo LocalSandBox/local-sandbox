@@ -479,8 +479,15 @@ fn run(
     ready: mpsc::SyncSender<Result<()>>,
     telemetry: crate::telemetry::Telemetry,
 ) {
+    telemetry.update_crash_context(
+        "sandbox.boot",
+        Some(&spec.resource_id),
+        Some(&spec.instance_dir),
+        false,
+    );
     if session_cancellation.is_cancelled() || startup_cancellation.is_cancelled() {
         let _ = cleanup_instance(&engine, &spec);
+        telemetry.update_crash_context("sandbox.cleaned_up", Some(&spec.resource_id), None, true);
         let _ = ready.send(Err(anyhow::anyhow!("operation cancelled")));
         return;
     }
@@ -490,6 +497,7 @@ fn run(
             capture_vm_failure(&telemetry, &engine, &spec, error, "boot");
         }
         let _ = cleanup_instance(&engine, &spec);
+        telemetry.update_crash_context("sandbox.cleaned_up", Some(&spec.resource_id), None, true);
         let _ = ready.send(result.map(|_| ()));
         return;
     };
@@ -517,8 +525,15 @@ fn run(
     }
     if ready.send(Ok(())).is_err() {
         let _ = stop_and_cleanup(&sandbox, &engine, &spec, &process_containment);
+        telemetry.update_crash_context("sandbox.cleaned_up", Some(&spec.resource_id), None, true);
         return;
     }
+    telemetry.update_crash_context(
+        "sandbox.ready",
+        Some(&spec.resource_id),
+        Some(&spec.instance_dir),
+        true,
+    );
     loop {
         if let Err(error) = process_containment.check_notifications() {
             eprintln!("authoritative QEMU Job monitor failed: {error}");
@@ -533,7 +548,21 @@ fn run(
         }
         match commands.recv_timeout(Duration::from_millis(100)) {
             Ok(Command::Stop(reply)) => {
+                telemetry.update_crash_context(
+                    "sandbox.stopping",
+                    Some(&spec.resource_id),
+                    Some(&spec.instance_dir),
+                    false,
+                );
                 let result = stop_and_cleanup(&sandbox, &engine, &spec, &process_containment);
+                if result.is_ok() {
+                    telemetry.update_crash_context(
+                        "sandbox.cleaned_up",
+                        Some(&spec.resource_id),
+                        None,
+                        true,
+                    );
+                }
                 let _ = reply.send(result);
                 return;
             }

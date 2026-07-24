@@ -1,5 +1,6 @@
 mod context;
 mod diagnostics;
+mod run_marker;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -9,6 +10,7 @@ pub use context::{CommonContext, COMPONENT, SERVICE_NAME};
 pub use diagnostics::{
     collect_incident, Attachment, DiagnosticLimits, IncidentMetadata, RetentionPolicy,
 };
+pub use run_marker::{PreviousRun, RunState};
 
 pub const TRANSACTION_SERVICE_STARTUP: &str = "service.startup";
 pub const TRANSACTION_SANDBOX_START: &str = "sandbox.start";
@@ -171,6 +173,7 @@ pub trait Adapter: Send + Sync {
 #[derive(Clone)]
 pub struct Telemetry {
     adapter: Arc<dyn Adapter>,
+    run_state: Option<Arc<RunState>>,
 }
 
 impl Default for Telemetry {
@@ -181,11 +184,19 @@ impl Default for Telemetry {
 
 impl Telemetry {
     pub fn new(adapter: Arc<dyn Adapter>) -> Self {
-        Self { adapter }
+        Self {
+            adapter,
+            run_state: None,
+        }
     }
 
     pub fn disabled() -> Self {
         Self::new(Arc::new(NoopAdapter))
+    }
+
+    pub fn with_run_state(mut self, run_state: Arc<RunState>) -> Self {
+        self.run_state = Some(run_state);
+        self
     }
 
     pub fn breadcrumb(&self, breadcrumb: Breadcrumb) {
@@ -213,6 +224,25 @@ impl Telemetry {
         let mut bytes = [0u8; 16];
         getrandom::fill(&mut bytes).ok()?;
         Some(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+    }
+
+    pub fn update_crash_context(
+        &self,
+        phase: impl Into<String>,
+        resource_id: Option<&str>,
+        instance_path: Option<&std::path::Path>,
+        boundary_completed: bool,
+    ) {
+        let Some(run_state) = &self.run_state else {
+            return;
+        };
+        let _ = run_state.update(phase.into(), resource_id, instance_path, boundary_completed);
+    }
+
+    pub fn close_run(&self) {
+        if let Some(run_state) = &self.run_state {
+            let _ = run_state.close();
+        }
     }
 }
 
