@@ -1,0 +1,42 @@
+crates/lsb-seawork-service/build.rs
+  s_f5954235260de2::t_2696775331bab7 130-133
+  s_f5954235260de2::t_82bf45bee748ae 128-129,134-153
+crates/lsb-seawork-service/src/telemetry/mod.rs
+  s_f5954235260de2::t_82bf45bee748ae 3-4,199-202,204-205
+  s_f5954235260de2::t_b75a84b32e179b 203,206-212
+  s_f5954235260de2::t_e5b3a44437b513 213-214
+crates/lsb-seawork-service/tests/fixtures/sentry-smoke/sentry-smoke.c
+  s_f5954235260de2::t_034f2e407df89b 1-88
+scripts/windows-test-suites/sentry-smoke.ps1
+  s_f5954235260de2::t_68c98ad31deed6 50-62
+  s_f5954235260de2::t_76d29e246f0a9a 64-146,151,154,156-163
+  s_f5954235260de2::t_0d631148571f7d 1-49,63,147-150,152-153,155,164-166
+scripts/prepare-sentry-native.ps1
+  s_f5954235260de2::t_d837375eb527c9 171-191,203-204
+crates/lsb-seawork-service/src/telemetry/native.rs
+  s_f5954235260de2::t_82bf45bee748ae 1-44,46-54,57-74,79-198,200-218,220-243,245-326,328-372,374-392,395-403,406-421
+  s_f5954235260de2::t_b75a84b32e179b 45,75-78,373
+  s_f5954235260de2::t_2696775331bab7 55-56,199,219,244,327,393-394,404-405
+crates/lsb-seawork-service/src/scm.rs
+  s_f5954235260de2::t_2696775331bab7 381-385
+  s_f5954235260de2::t_b75a84b32e179b 82-89,376-380,386-415
+  s_f5954235260de2::t_fa941d8a5bd811 416
+crates/lsb-seawork-service/tests/fixtures/sentry-smoke/CMakeLists.txt
+  s_f5954235260de2::t_034f2e407df89b 1-18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "3db37da967c75541b67064102d7959aba844f35d",
+  "prompts": {},
+  "sessions": {
+    "s_f5954235260de2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f9536-6d3c-7362-b9e4-0c9292ef97b3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
