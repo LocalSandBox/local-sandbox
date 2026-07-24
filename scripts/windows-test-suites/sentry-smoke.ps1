@@ -139,6 +139,32 @@ if ($minidumps.Count -lt 1) {
     throw 'Crashpad did not produce a non-empty minidump in its local database.'
 }
 
+$handlerLossDatabase = Join-Path $fixtureRoot 'handler loss database'
+New-Item -ItemType Directory -Path $handlerLossDatabase | Out-Null
+$handlerLoss = Start-Process -FilePath $fixture -ArgumentList @(
+    'handler-loss',
+    "`"$handlerLossDatabase`"",
+    "`"$fixtureHandler`"",
+    "`"$fixtureAttachment`"",
+    "`"$fixtureEnvelope`""
+) -PassThru
+$handlerProcess = $null
+for ($attempt = 0; $attempt -lt 50 -and $null -eq $handlerProcess; $attempt++) {
+    Start-Sleep -Milliseconds 100
+    $handlerProcess = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($handlerLoss.Id)" |
+        Where-Object { $_.Name -ceq 'crashpad_handler.exe' } |
+        Select-Object -First 1
+}
+if ($null -eq $handlerProcess) {
+    $handlerLoss.Kill()
+    throw 'The fixture did not start the Crashpad handler.'
+}
+Stop-Process -Id ([int]$handlerProcess.ProcessId) -Force
+if (-not $handlerLoss.WaitForExit(10000) -or $handlerLoss.ExitCode -ne 0) {
+    if (-not $handlerLoss.HasExited) { $handlerLoss.Kill() }
+    throw 'Loss of the Crashpad handler terminated or hung the fixture.'
+}
+
 $fixturePdb = Join-Path $fixtureBuild 'Release\lsb-sentry-smoke.pdb'
 if (-not (Test-Path -LiteralPath $fixturePdb -PathType Leaf)) {
     throw 'The Sentry smoke fixture PDB is missing.'
@@ -164,6 +190,7 @@ Invoke-Native ([string]$dependency.sentry_cli) @(
     transaction_child_span_check = 'passed'
     abort_minidump_check = 'passed'
     handler_space_path_check = 'passed'
+    handler_loss_isolation_check = 'passed'
     offline_debug_file_check = 'passed'
     network_transport = 'local_only'
     minidump_count = $minidumps.Count

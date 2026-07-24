@@ -539,6 +539,10 @@ fn run(
     loop {
         if let Err(error) = process_containment.check_notifications() {
             eprintln!("authoritative QEMU Job monitor failed: {error}");
+            telemetry.breadcrumb(
+                crate::telemetry::Breadcrumb::lifecycle("qemu", "process exit")
+                    .with_data("resource_id", spec.resource_id.clone()),
+            );
             capture_vm_failure(&telemetry, &engine, &spec, &error, "runtime");
             let _ = process_containment.terminate(1);
             let _ = sandbox.stop();
@@ -674,19 +678,25 @@ fn capture_vm_failure(
     let Ok(snapshot) = snapshot else {
         return;
     };
-    let captured = telemetry.capture_failure(
-        crate::telemetry::FailureEvent::new(
-            operation,
-            stable_error_code,
-            crate::telemetry::Level::Error,
-            error.to_string(),
-        )
-        .with_event_id(event_id)
-        .with_correlation_id(&spec.correlation_id)
-        .with_resource_id(&spec.resource_id)
-        .with_phase(phase)
-        .with_attachments(snapshot.attachments.clone()),
+    let mut event = crate::telemetry::FailureEvent::new(
+        operation,
+        stable_error_code,
+        crate::telemetry::Level::Error,
+        error.to_string(),
+    )
+    .with_event_id(event_id)
+    .with_correlation_id(&spec.correlation_id)
+    .with_resource_id(&spec.resource_id)
+    .with_phase(phase)
+    .with_attachments(snapshot.attachments.clone());
+    event.contexts.insert(
+        "incident".to_string(),
+        serde_json::json!({
+            "event_id": snapshot.event_id,
+            "total_bytes": snapshot.total_bytes,
+        }),
     );
+    let captured = telemetry.capture_failure(event);
     if captured.is_some() {
         let _ = snapshot.remove();
     } else {

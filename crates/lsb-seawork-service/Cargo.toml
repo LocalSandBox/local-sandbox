@@ -27,6 +27,7 @@ zeroize = "1"
 lsb-proxy.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+lsb-platform.workspace = true
 lsb-vm.workspace = true
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 windows-service = "0.8.1"

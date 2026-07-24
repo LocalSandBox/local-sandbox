@@ -20,8 +20,8 @@ use crate::session::{
     SessionManager, StartReplayDecision,
 };
 use crate::telemetry::{
-    FailureEvent, Level, SpanDescription, SpanStatus, Telemetry, TRANSACTION_SANDBOX_START,
-    TRANSACTION_SANDBOX_STOP,
+    Breadcrumb, FailureEvent, Level, SpanDescription, SpanStatus, Telemetry,
+    TRANSACTION_SANDBOX_START, TRANSACTION_SANDBOX_STOP,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -45,6 +45,15 @@ pub async fn start(
     network: Option<ServiceNetworkSpec>,
     cancellation: CancellationToken,
 ) -> Result<ResponseValue, ErrorCode> {
+    telemetry.breadcrumb(
+        Breadcrumb::lifecycle("request", "accepted")
+            .with_data("operation", TRANSACTION_SANDBOX_START)
+            .with_data("correlation_id", correlation_id.clone()),
+    );
+    telemetry.breadcrumb(
+        Breadcrumb::lifecycle("sandbox", "preflight")
+            .with_data("correlation_id", correlation_id.clone()),
+    );
     let span = telemetry.start_span(
         SpanDescription::transaction(TRANSACTION_SANDBOX_START)
             .with_data("correlation_id", correlation_id.clone()),
@@ -70,6 +79,14 @@ pub async fn start(
         cancellation,
     )
     .await;
+    telemetry.breadcrumb(
+        Breadcrumb::lifecycle("request", "completed")
+            .with_data("operation", TRANSACTION_SANDBOX_START)
+            .with_data("outcome", if result.is_ok() { "ok" } else { "error" }),
+    );
+    if result.is_ok() {
+        telemetry.breadcrumb(Breadcrumb::lifecycle("sandbox", "ready"));
+    }
     finish_operation(
         &telemetry,
         span,
@@ -414,12 +431,28 @@ pub async fn stop(
     sandbox_id: String,
     deadline_ms: Option<u32>,
 ) -> Result<ResponseValue, ErrorCode> {
+    telemetry.breadcrumb(
+        Breadcrumb::lifecycle("request", "accepted")
+            .with_data("operation", TRANSACTION_SANDBOX_STOP)
+            .with_data("correlation_id", correlation_id.clone()),
+    );
+    telemetry.breadcrumb(
+        Breadcrumb::lifecycle("sandbox", "stopping").with_data("resource_id", sandbox_id.clone()),
+    );
     let span = telemetry.start_span(
         SpanDescription::transaction(TRANSACTION_SANDBOX_STOP)
             .with_data("correlation_id", correlation_id.clone())
             .with_data("resource_id", sandbox_id.clone()),
     );
     let result = stop_inner(sessions, session_id, identity, &sandbox_id, deadline_ms).await;
+    telemetry.breadcrumb(
+        Breadcrumb::lifecycle("request", "completed")
+            .with_data("operation", TRANSACTION_SANDBOX_STOP)
+            .with_data("outcome", if result.is_ok() { "ok" } else { "error" }),
+    );
+    if result.is_ok() {
+        telemetry.breadcrumb(Breadcrumb::lifecycle("sandbox", "cleaned up"));
+    }
     finish_operation(
         &telemetry,
         span,
@@ -499,7 +532,13 @@ fn finish_operation(
             if let Some(resource_id) = resource_id {
                 event = event.with_resource_id(resource_id);
             }
-            if !(operation == TRANSACTION_SANDBOX_START && *error == ErrorCode::ServiceUnavailable)
+            let actionable = matches!(
+                error,
+                ErrorCode::InternalError | ErrorCode::BundleInvalid | ErrorCode::ServiceUnavailable
+            );
+            if actionable
+                && !(operation == TRANSACTION_SANDBOX_START
+                    && *error == ErrorCode::ServiceUnavailable)
             {
                 telemetry.capture_failure(event);
             }

@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <windows.h>
 
 static FILE *envelope_file;
 
@@ -42,14 +43,15 @@ static int configure(const wchar_t *database, const wchar_t *handler,
 int wmain(int argc, wchar_t **argv)
 {
     if (argc != 6 || (wcscmp(argv[1], L"capture") != 0
-                         && wcscmp(argv[1], L"crash") != 0)) {
+                         && wcscmp(argv[1], L"crash") != 0
+                         && wcscmp(argv[1], L"handler-loss") != 0)) {
         fwprintf(stderr,
-            L"usage: lsb-sentry-smoke <capture|crash> <db> <handler> "
+            L"usage: lsb-sentry-smoke <capture|crash|handler-loss> <db> <handler> "
             L"<attachment> <envelope>\n");
         return 2;
     }
 
-    const int capture = wcscmp(argv[1], L"capture") == 0;
+    const int capture = wcscmp(argv[1], L"crash") != 0;
     if (capture) {
         if (_wfopen_s(&envelope_file, argv[5], L"wb") != 0) {
             return 3;
@@ -64,6 +66,9 @@ int wmain(int argc, wchar_t **argv)
         "correlation_id", sentry_value_new_string("smoke-correlation"));
     if (!capture) {
         abort();
+    }
+    if (wcscmp(argv[1], L"handler-loss") == 0) {
+        Sleep(5000);
     }
 
     sentry_capture_event(sentry_value_new_message_event(

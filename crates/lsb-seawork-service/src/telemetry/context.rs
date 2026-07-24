@@ -34,6 +34,11 @@ pub struct BuildContext {
 pub struct RuntimeContext {
     pub architecture: &'static str,
     pub cpu_count: usize,
+    pub total_physical_memory_bytes: Option<u64>,
+    pub machine_name: Option<String>,
+    pub windows_version: Option<String>,
+    pub windows_edition_code: Option<u32>,
+    pub qemu_version: String,
 }
 
 impl CommonContext {
@@ -59,10 +64,7 @@ impl CommonContext {
                 bundle_digest: bundle_digest.map(|value| bounded(value, 256)),
                 installation_channel: installation_channel.map(|value| bounded(value, 64)),
             },
-            runtime: RuntimeContext {
-                architecture: std::env::consts::ARCH,
-                cpu_count: std::thread::available_parallelism().map_or(1, usize::from),
-            },
+            runtime: runtime_context(),
         }
     }
 
@@ -82,6 +84,91 @@ impl CommonContext {
         );
         contexts
     }
+}
+
+fn runtime_context() -> RuntimeContext {
+    let (total_physical_memory_bytes, machine_name, windows_version, windows_edition_code) =
+        platform_context();
+    RuntimeContext {
+        architecture: std::env::consts::ARCH,
+        cpu_count: std::thread::available_parallelism().map_or(1, usize::from),
+        total_physical_memory_bytes,
+        machine_name,
+        windows_version,
+        windows_edition_code,
+        qemu_version: qemu_version(),
+    }
+}
+
+#[cfg(windows)]
+fn qemu_version() -> String {
+    bounded(
+        lsb_platform::windows_x86_64::host_tools::managed_qemu_package_metadata()
+            .qemu_version
+            .to_string(),
+        64,
+    )
+}
+
+#[cfg(not(windows))]
+fn qemu_version() -> String {
+    "unavailable".to_string()
+}
+
+#[cfg(windows)]
+fn platform_context() -> (Option<u64>, Option<String>, Option<String>, Option<u32>) {
+    use windows_sys::Win32::System::SystemInformation::{
+        GetProductInfo, GetVersionExW, GlobalMemoryStatusEx, MEMORYSTATUSEX, OSVERSIONINFOW,
+    };
+    use windows_sys::Win32::System::WindowsProgramming::GetComputerNameW;
+
+    let mut memory = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    let total_memory =
+        (unsafe { GlobalMemoryStatusEx(&mut memory) } != 0).then_some(memory.ullTotalPhys);
+
+    let mut hostname = [0u16; 256];
+    let mut hostname_len = hostname.len() as u32;
+    let machine_name = (unsafe { GetComputerNameW(hostname.as_mut_ptr(), &mut hostname_len) } != 0)
+        .then(|| {
+            bounded(
+                String::from_utf16_lossy(&hostname[..hostname_len as usize]),
+                256,
+            )
+        });
+
+    let mut version = OSVERSIONINFOW {
+        dwOSVersionInfoSize: std::mem::size_of::<OSVERSIONINFOW>() as u32,
+        ..Default::default()
+    };
+    let (windows_version, edition) = if unsafe { GetVersionExW(&mut version) } != 0 {
+        let version_text = format!(
+            "{}.{}.{}",
+            version.dwMajorVersion, version.dwMinorVersion, version.dwBuildNumber
+        );
+        let mut product = 0u32;
+        let edition = (unsafe {
+            GetProductInfo(
+                version.dwMajorVersion,
+                version.dwMinorVersion,
+                0,
+                0,
+                &mut product,
+            )
+        } != 0)
+            .then_some(product);
+        (Some(version_text), edition)
+    } else {
+        (None, None)
+    };
+    (total_memory, machine_name, windows_version, edition)
+}
+
+#[cfg(not(windows))]
+fn platform_context() -> (Option<u64>, Option<String>, Option<String>, Option<u32>) {
+    (None, None, None, None)
 }
 
 fn bounded(mut value: String, max_bytes: usize) -> String {

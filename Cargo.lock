@@ -1051,6 +1051,7 @@ dependencies = [
  "crossbeam-channel",
  "getrandom 0.3.4",
  "http",
+ "lsb-platform",
  "lsb-proxy",
  "lsb-seawork-update",
  "lsb-service-proto",

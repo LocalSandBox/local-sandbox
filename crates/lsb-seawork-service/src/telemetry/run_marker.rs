@@ -149,14 +149,6 @@ impl RunState {
         crate::ledger::atomic::write_value(&self.marker_path, &*document)
             .context("close telemetry run marker")
     }
-
-    pub fn marker_path(&self) -> &Path {
-        &self.marker_path
-    }
-
-    pub fn context_path(&self) -> &Path {
-        &self.context_path
-    }
 }
 
 fn read_previous(

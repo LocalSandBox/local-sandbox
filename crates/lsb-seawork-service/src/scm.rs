@@ -431,6 +431,13 @@ fn capture_unclean_previous_exit(
             "previous_run".to_string(),
             serde_json::to_value(&previous).unwrap_or(serde_json::Value::Null),
         );
+        event.contexts.insert(
+            "incident".to_string(),
+            serde_json::json!({
+                "event_id": snapshot.event_id,
+                "total_bytes": snapshot.total_bytes,
+            }),
+        );
         if telemetry.capture_failure(event).is_some() {
             reported = true;
             let _ = snapshot.remove();

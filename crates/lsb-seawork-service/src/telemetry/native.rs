@@ -61,6 +61,7 @@ impl NativeAdapter {
         .expect("release has no NUL");
         let environment = CString::new(env!("LSB_SENTRY_ENVIRONMENT"))
             .context("compiled Sentry environment contains NUL")?;
+        let dist = CString::new("windows-x86_64").expect("static dist has no NUL");
         let database = wide(database_path);
         let handler = wide(handler_path);
         let sample_rate = env!("LSB_SENTRY_TRACES_SAMPLE_RATE")
@@ -70,6 +71,7 @@ impl NativeAdapter {
             sentry_options_set_dsn(options, dsn.as_ptr());
             sentry_options_set_release(options, release.as_ptr());
             sentry_options_set_environment(options, environment.as_ptr());
+            sentry_options_set_dist(options, dist.as_ptr());
             sentry_options_set_database_pathw(options, database.as_ptr());
             sentry_options_set_handler_pathw(options, handler.as_ptr());
             for attachment in crash_attachments {
@@ -379,6 +381,7 @@ unsafe extern "C" {
     fn sentry_options_set_dsn(options: *mut c_void, dsn: *const c_char);
     fn sentry_options_set_release(options: *mut c_void, release: *const c_char);
     fn sentry_options_set_environment(options: *mut c_void, environment: *const c_char);
+    fn sentry_options_set_dist(options: *mut c_void, dist: *const c_char);
     fn sentry_options_set_database_pathw(options: *mut c_void, path: *const u16);
     fn sentry_options_set_handler_pathw(options: *mut c_void, path: *const u16);
     fn sentry_options_add_attachmentw(options: *mut c_void, path: *const u16);
