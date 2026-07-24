@@ -140,9 +140,15 @@ if ($minidumps.Count -lt 1) {
 }
 
 $fixturePdb = Join-Path $fixtureBuild 'Release\lsb-sentry-smoke.pdb'
+if (-not (Test-Path -LiteralPath $fixturePdb -PathType Leaf)) {
+    throw 'The Sentry smoke fixture PDB is missing.'
+}
 Invoke-Native ([string]$dependency.sentry_cli) @(
-    'debug-files', 'check', $fixture, $fixturePdb
-) 'offline Sentry debug-file check'
+    'debug-files', 'check', $fixture
+) 'offline Sentry executable debug-file check'
+Invoke-Native ([string]$dependency.sentry_cli) @(
+    'debug-files', 'check', $fixturePdb
+) 'offline Sentry PDB debug-file check'
 
 [ordered]@{
     schema_version = 1

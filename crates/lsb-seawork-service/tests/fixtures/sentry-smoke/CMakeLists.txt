@@ -7,6 +7,8 @@ endif()
 
 add_executable(lsb-sentry-smoke sentry-smoke.c)
 target_compile_definitions(lsb-sentry-smoke PRIVATE SENTRY_BUILD_STATIC)
+target_compile_options(lsb-sentry-smoke PRIVATE /Zi)
+target_link_options(lsb-sentry-smoke PRIVATE /DEBUG)
 target_include_directories(lsb-sentry-smoke PRIVATE "${SENTRY_INCLUDE_DIR}")
 target_link_directories(lsb-sentry-smoke PRIVATE "${SENTRY_LIBRARY_DIR}")
 target_link_libraries(lsb-sentry-smoke PRIVATE
@@ -16,3 +18,6 @@ target_link_libraries(lsb-sentry-smoke PRIVATE
 )
 set_property(TARGET lsb-sentry-smoke PROPERTY
   MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set_target_properties(lsb-sentry-smoke PROPERTIES
+  PDB_NAME "lsb-sentry-smoke"
+  COMPILE_PDB_NAME "lsb-sentry-smoke")

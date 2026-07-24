@@ -506,6 +506,7 @@ fn run(
         .map(|handle| handle.placeholders.clone())
         .unwrap_or_default();
     if let Err(error) = process_containment.check_notifications() {
+        capture_vm_failure(&telemetry, &engine, &spec, &error, "boot");
         let _ = process_containment.terminate(1);
         let _ = sandbox.stop();
         let _ = cleanup_instance(&engine, &spec);
@@ -513,6 +514,7 @@ fn run(
         return;
     }
     if let Err(error) = process_containment.set_transaction_state(LifecycleState::Running) {
+        capture_vm_failure(&telemetry, &engine, &spec, &error, "boot");
         let _ = sandbox.stop();
         let _ = cleanup_instance(&engine, &spec);
         let _ = ready.send(Err(error));
@@ -537,6 +539,7 @@ fn run(
     loop {
         if let Err(error) = process_containment.check_notifications() {
             eprintln!("authoritative QEMU Job monitor failed: {error}");
+            capture_vm_failure(&telemetry, &engine, &spec, &error, "runtime");
             let _ = process_containment.terminate(1);
             let _ = sandbox.stop();
             let _ = cleanup_instance(&engine, &spec);
@@ -562,6 +565,8 @@ fn run(
                         None,
                         true,
                     );
+                } else if let Err(error) = &result {
+                    capture_vm_failure(&telemetry, &engine, &spec, error, "stop");
                 }
                 let _ = reply.send(result);
                 return;
@@ -639,12 +644,17 @@ fn capture_vm_failure(
     let Some(event_id) = telemetry.new_event_id() else {
         return;
     };
+    let (operation, stable_error_code) = match phase {
+        "stop" => ("sandbox.stop", "SANDBOX_STOP_FAILED"),
+        "runtime" => ("sandbox.runtime", "QEMU_UNEXPECTED_EXIT"),
+        _ => ("sandbox.start", "SANDBOX_BOOT_FAILED"),
+    };
     let metadata = crate::telemetry::IncidentMetadata {
         event_id: event_id.clone(),
         timestamp_utc: time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| "unknown".to_string()),
-        stable_error_code: "SANDBOX_BOOT_FAILED".to_string(),
+        stable_error_code: stable_error_code.to_string(),
         correlation_id: Some(spec.correlation_id.clone()),
         resource_id: Some(spec.resource_id.clone()),
         failure_phase: phase.to_string(),
@@ -657,7 +667,7 @@ fn capture_vm_failure(
     let snapshot = crate::telemetry::collect_incident(
         &engine.telemetry_root().join("incidents"),
         &spec.instance_dir,
-        None,
+        Some(engine.service_log()),
         &metadata,
         crate::telemetry::DiagnosticLimits::default(),
     );
@@ -666,8 +676,8 @@ fn capture_vm_failure(
     };
     let captured = telemetry.capture_failure(
         crate::telemetry::FailureEvent::new(
-            "sandbox.start",
-            "SANDBOX_BOOT_FAILED",
+            operation,
+            stable_error_code,
             crate::telemetry::Level::Error,
             error.to_string(),
         )

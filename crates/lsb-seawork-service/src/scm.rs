@@ -92,21 +92,7 @@ fn run_registered(
         telemetry.start_span(SpanDescription::transaction(TRANSACTION_SERVICE_STARTUP));
     telemetry.breadcrumb(Breadcrumb::lifecycle("service", "start"));
     if let Some(previous) = previous_run {
-        let mut event = FailureEvent::new(
-            "service.startup",
-            "UNCLEAN_PREVIOUS_EXIT",
-            Level::Error,
-            format!(
-                "previous service run ended during {}",
-                previous.current_phase
-            ),
-        )
-        .with_correlation_id(&previous.run_id);
-        event.contexts.insert(
-            "previous_run".to_string(),
-            serde_json::to_value(&previous).unwrap_or(serde_json::Value::Null),
-        );
-        telemetry.capture_failure(event);
+        capture_unclean_previous_exit(&telemetry, &paths, &common_context, previous);
     }
     verify_protected_configuration(&paths)?;
     let logger = std::sync::Arc::new(ServiceLogger::new(&paths.logs)?);
@@ -371,6 +357,116 @@ fn run_registered(
     telemetry.flush(Duration::from_secs(2));
     status_handle.set_service_status(status::stopped())?;
     Ok(())
+}
+
+fn capture_unclean_previous_exit(
+    telemetry: &Telemetry,
+    paths: &ServicePaths,
+    common_context: &crate::telemetry::CommonContext,
+    previous: crate::telemetry::PreviousRun,
+) {
+    let mut instances = previous
+        .active_instances
+        .iter()
+        .map(|(resource_id, path)| (Some(resource_id.as_str()), std::path::PathBuf::from(path)))
+        .collect::<Vec<_>>();
+    if instances.is_empty() {
+        instances.push((None, paths.runtime.clone()));
+    }
+    let mut reported = false;
+    for (resource_id, instance_path) in instances {
+        let Some(event_id) = telemetry.new_event_id() else {
+            break;
+        };
+        let metadata = crate::telemetry::IncidentMetadata {
+            event_id: event_id.clone(),
+            timestamp_utc: time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|_| "unknown".to_string()),
+            stable_error_code: "UNCLEAN_PREVIOUS_EXIT".to_string(),
+            correlation_id: Some(previous.run_id.clone()),
+            resource_id: resource_id.map(str::to_string),
+            failure_phase: previous.current_phase.clone(),
+            common_context: common_context.clone(),
+        };
+        let Ok(snapshot) = crate::telemetry::collect_incident(
+            &paths.runtime.join("telemetry").join("incidents"),
+            &instance_path,
+            Some(&paths.logs.join("service.jsonl")),
+            &metadata,
+            crate::telemetry::DiagnosticLimits::default(),
+        ) else {
+            continue;
+        };
+        let mut attachments = snapshot.attachments.clone();
+        attachments.extend([
+            crate::telemetry::Attachment {
+                path: previous.marker_path.clone(),
+                filename: "previous-run-marker.json".to_string(),
+                content_type: "application/json",
+            },
+            crate::telemetry::Attachment {
+                path: previous.context_path.clone(),
+                filename: "previous-crash-context.json".to_string(),
+                content_type: "application/json",
+            },
+        ]);
+        let mut event = FailureEvent::new(
+            "service.startup",
+            "UNCLEAN_PREVIOUS_EXIT",
+            Level::Error,
+            format!(
+                "previous service run ended during {}",
+                previous.current_phase
+            ),
+        )
+        .with_event_id(event_id)
+        .with_correlation_id(&previous.run_id)
+        .with_phase("previous_run")
+        .with_attachments(attachments);
+        if let Some(resource_id) = resource_id {
+            event = event.with_resource_id(resource_id);
+        }
+        event.contexts.insert(
+            "previous_run".to_string(),
+            serde_json::to_value(&previous).unwrap_or(serde_json::Value::Null),
+        );
+        if telemetry.capture_failure(event).is_some() {
+            reported = true;
+            let _ = snapshot.remove();
+        } else {
+            let _ = snapshot.retain_bounded(crate::telemetry::RetentionPolicy::default());
+        }
+    }
+    if !reported {
+        let mut event = FailureEvent::new(
+            "service.startup",
+            "UNCLEAN_PREVIOUS_EXIT",
+            Level::Error,
+            format!(
+                "previous service run ended during {}",
+                previous.current_phase
+            ),
+        )
+        .with_correlation_id(&previous.run_id)
+        .with_attachments(vec![
+            crate::telemetry::Attachment {
+                path: previous.marker_path.clone(),
+                filename: "previous-run-marker.json".to_string(),
+                content_type: "application/json",
+            },
+            crate::telemetry::Attachment {
+                path: previous.context_path.clone(),
+                filename: "previous-crash-context.json".to_string(),
+                content_type: "application/json",
+            },
+        ]);
+        event.contexts.insert(
+            "previous_run".to_string(),
+            serde_json::to_value(previous).unwrap_or(serde_json::Value::Null),
+        );
+        telemetry.capture_failure(event);
+    }
 }
 
 #[cfg(feature = "sentry-telemetry")]

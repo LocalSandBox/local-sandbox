@@ -9,6 +9,7 @@ const MARKER_NAME: &str = "run-marker.json";
 const CONTEXT_NAME: &str = "crash-context.json";
 const MAX_MARKER_BYTES: u64 = 256 * 1024;
 const MAX_ACTIVE_INSTANCES: usize = 64;
+const MAX_PREVIOUS_RUNS: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -60,7 +61,7 @@ impl RunState {
         let now_utc = bounded(now_utc.into(), 64);
         let marker_path = runtime_root.join(MARKER_NAME);
         let context_path = runtime_root.join(CONTEXT_NAME);
-        let previous = read_previous(&marker_path, &context_path)?;
+        let previous = read_previous(runtime_root, &marker_path, &context_path)?;
         let document = RunDocument {
             schema_version: 1,
             run_id: random_id()?,
@@ -158,7 +159,11 @@ impl RunState {
     }
 }
 
-fn read_previous(marker_path: &Path, context_path: &Path) -> Result<Option<PreviousRun>> {
+fn read_previous(
+    runtime_root: &Path,
+    marker_path: &Path,
+    context_path: &Path,
+) -> Result<Option<PreviousRun>> {
     let Some(marker) = read_document(marker_path)? else {
         return Ok(None);
     };
@@ -166,6 +171,21 @@ fn read_previous(marker_path: &Path, context_path: &Path) -> Result<Option<Previ
         return Ok(None);
     }
     let context = read_document(context_path)?.unwrap_or_else(|| marker.clone());
+    let snapshot_root = runtime_root
+        .join("telemetry")
+        .join("previous-runs")
+        .join(&marker.run_id);
+    let snapshot_marker = snapshot_root.join(MARKER_NAME);
+    let snapshot_context = snapshot_root.join(CONTEXT_NAME);
+    crate::ledger::atomic::write_value(&snapshot_marker, &marker)
+        .context("snapshot previous telemetry run marker")?;
+    crate::ledger::atomic::write_value(&snapshot_context, &context)
+        .context("snapshot previous telemetry crash context")?;
+    prune_previous_runs(
+        snapshot_root
+            .parent()
+            .context("previous-run snapshot has no parent")?,
+    );
     Ok(Some(PreviousRun {
         run_id: marker.run_id,
         started_utc: marker.started_utc,
@@ -173,9 +193,29 @@ fn read_previous(marker_path: &Path, context_path: &Path) -> Result<Option<Previ
         current_phase: context.current_phase,
         last_completed_boundary: context.last_completed_boundary,
         active_instances: context.active_instances,
-        marker_path: marker_path.to_path_buf(),
-        context_path: context_path.to_path_buf(),
+        marker_path: snapshot_marker,
+        context_path: snapshot_context,
     }))
+}
+
+fn prune_previous_runs(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    let mut directories = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let metadata = entry.metadata().ok()?;
+            metadata
+                .is_dir()
+                .then(|| (metadata.modified().ok(), entry.path()))
+        })
+        .collect::<Vec<_>>();
+    directories.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+    let remove_count = directories.len().saturating_sub(MAX_PREVIOUS_RUNS);
+    for (_, path) in directories.into_iter().take(remove_count) {
+        let _ = std::fs::remove_dir_all(path);
+    }
 }
 
 fn read_document(path: &Path) -> Result<Option<RunDocument>> {
@@ -291,6 +331,12 @@ mod tests {
         assert_eq!(previous.run_id, previous_id);
         assert_eq!(previous.current_phase, "sandbox.boot");
         assert!(previous.active_instances.contains_key("sandbox-1"));
+        assert!(previous.marker_path.is_file());
+        assert!(previous.context_path.is_file());
+        assert_ne!(previous.marker_path, root.join(MARKER_NAME));
+        assert!(std::fs::read_to_string(&previous.context_path)
+            .unwrap()
+            .contains(&previous_id));
         std::fs::remove_dir_all(root).unwrap();
     }
 

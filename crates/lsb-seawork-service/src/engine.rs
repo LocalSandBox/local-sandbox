@@ -22,6 +22,7 @@ pub struct ServiceEngineConfig {
     resources_root: PathBuf,
     ledger_root: PathBuf,
     telemetry_root: PathBuf,
+    service_log: PathBuf,
     operation_timeout: Duration,
     bundle_version: String,
 }
@@ -131,6 +132,7 @@ impl ServiceEngineConfig {
             resources_root: service_paths.users.clone(),
             ledger_root: service_paths.ledger.clone(),
             telemetry_root: service_paths.runtime.join("telemetry"),
+            service_log: service_paths.logs.join("service.jsonl"),
             operation_timeout: Duration::from_secs(60),
             bundle_version,
         })
@@ -154,6 +156,10 @@ impl ServiceEngineConfig {
 
     pub fn telemetry_root(&self) -> &Path {
         &self.telemetry_root
+    }
+
+    pub fn service_log(&self) -> &Path {
+        &self.service_log
     }
 
     pub fn qemu_image_relative_path(&self) -> Result<String> {

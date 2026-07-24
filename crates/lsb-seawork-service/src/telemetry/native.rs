@@ -224,6 +224,17 @@ impl Adapter for NativeAdapter {
         if native.is_null() {
             return Ok(None);
         }
+        unsafe {
+            for (key, value) in &span.data {
+                let key = CString::new(key.as_str()).map_err(|_| ())?;
+                let value = rust_string_value(value)?;
+                if parent_id.is_some() {
+                    sentry_span_set_data(native, key.as_ptr(), value);
+                } else {
+                    sentry_transaction_set_data(native, key.as_ptr(), value);
+                }
+            }
+        }
         let id = state.next_span_id;
         state.next_span_id = state.next_span_id.checked_add(1).ok_or(())?;
         let native = if parent_id.is_some() {
@@ -415,7 +426,13 @@ unsafe extern "C" {
         description: *const c_char,
     ) -> *mut c_void;
     fn sentry_transaction_set_status(transaction: *mut c_void, status: c_int);
+    fn sentry_transaction_set_data(
+        transaction: *mut c_void,
+        key: *const c_char,
+        value: SentryValue,
+    );
     fn sentry_span_set_status(span: *mut c_void, status: c_int);
+    fn sentry_span_set_data(span: *mut c_void, key: *const c_char, value: SentryValue);
     fn sentry_transaction_finish(transaction: *mut c_void) -> SentryUuid;
     fn sentry_span_finish(span: *mut c_void);
 }
