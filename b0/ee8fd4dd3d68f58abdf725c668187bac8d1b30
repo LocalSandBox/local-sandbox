@@ -1,0 +1,47 @@
+crates/lsb-seawork-service/Cargo.toml
+  s_f5954235260de2::t_30d20d2d591da2 30
+crates/lsb-seawork-service/src/telemetry/native.rs
+  s_f5954235260de2::t_71a2ee9cf3aac9 64,74,384
+crates/lsb-seawork-service/tests/fixtures/sentry-smoke/sentry-smoke.c
+  s_f5954235260de2::t_0a023a5695b40c 7,46-47,49,54,70-71
+  s_f5954235260de2::t_0e56e732fcd074 72
+scripts/windows-test-suites/sentry-smoke.ps1
+  s_f5954235260de2::t_1cff333c6970cc 142-153,155,157-162,164-167,193
+  s_f5954235260de2::t_791f7350d2de46 154,156
+  s_f5954235260de2::t_e99b6ea0449295 163
+sentry-native.lock.json
+  s_f5954235260de2::t_326ea71e3c1124 46-48,55
+crates/lsb-seawork-service/src/telemetry/context.rs
+  s_f5954235260de2::t_9dd40eb7462cd5 99-115
+  s_f5954235260de2::t_b8d384534353c5 37-41,67,89-98,116-172
+  s_f5954235260de2::t_7483584b6cb3d5 173
+crates/lsb-seawork-service/src/resource/vm.rs
+  s_f5954235260de2::t_d1edc2d39fef43 681,692-697,699
+  s_f5954235260de2::t_3d21a9e75dd5d5 682-691
+  s_f5954235260de2::t_e1826eadc4ebd5 542-545
+crates/lsb-seawork-service/src/scm.rs
+  s_f5954235260de2::t_e835e031b20198 434-440
+crates/lsb-seawork-service/src/rpc/sandbox.rs
+  s_f5954235260de2::t_6c1ccedf8994c0 434-441
+  s_f5954235260de2::t_87d67cb47a75b1 24,537
+  s_f5954235260de2::t_768d10f411aa1a 23,48-56,82-89,448-455
+  s_f5954235260de2::t_f002ec2c909373 535-536,538-541
+Cargo.lock
+  s_f5954235260de2::t_083b76f52a6208 1054
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "b0ee8fd4dd3d68f58abdf725c668187bac8d1b30",
+  "prompts": {},
+  "sessions": {
+    "s_f5954235260de2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f9536-6d3c-7362-b9e4-0c9292ef97b3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
