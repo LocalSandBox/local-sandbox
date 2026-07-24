@@ -1,0 +1,32 @@
+crates/lsb-seawork-service/build.rs
+  s_f5954235260de2::t_c2260e63c8b2ef 10,59-65,76-118,123-162
+  s_f5954235260de2::t_38083b4e702a56 66,119-122
+  s_f5954235260de2::t_4ca56670b90c52 67-75
+  s_f5954235260de2::t_0952c4529f95c5 163
+crates/lsb-seawork-service/Cargo.toml
+  s_f5954235260de2::t_c2260e63c8b2ef 10
+sentry-native.lock.json
+  s_f5954235260de2::t_38083b4e702a56 31-35
+  s_f5954235260de2::t_9e1b1d7507dbb1 21
+  s_f5954235260de2::t_c2260e63c8b2ef 1-20,22-30,36-55
+scripts/prepare-sentry-native.ps1
+  s_f5954235260de2::t_38083b4e702a56 141-142,180-181
+  s_f5954235260de2::t_c2260e63c8b2ef 1-102,107-140,143-179,182-196
+  s_f5954235260de2::t_46a0d9e0a571ae 103-106
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "797db0db231afb82f6116072e7c4a09a72f06b53",
+  "prompts": {},
+  "sessions": {
+    "s_f5954235260de2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f9536-6d3c-7362-b9e4-0c9292ef97b3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
