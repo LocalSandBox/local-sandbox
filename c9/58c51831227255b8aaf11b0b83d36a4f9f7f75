@@ -1,0 +1,54 @@
+crates/lsb-seawork-service/src/pipe.rs
+  s_910bbd93628373::t_b1f0b23f427c63 490,494-501
+crates/lsb-seawork-service/src/paths.rs
+  s_910bbd93628373::t_b58aac5e004528 29-30,57-62
+crates/lsb-seawork-updater/src/recovery.rs
+  s_910bbd93628373::t_2cf9adefe5795e 268-282
+  s_910bbd93628373::t_9b370d0bb9da7c 267
+crates/lsb-seawork-updater/src/windows.rs
+  s_910bbd93628373::t_208ffccfbd2c13 12,15-16,149-151,173,210,244-281
+  s_910bbd93628373::t_14480c7ca02436 469-566,733-736,739
+  s_910bbd93628373::t_a98feedf6bb2fd 282,342-355,357-364,1625-1626,1646-1647
+  s_910bbd93628373::t_5bc537139784bd 13,356
+  s_910bbd93628373::t_85fd7796060897 283
+crates/lsb-seawork-update/src/preinstall.rs
+  s_910bbd93628373::t_293827ee15da7d 1-193,199-204,211-212
+  s_910bbd93628373::t_5bc537139784bd 194-198
+  s_910bbd93628373::t_ab41b6acba9c34 205-210
+crates/lsb-seawork-update/src/lib.rs
+  s_910bbd93628373::t_5bc537139784bd 8,26-27
+  s_910bbd93628373::t_63448b0cdc5e15 28
+crates/lsb-seawork-service/src/update/mod.rs
+  s_910bbd93628373::t_ed03398ad3bb9d 346-373,376-386,388-402,407-435,437-441,443-504,519-536,539-548
+  s_910bbd93628373::t_30f983a079a220 295-308
+  s_910bbd93628373::t_e4b954bdf479ae 649-667
+  s_910bbd93628373::t_b3a14ec74624a5 1321-1322,1324-1326
+  s_910bbd93628373::t_5bc537139784bd 436,537-538,1323
+  s_910bbd93628373::t_ca4d6a6b52086a 442,505-518
+  s_910bbd93628373::t_7e5bfca7653957 387,403-406
+  s_910bbd93628373::t_6181e8e9364c9f 20-22,47
+  s_910bbd93628373::t_7c5c038b3525c8 374-375
+crates/lsb-seawork-service/src/maintenance.rs
+  s_910bbd93628373::t_6b45aa82470c2a 535-557
+  s_910bbd93628373::t_b1f0b23f427c63 223-272
+  s_910bbd93628373::t_ead6fbb0fee9b8 533-534
+crates/lsb-seawork-service/src/admission.rs
+  s_910bbd93628373::t_b1f0b23f427c63 132-149,297-308
+  s_910bbd93628373::t_ae1b2aab59b663 309
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "c958c51831227255b8aaf11b0b83d36a4f9f7f75",
+  "prompts": {},
+  "sessions": {
+    "s_910bbd93628373": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f91bb-7c63-7941-a845-724c29cfef8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
