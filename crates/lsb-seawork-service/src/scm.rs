@@ -79,8 +79,14 @@ fn run_registered(
     )
     .map(|(state, previous)| (Some(std::sync::Arc::new(state)), previous))
     .unwrap_or((None, None));
-    let telemetry = run_state.map_or_else(Telemetry::disabled, |run_state| {
-        Telemetry::disabled().with_run_state(run_state)
+    let common_context = crate::telemetry::CommonContext::collect(
+        option_env!("GITHUB_SHA").unwrap_or("unknown"),
+        None,
+        None,
+    );
+    let telemetry = initialize_telemetry(&paths, &common_context);
+    let telemetry = run_state.map_or(telemetry.clone(), |run_state| {
+        telemetry.with_run_state(run_state)
     });
     let startup_span =
         telemetry.start_span(SpanDescription::transaction(TRANSACTION_SERVICE_STARTUP));
@@ -365,6 +371,47 @@ fn run_registered(
     telemetry.flush(Duration::from_secs(2));
     status_handle.set_service_status(status::stopped())?;
     Ok(())
+}
+
+#[cfg(feature = "sentry-telemetry")]
+fn initialize_telemetry(
+    paths: &ServicePaths,
+    common_context: &crate::telemetry::CommonContext,
+) -> Telemetry {
+    let handler = std::env::current_exe().ok().and_then(|executable| {
+        executable
+            .parent()
+            .map(|parent| parent.join("crashpad_handler.exe"))
+    });
+    let Some(handler) = handler else {
+        eprintln!("telemetry disabled: service executable path is unavailable");
+        return Telemetry::disabled();
+    };
+    let crash_attachments = vec![
+        paths.runtime.join("run-marker.json"),
+        paths.runtime.join("crash-context.json"),
+        paths.logs.join("service.jsonl"),
+    ];
+    match Telemetry::initialize_native(
+        &paths.runtime.join("telemetry").join("sentry-db"),
+        &handler,
+        &crash_attachments,
+        common_context,
+    ) {
+        Ok(telemetry) => telemetry,
+        Err(error) => {
+            eprintln!("telemetry disabled: {error}");
+            Telemetry::disabled()
+        }
+    }
+}
+
+#[cfg(not(feature = "sentry-telemetry"))]
+fn initialize_telemetry(
+    _paths: &ServicePaths,
+    _common_context: &crate::telemetry::CommonContext,
+) -> Telemetry {
+    Telemetry::disabled()
 }
 
 fn verify_protected_configuration(paths: &ServicePaths) -> Result<()> {

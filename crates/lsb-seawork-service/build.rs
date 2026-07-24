@@ -125,6 +125,32 @@ fn compile_sentry_configuration() {
             "cargo:rustc-env=LSB_SENTRY_CRASHPAD_HANDLER={}",
             handler.display()
         );
+        println!(
+            "cargo:rustc-link-search=native={}",
+            library
+                .parent()
+                .expect("native library has no parent")
+                .display()
+        );
+        for library in [
+            "sentry",
+            "crashpad_client",
+            "crashpad_util",
+            "crashpad_compat",
+            "crashpad_zlib",
+            "mini_chromium",
+            "dbghelp",
+            "shlwapi",
+            "version",
+            "winhttp",
+            "user32",
+            "advapi32",
+            "kernel32",
+            "rpcrt4",
+            "powrprof",
+        ] {
+            println!("cargo:rustc-link-lib={library}");
+        }
     }
 
     println!("cargo:rustc-env=LSB_SENTRY_TELEMETRY_ENABLED=1");

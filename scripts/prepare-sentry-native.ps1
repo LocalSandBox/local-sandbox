@@ -168,6 +168,27 @@ if ($prepared.sentry_native_commit -cne [string]$native.commit -or
     throw 'The prepared Sentry Native cache does not match the dependency lock.'
 }
 
+$cli = $lock.sentry_cli.windows_x86_64
+$cliSha = [string]$cli.sha256
+if ($cliSha -notmatch '^[0-9a-f]{64}$') {
+    throw 'The locked sentry-cli SHA-256 is invalid.'
+}
+$cliPath = Join-Path $downloads "sentry-cli-$($lock.sentry_cli.version)-windows-x86_64-$cliSha.exe"
+if (-not (Test-Path -LiteralPath $cliPath -PathType Leaf)) {
+    $pendingCli = "$cliPath.pending-$PID"
+    try {
+        Invoke-WebRequest -Uri ([string]$cli.url) -OutFile $pendingCli
+        Assert-Sha256 $pendingCli $cliSha 'sentry-cli'
+        Move-Item -LiteralPath $pendingCli -Destination $cliPath
+    }
+    finally {
+        if (Test-Path -LiteralPath $pendingCli) {
+            Remove-Item -LiteralPath $pendingCli -Force
+        }
+    }
+}
+Assert-Sha256 $cliPath $cliSha 'cached sentry-cli'
+
 $result = [ordered]@{
     schema_version = 1
     sentry_native_tag = [string]$native.tag
@@ -179,6 +200,8 @@ $result = [ordered]@{
         (Join-Path $install 'bin\crashpad_handler.exe')).Path
     crashpad_wer = (Resolve-Path -LiteralPath `
         (Join-Path $install 'bin\crashpad_wer.dll')).Path
+    sentry_cli_version = [string]$lock.sentry_cli.version
+    sentry_cli = (Resolve-Path -LiteralPath $cliPath).Path
     source_dir = (Resolve-Path -LiteralPath $source).Path
     build_dir = (Resolve-Path -LiteralPath $build).Path
 }

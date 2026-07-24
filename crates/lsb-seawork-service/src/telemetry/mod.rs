@@ -1,5 +1,7 @@
 mod context;
 mod diagnostics;
+#[cfg(all(windows, feature = "sentry-telemetry"))]
+mod native;
 mod run_marker;
 
 use std::collections::BTreeMap;
@@ -192,6 +194,22 @@ impl Telemetry {
 
     pub fn disabled() -> Self {
         Self::new(Arc::new(NoopAdapter))
+    }
+
+    #[cfg(all(windows, feature = "sentry-telemetry"))]
+    pub fn initialize_native(
+        database_path: &std::path::Path,
+        handler_path: &std::path::Path,
+        crash_attachments: &[std::path::PathBuf],
+        common_context: &CommonContext,
+    ) -> anyhow::Result<Self> {
+        native::NativeAdapter::initialize(
+            database_path,
+            handler_path,
+            crash_attachments,
+            common_context,
+        )
+        .map(|adapter| Self::new(Arc::new(adapter)))
     }
 
     pub fn with_run_state(mut self, run_state: Arc<RunState>) -> Self {
