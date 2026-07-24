@@ -12,7 +12,7 @@ use lsb_service_proto::{
     encode_stream_payload, negotiate, parse_control, BundleIdentity, Cancel, CapabilityHealth,
     Correlation, ErrorCode, ErrorEnvelope, Event, FrameHeader, FrameKind, Health, HealthState,
     Hello, HelloReply, HexU64, ProtocolRange, Request, RequestOp, Response, ResponseValue,
-    ServiceInfo, UpdateCheckCategory, UpdatePhase, UpdateRetryState, WindowUpdate,
+    ServiceInfo, UpdateCheckCategory, UpdatePhase, UpdateRetryState, UpdateStatus, WindowUpdate,
     CANCELLATION_COMMIT_MIN_MINOR, CONTROLLED_UPDATE_MIN_MINOR, CURRENT,
     FEATURE_HTTPS_INTERCEPTION, FEATURE_NETWORK_EGRESS, FEATURE_NETWORK_SECRETS,
     START_REPLAY_MIN_MINOR, SUPPORTED,
@@ -378,6 +378,28 @@ impl Default for RuntimeUpdateObservation {
             },
         }
     }
+}
+
+fn apply_coordinator_observation(
+    status: &mut UpdateStatus,
+    observation: &RuntimeUpdateObservation,
+) {
+    if status.phase != UpdatePhase::UpdateIdle
+        || matches!(
+            observation.phase,
+            UpdatePhase::UpdateWaitingForIdle
+                | UpdatePhase::UpdateSealed
+                | UpdatePhase::UpdateHelperStarting
+                | UpdatePhase::UpdateActivationPending
+                | UpdatePhase::UpdateRollbackPending
+                | UpdatePhase::UpdateRecoveryQuarantine
+        )
+    {
+        return;
+    }
+    status.phase = observation.phase;
+    status.last_check_category = observation.last_check_category;
+    status.retry = observation.retry.clone();
 }
 
 impl HealthContext {
@@ -1729,9 +1751,7 @@ async fn dispatch_request(
             let mut status = maintenance.update_status(current, active_use_count);
             if status.phase == UpdatePhase::UpdateIdle {
                 if let Ok(observation) = context.update_observation.lock() {
-                    status.phase = observation.phase;
-                    status.last_check_category = observation.last_check_category;
-                    status.retry = observation.retry.clone();
+                    apply_coordinator_observation(&mut status, &observation);
                 }
             }
             ResponseValue::UpdateStatus { status }
@@ -2146,6 +2166,54 @@ fn random_epoch() -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_coordinator_maintenance_phase_does_not_override_idle_maintenance() {
+        let mut status = UpdateStatus {
+            phase: UpdatePhase::UpdateIdle,
+            current: None,
+            target: None,
+            active_use_count: 0,
+            last_check_category: None,
+            retry: UpdateRetryState {
+                attempt_count: 0,
+                retry_after_utc: None,
+                suppressed: false,
+            },
+        };
+        let stale = RuntimeUpdateObservation {
+            phase: UpdatePhase::UpdateActivationPending,
+            last_check_category: Some(UpdateCheckCategory::Internal),
+            retry: UpdateRetryState {
+                attempt_count: 3,
+                retry_after_utc: None,
+                suppressed: false,
+            },
+        };
+
+        apply_coordinator_observation(&mut status, &stale);
+
+        assert_eq!(status.phase, UpdatePhase::UpdateIdle);
+        assert_eq!(status.last_check_category, None);
+        assert_eq!(status.retry.attempt_count, 0);
+
+        let checking = RuntimeUpdateObservation {
+            phase: UpdatePhase::UpdateChecking,
+            last_check_category: Some(UpdateCheckCategory::Network),
+            retry: UpdateRetryState {
+                attempt_count: 1,
+                retry_after_utc: None,
+                suppressed: false,
+            },
+        };
+        apply_coordinator_observation(&mut status, &checking);
+        assert_eq!(status.phase, UpdatePhase::UpdateChecking);
+        assert_eq!(
+            status.last_check_category,
+            Some(UpdateCheckCategory::Network)
+        );
+        assert_eq!(status.retry.attempt_count, 1);
+    }
 
     struct TestHealthDelay {
         _guard: tokio::sync::MutexGuard<'static, ()>,

@@ -24,9 +24,9 @@ use windows_sys::Win32::Security::Cryptography::{
     HCERTSTORE,
 };
 use windows_sys::Win32::Security::WinTrust::{
-    WinVerifyTrust, DRIVER_ACTION_VERIFY, WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_CATALOG_INFO,
-    WINTRUST_DATA, WINTRUST_DATA_0, WINTRUST_FILE_INFO, WTD_CACHE_ONLY_URL_RETRIEVAL,
-    WTD_CHOICE_CATALOG, WTD_CHOICE_FILE, WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT, WTD_REVOKE_NONE,
+    WinVerifyTrust, WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_CATALOG_INFO, WINTRUST_DATA,
+    WINTRUST_DATA_0, WINTRUST_FILE_INFO, WTD_CACHE_ONLY_URL_RETRIEVAL, WTD_CHOICE_CATALOG,
+    WTD_CHOICE_FILE, WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT, WTD_REVOKE_NONE,
     WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY, WTD_UI_NONE,
 };
 use windows_sys::Win32::Security::{
@@ -140,6 +140,13 @@ pub fn verify_windows_package(
         let member =
             pin_file(&member_path).with_context(|| format!("pin catalog member {relative}"))?;
         require_protected_handle(&member)?;
+        // WinTrust cannot map a zero-length file and returns ERROR_FILE_INVALID even when the
+        // empty-file hash is present in the signed catalog. The catalog-authenticated bundle
+        // manifest already binds every member's path, size, and SHA-256, and structural
+        // verification checked those values before reaching this platform verification step.
+        if member.metadata()?.len() == 0 {
+            continue;
+        }
         verify_catalog_member(&admin, &catalog_path, &member_path, &member)
             .with_context(|| format!("verify signed catalog member {relative}"))?;
     }
@@ -403,7 +410,7 @@ fn verify_catalog_member(
         dwProvFlags: WTD_CACHE_ONLY_URL_RETRIEVAL | WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT,
         ..WINTRUST_DATA::default()
     };
-    let mut action = DRIVER_ACTION_VERIFY;
+    let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
     verify_and_close(&mut action, &mut data, "catalog member")
 }
 

@@ -37,7 +37,7 @@ use windows_sys::Win32::Security::{
     GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FlushFileBuffers, FILE_ATTRIBUTE_DIRECTORY, SYNCHRONIZE,
+    FlushFileBuffers, FILE_ATTRIBUTE_DIRECTORY, FILE_READ_ATTRIBUTES, SYNCHRONIZE,
 };
 use windows_sys::Win32::System::Services::{
     ChangeServiceConfigW, QueryServiceConfig2W, QueryServiceObjectSecurity, SERVICE_ALL_ACCESS,
@@ -513,36 +513,44 @@ impl UpdateBackend for WindowsBackend {
             .paths
             .versions
             .join(format!(".staging-{}", update.transaction_id));
-        remove_incomplete_final_staging(&self.paths.versions, &temporary, &update.transaction_id)?;
+        remove_incomplete_final_staging(&self.paths.versions, &temporary, &update.transaction_id)
+            .context("remove incomplete final-version staging")?;
         self.verify_package_identity(
             staged,
             &update.target_bundle_identity,
             update.helper_protocol,
-        )?;
+        )
+        .context("verify transaction staging package")?;
         if final_root.exists() {
-            return self.verify_package_identity(
-                final_root,
-                &update.target_bundle_identity,
-                update.helper_protocol,
-            );
+            return self
+                .verify_package_identity(
+                    final_root,
+                    &update.target_bundle_identity,
+                    update.helper_protocol,
+                )
+                .context("verify existing final-version package");
         }
-        copy_new_tree(staged, &temporary)?;
+        copy_new_tree(staged, &temporary).context("copy package into final-version staging")?;
         let result = (|| {
             self.verify_package_identity(
                 &temporary,
                 &update.target_bundle_identity,
                 update.helper_protocol,
-            )?;
-            fs::rename(&temporary, final_root).context("atomically place verified version root")?;
+            )
+            .context("verify copied final-version staging package")?;
+            fs::rename(&temporary, final_root)
+                .context("atomically place verified final-version root")?;
             sync_directory_handle(&relative::open_directory(
                 &self.paths.versions,
-                GENERIC_READ | SYNCHRONIZE,
-            )?)?;
+                GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE,
+            )?)
+            .context("flush versions directory after final-version rename")?;
             self.verify_package_identity(
                 final_root,
                 &update.target_bundle_identity,
                 update.helper_protocol,
             )
+            .context("verify renamed final-version package")
         })();
         if result.is_err() {
             let _ = fs::remove_dir_all(&temporary);
@@ -674,8 +682,7 @@ impl UpdateBackend for WindowsBackend {
                 || !health.ready
                 || !health.admissions_open
                 || health.stable_code != "READY"
-                || status.phase != UpdatePhase::UpdateIdle
-                || status.target.is_some()
+                || !post_commit_status_is_ready(status.phase, status.target.is_some())
             {
                 return Err(TargetHealthFailure("post_commit_ready").into());
             }
@@ -791,6 +798,14 @@ impl UpdateBackend for WindowsBackend {
 
 #[derive(Debug)]
 struct TargetHealthFailure(&'static str);
+
+fn post_commit_status_is_ready(phase: UpdatePhase, target_present: bool) -> bool {
+    !target_present
+        && matches!(
+            phase,
+            UpdatePhase::UpdateIdle | UpdatePhase::UpdateActivationPending
+        )
+}
 
 impl std::fmt::Display for TargetHealthFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1237,7 +1252,10 @@ fn copy_directory_contents(
             let Some((destination_child, _)) = relative::create_relative(
                 destination_handle,
                 &name,
-                GENERIC_WRITE | SYNCHRONIZE,
+                // create_relative validates the new handle with
+                // GetFileInformationByHandle, which requires read-attribute access on
+                // supported Windows filesystems.
+                FILE_READ_ATTRIBUTES | GENERIC_WRITE | SYNCHRONIZE,
                 Kind::File,
             )?
             else {
@@ -1588,6 +1606,23 @@ mod tests {
         assert!(matches_transaction_value("old", "old", "target"));
         assert!(matches_transaction_value("target", "old", "target"));
         assert!(!matches_transaction_value("unrelated", "old", "target"));
+    }
+
+    #[test]
+    fn post_commit_accepts_idle_or_stale_activation_only_after_target_is_cleared() {
+        assert!(post_commit_status_is_ready(UpdatePhase::UpdateIdle, false));
+        assert!(post_commit_status_is_ready(
+            UpdatePhase::UpdateActivationPending,
+            false
+        ));
+        assert!(!post_commit_status_is_ready(
+            UpdatePhase::UpdateActivationPending,
+            true
+        ));
+        assert!(!post_commit_status_is_ready(
+            UpdatePhase::UpdateSealed,
+            false
+        ));
     }
 
     #[test]
