@@ -1,0 +1,30 @@
+crates/lsb-seawork-updater/src/windows.rs
+  s_910bbd93628373::t_189519f8dc70fa 12-14,18-19,117-121,126,208-211,223,322-337,343-346,382-404
+  s_910bbd93628373::t_75eb117448a2fe 1211-1215,1217-1243
+  s_910bbd93628373::t_8d6348ea1e8be6 405,554,556-559,595-596,612-615,617,619,621-622,626,634,645,665
+  s_910bbd93628373::t_302d27c81ab344 206-207,212-222
+  s_910bbd93628373::t_9539027a625f8e 590,594,1216
+  s_910bbd93628373::t_307e5b88e4508f 406,597,1615-1695
+  s_910bbd93628373::t_14890e09dfe28b 15-16,600-604
+  s_910bbd93628373::t_9a49e724a91998 17
+  s_910bbd93628373::t_665888cf8ec06c 407
+  s_910bbd93628373::t_3f533f77af7a7f 598-599
+crates/lsb-seawork-update/src/windows_trust.rs
+  s_910bbd93628373::t_90827722f919b9 135-145,147-152
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "b2485d11c5ddeec5430180be7d755205f45750b2",
+  "prompts": {},
+  "sessions": {
+    "s_910bbd93628373": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f91bb-7c63-7941-a845-724c29cfef8f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
