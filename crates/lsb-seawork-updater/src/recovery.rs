@@ -265,6 +265,22 @@ mod tests {
     }
 
     #[test]
+    fn preinstalled_activation_skips_handoff_and_install() {
+        let mut transaction = transaction(TransactionPhase::FinalPathVerified);
+        let mut store = MemoryStore::default();
+        let mut backend = Backend::default();
+
+        assert_eq!(
+            recover_transaction(&mut transaction, &mut store, &mut backend).unwrap(),
+            RecoveryOutcome::Committed
+        );
+        assert_eq!(
+            backend.calls,
+            ["stop_old", "change", "start_target", "commit", "finalize"]
+        );
+    }
+
+    #[test]
     fn rollback_failure_quarantines_without_fallback() {
         let mut transaction = transaction(TransactionPhase::RollbackRequested);
         let mut store = MemoryStore::default();

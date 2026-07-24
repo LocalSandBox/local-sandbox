@@ -26,6 +26,8 @@ pub struct UpdatePaths {
     pub downloads: PathBuf,
     pub staging: PathBuf,
     pub current_transaction: PathBuf,
+    pub preinstall_request: PathBuf,
+    pub preinstall_receipt: PathBuf,
     pub history: PathBuf,
 }
 
@@ -52,6 +54,12 @@ impl ServicePaths {
                 downloads: update_root.join("downloads"),
                 staging: update_root.join("staging"),
                 current_transaction: update_root.join("transactions").join("current.json"),
+                preinstall_request: update_root
+                    .join("transactions")
+                    .join("preinstall-request.json"),
+                preinstall_receipt: update_root
+                    .join("transactions")
+                    .join("preinstall-receipt.json"),
                 history: update_root.join("history"),
                 root: update_root,
             },

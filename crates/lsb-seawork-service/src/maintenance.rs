@@ -220,6 +220,56 @@ impl MaintenanceManager {
         Ok(pending.update_id)
     }
 
+    pub fn prepare_preinstalled_update(
+        &self,
+        sessions: &SessionManager,
+        target: BundleIdentity,
+    ) -> Result<String> {
+        if !self.admissions.is_same_controller(sessions.admissions()) {
+            bail!("maintenance and session admissions are not shared");
+        }
+        if target.validate().is_err()
+            || target.protocol.major != SUPPORTED.major
+            || target.ledger.writer_schema != LEDGER_SCHEMA_VERSION
+        {
+            bail!("target bundle identity is incompatible");
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("maintenance state poisoned"))?;
+        if !matches!(*state, MaintenanceState::Active) {
+            bail!("service is not available for preinstalled update activation");
+        }
+        let snapshot = self.admissions.snapshot();
+        if snapshot.state != AdmissionState::UpdateSealed || snapshot.active_use_count != 0 {
+            bail!("preinstalled update activation requires an atomic idle seal");
+        }
+        let pending = PendingUpdate {
+            schema_version: 2,
+            update_id: random_id()?,
+            target,
+        };
+        pending.validate()?;
+        if let Err(error) = atomic::write_value(&self.pending_path, &pending) {
+            let _ = self.admissions.reopen(self.initial_admissions);
+            return Err(error);
+        }
+        *state = MaintenanceState::Pending(pending.clone());
+        Ok(pending.update_id)
+    }
+
+    pub fn cancel_preinstalled_seal(&self) -> Result<()> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("maintenance state poisoned"))?;
+        if !matches!(*state, MaintenanceState::Active) {
+            bail!("cannot cancel a seal after update state was created");
+        }
+        self.admissions.reopen(self.initial_admissions)
+    }
+
     pub fn commit_update(
         &self,
         update_id: &str,
@@ -479,6 +529,31 @@ mod tests {
         assert_eq!(restarted.stable_code(), "UPDATE_SEALED");
         restarted.abort_update(&update_id).unwrap();
         assert!(restarted.admissions.accepts_work());
+    }
+
+    #[test]
+    fn preinstalled_update_requires_atomic_idle_seal_and_can_reopen_before_handoff() {
+        let path = path("preinstalled");
+        let _ = std::fs::remove_file(&path);
+        let (sessions, manager) = setup(path.clone());
+        let target = target("0.5.0-rc.2");
+
+        assert!(manager
+            .prepare_preinstalled_update(&sessions, target.clone())
+            .is_err());
+        assert!(manager.admissions.try_seal_if_idle().unwrap());
+        manager.cancel_preinstalled_seal().unwrap();
+        assert!(manager.admissions.accepts_work());
+
+        assert!(manager.admissions.try_seal_if_idle().unwrap());
+        let update_id = manager
+            .prepare_preinstalled_update(&sessions, target)
+            .unwrap();
+        assert!(!manager.admissions.accepts_work());
+        assert!(path.exists());
+        manager.abort_update(&update_id).unwrap();
+        assert!(manager.admissions.accepts_work());
+        assert!(!path.exists());
     }
 
     #[test]

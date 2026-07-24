@@ -487,11 +487,18 @@ impl HealthContext {
         self.update_check_requested.clone()
     }
 
-    pub fn prepare_automatic_update(&self, target: BundleIdentity) -> Result<String> {
+    pub fn prepare_preinstalled_update(&self, target: BundleIdentity) -> Result<String> {
         self.maintenance
             .as_ref()
             .context("maintenance manager is unavailable")?
-            .prepare_update(&self.sessions, target)
+            .prepare_preinstalled_update(&self.sessions, target)
+    }
+
+    pub fn cancel_preinstalled_seal(&self) -> Result<()> {
+        self.maintenance
+            .as_ref()
+            .context("maintenance manager is unavailable")?
+            .cancel_preinstalled_seal()
     }
 
     pub fn abort_automatic_update(&self, update_id: &str) -> Result<()> {

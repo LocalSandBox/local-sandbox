@@ -17,8 +17,9 @@ use lsb_seawork_update::{
     verify_bundle_root, verify_windows_directory_protection, verify_windows_file_protection,
     verify_windows_file_publisher, verify_windows_package, write_json_atomic,
     CommittedStateEnvelope, FailedTargetDecision, FailedTargetState, HelperProtocol, PackagePolicy,
-    ReleaseCandidate, ReleaseChannel, ReleaseResponseStatus, ReleaseSelector, TransactionEnvelope,
-    TransactionPhase, UpdateTransaction,
+    PreinstallReceiptEnvelope, PreinstallRequest, PreinstallRequestEnvelope, ReleaseCandidate,
+    ReleaseChannel, ReleaseResponseStatus, ReleaseSelector, TransactionEnvelope, TransactionPhase,
+    UpdateTransaction,
 };
 use lsb_service_proto::{UpdateCheckCategory, UpdatePhase, UpdateRetryState, SUPPORTED};
 use serde::{Deserialize, Serialize};
@@ -26,7 +27,6 @@ use sha2::{Digest, Sha256};
 use windows_service::service::{ServiceAccess, ServiceState, ServiceType};
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
-use crate::admission::AdmissionState;
 use crate::logging::ServiceLogger;
 use crate::paths::ServicePaths;
 use crate::pipe::HealthContext;
@@ -44,6 +44,7 @@ const STATUS_SCHEMA: u32 = 1;
 const REQUIRED_HELPER_PROTOCOL: HelperProtocol = HelperProtocol { major: 1, minor: 1 };
 const HELPER_VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
+const PREINSTALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 pub enum StartupRecovery {
     None,
@@ -291,6 +292,20 @@ impl Coordinator {
                 std::thread::sleep(Duration::from_secs(1));
                 continue;
             }
+            match self.resume_preinstall_if_present() {
+                Ok(true) => {
+                    std::thread::sleep(Duration::from_secs(1));
+                    continue;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    self.record_failure(&error);
+                    let _ = self.cleanup_abandoned_preinstall();
+                    next = Instant::now() + retry_delay(1);
+                    std::thread::sleep(Duration::from_secs(1));
+                    continue;
+                }
+            }
             if recovering {
                 recovering = false;
                 next = Instant::now() + first_delay;
@@ -326,6 +341,209 @@ impl Coordinator {
             Ok(_) => true,
             Err(error) => !is_not_found(&error),
         }
+    }
+
+    fn resume_preinstall_if_present(&mut self) -> Result<bool> {
+        let request: PreinstallRequestEnvelope =
+            match protected_load_json(&self.paths.updates.preinstall_request) {
+                Ok(request) => request,
+                Err(error) if is_not_found(&error) => return Ok(false),
+                Err(error) => return Err(error).context("load protected preinstall request"),
+            };
+        request.validate()?;
+        match protected_load_json::<PreinstallReceiptEnvelope>(
+            &self.paths.updates.preinstall_receipt,
+        ) {
+            Ok(receipt) => {
+                receipt.validate()?;
+                if !receipt.matches_request(&request) {
+                    bail!("protected preinstall receipt differs from its request");
+                }
+                self.activate_preinstalled(&request)?;
+            }
+            Err(error) if is_not_found(&error) => {
+                let fixed = FixedProductPaths::discover()?;
+                let observed = verify_helper(
+                    &fixed.updater.join(HELPER_EXE),
+                    request.request.helper_protocol,
+                )?;
+                if observed != request.request.helper_protocol {
+                    bail!("installed helper protocol changed during preinstall recovery");
+                }
+                start_helper()?;
+                self.wait_for_preinstall_receipt(&request)?;
+                self.activate_preinstalled(&request)?;
+            }
+            Err(error) => return Err(error).context("load protected preinstall receipt"),
+        }
+        Ok(true)
+    }
+
+    fn wait_for_preinstall_receipt(
+        &self,
+        request: &PreinstallRequestEnvelope,
+    ) -> Result<PreinstallReceiptEnvelope> {
+        let deadline = Instant::now() + PREINSTALL_TIMEOUT;
+        let mut saw_helper_active = false;
+        loop {
+            self.require_not_stopping("preinstall receipt wait")?;
+            match protected_load_json::<PreinstallReceiptEnvelope>(
+                &self.paths.updates.preinstall_receipt,
+            ) {
+                Ok(receipt) => {
+                    receipt.validate()?;
+                    if !receipt.matches_request(request) {
+                        bail!("preinstall helper produced a contradictory receipt");
+                    }
+                    return Ok(receipt);
+                }
+                Err(error) if is_not_found(&error) => {}
+                Err(error) => return Err(error).context("load preinstall helper receipt"),
+            }
+            let helper_state = helper_service_state()?;
+            if helper_state != ServiceState::Stopped {
+                saw_helper_active = true;
+            } else if saw_helper_active {
+                bail!("preinstall helper stopped without producing a receipt");
+            }
+            if Instant::now() >= deadline {
+                bail!("preinstall helper exceeded its bounded preparation time");
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+
+    fn activate_preinstalled(&mut self, request: &PreinstallRequestEnvelope) -> Result<()> {
+        request.validate()?;
+        let receipt: PreinstallReceiptEnvelope =
+            protected_load_json(&self.paths.updates.preinstall_receipt)
+                .context("activation requires a protected preinstall receipt")?;
+        receipt.validate()?;
+        if !receipt.matches_request(request) {
+            bail!("activation preinstall receipt differs from its request");
+        }
+        let fixed = FixedProductPaths::discover()?;
+        if Path::new(&request.request.final_version_root)
+            != fixed.versions.join(&request.request.candidate.version)
+        {
+            bail!("preinstalled final root differs from fixed product policy");
+        }
+        let helper = fixed.updater.join(HELPER_EXE);
+        let observed = verify_helper(&helper, request.request.helper_protocol)?;
+        if observed != request.request.helper_protocol {
+            bail!("installed helper protocol changed before activation");
+        }
+        let committed: CommittedStateEnvelope = protected_load_json(&self.paths.updates.committed)?;
+        committed.validate()?;
+        if committed.committed.current != request.request.old_bundle_identity {
+            bail!("preinstall request no longer matches committed state");
+        }
+
+        self.wait_for_helper_stopped()?;
+        self.set_phase(
+            UpdatePhase::UpdateWaitingForIdle,
+            Some(request.request.candidate.clone()),
+        )?;
+        while !self.context.admissions().try_seal_if_idle()? {
+            self.require_not_stopping("atomic idle seal")?;
+            std::thread::sleep(Duration::from_millis(250));
+        }
+
+        let mut update_id = None;
+        let mut journal_created = false;
+        let handoff = (|| {
+            self.require_not_stopping("sealed activation handoff")?;
+            self.set_phase(
+                UpdatePhase::UpdateSealed,
+                Some(request.request.candidate.clone()),
+            )?;
+            let id = self
+                .context
+                .prepare_preinstalled_update(request.request.target_bundle_identity.clone())?;
+            update_id = Some(id.clone());
+            let old_image = std::env::current_exe()?;
+            let final_root = Path::new(&request.request.final_version_root);
+            let target_image = final_root.join("bin").join(MAIN_EXE);
+            let transaction = TransactionEnvelope::new(UpdateTransaction {
+                transaction_id: request.request.request_id.clone(),
+                update_id: id,
+                phase: TransactionPhase::FinalPathVerified,
+                created_utc: now_utc()?,
+                old_bundle_identity: request.request.old_bundle_identity.clone(),
+                target_bundle_identity: request.request.target_bundle_identity.clone(),
+                old_image_path: path_string(&old_image)?,
+                target_image_path: path_string(&target_image)?,
+                old_event_message_path: path_string(&old_image)?,
+                target_event_message_path: path_string(&target_image)?,
+                staged_root: request.request.staged_root.clone(),
+                final_version_root: request.request.final_version_root.clone(),
+                helper_protocol: request.request.helper_protocol,
+                attempt_count: 1,
+                last_error_category: None,
+            })?;
+            create_json(&self.paths.updates.current_transaction, &transaction)?;
+            journal_created = true;
+            self.require_not_stopping("activation helper start")?;
+            self.set_phase(
+                UpdatePhase::UpdateHelperStarting,
+                Some(request.request.candidate.clone()),
+            )?;
+            start_helper()
+        })();
+        if let Err(error) = handoff {
+            if journal_created {
+                let _ = remove_file_if_exists(&self.paths.updates.current_transaction);
+            }
+            if let Some(update_id) = update_id {
+                let _ = self.context.abort_automatic_update(&update_id);
+            } else {
+                let _ = self.context.cancel_preinstalled_seal();
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn wait_for_helper_stopped(&self) -> Result<()> {
+        let deadline = Instant::now() + PREINSTALL_TIMEOUT;
+        loop {
+            self.require_not_stopping("preinstall helper shutdown")?;
+            if helper_service_state()? == ServiceState::Stopped {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                bail!("preinstall helper did not stop before activation");
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+
+    fn cleanup_abandoned_preinstall(&self) -> Result<()> {
+        let request = protected_load_json::<PreinstallRequestEnvelope>(
+            &self.paths.updates.preinstall_request,
+        )
+        .ok()
+        .filter(|request| request.validate().is_ok());
+        let mut failed = false;
+        for path in [
+            &self.paths.updates.preinstall_receipt,
+            &self.paths.updates.preinstall_request,
+        ] {
+            if remove_file_if_exists(path).is_err() {
+                failed = true;
+            }
+        }
+        if let Some(request) = request {
+            if remove_owned_staging(&self.paths.updates.staging, &request.request.request_id)
+                .is_err()
+            {
+                failed = true;
+            }
+        }
+        if failed {
+            bail!("abandoned preinstall cleanup was incomplete");
+        }
+        Ok(())
     }
 
     fn check_once(&mut self) -> Result<()> {
@@ -428,69 +646,25 @@ impl Coordinator {
             }
         };
 
-        let update_id = match self.context.prepare_automatic_update(target.clone()) {
-            Ok(update_id) => update_id,
-            Err(error) => {
-                let _ = remove_owned_staging(&self.paths.updates.staging, &transaction_id);
-                return Err(error);
-            }
-        };
-        let mut helper_owns_transaction = false;
-        let mut journal_created = false;
-        let handoff = (|| {
-            self.set_phase(UpdatePhase::UpdateWaitingForIdle, Some(candidate.clone()))?;
-            self.context
-                .admissions()
-                .wait_until_update_sealed(&self.stop)?;
-            self.require_not_stopping("durable helper handoff")?;
-            self.set_phase(UpdatePhase::UpdateSealed, Some(candidate.clone()))?;
-            let old_image = std::env::current_exe()?;
-            let final_root = fixed.versions.join(&candidate.version);
-            let target_image = final_root.join("bin").join(MAIN_EXE);
-            let helper_protocol = verify_helper(&helper, required_helper_protocol)?;
-            let transaction = TransactionEnvelope::new(UpdateTransaction {
-                transaction_id: transaction_id.clone(),
-                update_id: update_id.clone(),
-                phase: TransactionPhase::Prepared,
-                created_utc: now_utc()?,
-                old_bundle_identity: committed.committed.current,
-                target_bundle_identity: target,
-                old_image_path: path_string(&old_image)?,
-                target_image_path: path_string(&target_image)?,
-                old_event_message_path: path_string(&old_image)?,
-                target_event_message_path: path_string(&target_image)?,
-                staged_root: path_string(&staged_root)?,
-                final_version_root: path_string(&final_root)?,
-                helper_protocol,
-                attempt_count: 1,
-                last_error_category: None,
-            })?;
-            if self.context.admissions().snapshot().state != AdmissionState::UpdateSealed {
-                bail!("admissions changed before durable helper handoff");
-            }
-            create_json(&self.paths.updates.current_transaction, &transaction)?;
-            journal_created = true;
-            self.require_not_stopping("updater helper start")?;
-            self.set_phase(UpdatePhase::UpdateHelperStarting, Some(candidate.clone()))?;
-            start_helper()?;
-            helper_owns_transaction = true;
-            Ok::<_, anyhow::Error>(())
-        })();
-        if let Err(error) = handoff {
-            if !helper_owns_transaction {
-                let cleanup = (|| {
-                    if journal_created
-                        && !remove_file_if_exists(&self.paths.updates.current_transaction)?
-                    {
-                        bail!("unowned helper transaction journal disappeared during cleanup");
-                    }
-                    self.context.abort_automatic_update(&update_id)?;
-                    remove_owned_staging(&self.paths.updates.staging, &transaction_id)
-                })();
-                if let Err(cleanup) = cleanup {
-                    return Err(cleanup).context("unowned helper handoff cleanup failed");
-                }
-            }
+        let final_root = fixed.versions.join(&candidate.version);
+        let helper_protocol = verify_helper(&helper, required_helper_protocol)?;
+        let request = PreinstallRequestEnvelope::new(PreinstallRequest {
+            request_id: transaction_id,
+            created_utc: now_utc()?,
+            candidate: candidate.clone(),
+            old_bundle_identity: committed.committed.current,
+            target_bundle_identity: target,
+            staged_root: path_string(&staged_root)?,
+            final_version_root: path_string(&final_root)?,
+            helper_protocol,
+        })?;
+        create_json(&self.paths.updates.preinstall_request, &request)
+            .context("persist protected preinstall request")?;
+        if let Err(error) = start_helper()
+            .and_then(|()| self.wait_for_preinstall_receipt(&request).map(|_| ()))
+            .and_then(|()| self.activate_preinstalled(&request))
+        {
+            let _ = self.cleanup_abandoned_preinstall();
             return Err(error);
         }
         self.record_success(UpdatePhase::UpdateActivationPending, Some(candidate), etag)
@@ -1142,6 +1316,12 @@ fn start_helper() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn helper_service_state() -> Result<ServiceState> {
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+    let service = manager.open_service(HELPER_SERVICE_NAME, ServiceAccess::QUERY_STATUS)?;
+    Ok(service.query_status()?.current_state)
 }
 
 pub fn start_recovery_helper() -> Result<()> {

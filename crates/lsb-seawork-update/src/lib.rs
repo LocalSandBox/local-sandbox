@@ -5,6 +5,7 @@ mod journal;
 mod package;
 #[cfg(feature = "coordinator-policy")]
 mod policy;
+mod preinstall;
 mod state;
 #[cfg(windows)]
 mod windows_trust;
@@ -21,6 +22,9 @@ pub use policy::{
     validate_download_url, validate_helper_install_output, validate_helper_version_output,
     validate_release_page, FailedTargetDecision, HelperInstallOutput, HelperVersionOutput,
     ReleasePageProgress, ReleaseResponseStatus,
+};
+pub use preinstall::{
+    PreinstallReceipt, PreinstallReceiptEnvelope, PreinstallRequest, PreinstallRequestEnvelope,
 };
 pub use state::{archive_file, create_json, load_json, remove_file_if_exists, write_json_atomic};
 #[cfg(windows)]

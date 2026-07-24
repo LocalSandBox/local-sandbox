@@ -129,6 +129,24 @@ impl AdmissionController {
         Ok(state)
     }
 
+    pub fn try_seal_if_idle(&self) -> Result<bool> {
+        let mut inner = self
+            .shared
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("admission controller poisoned"))?;
+        match inner.state {
+            AdmissionState::Open if inner.active_use_count == 0 => {
+                inner.state = AdmissionState::UpdateSealed;
+                self.shared.changed.notify_all();
+                Ok(true)
+            }
+            AdmissionState::Open => Ok(false),
+            AdmissionState::UpdateSealed if inner.active_use_count == 0 => Ok(true),
+            _ => bail!("service is not available for atomic update sealing"),
+        }
+    }
+
     pub fn mark_activation_pending(&self) -> Result<()> {
         let mut inner = self
             .shared
@@ -274,6 +292,19 @@ mod tests {
             }
         );
         assert!(controller.reserve_active_use().is_err());
+    }
+
+    #[test]
+    fn atomic_idle_seal_never_enters_a_waiting_blackout() {
+        let controller = AdmissionController::new(true);
+        let active = controller.reserve_active_use().unwrap();
+        assert!(!controller.try_seal_if_idle().unwrap());
+        assert_eq!(controller.snapshot().state, AdmissionState::Open);
+        assert!(controller.accepts_work());
+        drop(active);
+        assert!(controller.try_seal_if_idle().unwrap());
+        assert_eq!(controller.snapshot().state, AdmissionState::UpdateSealed);
+        assert!(!controller.accepts_work());
     }
 
     #[test]

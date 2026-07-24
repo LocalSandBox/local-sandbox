@@ -9,10 +9,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use lsb_seawork_update::{
-    archive_file, is_update_transaction_id, load_json, verify_bundle_root,
-    verify_windows_directory_protection, verify_windows_file_protection,
+    archive_file, create_json, is_update_transaction_id, load_json, remove_file_if_exists,
+    verify_bundle_root, verify_windows_directory_protection, verify_windows_file_protection,
     verify_windows_file_publisher, verify_windows_package, write_json_atomic, CommittedState,
-    CommittedStateEnvelope, FailedTargetState, PackagePolicy, TransactionEnvelope,
+    CommittedStateEnvelope, FailedTargetState, PackagePolicy, PreinstallReceipt,
+    PreinstallReceiptEnvelope, PreinstallRequest, PreinstallRequestEnvelope, TransactionEnvelope,
     UpdateTransaction,
 };
 use lsb_service_proto::{
@@ -145,7 +146,9 @@ fn run_recovery(stop_rx: &std::sync::mpsc::Receiver<()>) -> Result<()> {
     let mut transaction: TransactionEnvelope =
         match protected_load_json(&backend.paths.current_transaction) {
             Ok(transaction) => transaction,
-            Err(error) if is_not_found(&error) => return Ok(()),
+            Err(error) if is_not_found(&error) => {
+                return run_preinstall(&mut backend, stop_rx);
+            }
             Err(error) => {
                 let _ = report_update_event(
                     12,
@@ -167,6 +170,7 @@ fn run_recovery(stop_rx: &std::sync::mpsc::Receiver<()>) -> Result<()> {
         );
         return Err(error).context("validate current protected update transaction");
     }
+    backend.restore_verified_target_from_receipt(&transaction)?;
     let mut store = DiskStore {
         current: backend.paths.current_transaction.clone(),
     };
@@ -203,13 +207,7 @@ fn run_recovery(stop_rx: &std::sync::mpsc::Receiver<()>) -> Result<()> {
                     .target_bundle_identity
                     .archive_sha256,
             );
-            if outcome == RecoveryOutcome::Committed
-                && remove_completed_staging(
-                    &backend.paths.staging,
-                    &transaction.transaction.transaction_id,
-                )
-                .is_err()
-            {
+            if cleanup_terminal_preinstall(&backend.paths, &transaction).is_err() {
                 let _ = report_update_event(
                     12,
                     "update_cleanup_warning",
@@ -241,6 +239,46 @@ fn run_recovery(stop_rx: &std::sync::mpsc::Receiver<()>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn run_preinstall(
+    backend: &mut WindowsBackend,
+    stop_rx: &std::sync::mpsc::Receiver<()>,
+) -> Result<()> {
+    let request: PreinstallRequestEnvelope =
+        match protected_load_json(&backend.paths.preinstall_request) {
+            Ok(request) => request,
+            Err(error) if is_not_found(&error) => return Ok(()),
+            Err(error) => return Err(error).context("load protected preinstall request"),
+        };
+    request.validate()?;
+    if stop_rx.try_recv().is_ok() {
+        return Ok(());
+    }
+    match protected_load_json::<PreinstallReceiptEnvelope>(&backend.paths.preinstall_receipt) {
+        Ok(receipt) => {
+            receipt.validate()?;
+            if !receipt.matches_request(&request) {
+                bail!("preinstall receipt differs from the protected request");
+            }
+            return Ok(());
+        }
+        Err(error) if is_not_found(&error) => {}
+        Err(error) => return Err(error).context("load protected preinstall receipt"),
+    }
+    backend.validate_preinstall_request(&request.request)?;
+    let committed: CommittedStateEnvelope = protected_load_json(&backend.paths.committed)?;
+    committed.validate()?;
+    if committed.committed.current != request.request.old_bundle_identity {
+        bail!("preinstall request old identity differs from committed state");
+    }
+    backend.preinstall_target(&request.request)?;
+    let receipt = PreinstallReceiptEnvelope::new(PreinstallReceipt {
+        request: request.request,
+        completed_utc: now_utc()?,
+    })?;
+    create_json(&backend.paths.preinstall_receipt, &receipt)
+        .context("persist protected preinstall receipt")
 }
 
 fn report_update_event(
@@ -299,6 +337,29 @@ fn is_not_found(error: &anyhow::Error) -> bool {
             .downcast_ref::<io::Error>()
             .is_some_and(|error| error.kind() == io::ErrorKind::NotFound)
     })
+}
+
+fn now_utc() -> Result<String> {
+    Ok(time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339)?)
+}
+
+fn cleanup_terminal_preinstall(
+    paths: &FixedPaths,
+    transaction: &TransactionEnvelope,
+) -> Result<()> {
+    let mut failed = false;
+    for path in [&paths.preinstall_receipt, &paths.preinstall_request] {
+        if remove_file_if_exists(path).is_err() {
+            failed = true;
+        }
+    }
+    if remove_completed_staging(&paths.staging, &transaction.transaction.transaction_id).is_err() {
+        failed = true;
+    }
+    if failed {
+        bail!("one or more terminal preinstall cleanup operations failed");
+    }
+    Ok(())
 }
 
 fn protected_load_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
@@ -401,6 +462,104 @@ impl WindowsBackend {
             update.helper_protocol,
         )
         .context("verify final target after updater recovery")?;
+        self.remember_verified_target(update);
+        Ok(())
+    }
+
+    fn validate_preinstall_request(&self, request: &PreinstallRequest) -> Result<()> {
+        if request.helper_protocol.major != HELPER_PROTOCOL_MAJOR
+            || request.helper_protocol.minor > HELPER_PROTOCOL_MINOR
+            || Path::new(&request.staged_root)
+                != self
+                    .paths
+                    .staging
+                    .join(&request.request_id)
+                    .join("LocalSandbox")
+            || Path::new(&request.final_version_root)
+                != self
+                    .paths
+                    .versions
+                    .join(&request.target_bundle_identity.version)
+        {
+            bail!("preinstall paths or helper protocol differ from compiled product policy");
+        }
+        Ok(())
+    }
+
+    fn preinstall_target(&mut self, request: &PreinstallRequest) -> Result<()> {
+        self.install_target(
+            &request.request_id,
+            Path::new(&request.staged_root),
+            Path::new(&request.final_version_root),
+            &request.target_bundle_identity,
+            request.helper_protocol,
+        )
+    }
+
+    fn install_target(
+        &self,
+        request_id: &str,
+        staged: &Path,
+        final_root: &Path,
+        target: &BundleIdentity,
+        helper_protocol: lsb_seawork_update::HelperProtocol,
+    ) -> Result<()> {
+        let temporary = self.paths.versions.join(format!(".staging-{request_id}"));
+        remove_incomplete_final_staging(&self.paths.versions, &temporary, request_id)
+            .context("remove incomplete final-version staging")?;
+        self.verify_package_identity(staged, target, helper_protocol)
+            .context("verify transaction staging package")?;
+        if final_root.exists() {
+            return self
+                .verify_package_identity(final_root, target, helper_protocol)
+                .context("verify existing final-version package");
+        }
+        copy_new_tree(staged, &temporary).context("copy package into final-version staging")?;
+        let result = (|| {
+            // The helper fully verified the protected source immediately before this bounded
+            // create-new copy. copy_new_tree pins every source entry, rejects destination
+            // collisions/reparse points, checks every copied byte count, and flushes every file.
+            fs::rename(&temporary, final_root)
+                .context("atomically place verified final-version root")?;
+            sync_directory_handle(&relative::open_directory(
+                &self.paths.versions,
+                GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE,
+            )?)
+            .context("flush versions directory after final-version rename")?;
+            verify_windows_directory_protection(final_root)
+                .context("verify renamed final-version root protection")
+        })();
+        if let Err(error) = result {
+            let _ = fs::remove_dir_all(&temporary);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn restore_verified_target_from_receipt(
+        &mut self,
+        transaction: &TransactionEnvelope,
+    ) -> Result<()> {
+        let receipt: PreinstallReceiptEnvelope =
+            match protected_load_json(&self.paths.preinstall_receipt) {
+                Ok(receipt) => receipt,
+                Err(error) if is_not_found(&error) => return Ok(()),
+                Err(error) => return Err(error).context("load activation preinstall receipt"),
+            };
+        receipt.validate()?;
+        let request = &receipt.receipt.request;
+        let update = &transaction.transaction;
+        if request.request_id != update.transaction_id
+            || request.old_bundle_identity != update.old_bundle_identity
+            || request.target_bundle_identity != update.target_bundle_identity
+            || request.staged_root != update.staged_root
+            || request.final_version_root != update.final_version_root
+            || request.helper_protocol != update.helper_protocol
+        {
+            bail!("activation transaction differs from its preinstall receipt");
+        }
+        verify_windows_directory_protection(Path::new(&update.final_version_root))
+            .context("verify receipted final-version root protection")?;
         self.remember_verified_target(update);
         Ok(())
     }
@@ -571,53 +730,13 @@ impl UpdateBackend for WindowsBackend {
 
     fn install_and_verify_target(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
         let update = &transaction.transaction;
-        let staged = Path::new(&update.staged_root);
-        let final_root = Path::new(&update.final_version_root);
-        let temporary = self
-            .paths
-            .versions
-            .join(format!(".staging-{}", update.transaction_id));
-        remove_incomplete_final_staging(&self.paths.versions, &temporary, &update.transaction_id)
-            .context("remove incomplete final-version staging")?;
-        self.verify_package_identity(
-            staged,
+        self.install_target(
+            &update.transaction_id,
+            Path::new(&update.staged_root),
+            Path::new(&update.final_version_root),
             &update.target_bundle_identity,
             update.helper_protocol,
-        )
-        .context("verify transaction staging package")?;
-        if final_root.exists() {
-            self.verify_package_identity(
-                final_root,
-                &update.target_bundle_identity,
-                update.helper_protocol,
-            )
-            .context("verify existing final-version package")?;
-            self.remember_verified_target(update);
-            return Ok(());
-        }
-        copy_new_tree(staged, &temporary).context("copy package into final-version staging")?;
-        let result = (|| {
-            // The helper fully verified the protected source immediately before this bounded
-            // create-new copy. copy_new_tree pins every source entry, rejects destination
-            // collisions/reparse points, checks every copied byte count, and flushes every file.
-            // The target service independently verifies the installed tree before reaching
-            // RUNNING, so another complete read here adds no necessary trust boundary.
-            fs::rename(&temporary, final_root)
-                .context("atomically place verified final-version root")?;
-            sync_directory_handle(&relative::open_directory(
-                &self.paths.versions,
-                GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE,
-            )?)
-            .context("flush versions directory after final-version rename")?;
-            // The same-volume atomic rename preserves the verified directory object. Recheck
-            // only its protected final root; later transitions reuse this in-process proof.
-            verify_windows_directory_protection(final_root)
-                .context("verify renamed final-version root protection")
-        })();
-        if let Err(error) = result {
-            let _ = fs::remove_dir_all(&temporary);
-            return Err(error);
-        }
+        )?;
         self.remember_verified_target(update);
         Ok(())
     }
@@ -1503,6 +1622,8 @@ struct FixedPaths {
     staging: PathBuf,
     transactions: PathBuf,
     current_transaction: PathBuf,
+    preinstall_request: PathBuf,
+    preinstall_receipt: PathBuf,
     history: PathBuf,
     versions: PathBuf,
 }
@@ -1522,6 +1643,8 @@ impl FixedPaths {
             failed_target: updates.join("failed-target.json"),
             staging: updates.join("staging"),
             current_transaction: transactions.join("current.json"),
+            preinstall_request: transactions.join("preinstall-request.json"),
+            preinstall_receipt: transactions.join("preinstall-receipt.json"),
             history: updates.join("history"),
             versions: product.join("versions"),
             product,
