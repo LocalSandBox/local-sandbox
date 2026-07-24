@@ -55,6 +55,14 @@ if ($lock.schema_version -ne 1) {
 }
 
 $native = $lock.sentry_native
+if ([string]$native.commit -notmatch '^[0-9a-f]{40}$') {
+    throw 'The locked Sentry Native commit is invalid.'
+}
+foreach ($revision in $native.recursive_revisions.psobject.Properties) {
+    if ([string]$revision.Value -notmatch '^[0-9a-f]{40}$') {
+        throw "The locked revision for $($revision.Name) is invalid."
+    }
+}
 $archiveSha = [string]$native.release_archive.sha256
 if ($archiveSha -notmatch '^[0-9a-f]{64}$') {
     throw 'The locked Sentry Native archive SHA-256 is invalid.'
@@ -106,7 +114,6 @@ if (-not (Test-Path -LiteralPath $complete -PathType Leaf)) {
         if ($versionMatches.Count -ne 1) {
             throw 'The extracted Sentry Native version does not match the dependency lock.'
         }
-
         $stagingBuild = Join-Path $staging 'build'
         $stagingInstall = Join-Path $staging 'install'
         $options = $native.cmake_options
@@ -167,7 +174,6 @@ if ($prepared.sentry_native_commit -cne [string]$native.commit -or
     $prepared.archive_sha256 -cne $archiveSha) {
     throw 'The prepared Sentry Native cache does not match the dependency lock.'
 }
-
 $cli = $lock.sentry_cli.windows_x86_64
 $cliSha = [string]$cli.sha256
 if ($cliSha -notmatch '^[0-9a-f]{64}$') {
@@ -193,6 +199,7 @@ $result = [ordered]@{
     schema_version = 1
     sentry_native_tag = [string]$native.tag
     sentry_native_commit = [string]$native.commit
+    recursive_revisions = $native.recursive_revisions
     include_dir = (Resolve-Path -LiteralPath (Join-Path $install 'include')).Path
     library_dir = (Resolve-Path -LiteralPath (Join-Path $install 'lib')).Path
     library = (Resolve-Path -LiteralPath (Join-Path $install 'lib\sentry.lib')).Path

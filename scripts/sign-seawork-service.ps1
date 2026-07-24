@@ -1,10 +1,11 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('SignPe', 'SignUpdaterPe', 'VerifyUpdaterPe', 'SignTestNode', 'Catalog', 'Verify')]
+    [ValidateSet('SignPe', 'SignTelemetryPe', 'SignUpdaterPe', 'VerifyUpdaterPe', 'SignTestNode', 'Catalog', 'Verify')]
     [string]$Mode,
 
     [string]$ServiceBinary,
+    [string[]]$TelemetryBinary,
     [string]$UpdaterBinary,
     [string]$ClientBinary,
     [string]$BundleRoot,
@@ -386,8 +387,12 @@ function Verify-BundleSignatures {
     try {
         $catalog = Resolve-ExistingFile (Join-Path $root 'manifests\LocalSandboxSeaWork.cat') 'catalog'
         $service = Resolve-ExistingFile (Join-Path $root 'bin\localsandbox-seawork-service.exe') 'service binary'
+        $handler = Resolve-ExistingFile (Join-Path $root 'bin\crashpad_handler.exe') 'Crashpad handler'
+        $wer = Resolve-ExistingFile (Join-Path $root 'bin\crashpad_wer.dll') 'Crashpad WER module'
         $files = Get-BundleFiles $root -ExcludeCatalog
         Assert-Signer $service -RequireTimestamp:(-not $SkipTimestamp) | Out-Null
+        Assert-Signer $handler -RequireTimestamp:(-not $SkipTimestamp) | Out-Null
+        Assert-Signer $wer -RequireTimestamp:(-not $SkipTimestamp) | Out-Null
         Assert-Signer $catalog -RequireTimestamp:(-not $SkipTimestamp) | Out-Null
         Assert-FileCatalogClosure `
             -Root $root `
@@ -406,6 +411,8 @@ function Verify-BundleSignatures {
             }
             $representativeMembers = @(
                 'bin/localsandbox-seawork-service.exe'
+                'bin/crashpad_handler.exe'
+                'bin/crashpad_wer.dll'
                 'manifests/bundle.json'
                 'tools/qemu/qemu-system-x86_64.exe'
             )
@@ -435,6 +442,23 @@ switch ($Mode) {
         }
         $result = Invoke-Sign $service
         $result | ConvertTo-Json -Compress
+    }
+    'SignTelemetryPe' {
+        if ($null -eq $TelemetryBinary -or $TelemetryBinary.Count -ne 2) {
+            throw 'TelemetryBinary must contain crashpad_handler.exe and crashpad_wer.dll'
+        }
+        $expected = @('crashpad_handler.exe', 'crashpad_wer.dll')
+        $results = foreach ($name in $expected) {
+            $matches = @($TelemetryBinary | Where-Object {
+                (Split-Path -Leaf $_) -ceq $name
+            })
+            if ($matches.Count -ne 1) {
+                throw "TelemetryBinary must contain exactly one $name"
+            }
+            $binary = Resolve-ExistingFile $matches[0] $name
+            Invoke-Sign $binary
+        }
+        @($results) | ConvertTo-Json -Compress
     }
     'SignUpdaterPe' {
         $updater = Resolve-ExistingFile $UpdaterBinary 'UpdaterBinary'

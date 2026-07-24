@@ -362,6 +362,16 @@ pub fn stage_bundle(
         bail!("--service-binary must name localsandbox-seawork-service.exe");
     }
     require_service_profile_binary(&service_binary, profile)?;
+    let crashpad_handler = input_file(args, "--crashpad-handler", workspace_root)?;
+    if crashpad_handler.file_name().and_then(|name| name.to_str()) != Some("crashpad_handler.exe") {
+        bail!("--crashpad-handler must name crashpad_handler.exe");
+    }
+    require_amd64_pe(&crashpad_handler)?;
+    let crashpad_wer = input_file(args, "--crashpad-wer", workspace_root)?;
+    if crashpad_wer.file_name().and_then(|name| name.to_str()) != Some("crashpad_wer.dll") {
+        bail!("--crashpad-wer must name crashpad_wer.dll");
+    }
+    require_amd64_pe(&crashpad_wer)?;
     let runtime_dir = input_directory(args, "--runtime-dir", workspace_root)?;
     let qemu_dir = input_directory(args, "--qemu-dir", workspace_root)?;
     let sbom = input_file(args, "--sbom", workspace_root)?;
@@ -402,6 +412,11 @@ pub fn stage_bundle(
         &service_binary,
         &bundle_root.join("bin/localsandbox-seawork-service.exe"),
     )?;
+    copy_file(
+        &crashpad_handler,
+        &bundle_root.join("bin/crashpad_handler.exe"),
+    )?;
+    copy_file(&crashpad_wer, &bundle_root.join("bin/crashpad_wer.dll"))?;
     for asset in ["Image", "initramfs.cpio.gz", "rootfs.ext4"] {
         copy_file(
             &runtime_dir.join(asset),
@@ -473,8 +488,12 @@ fn archive_bundle(
     let catalog = input_file(args, "--catalog", workspace_root)?;
     let pdb = input_file(args, "--pdb", workspace_root)?;
     let source_map = input_file(args, "--source-map", workspace_root)?;
+    let debug_id_evidence = input_file(args, "--debug-id-evidence", workspace_root)?;
     if fs::metadata(&source_map)?.len() > 1024 * 1024 {
         bail!("source map exceeds the 1 MiB limit");
+    }
+    if fs::metadata(&debug_id_evidence)?.len() > 1024 * 1024 {
+        bail!("debug-ID evidence exceeds the 1 MiB limit");
     }
     let bundle_root = require_closed_stage(&stage_dir)?;
     install_catalog(
@@ -484,6 +503,8 @@ fn archive_bundle(
     verify_staged_bundle(&bundle_root, &version, profile)?;
     serde_json::from_slice::<serde_json::Value>(&fs::read(&source_map)?)
         .context("source map must be valid JSON")?;
+    serde_json::from_slice::<serde_json::Value>(&fs::read(&debug_id_evidence)?)
+        .context("debug-ID evidence must be valid JSON")?;
 
     let artifact_stem = profile.artifact_stem(&version);
     let archive_name = format!("{artifact_stem}.zip");
@@ -496,12 +517,20 @@ fn archive_bundle(
         &symbols,
         vec![
             ZipInput {
+                name: "LocalSandbox/bin/localsandbox-seawork-service.exe".to_string(),
+                source: bundle_root.join("bin/localsandbox-seawork-service.exe"),
+            },
+            ZipInput {
                 name: "LocalSandbox/bin/localsandbox-seawork-service.pdb".to_string(),
                 source: pdb,
             },
             ZipInput {
                 name: "LocalSandbox/manifests/source-map.json".to_string(),
                 source: source_map,
+            },
+            ZipInput {
+                name: "LocalSandbox/manifests/evidence-sentry-debug-ids.json".to_string(),
+                source: debug_id_evidence,
             },
         ],
     )?;
@@ -609,6 +638,8 @@ fn verify_staged_bundle(
     let service_binary = bundle_root.join("bin/localsandbox-seawork-service.exe");
     require_amd64_pe(&service_binary)?;
     require_service_profile_binary(&service_binary, profile)?;
+    require_amd64_pe(&bundle_root.join("bin/crashpad_handler.exe"))?;
+    require_amd64_pe(&bundle_root.join("bin/crashpad_wer.dll"))?;
     require_regular_file(&bundle_root.join("manifests/LocalSandboxSeaWork.cat"))?;
     validate_json_file(
         &bundle_root.join("manifests/runtime-dependencies.json"),
@@ -1404,6 +1435,16 @@ mod tests {
             fake_amd64_pe(ServiceProfile::Production),
         )
         .unwrap();
+        fs::write(
+            inputs.join("crashpad_handler.exe"),
+            fake_amd64_pe(ServiceProfile::Production),
+        )
+        .unwrap();
+        fs::write(
+            inputs.join("crashpad_wer.dll"),
+            fake_amd64_pe(ServiceProfile::Production),
+        )
+        .unwrap();
         let output = root.join("output");
         fs::create_dir_all(&output).unwrap();
         let args = vec![
@@ -1412,6 +1453,10 @@ mod tests {
                 .join("localsandbox-seawork-service.exe")
                 .display()
                 .to_string(),
+            "--crashpad-handler".into(),
+            inputs.join("crashpad_handler.exe").display().to_string(),
+            "--crashpad-wer".into(),
+            inputs.join("crashpad_wer.dll").display().to_string(),
             "--runtime-dir".into(),
             runtime.display().to_string(),
             "--qemu-dir".into(),
@@ -1438,6 +1483,12 @@ mod tests {
         let manifest: serde_json::Value = serde_json::from_slice(&manifest).unwrap();
         let files = manifest["files"].as_array().unwrap();
         assert!(files.iter().any(|file| file["path"] == "runtime/Image"));
+        assert!(files
+            .iter()
+            .any(|file| file["path"] == "bin/crashpad_handler.exe"));
+        assert!(files
+            .iter()
+            .any(|file| file["path"] == "bin/crashpad_wer.dll"));
         assert!(!files
             .iter()
             .any(|file| file["path"] == "manifests/bundle.json"));
@@ -1446,6 +1497,7 @@ mod tests {
         fs::write(inputs.join("LocalSandboxSeaWork.cat"), b"signed catalog").unwrap();
         fs::write(inputs.join("localsandbox-seawork-service.pdb"), b"pdb").unwrap();
         fs::write(inputs.join("source-map.json"), b"{}\n").unwrap();
+        fs::write(inputs.join("evidence-sentry-debug-ids.json"), b"{}\n").unwrap();
         let archive_args = vec![
             "--stage-dir".into(),
             stage.display().to_string(),
@@ -1458,6 +1510,11 @@ mod tests {
                 .to_string(),
             "--source-map".into(),
             inputs.join("source-map.json").display().to_string(),
+            "--debug-id-evidence".into(),
+            inputs
+                .join("evidence-sentry-debug-ids.json")
+                .display()
+                .to_string(),
         ];
         archive_bundle(&archive_args, platform, "0.4.6", &root, &output).unwrap();
         let archive = output.join("lsb-seawork-service-v0.4.6-windows-x86_64.zip");
@@ -1477,6 +1534,24 @@ mod tests {
         assert_eq!(fs::read(&archive).unwrap(), first_archive);
         assert_eq!(fs::read(&symbols).unwrap(), first_symbols);
 
+        let handler = stage.join("LocalSandbox/bin/crashpad_handler.exe");
+        let original_handler = fs::read(&handler).unwrap();
+        fs::remove_file(&handler).unwrap();
+        assert!(verify_staged_bundle(
+            &stage.join("LocalSandbox"),
+            "0.4.6",
+            ServiceProfile::Production
+        )
+        .is_err());
+        fs::write(&handler, &original_handler).unwrap();
+        fs::write(&handler, b"tampered").unwrap();
+        assert!(verify_staged_bundle(
+            &stage.join("LocalSandbox"),
+            "0.4.6",
+            ServiceProfile::Production
+        )
+        .is_err());
+        fs::write(&handler, original_handler).unwrap();
         fs::write(stage.join("LocalSandbox/runtime/Image"), b"tampered").unwrap();
         assert!(verify_staged_bundle(
             &stage.join("LocalSandbox"),

@@ -123,13 +123,19 @@ if ($certificateInfo.status -ne 'ready' -or
     throw 'Protected signing assets did not produce valid public certificate metadata.'
 }
 
-$stateText = Get-Content -LiteralPath 'state.md' -Raw
-$versionMatch = [regex]::Match($stateText, '(?m)^- Candidate version: `([^`]+)`$')
-if (-not $versionMatch.Success -or
-    $versionMatch.Groups[1].Value -notmatch '^\d+\.\d+\.\d+-[0-9A-Za-z.-]+$') {
-    throw 'state.md does not contain the bounded prerelease candidate version.'
+$workspaceMetadata = (& cargo metadata --locked --no-deps --format-version 1 |
+    Out-String | ConvertFrom-Json)
+if ($LASTEXITCODE -ne 0) {
+    throw 'cargo metadata could not resolve the release candidate version.'
 }
-$version = $versionMatch.Groups[1].Value
+$servicePackages = @($workspaceMetadata.packages | Where-Object {
+    $_.name -ceq 'lsb-seawork-service'
+})
+if ($servicePackages.Count -ne 1 -or
+    [string]$servicePackages[0].version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+    throw 'cargo metadata did not contain one bounded service package version.'
+}
+$version = [string]$servicePackages[0].version
 $releaseRoot = Join-Path $RunRoot 'release-work'
 if (Test-Path -LiteralPath $releaseRoot) {
     throw 'The release work directory already exists.'
@@ -139,6 +145,24 @@ $metadata = Join-Path $input 'metadata'
 $out = Join-Path $releaseRoot 'out'
 $catalogWork = Join-Path $releaseRoot 'catalog-work'
 New-Item -ItemType Directory -Path $input, $out, $catalogWork | Out-Null
+
+$sentryDependencyJson = Join-Path $releaseRoot 'sentry-native-prepared.json'
+Invoke-Native (Join-Path $PWD 'scripts\prepare-sentry-native.ps1') @(
+    '-OutputJson', $sentryDependencyJson
+) 'Sentry Native preparation'
+$sentryDependency = Get-Content -LiteralPath $sentryDependencyJson -Raw | ConvertFrom-Json
+$env:LSB_SENTRY_DSN = 'http://public@127.0.0.1:9/1'
+$env:LSB_SENTRY_ENVIRONMENT = 'windows-release-candidate'
+$env:LSB_SENTRY_TRACES_SAMPLE_RATE = '1'
+$env:LSB_SENTRY_NATIVE_INCLUDE_DIR = [string]$sentryDependency.include_dir
+$env:LSB_SENTRY_NATIVE_LIBRARY = [string]$sentryDependency.library
+$env:LSB_SENTRY_CRASHPAD_HANDLER = [string]$sentryDependency.crashpad_handler
+$env:LSB_SENTRY_CRASHPAD_WER = [string]$sentryDependency.crashpad_wer
+$crashpadHandler = Join-Path $input 'crashpad_handler.exe'
+$crashpadWer = Join-Path $input 'crashpad_wer.dll'
+$telemetryBinaries = @($crashpadHandler, $crashpadWer)
+Copy-Item -LiteralPath $env:LSB_SENTRY_CRASHPAD_HANDLER -Destination $crashpadHandler
+Copy-Item -LiteralPath $env:LSB_SENTRY_CRASHPAD_WER -Destination $crashpadWer
 
 $targetRoot = if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
     Join-Path $PWD 'target'
@@ -153,6 +177,8 @@ $priorRustFlags = $env:RUSTFLAGS
 $priorCompileEventMessages = $env:LSB_COMPILE_EVENT_MESSAGES
 $priorMcPath = $env:LSB_WINDOWS_MC_PATH
 $priorRcPath = $env:LSB_WINDOWS_RC_PATH
+$priorPublisher = $env:SEAWORK_PUBLISHER_SHA256
+$priorPreviousPublisher = $env:SEAWORK_PUBLISHER_SHA256_PREVIOUS
 try {
     foreach ($outputPath in @($service, $pdb)) {
         if (Test-Path -LiteralPath $outputPath) {
@@ -164,9 +190,11 @@ try {
     $env:LSB_COMPILE_EVENT_MESSAGES = '1'
     $env:LSB_WINDOWS_MC_PATH = $eventTools.Mc
     $env:LSB_WINDOWS_RC_PATH = $eventTools.Rc
+    $env:SEAWORK_PUBLISHER_SHA256 = [string]$certificateInfo.sha256_thumbprint
+    $env:SEAWORK_PUBLISHER_SHA256_PREVIOUS = ''
     Invoke-Native cargo @(
         'build', '-p', 'lsb-seawork-service', '--locked', '--release',
-        '--target', 'x86_64-pc-windows-msvc'
+        '--target', 'x86_64-pc-windows-msvc', '--features', 'sentry-telemetry'
     ) 'production service build'
 }
 finally {
@@ -174,6 +202,8 @@ finally {
     $env:LSB_COMPILE_EVENT_MESSAGES = $priorCompileEventMessages
     $env:LSB_WINDOWS_MC_PATH = $priorMcPath
     $env:LSB_WINDOWS_RC_PATH = $priorRcPath
+    $env:SEAWORK_PUBLISHER_SHA256 = $priorPublisher
+    $env:SEAWORK_PUBLISHER_SHA256_PREVIOUS = $priorPreviousPublisher
 }
 Resolve-RegularFile $service 'release service PE' | Out-Null
 Resolve-RegularFile $pdb 'release service PDB' | Out-Null
@@ -193,6 +223,14 @@ Invoke-Native (Join-Path $PWD 'scripts\sign-seawork-service.ps1') @(
     '-ExpectedPublisherSubject', [string]$certificateInfo.subject,
     '-ExpectedPublisherSha256', [string]$certificateInfo.sha256_thumbprint
 ) 'service PE signing'
+& (Join-Path $PWD 'scripts\sign-seawork-service.ps1') `
+    -Mode SignTelemetryPe `
+    -UseLocalMachineStore `
+    -TelemetryBinary $telemetryBinaries `
+    -PfxPath $pfx `
+    -PasswordFile $passwordFile `
+    -ExpectedPublisherSubject ([string]$certificateInfo.subject) `
+    -ExpectedPublisherSha256 ([string]$certificateInfo.sha256_thumbprint)
 
 $eventSigned = Join-Path $releaseRoot 'event-messages-signed.json'
 Invoke-Native (Join-Path $PWD 'scripts\verify-seawork-event-messages.ps1') @(
@@ -201,10 +239,10 @@ Invoke-Native (Join-Path $PWD 'scripts\verify-seawork-event-messages.ps1') @(
 ) 'signed Event Log resource verification'
 
 $dependencies = Join-Path $input 'runtime-dependencies.json'
-Invoke-Native (Join-Path $PWD 'scripts\inspect-seawork-service-dependencies.ps1') @(
-    '-ServiceBinary', $service,
-    '-OutputPath', $dependencies
-) 'runtime dependency inspection'
+& (Join-Path $PWD 'scripts\inspect-seawork-service-dependencies.ps1') `
+    -ServiceBinary $service `
+    -TelemetryBinary $telemetryBinaries `
+    -OutputPath $dependencies
 $cargoMetadata = Join-Path $input 'cargo-metadata.json'
 $metadataProcess = Start-Process cargo.exe `
     -ArgumentList @('metadata', '--locked', '--format-version', '1') `
@@ -222,17 +260,21 @@ Invoke-Native (Join-Path $PWD 'scripts\prepare-seawork-release-metadata.ps1') @(
     '-OutputDirectory', $metadata,
     '-Version', $version,
     '-CommitSha', $SnapshotSha,
-    '-CreatedUtc', $createdUtc
+    '-CreatedUtc', $createdUtc,
+    '-SentryNativeLockPath', (Join-Path $PWD 'sentry-native.lock.json'),
+    '-SentryNativeSourceDirectory', [string]$sentryDependency.source_dir
 ) 'release metadata generation'
 
 Invoke-Native cargo @(
-    'run', '-p', 'xtask', '--locked', '--', 'package-release',
+    'run', '-p', 'xtask', '--release', '--locked', '--', 'package-release',
     '--artifact', 'seawork-service',
     '--mode', 'stage',
     '--platform', 'windows-x86_64',
     '--version', $version,
     '--output-dir', $out,
     '--service-binary', $service,
+    '--crashpad-handler', $crashpadHandler,
+    '--crashpad-wer', $crashpadWer,
     '--runtime-dir', $runtime,
     '--qemu-dir', $qemu,
     '--sbom', (Join-Path $metadata 'sbom.spdx.json'),
@@ -260,12 +302,37 @@ $sourceMap = Join-Path $input 'source-map.json'
     schema_version = 1
     version = $version
     snapshot_sha = $SnapshotSha
+    sentry_native_commit = [string]$sentryDependency.sentry_native_commit
     service_sha256 = (Get-FileHash -LiteralPath $service -Algorithm SHA256).Hash.ToLowerInvariant()
     pdb_sha256 = (Get-FileHash -LiteralPath $pdb -Algorithm SHA256).Hash.ToLowerInvariant()
 } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $sourceMap -Encoding utf8NoBOM
 
+$serviceCheck = @(& $sentryDependency.sentry_cli debug-files check $service 2>&1)
+if ($LASTEXITCODE -ne 0) {
+    throw 'sentry-cli executable debug-file check failed'
+}
+$pdbCheck = @(& $sentryDependency.sentry_cli debug-files check $pdb 2>&1)
+if ($LASTEXITCODE -ne 0) {
+    throw 'sentry-cli PDB debug-file check failed'
+}
+$debugIds = @(($serviceCheck + $pdbCheck) | Select-String -AllMatches `
+    -Pattern '(?i)\b(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})-[0-9a-f]+\b' |
+    ForEach-Object { $_.Matches.Value.ToLowerInvariant() } | Sort-Object -Unique)
+if ($debugIds.Count -ne 1) {
+    throw 'service PE and PDB did not report one matching debug identifier'
+}
+$debugIdEvidence = Join-Path $input 'evidence-sentry-debug-ids.json'
+[ordered]@{
+    schema_version = 1
+    release = "local-sandbox-service@$version"
+    dist = 'windows-x86_64'
+    debug_ids = $debugIds
+    service_sha256 = (Get-FileHash -LiteralPath $service -Algorithm SHA256).Hash.ToLowerInvariant()
+    pdb_sha256 = (Get-FileHash -LiteralPath $pdb -Algorithm SHA256).Hash.ToLowerInvariant()
+} | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $debugIdEvidence -Encoding utf8NoBOM
+
 Invoke-Native cargo @(
-    'run', '-p', 'xtask', '--locked', '--', 'package-release',
+    'run', '-p', 'xtask', '--release', '--locked', '--', 'package-release',
     '--artifact', 'seawork-service',
     '--mode', 'archive',
     '--platform', 'windows-x86_64',
@@ -274,8 +341,45 @@ Invoke-Native cargo @(
     '--stage-dir', $stage,
     '--catalog', (Join-Path $bundle 'manifests\LocalSandboxSeaWork.cat'),
     '--pdb', $pdb,
-    '--source-map', $sourceMap
+    '--source-map', $sourceMap,
+    '--debug-id-evidence', $debugIdEvidence
 ) 'service archive construction'
+
+$symbolsPath = Resolve-RegularFile `
+    (Join-Path $out "lsb-seawork-service-v$version-windows-x86_64-symbols.zip") `
+    'symbols archive'
+$symbolEntries = @(& tar.exe -tf $symbolsPath | Sort-Object)
+if ($LASTEXITCODE -ne 0) {
+    throw 'listing the symbols archive failed'
+}
+$expectedSymbolEntries = @(
+    'LocalSandbox/bin/localsandbox-seawork-service.exe',
+    'LocalSandbox/bin/localsandbox-seawork-service.pdb',
+    'LocalSandbox/manifests/source-map.json',
+    'LocalSandbox/manifests/evidence-sentry-debug-ids.json'
+) | Sort-Object
+if (@(Compare-Object $expectedSymbolEntries $symbolEntries -CaseSensitive).Count -ne 0) {
+    throw 'symbols archive does not have the exact required layout'
+}
+$archivedDebugIds = @((& tar.exe -xOf $symbolsPath `
+    'LocalSandbox/manifests/evidence-sentry-debug-ids.json' |
+    Out-String | ConvertFrom-Json).debug_ids | Sort-Object -Unique)
+if ($LASTEXITCODE -ne 0 -or
+    @(Compare-Object $debugIds $archivedDebugIds -CaseSensitive).Count -ne 0) {
+    throw 'symbols archive debug-ID evidence does not match the PE/PDB checks'
+}
+$sentrySymbolsEvidence = Join-Path $RunRoot 'evidence-sentry-symbols.json'
+[ordered]@{
+    schema_version = 1
+    release = "local-sandbox-service@$version"
+    dist = 'windows-x86_64'
+    sentry_cli_version = [string]$sentryDependency.sentry_cli_version
+    debug_ids = $debugIds
+    service_sha256 = (Get-FileHash -LiteralPath $service -Algorithm SHA256).Hash.ToLowerInvariant()
+    pdb_sha256 = (Get-FileHash -LiteralPath $pdb -Algorithm SHA256).Hash.ToLowerInvariant()
+    symbols_archive_sha256 = (Get-FileHash -LiteralPath $symbolsPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    upload_status = 'manual_required'
+} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $sentrySymbolsEvidence -Encoding utf8NoBOM
 
 Invoke-Native (Join-Path $PWD 'scripts\sign-seawork-service.ps1') @(
     '-Mode', 'Verify',
@@ -323,10 +427,13 @@ Copy-Item -LiteralPath $nodeEvidenceSource `
 
 $payloadName = "lsb-seawork-service-v$version-windows-x86_64.zip"
 $symbolsName = "lsb-seawork-service-v$version-windows-x86_64-symbols.zip"
-foreach ($name in @($payloadName, $symbolsName, 'SHA256SUMS')) {
+$sumsName = "lsb-seawork-service-v$version-SHA256SUMS"
+foreach ($name in @($payloadName, $symbolsName)) {
     Copy-Item -LiteralPath (Resolve-RegularFile (Join-Path $out $name) "release artifact $name") `
         -Destination (Join-Path $RunRoot $name)
 }
+Copy-Item -LiteralPath (Resolve-RegularFile (Join-Path $out $sumsName) 'release checksums') `
+    -Destination (Join-Path $RunRoot 'SHA256SUMS')
 Copy-Item -LiteralPath $eventSigned -Destination (Join-Path $RunRoot 'evidence-event-messages.json')
 $evidenceName = 'evidence-release-candidate.json'
 $snapshotTreeSha = (& git rev-parse "${SnapshotSha}^{tree}").Trim().ToLowerInvariant()
@@ -354,6 +461,17 @@ if ($LASTEXITCODE -ne 0 -or $snapshotTreeSha -notmatch '^[0-9a-f]{40}$' -or
         name = $symbolsName
         sha256 = (Get-FileHash -LiteralPath (Join-Path $RunRoot $symbolsName) -Algorithm SHA256).Hash.ToLowerInvariant()
     }
+    sentry = [ordered]@{
+        native_tag = [string]$sentryDependency.sentry_native_tag
+        native_commit = [string]$sentryDependency.sentry_native_commit
+        cli_version = [string]$sentryDependency.sentry_cli_version
+        debug_ids = $debugIds
+        environment = $env:LSB_SENTRY_ENVIRONMENT
+        traces_sample_rate = [double]$env:LSB_SENTRY_TRACES_SAMPLE_RATE
+        handler_sha256 = (Get-FileHash -LiteralPath $crashpadHandler -Algorithm SHA256).Hash.ToLowerInvariant()
+        wer_sha256 = (Get-FileHash -LiteralPath $crashpadWer -Algorithm SHA256).Hash.ToLowerInvariant()
+        upload_status = 'manual_required'
+    }
     node_packages = @($nodeEvidence.packages)
     trusted_signature_required = $true
     timestamp_required = $true
@@ -373,6 +491,7 @@ $fetchNames = @(
     'seawork-test-release-manifest.json',
     'evidence-event-messages.json',
     'evidence-node-packages.json',
+    'evidence-sentry-symbols.json',
     $evidenceName
 )
 $fetchNames += @($nodePackageNames)

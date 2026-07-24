@@ -19,6 +19,7 @@ the LocalSandbox tag and Node packages:
 lsb-seawork-service-v<VERSION>-windows-x86_64.zip
   LocalSandbox/
     bin/localsandbox-seawork-service.exe
+    bin/{crashpad_handler.exe,crashpad_wer.dll}
     runtime/{Image,initramfs.cpio.gz,rootfs.ext4,VERSION}
     tools/qemu/<complete pinned managed QEMU distribution>
     manifests/{bundle.json,service-contract.json,sbom.spdx.json}
@@ -26,8 +27,10 @@ lsb-seawork-service-v<VERSION>-windows-x86_64.zip
     licenses/<LocalSandbox and third-party license/notice inventory>
 
 lsb-seawork-service-v<VERSION>-windows-x86_64-symbols.zip
+  LocalSandbox/bin/localsandbox-seawork-service.exe
   LocalSandbox/bin/localsandbox-seawork-service.pdb
   LocalSandbox/manifests/source-map.json
+  LocalSandbox/manifests/evidence-sentry-debug-ids.json
 
 lsb-seawork-service-v<VERSION>-SHA256SUMS
 ```
@@ -36,8 +39,9 @@ The payload ZIP is deterministic after signing. `bundle.json` is a sorted,
 closed SHA-256 and size inventory; it excludes itself and the catalog to avoid
 a hash cycle. The signed catalog covers both manifests and every other payload
 file. The symbols ZIP is not installed. `runtime-dependencies.json` records the
-signed service PE's `dumpbin /DEPENDENTS` result; releases fail if the service
-imports a Visual C++ redistributable or any DLL not supplied by Windows.
+signed service, Crashpad handler, and Crashpad WER module
+`dumpbin /DEPENDENTS` results; releases fail if any of them imports a Visual
+C++ redistributable or any DLL not supplied by Windows.
 
 ## Release workflow
 
@@ -57,6 +61,13 @@ Configure these repository variables:
 | `SEAWORK_PUBLISHER_SHA256_PREVIOUS` | Optional previous thumbprint trusted by the Node client during rotation |
 | `SEAWORK_TIMESTAMP_URL` | Organization-approved RFC 3161 timestamp URL |
 | `SEAWORK_WINDOWS_EVIDENCE_ROOT` | Protected absolute root on the evidence runner |
+| `LSB_SENTRY_DSN` | Public DSN for the existing SeaWork Sentry project |
+| `LSB_SENTRY_ENVIRONMENT` | Release environment name |
+| `LSB_SENTRY_TRACES_SAMPLE_RATE` | Validated trace rate from `0` through `1` |
+| `SEAWORK_SENTRY_SYMBOL_UPLOAD_ENABLED` | `false` by default; enables only the internal-runner upload job |
+| `SEAWORK_SENTRY_ORG` | Existing SeaWork Sentry organization slug |
+| `SEAWORK_SENTRY_PROJECT` | Existing SeaWork Sentry project slug |
+| `SEAWORK_SENTRY_URL` | Internal Sentry base URL |
 
 Configure these secrets in the protected `seawork-service-signing` environment:
 
@@ -65,8 +76,13 @@ Configure these secrets in the protected `seawork-service-signing` environment:
 | `SEAWORK_CODESIGN_PFX_BASE64` | Base64 of the organization-controlled PFX |
 | `SEAWORK_CODESIGN_PASSWORD` | PFX password |
 
+The optional `seawork-sentry-symbol-upload` environment supplies
+`SENTRY_AUTH_TOKEN`. The token is never available to the hosted build, is not
+compiled into the service, and is not written to an artifact.
+
 The workflow builds the x64 service and updater helper with a statically linked
-CRT, preserves the service PDB, and signs and timestamps both PEs. It records
+CRT, preserves the service PDB, and signs and timestamps the service, updater,
+Crashpad handler, and WER module. It records
 runtime and Cargo dependencies, generates the SPDX/license inventory, stages the
 closed service bundle, creates and signs the catalog, and builds deterministic
 service payload/symbol ZIPs. It also emits the separate, deterministic updater

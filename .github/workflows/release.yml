@@ -408,6 +408,9 @@ jobs:
       SEAWORK_CODESIGN_PASSWORD: ${{ secrets.SEAWORK_CODESIGN_PASSWORD }}
       LSB_SEAWORK_VERSION: ${{ needs.prepare.outputs.version }}
       RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
+      LSB_SENTRY_DSN: ${{ vars.LSB_SENTRY_DSN }}
+      LSB_SENTRY_ENVIRONMENT: ${{ vars.LSB_SENTRY_ENVIRONMENT }}
+      LSB_SENTRY_TRACES_SAMPLE_RATE: ${{ vars.LSB_SENTRY_TRACES_SAMPLE_RATE }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -418,6 +421,19 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Prepare pinned Sentry Native dependency
+        run: |
+          $json = Join-Path $env:RUNNER_TEMP 'sentry-native-prepared.json'
+          .\scripts\prepare-sentry-native.ps1 -OutputJson $json | Out-Null
+          $dependency = Get-Content -LiteralPath $json -Raw | ConvertFrom-Json
+          "LSB_SENTRY_NATIVE_INCLUDE_DIR=$($dependency.include_dir)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LSB_SENTRY_NATIVE_LIBRARY=$($dependency.library)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LSB_SENTRY_CRASHPAD_HANDLER=$($dependency.crashpad_handler)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LSB_SENTRY_CRASHPAD_WER=$($dependency.crashpad_wer)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LSB_SENTRY_CLI=$($dependency.sentry_cli)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LSB_SENTRY_CLI_VERSION=$($dependency.sentry_cli_version)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LSB_SENTRY_NATIVE_SOURCE_DIR=$($dependency.source_dir)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Resolve release metadata
         run: |
@@ -448,7 +464,8 @@ jobs:
           RUSTFLAGS: -C target-feature=+crt-static
         run: |
           cargo build -p lsb-seawork-service -p lsb-seawork-updater `
-            --locked --release --target x86_64-pc-windows-msvc
+            --locked --release --target x86_64-pc-windows-msvc `
+            --features lsb-seawork-service/sentry-telemetry
 
       - name: Verify embedded Event Log messages
         run: |
@@ -498,6 +515,8 @@ jobs:
           "LSB_SEAWORK_QEMU=$qemuExtract\$env:LSB_MANAGED_QEMU_TOP_LEVEL_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "LSB_SEAWORK_PFX=$secrets\codesign.pfx" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "LSB_SEAWORK_PASSWORD=$secrets\password.txt" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Copy-Item -LiteralPath $env:LSB_SENTRY_CRASHPAD_HANDLER -Destination (Join-Path $input 'crashpad_handler.exe')
+          Copy-Item -LiteralPath $env:LSB_SENTRY_CRASHPAD_WER -Destination (Join-Path $input 'crashpad_wer.dll')
 
       - name: Sign service and updater PEs
         run: |
@@ -505,6 +524,19 @@ jobs:
           .\scripts\sign-seawork-service.ps1 `
             -Mode SignPe `
             -ServiceBinary '.\target\x86_64-pc-windows-msvc\release\localsandbox-seawork-service.exe' `
+            -PfxPath $env:LSB_SEAWORK_PFX `
+            -PasswordFile $env:LSB_SEAWORK_PASSWORD `
+            -TimestampUrl $env:SEAWORK_TIMESTAMP_URL `
+            -ExpectedPublisherSubject $env:SEAWORK_PUBLISHER_SUBJECT `
+            -ExpectedPublisherSha256 $env:SEAWORK_PUBLISHER_SHA256 `
+            -SkipTrustVerification
+          $telemetryBinaries = @(
+            "$env:LSB_SEAWORK_INPUT\crashpad_handler.exe",
+            "$env:LSB_SEAWORK_INPUT\crashpad_wer.dll"
+          )
+          .\scripts\sign-seawork-service.ps1 `
+            -Mode SignTelemetryPe `
+            -TelemetryBinary $telemetryBinaries `
             -PfxPath $env:LSB_SEAWORK_PFX `
             -PasswordFile $env:LSB_SEAWORK_PASSWORD `
             -TimestampUrl $env:SEAWORK_TIMESTAMP_URL `
@@ -548,8 +580,13 @@ jobs:
 
       - name: Generate SBOM and license inventory
         run: |
+          $telemetryBinaries = @(
+            "$env:LSB_SEAWORK_INPUT\crashpad_handler.exe",
+            "$env:LSB_SEAWORK_INPUT\crashpad_wer.dll"
+          )
           .\scripts\inspect-seawork-service-dependencies.ps1 `
             -ServiceBinary '.\target\x86_64-pc-windows-msvc\release\localsandbox-seawork-service.exe' `
+            -TelemetryBinary $telemetryBinaries `
             -OutputPath (Join-Path $env:LSB_SEAWORK_INPUT 'runtime-dependencies.json')
           $metadataPath = Join-Path $env:LSB_SEAWORK_INPUT 'cargo-metadata.json'
           $process = Start-Process cargo.exe `
@@ -563,17 +600,21 @@ jobs:
             -OutputDirectory (Join-Path $env:LSB_SEAWORK_INPUT 'metadata') `
             -Version $env:LSB_SEAWORK_VERSION `
             -CommitSha $env:RELEASE_SHA `
-            -CreatedUtc $created
+            -CreatedUtc $created `
+            -SentryNativeLockPath '.\sentry-native.lock.json' `
+            -SentryNativeSourceDirectory $env:LSB_SENTRY_NATIVE_SOURCE_DIR
 
       - name: Stage bundle and manifests
         run: |
-          cargo run -p xtask --locked -- package-release `
+          cargo run -p xtask --release --locked -- package-release `
             --artifact seawork-service `
             --mode stage `
             --platform windows-x86_64 `
             --version $env:LSB_SEAWORK_VERSION `
             --output-dir target/seawork-service/out `
             --service-binary target/x86_64-pc-windows-msvc/release/localsandbox-seawork-service.exe `
+            --crashpad-handler $env:LSB_SEAWORK_INPUT\crashpad_handler.exe `
+            --crashpad-wer $env:LSB_SEAWORK_INPUT\crashpad_wer.dll `
             --runtime-dir $env:LSB_SEAWORK_INPUT\runtime `
             --qemu-dir $env:LSB_SEAWORK_QEMU `
             --sbom $env:LSB_SEAWORK_INPUT\metadata\sbom.spdx.json `
@@ -608,12 +649,33 @@ jobs:
             version = $env:LSB_SEAWORK_VERSION
             commit = $env:RELEASE_SHA
             target = 'x86_64-pc-windows-msvc'
+            sentry_native_commit = (Get-Content -LiteralPath '.\sentry-native.lock.json' -Raw | ConvertFrom-Json).sentry_native.commit
             service_sha256 = (Get-FileHash -LiteralPath $service -Algorithm SHA256).Hash.ToLowerInvariant()
             pdb_sha256 = (Get-FileHash -LiteralPath $pdb -Algorithm SHA256).Hash.ToLowerInvariant()
           } | ConvertTo-Json
           $sourceMapPath = Join-Path $env:LSB_SEAWORK_INPUT 'source-map.json'
           [IO.File]::WriteAllText($sourceMapPath, $sourceMap + "`n", [Text.UTF8Encoding]::new($false))
-          cargo run -p xtask --locked -- package-release `
+          $debugCheck = @(& $env:LSB_SENTRY_CLI debug-files check $service 2>&1)
+          if ($LASTEXITCODE -ne 0) { throw 'sentry-cli executable debug-file check failed' }
+          $debugCheck += @(& $env:LSB_SENTRY_CLI debug-files check $pdb 2>&1)
+          if ($LASTEXITCODE -ne 0) { throw 'sentry-cli PDB debug-file check failed' }
+          $debugIds = @($debugCheck | Select-String -AllMatches `
+            -Pattern '(?i)\b(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})-[0-9a-f]+\b' |
+            ForEach-Object { $_.Matches.Value.ToLowerInvariant() } | Sort-Object -Unique)
+          if ($debugIds.Count -ne 1) {
+            throw 'service PE and PDB did not report one matching debug identifier'
+          }
+          $debugEvidencePath = Join-Path $env:LSB_SEAWORK_INPUT 'evidence-sentry-debug-ids.json'
+          [ordered]@{
+            schema_version = 1
+            release = "local-sandbox-service@$env:LSB_SEAWORK_VERSION"
+            dist = 'windows-x86_64'
+            debug_ids = $debugIds
+            service_sha256 = (Get-FileHash -LiteralPath $service -Algorithm SHA256).Hash.ToLowerInvariant()
+            pdb_sha256 = (Get-FileHash -LiteralPath $pdb -Algorithm SHA256).Hash.ToLowerInvariant()
+          } | ConvertTo-Json -Depth 4 | Set-Content `
+            -LiteralPath $debugEvidencePath -Encoding utf8NoBOM
+          cargo run -p xtask --release --locked -- package-release `
             --artifact seawork-service `
             --mode archive `
             --platform windows-x86_64 `
@@ -622,7 +684,74 @@ jobs:
             --stage-dir $env:LSB_SEAWORK_STAGE `
             --catalog $env:LSB_SEAWORK_STAGE\LocalSandbox\manifests\LocalSandboxSeaWork.cat `
             --pdb $pdb `
-            --source-map $sourceMapPath
+            --source-map $sourceMapPath `
+            --debug-id-evidence $debugEvidencePath
+
+      - name: Validate native symbols and write Sentry evidence
+        run: |
+          $service = Resolve-Path '.\target\x86_64-pc-windows-msvc\release\localsandbox-seawork-service.exe'
+          $pdb = Resolve-Path '.\target\x86_64-pc-windows-msvc\release\localsandbox_seawork_service.pdb'
+          $symbols = Resolve-Path ".\target\seawork-service\out\lsb-seawork-service-v$env:LSB_SEAWORK_VERSION-windows-x86_64-symbols.zip"
+          $checkRoot = Join-Path $env:RUNNER_TEMP 'sentry-symbol-check'
+          New-Item -ItemType Directory -Path $checkRoot | Out-Null
+          Copy-Item -LiteralPath $service -Destination (Join-Path $checkRoot 'localsandbox-seawork-service.exe')
+          Copy-Item -LiteralPath $pdb -Destination (Join-Path $checkRoot 'localsandbox_seawork_service.pdb')
+          $checkOutput = @(& $env:LSB_SENTRY_CLI debug-files check (Join-Path $checkRoot 'localsandbox-seawork-service.exe') 2>&1)
+          if ($LASTEXITCODE -ne 0) { throw 'sentry-cli executable debug-file check failed' }
+          $checkOutput += @(& $env:LSB_SENTRY_CLI debug-files check (Join-Path $checkRoot 'localsandbox_seawork_service.pdb') 2>&1)
+          if ($LASTEXITCODE -ne 0) { throw 'sentry-cli PDB debug-file check failed' }
+          $debugIds = @($checkOutput | Select-String -AllMatches `
+            -Pattern '(?i)\b(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})-[0-9a-f]+\b' |
+            ForEach-Object { $_.Matches.Value.ToLowerInvariant() } | Sort-Object -Unique)
+          if ($debugIds.Count -lt 1) { throw 'sentry-cli did not report a debug identifier' }
+          $entries = @(tar -tf $symbols | Sort-Object)
+          $expected = @(
+            'LocalSandbox/bin/localsandbox-seawork-service.exe',
+            'LocalSandbox/bin/localsandbox-seawork-service.pdb',
+            'LocalSandbox/manifests/source-map.json',
+            'LocalSandbox/manifests/evidence-sentry-debug-ids.json'
+          ) | Sort-Object
+          if (@(Compare-Object $expected $entries -CaseSensitive).Count -ne 0) {
+            throw 'symbols ZIP does not have the exact required four-file layout'
+          }
+          $archivedDebugIds = @((tar -xOf $symbols `
+            'LocalSandbox/manifests/evidence-sentry-debug-ids.json' |
+            Out-String | ConvertFrom-Json).debug_ids | Sort-Object -Unique)
+          if (@(Compare-Object $debugIds $archivedDebugIds -CaseSensitive).Count -ne 0) {
+            throw 'symbols ZIP debug-ID evidence does not match the PE/PDB checks'
+          }
+          $symbolsSha = (Get-FileHash -LiteralPath $symbols -Algorithm SHA256).Hash.ToLowerInvariant()
+          $lock = Get-Content -LiteralPath '.\sentry-native.lock.json' -Raw | ConvertFrom-Json
+          [ordered]@{
+            schema_version = 1
+            release = "local-sandbox-service@$env:LSB_SEAWORK_VERSION"
+            dist = 'windows-x86_64'
+            sentry_cli_version = $env:LSB_SENTRY_CLI_VERSION
+            debug_ids = $debugIds
+            service_sha256 = (Get-FileHash -LiteralPath $service -Algorithm SHA256).Hash.ToLowerInvariant()
+            pdb_sha256 = (Get-FileHash -LiteralPath $pdb -Algorithm SHA256).Hash.ToLowerInvariant()
+            symbols_archive_sha256 = $symbolsSha
+            upload_status = 'manual_required'
+          } | ConvertTo-Json -Depth 5 | Set-Content `
+            -LiteralPath '.\target\seawork-service\evidence-sentry-symbols.json' `
+            -Encoding utf8NoBOM
+          $handler = Resolve-Path "$env:LSB_SEAWORK_STAGE\LocalSandbox\bin\crashpad_handler.exe"
+          $wer = Resolve-Path "$env:LSB_SEAWORK_STAGE\LocalSandbox\bin\crashpad_wer.dll"
+          [ordered]@{
+            schema_version = 1
+            sentry_native_tag = $lock.sentry_native.tag
+            sentry_native_commit = $lock.sentry_native.commit
+            crashpad_commit = $lock.sentry_native.recursive_revisions.'external/crashpad'
+            source_archive_sha256 = $lock.sentry_native.release_archive.sha256
+            cmake_options = $lock.sentry_native.cmake_options
+            environment = $env:LSB_SENTRY_ENVIRONMENT
+            traces_sample_rate = [double]$env:LSB_SENTRY_TRACES_SAMPLE_RATE
+            handler_sha256 = (Get-FileHash -LiteralPath $handler -Algorithm SHA256).Hash.ToLowerInvariant()
+            wer_sha256 = (Get-FileHash -LiteralPath $wer -Algorithm SHA256).Hash.ToLowerInvariant()
+            handler_signer = (Get-AuthenticodeSignature -LiteralPath $handler).SignerCertificate.Subject
+          } | ConvertTo-Json -Depth 8 | Set-Content `
+            -LiteralPath '.\target\seawork-service\evidence-sentry-release.json' `
+            -Encoding utf8NoBOM
 
       - name: Package updater release artifacts
         run: |
@@ -667,8 +796,69 @@ jobs:
             target/seawork-service/out/lsb-seawork-updater-v*-windows-x86_64-manifest.json
             target/seawork-service/out/lsb-seawork-updater-v*-SHA256SUMS
             target/seawork-service/event-messages-signed.json
+            target/seawork-service/evidence-sentry-symbols.json
+            target/seawork-service/evidence-sentry-release.json
           if-no-files-found: error
           retention-days: 14
+
+  upload-seawork-sentry-symbols:
+    name: Optionally upload SeaWork native symbols
+    if: ${{ vars.SEAWORK_SENTRY_SYMBOL_UPLOAD_ENABLED == 'true' }}
+    needs: [prepare, build-seawork-service]
+    runs-on: [self-hosted, Windows, X64, sentry-internal-network]
+    continue-on-error: true
+    timeout-minutes: 20
+    environment: seawork-sentry-symbol-upload
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_ORG: ${{ vars.SEAWORK_SENTRY_ORG }}
+      SENTRY_PROJECT: ${{ vars.SEAWORK_SENTRY_PROJECT }}
+      SENTRY_URL: ${{ vars.SEAWORK_SENTRY_URL }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: seawork-service-release
+          path: artifacts
+      - name: Verify and upload exact symbols archive
+        run: |
+          $dependencyJson = Join-Path $env:RUNNER_TEMP 'sentry-native-prepared.json'
+          .\scripts\prepare-sentry-native.ps1 -OutputJson $dependencyJson | Out-Null
+          $dependency = Get-Content -LiteralPath $dependencyJson -Raw | ConvertFrom-Json
+          $out = Join-Path $PWD 'artifacts\out'
+          $symbols = Join-Path $out "lsb-seawork-service-v$env:VERSION-windows-x86_64-symbols.zip"
+          $sums = Join-Path $out "lsb-seawork-service-v$env:VERSION-SHA256SUMS"
+          if (-not (Test-Path -LiteralPath $symbols -PathType Leaf) -or
+              -not (Test-Path -LiteralPath $sums -PathType Leaf)) {
+            throw 'required symbols archive or checksum is missing'
+          }
+          $expected = @(Get-Content -LiteralPath $sums | Where-Object {
+            $_ -match [regex]::Escape([IO.Path]::GetFileName($symbols)) + '$'
+          })
+          if ($expected.Count -ne 1) { throw 'symbols checksum entry is not unique' }
+          $actual = (Get-FileHash -LiteralPath $symbols -Algorithm SHA256).Hash.ToLowerInvariant()
+          if (-not $expected[0].StartsWith($actual, [StringComparison]::Ordinal)) {
+            throw 'symbols archive checksum mismatch'
+          }
+          $extract = Join-Path $env:RUNNER_TEMP 'sentry-symbol-upload'
+          Expand-Archive -LiteralPath $symbols -DestinationPath $extract
+          & $dependency.sentry_cli debug-files check (Join-Path $extract 'LocalSandbox\bin\localsandbox-seawork-service.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'offline executable debug-file check failed before upload' }
+          & $dependency.sentry_cli debug-files check (Join-Path $extract 'LocalSandbox\bin\localsandbox-seawork-service.pdb')
+          if ($LASTEXITCODE -ne 0) { throw 'offline PDB debug-file check failed before upload' }
+          & $dependency.sentry_cli debug-files upload `
+            --include-sources `
+            --org $env:SENTRY_ORG `
+            --project $env:SENTRY_PROJECT `
+            --url $env:SENTRY_URL `
+            $extract
+          if ($LASTEXITCODE -ne 0) { throw 'Sentry debug-file upload failed' }
 
   gate-seawork-service-windows:
     name: Gate signed service on complete Windows evidence
@@ -908,10 +1098,14 @@ jobs:
         run: |
           set -euo pipefail
           service="artifacts/lsb-seawork-service-v${VERSION}-windows-x86_64.zip"
+          symbols="artifacts/lsb-seawork-service-v${VERSION}-windows-x86_64-symbols.zip"
+          service_sums="artifacts/lsb-seawork-service-v${VERSION}-SHA256SUMS"
+          symbol_evidence="artifacts/evidence-sentry-symbols.json"
+          release_evidence="artifacts/evidence-sentry-release.json"
           updater="artifacts/lsb-seawork-updater-v${VERSION}-windows-x86_64.zip"
           manifest="artifacts/lsb-seawork-updater-v${VERSION}-windows-x86_64-manifest.json"
           sums="artifacts/lsb-seawork-updater-v${VERSION}-SHA256SUMS"
-          for path in "$service" "$updater" "$manifest" "$sums"; do
+          for path in "$service" "$symbols" "$service_sums" "$symbol_evidence" "$release_evidence" "$updater" "$manifest" "$sums"; do
             if [[ ! -f "$path" ]]; then
               echo "required SeaWork release artifact is missing: $path" >&2
               exit 1
@@ -920,10 +1114,13 @@ jobs:
 
           shopt -s nullglob
           service_payloads=(artifacts/lsb-seawork-service-v*-windows-x86_64.zip)
+          service_symbols=(artifacts/lsb-seawork-service-v*-windows-x86_64-symbols.zip)
+          service_sums_files=(artifacts/lsb-seawork-service-v*-SHA256SUMS)
           updater_payloads=(artifacts/lsb-seawork-updater-v*-windows-x86_64.zip)
           updater_manifests=(artifacts/lsb-seawork-updater-v*-windows-x86_64-manifest.json)
           updater_sums=(artifacts/lsb-seawork-updater-v*-SHA256SUMS)
-          if (( ${#service_payloads[@]} != 1 || ${#updater_payloads[@]} != 1 ||
+          if (( ${#service_payloads[@]} != 1 || ${#service_symbols[@]} != 1 ||
+                ${#service_sums_files[@]} != 1 || ${#updater_payloads[@]} != 1 ||
                 ${#updater_manifests[@]} != 1 || ${#updater_sums[@]} != 1 )); then
             echo "expected exactly one version-consistent service/updater release tuple" >&2
             exit 1
@@ -931,8 +1128,15 @@ jobs:
 
           (
             cd artifacts
+            sha256sum -c "lsb-seawork-service-v${VERSION}-SHA256SUMS"
             sha256sum -c "lsb-seawork-updater-v${VERSION}-SHA256SUMS"
           )
+          jq -e --arg release "local-sandbox-service@${VERSION}" \
+            '.schema_version == 1 and .release == $release and
+             .upload_status == "manual_required" and
+             (.debug_ids | length > 0) and
+             (.symbols_archive_sha256 | test("^[0-9a-f]{64}$"))' \
+            "$symbol_evidence" >/dev/null
           jq -e \
             --arg version "$VERSION" \
             --arg publisher "$PUBLISHER_SHA256" \
@@ -1029,6 +1233,10 @@ jobs:
             --arg tag "$RELEASE_TAG" \
             --argjson prerelease "$IS_PRERELEASE" \
             --arg service "lsb-seawork-service-v${VERSION}-windows-x86_64.zip" \
+            --arg symbols "lsb-seawork-service-v${VERSION}-windows-x86_64-symbols.zip" \
+            --arg service_sums "lsb-seawork-service-v${VERSION}-SHA256SUMS" \
+            --arg symbol_evidence "evidence-sentry-symbols.json" \
+            --arg release_evidence "evidence-sentry-release.json" \
             --arg updater "lsb-seawork-updater-v${VERSION}-windows-x86_64.zip" \
             --arg manifest "lsb-seawork-updater-v${VERSION}-windows-x86_64-manifest.json" \
             --arg sums "lsb-seawork-updater-v${VERSION}-SHA256SUMS" \
@@ -1038,7 +1246,10 @@ jobs:
              .tag_name == $tag and
              .prerelease == $prerelease and
              ((.draft == true) or (.immutable == true)) and
-             valid_asset($service) and valid_asset($updater) and
+             valid_asset($service) and valid_asset($symbols) and
+             valid_asset($service_sums) and valid_asset($symbol_evidence) and
+             valid_asset($release_evidence) and
+             valid_asset($updater) and
              valid_asset($manifest) and valid_asset($sums)' \
             release.json >/dev/null
 
@@ -1106,6 +1317,10 @@ jobs:
             --argjson prerelease "$IS_PRERELEASE" \
             --argjson service_enabled "$SERVICE_ENABLED" \
             --arg service "lsb-seawork-service-v${VERSION}-windows-x86_64.zip" \
+            --arg symbols "lsb-seawork-service-v${VERSION}-windows-x86_64-symbols.zip" \
+            --arg service_sums "lsb-seawork-service-v${VERSION}-SHA256SUMS" \
+            --arg symbol_evidence "evidence-sentry-symbols.json" \
+            --arg release_evidence "evidence-sentry-release.json" \
             --arg updater "lsb-seawork-updater-v${VERSION}-windows-x86_64.zip" \
             --arg manifest "lsb-seawork-updater-v${VERSION}-windows-x86_64-manifest.json" \
             --arg sums "lsb-seawork-updater-v${VERSION}-SHA256SUMS" \
@@ -1115,6 +1330,9 @@ jobs:
              .tag_name == $tag and .draft == false and .immutable == true and
              .prerelease == $prerelease and
              (($service_enabled | not) or
-               (valid_asset($service) and valid_asset($updater) and
+               (valid_asset($service) and valid_asset($symbols) and
+                valid_asset($service_sums) and valid_asset($symbol_evidence) and
+                valid_asset($release_evidence) and
+                valid_asset($updater) and
                 valid_asset($manifest) and valid_asset($sums)))' \
             release.json >/dev/null

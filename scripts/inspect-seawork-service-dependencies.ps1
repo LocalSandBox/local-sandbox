@@ -6,6 +6,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutputPath,
 
+    [string[]]$TelemetryBinary = @(),
+
     [string]$DumpbinPath
 )
 
@@ -63,44 +65,58 @@ if ((Get-Item -LiteralPath $parent -Force).Attributes -band [IO.FileAttributes]:
 }
 
 $dumpbin = Resolve-Dumpbin
-$lines = @(& $dumpbin /NOLOGO /DEPENDENTS $service 2>&1)
-if ($LASTEXITCODE -ne 0) {
-    throw "dumpbin /DEPENDENTS failed with exit code $LASTEXITCODE"
-}
-$dependencies = @($lines |
-    ForEach-Object { $_.ToString().Trim() } |
-    Where-Object { $_ -match '^[A-Za-z0-9_.-]+\.dll$' } |
-    ForEach-Object { $_.ToLowerInvariant() } |
-    Sort-Object -Unique)
-if ($dependencies.Count -eq 0) {
-    throw 'dumpbin reported no service DLL dependencies'
+$systemDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::System)
+function Get-DependencyEntries {
+    param([string]$Binary, [string]$Label)
+    $lines = @(& $dumpbin /NOLOGO /DEPENDENTS $Binary 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw "dumpbin /DEPENDENTS failed for $Label with exit code $LASTEXITCODE"
+    }
+    $dependencies = @($lines |
+        ForEach-Object { $_.ToString().Trim() } |
+        Where-Object { $_ -match '^[A-Za-z0-9_.-]+\.dll$' } |
+        ForEach-Object { $_.ToLowerInvariant() } |
+        Sort-Object -Unique)
+    if ($dependencies.Count -eq 0) {
+        throw "dumpbin reported no DLL dependencies for $Label"
+    }
+    return @($dependencies | ForEach-Object {
+        $dependency = $_
+        $isApiSet = $dependency.StartsWith('api-ms-win-', [StringComparison]::OrdinalIgnoreCase) -or
+            $dependency.StartsWith('ext-ms-win-', [StringComparison]::OrdinalIgnoreCase)
+        if ($dependency -match '^(vcruntime|msvcp|concrt|mfc)[0-9].*\.dll$') {
+            throw "Visual C++ runtime dependency must be statically linked: $dependency"
+        }
+        if (-not $isApiSet -and
+            -not (Test-Path -LiteralPath (Join-Path $systemDirectory $dependency) -PathType Leaf)) {
+            throw "non-system runtime dependency is not bundled: $dependency"
+        }
+        [ordered]@{ name = $dependency; source = 'windows_system' }
+    })
 }
 
-$systemDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::System)
-$entries = foreach ($dependency in $dependencies) {
-    $isApiSet = $dependency.StartsWith('api-ms-win-', [StringComparison]::OrdinalIgnoreCase) -or
-        $dependency.StartsWith('ext-ms-win-', [StringComparison]::OrdinalIgnoreCase)
-    $isRedistributable = $dependency -match '^(vcruntime|msvcp|concrt|mfc)[0-9].*\.dll$'
-    if ($isRedistributable) {
-        throw "Visual C++ runtime dependency must be statically linked: $dependency"
-    }
-    if (-not $isApiSet -and
-        -not (Test-Path -LiteralPath (Join-Path $systemDirectory $dependency) -PathType Leaf)) {
-        throw "non-system runtime dependency is not bundled: $dependency"
+$entries = @(Get-DependencyEntries $service 'service binary')
+$telemetryEntries = foreach ($path in $TelemetryBinary) {
+    $binary = (Resolve-Path -LiteralPath $path -ErrorAction Stop).Path
+    $name = [IO.Path]::GetFileName($binary)
+    if ($name -cnotin @('crashpad_handler.exe', 'crashpad_wer.dll')) {
+        throw "unexpected telemetry runtime filename: $name"
     }
     [ordered]@{
-        name = $dependency
-        source = 'windows_system'
+        name = $name
+        sha256 = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
+        dependencies = @(Get-DependencyEntries $binary $name)
     }
 }
 
 $report = [ordered]@{
-    schema_version = 1
+    schema_version = 2
     architecture = 'x86_64'
     service_binary = [IO.Path]::GetFileName($service)
     service_sha256 = (Get-FileHash -LiteralPath $service -Algorithm SHA256).Hash.ToLowerInvariant()
     dependencies = @($entries)
+    telemetry_binaries = @($telemetryEntries)
 }
 $json = $report | ConvertTo-Json -Depth 5
 [IO.File]::WriteAllText($output, $json + "`n", [Text.UTF8Encoding]::new($false))
-Write-Output "wrote runtime dependency report for $($dependencies.Count) DLLs to $output"
+Write-Output "wrote runtime dependency report to $output"

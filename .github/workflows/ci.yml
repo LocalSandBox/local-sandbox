@@ -74,6 +74,8 @@ jobs:
             '.\scripts\sign-seawork-service.ps1',
             '.\scripts\prepare-seawork-release-metadata.ps1',
             '.\scripts\inspect-seawork-service-dependencies.ps1',
+            '.\scripts\prepare-sentry-native.ps1',
+            '.\scripts\windows-test-suites\sentry-smoke.ps1',
             '.\scripts\verify-seawork-event-messages.ps1',
             '.\scripts\assemble-windows-evidence.ps1'
           )) {
@@ -91,6 +93,16 @@ jobs:
           if ($failed) { throw 'Windows release script parsing failed' }
       - name: Cargo check Windows target
         run: cargo check --workspace --locked --target x86_64-pc-windows-msvc
+      - uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\LocalSandbox\BuildCache\SentryNative
+          key: sentry-native-windows-${{ hashFiles('sentry-native.lock.json') }}
+      - name: Sentry Native offline smoke
+        run: |
+          $runRoot = Join-Path $env:RUNNER_TEMP 'sentry-smoke'
+          New-Item -ItemType Directory -Path $runRoot | Out-Null
+          .\scripts\windows-test-suites\sentry-smoke.ps1 `
+            -Phase Normal -RunRoot $runRoot -SnapshotSha $env:GITHUB_SHA
       - name: QEMU argv golden tests
         run: cargo test -p lsb-platform --locked windows_x86_64::qemu::argv
       - name: QEMU preflight unit tests
@@ -117,12 +129,17 @@ jobs:
           $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
           $version = ($metadata.packages | Where-Object name -eq 'lsb-seawork-service').version
           $created = git show -s --format=%cI HEAD
+          $sentryDependency = Get-Content `
+            -LiteralPath (Join-Path $env:RUNNER_TEMP 'sentry-smoke\sentry-native-prepared.json') `
+            -Raw | ConvertFrom-Json
           .\scripts\prepare-seawork-release-metadata.ps1 `
             -MetadataPath $metadataPath `
             -OutputDirectory (Join-Path $root 'output') `
             -Version $version `
             -CommitSha $env:GITHUB_SHA `
-            -CreatedUtc $created
+            -CreatedUtc $created `
+            -SentryNativeLockPath '.\sentry-native.lock.json' `
+            -SentryNativeSourceDirectory $sentryDependency.source_dir
       - name: Stage Windows hosted diagnostics
         if: failure()
         run: .\scripts\collect-windows-diagnostics.ps1 -AssetWorkRoot "$env:RUNNER_TEMP\missing-lsb-assets"

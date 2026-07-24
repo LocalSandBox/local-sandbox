@@ -13,7 +13,10 @@ param(
     [string]$CommitSha,
 
     [Parameter(Mandatory = $true)]
-    [string]$CreatedUtc
+    [string]$CreatedUtc,
+
+    [string]$SentryNativeLockPath,
+    [string]$SentryNativeSourceDirectory
 )
 
 Set-StrictMode -Version Latest
@@ -155,6 +158,59 @@ $workspaceRoot = Resolve-ExistingFile (Join-Path $metadata.workspace_root 'Cargo
 $workspaceRoot = Split-Path -Parent $workspaceRoot
 Copy-LicenseInventory $packages $licensesDirectory $workspaceRoot
 
+$nativePackages = @()
+if (-not [string]::IsNullOrWhiteSpace($SentryNativeLockPath) -or
+    -not [string]::IsNullOrWhiteSpace($SentryNativeSourceDirectory)) {
+    if ([string]::IsNullOrWhiteSpace($SentryNativeLockPath) -or
+        [string]::IsNullOrWhiteSpace($SentryNativeSourceDirectory)) {
+        throw 'SentryNativeLockPath and SentryNativeSourceDirectory must be supplied together'
+    }
+    $nativeLockFile = Resolve-ExistingFile $SentryNativeLockPath 'Sentry Native lock'
+    $nativeLock = Get-Content -LiteralPath $nativeLockFile -Raw | ConvertFrom-Json
+    $nativeSource = (Resolve-Path -LiteralPath $SentryNativeSourceDirectory -ErrorAction Stop).Path
+    $nativePackages = @(
+        [ordered]@{
+            name = 'sentry-native'; version = [string]$nativeLock.sentry_native.tag
+            license = 'MIT'; revision = [string]$nativeLock.sentry_native.commit
+            license_path = Join-Path $nativeSource 'LICENSE'
+        },
+        [ordered]@{
+            name = 'crashpad'; version = [string]$nativeLock.sentry_native.recursive_revisions.'external/crashpad'
+            license = 'Apache-2.0'; revision = [string]$nativeLock.sentry_native.recursive_revisions.'external/crashpad'
+            license_path = Join-Path $nativeSource 'external\crashpad\LICENSE'
+        },
+        [ordered]@{
+            name = 'mini-chromium'; version = [string]$nativeLock.sentry_native.recursive_revisions.'external/crashpad/third_party/mini_chromium/mini_chromium'
+            license = 'BSD-3-Clause'; revision = [string]$nativeLock.sentry_native.recursive_revisions.'external/crashpad/third_party/mini_chromium/mini_chromium'
+            license_path = Join-Path $nativeSource 'external\crashpad\third_party\mini_chromium\mini_chromium\LICENSE'
+        },
+        [ordered]@{
+            name = 'zlib'; version = [string]$nativeLock.sentry_native.recursive_revisions.'external/crashpad/third_party/zlib/zlib'
+            license = 'Zlib'; revision = [string]$nativeLock.sentry_native.recursive_revisions.'external/crashpad/third_party/zlib/zlib'
+            license_path = Join-Path $nativeSource 'external\crashpad\third_party\zlib\zlib\LICENSE'
+        }
+    )
+    foreach ($nativePackage in $nativePackages) {
+        $license = Resolve-ExistingFile $nativePackage.license_path "$($nativePackage.name) license"
+        $destination = Join-Path $licensesDirectory "third-party\$($nativePackage.name)-$($nativePackage.revision)"
+        [void](New-Item -ItemType Directory -Path $destination)
+        Copy-Item -LiteralPath $license -Destination (Join-Path $destination 'LICENSE')
+    }
+    $noticesPath = Join-Path $licensesDirectory 'THIRD-PARTY-NOTICES.json'
+    $notices = @((Get-Content -LiteralPath $noticesPath -Raw | ConvertFrom-Json))
+    $notices += @($nativePackages | ForEach-Object {
+        [ordered]@{
+            name = $_.name
+            version = $_.version
+            revision = $_.revision
+            license = $_.license
+            source = 'sentry-native.lock.json'
+            files = @('LICENSE')
+        }
+    })
+    Write-DeterministicJson $noticesPath @($notices | Sort-Object name, version)
+}
+
 $spdxPackages = [Collections.Generic.List[object]]::new()
 $relationships = [Collections.Generic.List[object]]::new()
 foreach ($package in $packages) {
@@ -175,6 +231,25 @@ foreach ($package in $packages) {
             referenceType = 'purl'
             referenceLocator = "pkg:cargo/$($package.name)@$($package.version)"
         })
+    })
+    $relationships.Add([ordered]@{
+        spdxElementId = 'SPDXRef-DOCUMENT'
+        relationshipType = 'DESCRIBES'
+        relatedSpdxElement = $spdxId
+    })
+}
+foreach ($package in $nativePackages) {
+    $spdxId = "SPDXRef-Package-$($package.name)-$($package.revision)"
+    $spdxPackages.Add([ordered]@{
+        SPDXID = $spdxId
+        name = $package.name
+        versionInfo = $package.version
+        downloadLocation = 'NOASSERTION'
+        filesAnalyzed = $false
+        licenseConcluded = 'NOASSERTION'
+        licenseDeclared = $package.license
+        copyrightText = 'NOASSERTION'
+        externalRefs = @()
     })
     $relationships.Add([ordered]@{
         spdxElementId = 'SPDXRef-DOCUMENT'
