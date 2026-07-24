@@ -41,6 +41,7 @@ use crate::session::{
     CancelOutcome, CancellationReason, CancellationToken, ClientIdentityKey, QuotaLimits,
     ResourceHandle, SessionManager,
 };
+use crate::telemetry::Telemetry;
 use crate::{engine::ServiceEngineConfig, rpc};
 use crate::{LEDGER_SCHEMA_VERSION, PIPE_NAME, PIPE_SDDL};
 
@@ -357,6 +358,7 @@ pub struct HealthContext {
     protected_egress_allow: Vec<String>,
     product_ca_bundle_pem: Vec<u8>,
     upstream_proxy: Option<lsb_proxy::UpstreamProxyConfig>,
+    telemetry: Telemetry,
 }
 
 #[derive(Debug, Clone)]
@@ -428,11 +430,17 @@ impl HealthContext {
             protected_egress_allow: Vec::new(),
             product_ca_bundle_pem: Vec::new(),
             upstream_proxy: None,
+            telemetry: Telemetry::disabled(),
         }
     }
 
     pub fn with_engine(mut self, engine: Option<ServiceEngineConfig>) -> Self {
         self.engine = engine;
+        self
+    }
+
+    pub fn with_telemetry(mut self, telemetry: Telemetry) -> Self {
+        self.telemetry = telemetry;
         self
     }
 
@@ -1445,6 +1453,8 @@ async fn dispatch_request(
             ports,
             network,
         } => rpc_value!(rpc::sandbox::start(
+            context.telemetry.clone(),
+            format!("{:016x}{:016x}", correlation.high, correlation.low),
             context.engine.clone(),
             context.sessions.clone(),
             session_id,
@@ -1467,6 +1477,8 @@ async fn dispatch_request(
             request_cancellation.clone(),
         )),
         RequestOp::StopSandbox { sandbox_id } => rpc_value!(rpc::sandbox::stop(
+            context.telemetry.clone(),
+            format!("{:016x}{:016x}", correlation.high, correlation.low),
             context.sessions.clone(),
             session_id,
             identity.clone(),

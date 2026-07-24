@@ -17,6 +17,10 @@ use crate::paths::ServicePaths;
 use crate::pipe::{HealthContext, HealthPipe};
 use crate::session::QuotaLimits;
 use crate::status;
+use crate::telemetry::{
+    Breadcrumb, FailureEvent, Level, SpanDescription, SpanStatus, Telemetry,
+    TRANSACTION_SERVICE_STARTUP,
+};
 use crate::SERVICE_NAME;
 
 define_windows_service!(ffi_service_main, service_main);
@@ -56,6 +60,10 @@ fn run_registered(
     status_handle: &service_control_handler::ServiceStatusHandle,
     mut control_rx: tokio::sync::mpsc::UnboundedReceiver<ServiceControl>,
 ) -> Result<()> {
+    let telemetry = Telemetry::disabled();
+    let startup_span =
+        telemetry.start_span(SpanDescription::transaction(TRANSACTION_SERVICE_STARTUP));
+    telemetry.breadcrumb(Breadcrumb::lifecycle("service", "start"));
     let mut startup_checkpoint = 1u32;
     status_handle.set_service_status(status::pending(
         ServiceState::StartPending,
@@ -74,6 +82,10 @@ fn run_registered(
     let config = ServiceConfig::load_or_default(&paths.config)?;
     let product_ca_bundle_pem = crate::config::load_product_ca_bundle(&paths.product_ca_bundle)?;
     advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
+    let bundle_span = telemetry.start_span(SpanDescription::child(
+        "bundle.verify",
+        "bundle/config verification",
+    ));
     let engine = match run_startup_operation(
         &mut startup_checkpoint,
         STARTUP_HEARTBEAT,
@@ -92,10 +104,18 @@ fn run_registered(
         },
     ) {
         Ok((_files_verified, engine)) => {
+            bundle_span.finish(SpanStatus::Ok);
             logger.write(EventId::BundleVerified, "bundle", "BUNDLE_VERIFIED")?;
             Some(engine)
         }
-        Err(_) => {
+        Err(error) => {
+            bundle_span.finish(SpanStatus::InternalError);
+            telemetry.capture_failure(FailureEvent::new(
+                "service.startup",
+                "BUNDLE_INVALID",
+                Level::Error,
+                error.to_string(),
+            ));
             logger.write(
                 EventId::BundleVerificationFailed,
                 "bundle",
@@ -105,6 +125,10 @@ fn run_registered(
         }
     };
     advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
+    let ledger_span = telemetry.start_span(SpanDescription::child(
+        "ledger.reconcile",
+        "ledger load/recovery/reconciliation",
+    ));
     let reconciliation = if let Some(engine) = &engine {
         let mut cleaner = ledger::windows_cleaner::WindowsResourceCleaner::new(
             engine.bundle_root(),
@@ -114,6 +138,7 @@ fn run_registered(
     } else {
         ledger::reconcile(&paths.ledger, &paths.quarantine)?
     };
+    ledger_span.finish(SpanStatus::Ok);
     if !reconciliation.admissions_open {
         let stable_code = if reconciliation.valid_documents == 0 {
             "HEALTH_ONLY_QUARANTINE"
@@ -176,6 +201,7 @@ fn run_registered(
         },
         admissions,
     )
+    .with_telemetry(telemetry.clone())
     .with_engine(engine)
     .with_whpx(whpx)
     .with_committed_identity(committed_identity)
@@ -226,6 +252,8 @@ fn run_registered(
     )?;
 
     status_handle.set_service_status(status::running())?;
+    startup_span.finish(SpanStatus::Ok);
+    telemetry.breadcrumb(Breadcrumb::lifecycle("service", "running"));
     logger.write(EventId::ServiceStarted, "runtime", "RUNNING")?;
     let control = match runtime.block_on(wait_for_runtime_exit(&mut control_rx, &mut pipe_task)) {
         RuntimeExit::Control(Some(control)) => control,
@@ -272,6 +300,7 @@ fn run_registered(
         "STOP_PENDING"
     };
     logger.write(EventId::ServiceStopPending, "shutdown", stop_code)?;
+    telemetry.breadcrumb(Breadcrumb::lifecycle("service", "stop requested"));
     drain_sessions(&context, &logger);
     let _ = shutdown_tx.send(());
     let pipe_drain = runtime.block_on(wait_for_pipe_drain(
@@ -304,6 +333,8 @@ fn run_registered(
         }
     }
     let _ = logger.write(EventId::ServiceStopped, "shutdown", "STOPPED");
+    telemetry.breadcrumb(Breadcrumb::lifecycle("service", "stopped"));
+    telemetry.flush(Duration::from_secs(2));
     status_handle.set_service_status(status::stopped())?;
     Ok(())
 }

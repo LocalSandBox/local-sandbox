@@ -24,6 +24,7 @@ pub mod security;
 pub mod session;
 #[cfg(windows)]
 mod status;
+mod telemetry;
 #[cfg(windows)]
 mod update;
 #[cfg(windows)]

@@ -19,9 +19,69 @@ use crate::session::{
     CancellationToken, ClientIdentityKey, QuotaError, ResourceHandle, SandboxResources,
     SessionManager, StartReplayDecision,
 };
+use crate::telemetry::{
+    FailureEvent, Level, SpanDescription, SpanStatus, Telemetry, TRANSACTION_SANDBOX_START,
+    TRANSACTION_SANDBOX_STOP,
+};
 
 #[allow(clippy::too_many_arguments)]
 pub async fn start(
+    telemetry: Telemetry,
+    correlation_id: String,
+    engine: Option<ServiceEngineConfig>,
+    sessions: SessionManager,
+    session_id: ResourceHandle,
+    identity: ClientIdentityKey,
+    protected_egress_allow: Vec<String>,
+    product_ca_bundle_pem: Vec<u8>,
+    upstream_proxy: Option<lsb_proxy::UpstreamProxyConfig>,
+    client_instance_id: Option<String>,
+    from: Option<String>,
+    cpus: u16,
+    memory_mib: u32,
+    disk_mib: u32,
+    mounts: Vec<ServiceMountSpec>,
+    ports: Vec<ServicePortSpec>,
+    network: Option<ServiceNetworkSpec>,
+    cancellation: CancellationToken,
+) -> Result<ResponseValue, ErrorCode> {
+    let span = telemetry.start_span(
+        SpanDescription::transaction(TRANSACTION_SANDBOX_START)
+            .with_data("correlation_id", correlation_id.clone()),
+    );
+    let result = start_inner(
+        engine,
+        sessions,
+        session_id,
+        identity,
+        protected_egress_allow,
+        product_ca_bundle_pem,
+        upstream_proxy,
+        client_instance_id,
+        from,
+        cpus,
+        memory_mib,
+        disk_mib,
+        mounts,
+        ports,
+        network,
+        cancellation,
+    )
+    .await;
+    finish_operation(
+        &telemetry,
+        span,
+        &result,
+        TRANSACTION_SANDBOX_START,
+        "SANDBOX_START_FAILED",
+        correlation_id,
+        result.as_ref().ok().and_then(response_sandbox_id),
+    );
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_inner(
     engine: Option<ServiceEngineConfig>,
     sessions: SessionManager,
     session_id: ResourceHandle,
@@ -340,10 +400,37 @@ fn available_disk_bytes(path: &Path) -> Result<u64> {
 }
 
 pub async fn stop(
+    telemetry: Telemetry,
+    correlation_id: String,
     sessions: SessionManager,
     session_id: ResourceHandle,
     identity: ClientIdentityKey,
     sandbox_id: String,
+    deadline_ms: Option<u32>,
+) -> Result<ResponseValue, ErrorCode> {
+    let span = telemetry.start_span(
+        SpanDescription::transaction(TRANSACTION_SANDBOX_STOP)
+            .with_data("correlation_id", correlation_id.clone())
+            .with_data("resource_id", sandbox_id.clone()),
+    );
+    let result = stop_inner(sessions, session_id, identity, &sandbox_id, deadline_ms).await;
+    finish_operation(
+        &telemetry,
+        span,
+        &result,
+        TRANSACTION_SANDBOX_STOP,
+        "SANDBOX_STOP_FAILED",
+        correlation_id,
+        Some(&sandbox_id),
+    );
+    result
+}
+
+async fn stop_inner(
+    sessions: SessionManager,
+    session_id: ResourceHandle,
+    identity: ClientIdentityKey,
+    sandbox_id: &str,
     deadline_ms: Option<u32>,
 ) -> Result<ResponseValue, ErrorCode> {
     let handle = ResourceHandle::parse(&sandbox_id).map_err(|_| ErrorCode::InvalidRequest)?;
@@ -363,6 +450,53 @@ pub async fn stop(
     })
     .await
     .map_err(|_| ErrorCode::InternalError)?
+}
+
+fn response_sandbox_id(response: &ResponseValue) -> Option<&str> {
+    match response {
+        ResponseValue::SandboxStarted { sandbox_id, .. } => Some(sandbox_id),
+        _ => None,
+    }
+}
+
+fn finish_operation(
+    telemetry: &Telemetry,
+    span: crate::telemetry::SpanGuard,
+    result: &Result<ResponseValue, ErrorCode>,
+    operation: &'static str,
+    stable_error_code: &'static str,
+    correlation_id: String,
+    resource_id: Option<&str>,
+) {
+    match result {
+        Ok(_) => span.finish(SpanStatus::Ok),
+        Err(error) => {
+            let status = match error {
+                ErrorCode::Cancelled => SpanStatus::Cancelled,
+                ErrorCode::InvalidRequest => SpanStatus::InvalidArgument,
+                ErrorCode::ServiceUnavailable
+                | ErrorCode::BundleInvalid
+                | ErrorCode::ServiceDraining => SpanStatus::Unavailable,
+                _ => SpanStatus::InternalError,
+            };
+            let mut event = FailureEvent::new(
+                operation,
+                stable_error_code,
+                Level::Error,
+                format!("{operation} failed with {error:?}"),
+            )
+            .with_correlation_id(correlation_id)
+            .retryable(matches!(
+                error,
+                ErrorCode::ServiceUnavailable | ErrorCode::ServiceDraining
+            ));
+            if let Some(resource_id) = resource_id {
+                event = event.with_resource_id(resource_id);
+            }
+            telemetry.capture_failure(event);
+            span.finish(status);
+        }
+    }
 }
 
 struct PrepareInstanceOptions {
