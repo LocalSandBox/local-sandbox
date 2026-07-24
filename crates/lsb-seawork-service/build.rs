@@ -7,6 +7,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=LSB_WINDOWS_MC_PATH");
     println!("cargo:rerun-if-env-changed=LSB_WINDOWS_RC_PATH");
     compile_publisher_policy();
+    compile_sentry_configuration();
 
     if std::env::var_os("LSB_COMPILE_EVENT_MESSAGES").is_none() {
         return;
@@ -53,6 +54,111 @@ fn main() {
         "cargo:rustc-link-arg-bin=localsandbox-seawork-service={}",
         compiled.display()
     );
+}
+
+fn compile_sentry_configuration() {
+    const DSN: &str = "LSB_SENTRY_DSN";
+    const ENVIRONMENT: &str = "LSB_SENTRY_ENVIRONMENT";
+    const SAMPLE_RATE: &str = "LSB_SENTRY_TRACES_SAMPLE_RATE";
+    const INCLUDE: &str = "LSB_SENTRY_NATIVE_INCLUDE_DIR";
+    const LIBRARY: &str = "LSB_SENTRY_NATIVE_LIBRARY";
+    const HANDLER: &str = "LSB_SENTRY_CRASHPAD_HANDLER";
+    const WER: &str = "LSB_SENTRY_CRASHPAD_WER";
+    for name in [
+        DSN,
+        ENVIRONMENT,
+        SAMPLE_RATE,
+        INCLUDE,
+        LIBRARY,
+        HANDLER,
+        WER,
+    ] {
+        println!("cargo:rerun-if-env-changed={name}");
+    }
+
+    if std::env::var_os("CARGO_FEATURE_SENTRY_TELEMETRY").is_none() {
+        println!("cargo:rustc-env=LSB_SENTRY_TELEMETRY_ENABLED=0");
+        return;
+    }
+
+    let dsn = required_non_secret_value(DSN);
+    if !(dsn.starts_with("https://") || dsn.starts_with("http://"))
+        || dsn.chars().any(char::is_whitespace)
+        || dsn.len() > 2_048
+    {
+        panic!("{DSN} must be one bounded HTTP(S) public Sentry DSN");
+    }
+    let environment = required_non_secret_value(ENVIRONMENT);
+    if environment.len() > 64
+        || !environment
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        panic!("{ENVIRONMENT} must contain only 1-64 ASCII letters, digits, '.', '_', or '-'");
+    }
+    let sample_rate = required_non_secret_value(SAMPLE_RATE);
+    let parsed_rate = sample_rate
+        .parse::<f64>()
+        .unwrap_or_else(|_| panic!("{SAMPLE_RATE} must be a number in the inclusive range 0-1"));
+    if !parsed_rate.is_finite() || !(0.0..=1.0).contains(&parsed_rate) {
+        panic!("{SAMPLE_RATE} must be a number in the inclusive range 0-1");
+    }
+
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        let include = required_directory(INCLUDE);
+        if !include.join("sentry.h").is_file() {
+            panic!("{INCLUDE} must contain sentry.h");
+        }
+        let library = required_file(LIBRARY);
+        if library.extension().and_then(|value| value.to_str()) != Some("lib") {
+            panic!("{LIBRARY} must name the prepared static sentry.lib");
+        }
+        let handler = required_file(HANDLER);
+        if handler.file_name().and_then(|value| value.to_str()) != Some("crashpad_handler.exe") {
+            panic!("{HANDLER} must name the prepared crashpad_handler.exe");
+        }
+        let wer = required_file(WER);
+        if wer.file_name().and_then(|value| value.to_str()) != Some("crashpad_wer.dll") {
+            panic!("{WER} must name the prepared crashpad_wer.dll");
+        }
+        println!(
+            "cargo:rustc-env=LSB_SENTRY_CRASHPAD_HANDLER={}",
+            handler.display()
+        );
+    }
+
+    println!("cargo:rustc-env=LSB_SENTRY_TELEMETRY_ENABLED=1");
+    println!("cargo:rustc-env=LSB_SENTRY_DSN={dsn}");
+    println!("cargo:rustc-env=LSB_SENTRY_ENVIRONMENT={environment}");
+    println!("cargo:rustc-env=LSB_SENTRY_TRACES_SAMPLE_RATE={sample_rate}");
+}
+
+fn required_non_secret_value(name: &str) -> String {
+    let value = std::env::var(name).unwrap_or_else(|_| panic!("{name} is required"));
+    if value.is_empty() {
+        panic!("{name} is required");
+    }
+    value
+}
+
+fn required_directory(name: &str) -> PathBuf {
+    let path = PathBuf::from(
+        std::env::var_os(name).unwrap_or_else(|| panic!("{name} must name an absolute directory")),
+    );
+    if !path.is_absolute() || !path.is_dir() {
+        panic!("{name} must name an absolute directory");
+    }
+    path
+}
+
+fn required_file(name: &str) -> PathBuf {
+    let path = PathBuf::from(
+        std::env::var_os(name).unwrap_or_else(|| panic!("{name} must name an absolute file")),
+    );
+    if !path.is_absolute() || !path.is_file() {
+        panic!("{name} must name an absolute file");
+    }
+    path
 }
 
 fn compile_publisher_policy() {
