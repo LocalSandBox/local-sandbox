@@ -95,3 +95,7 @@ release version service_evidence="":
         *) echo "service_evidence must be skip or required" >&2; exit 2 ;; \
     esac; \
     gh workflow run release.yml --ref main -f version="{{ version }}" -f service_evidence="$evidence"
+
+# Verify and upload service symbols from the newest published GitHub release.
+upload-symbols:
+    pwsh -NoProfile -NonInteractive -File scripts/upload-seawork-sentry-symbols.ps1
