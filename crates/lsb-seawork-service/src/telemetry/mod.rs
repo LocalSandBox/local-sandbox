@@ -8,7 +8,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub use context::{CommonContext, COMPONENT, SERVICE_NAME};
+#[cfg(all(windows, feature = "sentry-telemetry"))]
+pub use context::SERVICE_NAME;
+pub use context::{CommonContext, COMPONENT};
 pub use diagnostics::{
     collect_incident, Attachment, DiagnosticLimits, IncidentMetadata, RetentionPolicy,
 };

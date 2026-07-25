@@ -472,7 +472,7 @@ async fn stop_inner(
     sandbox_id: &str,
     deadline_ms: Option<u32>,
 ) -> Result<ResponseValue, ErrorCode> {
-    let handle = ResourceHandle::parse(&sandbox_id).map_err(|_| ErrorCode::InvalidRequest)?;
+    let handle = ResourceHandle::parse(sandbox_id).map_err(|_| ErrorCode::InvalidRequest)?;
     let timeout =
         Duration::from_millis(u64::from(deadline_ms.unwrap_or(30_000).clamp(100, 60_000)));
     tokio::task::spawn_blocking(move || {

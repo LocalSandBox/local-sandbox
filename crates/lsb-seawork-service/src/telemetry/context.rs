@@ -1,3 +1,4 @@
+#[cfg(all(windows, feature = "sentry-telemetry"))]
 use std::collections::BTreeMap;
 
 use serde::Serialize;
@@ -68,6 +69,7 @@ impl CommonContext {
         }
     }
 
+    #[cfg(all(windows, feature = "sentry-telemetry"))]
     pub fn as_contexts(&self) -> BTreeMap<String, serde_json::Value> {
         let mut contexts = BTreeMap::new();
         contexts.insert(

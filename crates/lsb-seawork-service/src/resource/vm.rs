@@ -469,6 +469,7 @@ impl Drop for ManagedVm {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run(
     engine: ServiceEngineConfig,
     mut spec: ManagedVmSpec,
