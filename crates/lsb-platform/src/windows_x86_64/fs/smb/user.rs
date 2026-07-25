@@ -33,6 +33,8 @@ pub struct WindowsSmbUserAccount {
     pub name: WindowsSmbUserName,
     pub domain: String,
     pub principal: String,
+    /// Canonical string SID captured while the account is known to exist.
+    pub sid: String,
 }
 
 pub trait WindowsSmbUserManager {
@@ -46,6 +48,23 @@ pub trait WindowsSmbUserManager {
         &mut self,
         account: &WindowsSmbUserAccount,
     ) -> Result<(), WindowsSmbLifecycleError>;
+
+    fn resolve_account_sid(
+        &mut self,
+        account: &mut WindowsSmbUserAccount,
+    ) -> Result<(), WindowsSmbLifecycleError> {
+        if account.sid.is_empty() {
+            Err(WindowsSmbLifecycleError::operation_failed(
+                WindowsSmbLifecyclePhase::AclRevoke,
+                format!(
+                    "cleanup record for '{}' has no SID and account lookup is unavailable",
+                    account.principal
+                ),
+            ))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -108,6 +127,16 @@ impl WindowsSmbUserManager for NativeWindowsSmbUserManager {
             }
         };
         let principal = format!(r"{domain}\{}", name.as_str());
+        let sid = match super::policy::lookup_account_sid_string(
+            &principal,
+            WindowsSmbLifecyclePhase::UserCreate,
+        ) {
+            Ok(sid) => sid,
+            Err(error) => {
+                let _ = delete_local_user(name);
+                return Err(error);
+            }
+        };
         if let Err(error) = super::policy::grant_network_logon_right(&principal) {
             let _ = delete_local_user(name);
             return Err(error);
@@ -116,6 +145,7 @@ impl WindowsSmbUserManager for NativeWindowsSmbUserManager {
             name: name.clone(),
             domain,
             principal,
+            sid,
         })
     }
 
@@ -123,13 +153,32 @@ impl WindowsSmbUserManager for NativeWindowsSmbUserManager {
         &mut self,
         account: &WindowsSmbUserAccount,
     ) -> Result<(), WindowsSmbLifecycleError> {
-        let revoke_result = super::policy::revoke_network_logon_right(&account.principal);
+        let revoke_result = if !account.sid.is_empty() {
+            super::policy::revoke_network_logon_right_for_sid(&account.sid)
+        } else if account.principal.is_empty() {
+            Ok(())
+        } else {
+            super::policy::revoke_network_logon_right(&account.principal)
+        };
         let delete_result = delete_local_user(&account.name);
         match (revoke_result, delete_result) {
             (Ok(()), Ok(())) => Ok(()),
             (Err(error), Ok(())) => Err(error),
             (_, Err(error)) => Err(error),
         }
+    }
+
+    fn resolve_account_sid(
+        &mut self,
+        account: &mut WindowsSmbUserAccount,
+    ) -> Result<(), WindowsSmbLifecycleError> {
+        if account.sid.is_empty() {
+            account.sid = super::policy::lookup_account_sid_string(
+                &account.principal,
+                WindowsSmbLifecyclePhase::AclRevoke,
+            )?;
+        }
+        Ok(())
     }
 }
 

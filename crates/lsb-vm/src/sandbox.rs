@@ -32,8 +32,7 @@ use crossbeam_channel::Receiver;
 use lsb_platform::terminal;
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use lsb_platform::windows_x86_64::fs::smb::{
-    remove_windows_smb_cleanup_manifest, windows_smb_cleanup_manifest_path,
-    write_windows_smb_cleanup_manifest, WindowsSmbActiveResources, WindowsSmbInstanceGuard,
+    windows_smb_cleanup_manifest_path, WindowsSmbActiveResources, WindowsSmbInstanceGuard,
     WindowsSmbLifecycleConfig, WindowsSmbLifecycleManager, WindowsSmbMount,
 };
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -2748,20 +2747,8 @@ impl Sandbox {
                 })?;
         }
 
-        let mut resources = manager.prepare(&config)?;
-        if let Err(error) = write_windows_smb_cleanup_manifest(
-            &self.windows_smb_cleanup_manifest_path,
-            &self.windows_smb_instance_id,
-            &resources,
-        ) {
-            let cleanup_result = manager.cleanup(resources);
-            if let Err(cleanup_error) = cleanup_result {
-                return Err(error).context(format!(
-                    "failed to write Windows SMB cleanup manifest; additionally failed to clean up prepared SMB resources: {cleanup_error}"
-                ));
-            }
-            return Err(error).context("failed to write Windows SMB cleanup manifest");
-        }
+        let mut resources = manager
+            .prepare_with_cleanup_manifest(&config, &self.windows_smb_cleanup_manifest_path)?;
 
         {
             let mut pending_mounts = self
@@ -2799,15 +2786,16 @@ impl Sandbox {
         };
 
         let mut manager = WindowsSmbLifecycleManager::native();
-        let cleanup_result = manager.cleanup(resources);
+        let cleanup_result = if self.windows_smb_cleanup_manifest_path.is_file() {
+            manager.recover_cleanup_manifest(&self.windows_smb_cleanup_manifest_path)
+        } else {
+            manager.cleanup(resources)
+        };
         if let Err(error) = cleanup_result {
             self.release_windows_smb_instance_guard()?;
             return Err(error.into());
         }
-        let manifest_result =
-            remove_windows_smb_cleanup_manifest(&self.windows_smb_cleanup_manifest_path);
         self.release_windows_smb_instance_guard()?;
-        manifest_result?;
         Ok(())
     }
 

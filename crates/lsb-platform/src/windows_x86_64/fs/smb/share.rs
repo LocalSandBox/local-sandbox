@@ -70,8 +70,8 @@ impl WindowsSmbShareManager for NativeWindowsSmbShareManager {
 
         use windows_sys::Win32::Foundation::LocalFree;
         use windows_sys::Win32::Security::Authorization::{
-            BuildSecurityDescriptorW, EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE,
-            TRUSTEE_IS_NAME, TRUSTEE_IS_USER, TRUSTEE_W,
+            BuildSecurityDescriptorW, ConvertStringSidToSidW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
+            NO_MULTIPLE_TRUSTEE, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
         };
         use windows_sys::Win32::Storage::FileSystem::{
             NetShareAdd, SHARE_INFO_502, STYPE_DISKTREE,
@@ -79,13 +79,21 @@ impl WindowsSmbShareManager for NativeWindowsSmbShareManager {
 
         validate_smb_share_name(request.name.as_str())?;
 
-        let mut principal_w = super::user::wide_null(&request.account.principal);
+        let sid_w = super::user::wide_null(&request.account.sid);
+        let mut sid = ptr::null_mut();
+        if unsafe { ConvertStringSidToSidW(sid_w.as_ptr(), &mut sid) } == 0 {
+            let code = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+            return Err(WindowsSmbLifecycleError::operation_failed(
+                WindowsSmbLifecyclePhase::ShareCreate,
+                format!("ConvertStringSidToSidW failed with win32 error {code}"),
+            ));
+        }
         let trustee = TRUSTEE_W {
             pMultipleTrustee: ptr::null_mut(),
             MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
-            TrusteeForm: TRUSTEE_IS_NAME,
-            TrusteeType: TRUSTEE_IS_USER,
-            ptstrName: principal_w.as_mut_ptr(),
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_UNKNOWN,
+            ptstrName: sid.cast(),
         };
         let mut entry = EXPLICIT_ACCESS_W {
             grfAccessPermissions: share_access_mask(request.access),
@@ -109,6 +117,9 @@ impl WindowsSmbShareManager for NativeWindowsSmbShareManager {
             )
         };
         if status != 0 {
+            unsafe {
+                LocalFree(sid.cast());
+            }
             return Err(WindowsSmbLifecycleError::operation_failed(
                 WindowsSmbLifecyclePhase::ShareCreate,
                 format!("BuildSecurityDescriptorW failed with win32 error {status}"),
@@ -141,6 +152,7 @@ impl WindowsSmbShareManager for NativeWindowsSmbShareManager {
         };
         unsafe {
             LocalFree(security_descriptor);
+            LocalFree(sid.cast());
         }
         if status != 0 {
             return Err(WindowsSmbLifecycleError::operation_failed(

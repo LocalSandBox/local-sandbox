@@ -188,6 +188,12 @@ try {
       check('exec-cancellation', cancelled)
 
       if (config.mounts?.length) {
+        failedStage = 'protected-direct-mount-file-api'
+        const protectedSkill = await sandbox.readFile('/skills/mis-it-center/SKILL.md')
+        check(
+          'protected-direct-mount-file-api',
+          Buffer.from(protectedSkill).toString('utf8') === 'protected-skill-input',
+        )
         failedStage = 'direct-mount-layout'
         const mountProbe = await sandbox.exec([
           '/bin/sh',
@@ -196,9 +202,11 @@ try {
             'set -eu',
             'test "$(cat /workspace/input.txt)" = workspace-input',
             'test "$(cat /skills/skill.txt)" = skill-input',
+            'test "$(cat /skills/mis-it-center/SKILL.md)" = protected-skill-input',
             'test "$(cat /uploaded_files/upload.txt)" = upload-input',
             'if printf denied > /workspace/forbidden.txt 2>/dev/null; then exit 21; fi',
             'if printf denied > /skills/forbidden.txt 2>/dev/null; then exit 22; fi',
+            'if printf denied > /skills/mis-it-center/forbidden.txt 2>/dev/null; then exit 24; fi',
             'if printf denied > /uploaded_files/forbidden.txt 2>/dev/null; then exit 23; fi',
             'printf nested-output > /workspace/output/result.txt',
           ].join('; '),

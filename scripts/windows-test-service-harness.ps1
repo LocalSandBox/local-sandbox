@@ -395,8 +395,21 @@ function Assert-SecretAbsentFromLogs {
 
 function Wait-ServiceState {
     param([string] $State, [int] $Seconds)
-    $service = Get-Service -Name $serviceName
-    $service.WaitForStatus($State, [TimeSpan]::FromSeconds($Seconds))
+    $deadline = [datetime]::UtcNow.AddSeconds($Seconds)
+    do {
+        $service = Get-Service -Name $serviceName
+        if ([string]$service.Status -eq $State) {
+            return
+        }
+        if ($State -ne 'Stopped' -and [string]$service.Status -eq 'Stopped') {
+            $details = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+            throw "Owned service stopped before reaching $State " +
+                "(Win32ExitCode=$($details.ExitCode), " +
+                "ServiceSpecificExitCode=$($details.ServiceSpecificExitCode))."
+        }
+        Start-Sleep -Milliseconds 250
+    } while ([datetime]::UtcNow -lt $deadline)
+    throw "Owned service did not reach $State within $Seconds seconds."
 }
 
 function Wait-OwnedProcessExit {
@@ -468,9 +481,22 @@ function Invoke-ClientSmoke {
     $skills = Join-Path $clientData 'skills'
     $uploads = Join-Path $clientData 'uploads'
     New-Item -ItemType Directory -Path $output, $skills, $uploads | Out-Null
+    $protectedSkill = Join-Path $skills 'mis-it-center'
+    New-Item -ItemType Directory -Path $protectedSkill | Out-Null
+    Set-Sddl $protectedSkill (
+        "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;{0})" -f
+        $State.client_user_sid
+    )
+    $protectedSkillFile = Join-Path $protectedSkill 'SKILL.md'
     Set-Content -LiteralPath (Join-Path $workspace 'input.txt') -Value 'workspace-input' -NoNewline
     Set-Content -LiteralPath (Join-Path $skills 'skill.txt') -Value 'skill-input' -NoNewline
+    Set-Content -LiteralPath $protectedSkillFile -Value 'protected-skill-input' -NoNewline
     Set-Content -LiteralPath (Join-Path $uploads 'upload.txt') -Value 'upload-input' -NoNewline
+    $aclBefore = [ordered]@{
+        root = (Get-Acl -LiteralPath $skills).Sddl
+        protected_child = (Get-Acl -LiteralPath $protectedSkill).Sddl
+        protected_file = (Get-Acl -LiteralPath $protectedSkillFile).Sddl
+    }
     $resultPath = Join-Path $clientData 'result.json'
     $mountList = if ($Mounts) {
         @(
@@ -574,9 +600,26 @@ function Invoke-ClientSmoke {
             if ((Get-Content -LiteralPath (Join-Path $output 'result.txt') -Raw) -cne 'nested-output' -or
                 (Test-Path -LiteralPath (Join-Path $workspace 'forbidden.txt')) -or
                 (Test-Path -LiteralPath (Join-Path $skills 'forbidden.txt')) -or
+                (Test-Path -LiteralPath (Join-Path $protectedSkill 'forbidden.txt')) -or
                 (Test-Path -LiteralPath (Join-Path $uploads 'forbidden.txt'))) {
                 throw 'The direct-mount host visibility or access-mode proof failed.'
             }
+            $aclAfter = [ordered]@{
+                root = (Get-Acl -LiteralPath $skills).Sddl
+                protected_child = (Get-Acl -LiteralPath $protectedSkill).Sddl
+                protected_file = (Get-Acl -LiteralPath $protectedSkillFile).Sddl
+            }
+            foreach ($name in @('root', 'protected_child', 'protected_file')) {
+                if ($aclBefore[$name] -cne $aclAfter[$name]) {
+                    throw "The direct-mount smoke did not exactly restore the $name SDDL."
+                }
+            }
+            $result | Add-Member -NotePropertyName protected_acl -NotePropertyValue ([ordered]@{
+                subtree_read_via_file_api = $true
+                subtree_read_via_guest_shell = $true
+                exact_sddl_restored = $true
+                paths = @('skills', 'skills/mis-it-center', 'skills/mis-it-center/SKILL.md')
+            })
         }
         $result | ConvertTo-Json -Depth 8 |
             Set-Content -LiteralPath $resultPath -Encoding utf8NoBOM
@@ -692,7 +735,7 @@ function Install-And-Smoke {
     Invoke-Native sc.exe @('config', $serviceName, 'start=', 'delayed-auto') 'delayed automatic start'
     $serviceSid = ([Security.Principal.NTAccount]::new("NT SERVICE\$serviceName")).Translate([Security.Principal.SecurityIdentifier]).Value
     Set-Sddl $versionRoot ("O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FRFX;;;{0})(A;OICI;FRFX;;;BU)" -f $serviceSid)
-    Set-Sddl $stateRoot ("O:SYG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{0})" -f $serviceSid)
+    Set-Sddl $stateRoot 'O:SYG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
     New-Item -ItemType Directory -Path (Join-Path $stateRoot 'config') | Out-Null
     [ordered]@{
         schema_version = 1; config_revision = 1
@@ -702,7 +745,7 @@ function Install-And-Smoke {
         maintenance_roots = @(Join-Path $programFiles 'SeaWork')
         egress_allow = @(); upstream_proxy = $null; ports_enabled = $false
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $stateRoot 'config\service.json') -Encoding utf8NoBOM
-    Set-Sddl $stateRoot ("O:SYG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{0})" -f $serviceSid)
+    Set-Sddl $stateRoot 'O:SYG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
     if (Test-Path -LiteralPath $eventKey) { throw 'Refusing to adopt an existing Event Log source.' }
     New-Item -Path $eventKey | Out-Null
     New-ItemProperty -Path $eventKey -Name LocalSandboxAgentOwner -Value $owner -PropertyType String | Out-Null
@@ -716,6 +759,7 @@ function Install-And-Smoke {
     $before = Get-CompatibilityResources
     Invoke-ClientSmoke $state -Suffix 'mount-free'
     Invoke-ClientSmoke $state -Mounts -Suffix 'direct-mounts'
+    Invoke-ClientSmoke $state -Mounts -Suffix 'direct-mounts-repeat'
     Invoke-ClientSmoke $state -Network -Suffix 'network'
     Invoke-ClientSmoke $state -Sequential -Suffix 'sequential'
     Assert-CompatibleResourcesRestored $before $stateRoot
@@ -733,6 +777,9 @@ function Install-And-Smoke {
         }
         uac_after_install = $false
         compatibility_resources_restored = $true
+        protected_acl_cycles = 2
+        protected_subtree_reads = $true
+        exact_acl_restoration = $true
     } |
         ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $RunRoot 'evidence-installed-smoke.json') -Encoding utf8NoBOM
 }

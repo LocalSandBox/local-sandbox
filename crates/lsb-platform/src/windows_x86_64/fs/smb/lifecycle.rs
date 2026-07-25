@@ -20,6 +20,7 @@ use super::user::{WindowsSmbUserAccount, WindowsSmbUserManager, WindowsSmbUserNa
 
 pub const WINDOWS_SMB_CLEANUP_MANIFEST_FILE: &str = "windows-smb-cleanup.json";
 pub const WINDOWS_SMB_INSTANCE_LOCK_FILE: &str = "windows-smb-active.lock";
+const WINDOWS_SMB_CLEANUP_SCHEMA_VERSION: u32 = 2;
 
 #[cfg(windows)]
 pub struct WindowsSmbInstanceGuard {
@@ -95,6 +96,22 @@ where
         &mut self,
         config: &WindowsSmbLifecycleConfig,
     ) -> Result<WindowsSmbActiveResources, WindowsSmbLifecycleError> {
+        self.prepare_internal(config, None)
+    }
+
+    pub fn prepare_with_cleanup_manifest(
+        &mut self,
+        config: &WindowsSmbLifecycleConfig,
+        manifest_path: &Path,
+    ) -> Result<WindowsSmbActiveResources, WindowsSmbLifecycleError> {
+        self.prepare_internal(config, Some(manifest_path))
+    }
+
+    fn prepare_internal(
+        &mut self,
+        config: &WindowsSmbLifecycleConfig,
+        manifest_path: Option<&Path>,
+    ) -> Result<WindowsSmbActiveResources, WindowsSmbLifecycleError> {
         self.admin.ensure_elevated_admin()?;
         self.admin
             .ensure_windows_smb_policy_allows_generated_users()?;
@@ -102,25 +119,117 @@ where
 
         let user_name = generate_smb_user_name(&mut self.passwords)?;
         let password = self.passwords.generate_password()?;
-        let account = self.users.create_user(&user_name, &password)?;
+        let mut journal = WindowsSmbCleanupManifest::new(
+            config.instance_id.clone(),
+            user_name.as_str().to_string(),
+        );
+        if let Some(path) = manifest_path {
+            write_windows_smb_cleanup_journal(path, &journal)?;
+        }
+        let account = match self.users.create_user(&user_name, &password) {
+            Ok(account) => account,
+            Err(error) => {
+                let failures = if let Some(path) = manifest_path {
+                    match self.recover_cleanup_manifest(path) {
+                        Ok(()) => Vec::new(),
+                        Err(cleanup) => cleanup.cleanup_failures().to_vec(),
+                    }
+                } else {
+                    Vec::new()
+                };
+                return Err(error.with_cleanup_failures(failures));
+            }
+        };
+        journal.account.domain = account.domain.clone();
+        journal.account.principal = account.principal.clone();
+        journal.account.sid = Some(account.sid.clone());
+        if let Some(path) = manifest_path {
+            if let Err(error) = write_windows_smb_cleanup_journal(path, &journal) {
+                let failures = match self.recover_cleanup_manifest(path) {
+                    Ok(()) => Vec::new(),
+                    Err(cleanup) => cleanup.cleanup_failures().to_vec(),
+                };
+                return Err(error.with_cleanup_failures(failures));
+            }
+        }
 
         let mut acl_grants = Vec::new();
         let mut shares = Vec::new();
         let mut mount_requests = Vec::new();
 
         for mount in &config.mounts {
-            let grant = match self.acls.grant_access(WindowsSmbAclGrantRequest {
+            let request = WindowsSmbAclGrantRequest {
                 path: mount.source.clone(),
                 account: account.clone(),
                 access: mount.access,
-            }) {
+            };
+            let intended_grant = match self.acls.prepare_grant(&request) {
                 Ok(grant) => grant,
                 Err(error) => {
-                    let failures = self.cleanup_created(&account, &mut shares, &mut acl_grants);
+                    let failures = if let Some(path) = manifest_path {
+                        match self.recover_cleanup_manifest(path) {
+                            Ok(()) => Vec::new(),
+                            Err(cleanup) => cleanup.cleanup_failures().to_vec(),
+                        }
+                    } else {
+                        self.cleanup_created(&account, &mut shares, &mut acl_grants)
+                    };
+                    return Err(error.with_cleanup_failures(failures));
+                }
+            };
+            journal
+                .acl_grants
+                .push(WindowsSmbCleanupAclGrant::from_grant(&intended_grant));
+            if let Some(path) = manifest_path {
+                if let Err(error) = write_windows_smb_cleanup_journal(path, &journal) {
+                    let failures = match self.recover_cleanup_manifest(path) {
+                        Ok(()) => Vec::new(),
+                        Err(cleanup) => cleanup.cleanup_failures().to_vec(),
+                    };
+                    return Err(error.with_cleanup_failures(failures));
+                }
+            }
+            let grant = match self.acls.grant_access(request) {
+                Ok(grant) => grant,
+                Err(error) => {
+                    let failures = if let Some(path) = manifest_path {
+                        match self.recover_cleanup_manifest(path) {
+                            Ok(()) => Vec::new(),
+                            Err(cleanup) => cleanup.cleanup_failures().to_vec(),
+                        }
+                    } else {
+                        self.cleanup_created(&account, &mut shares, &mut acl_grants)
+                    };
                     return Err(error.with_cleanup_failures(failures));
                 }
             };
             acl_grants.push(grant);
+            if let Some(record) = journal.acl_grants.last_mut() {
+                record.original_dacl_control = acl_grants
+                    .last()
+                    .and_then(|grant| grant.original_dacl_control);
+            }
+            if let Some(path) = manifest_path {
+                if let Err(error) = write_windows_smb_cleanup_journal(path, &journal) {
+                    let failures = match self.recover_cleanup_manifest(path) {
+                        Ok(()) => Vec::new(),
+                        Err(cleanup) => cleanup.cleanup_failures().to_vec(),
+                    };
+                    return Err(error.with_cleanup_failures(failures));
+                }
+            }
+        }
+
+        if let Err(error) = self.acls.verify_access(&account, &password, &acl_grants) {
+            let failures = if let Some(path) = manifest_path {
+                match self.recover_cleanup_manifest(path) {
+                    Ok(()) => Vec::new(),
+                    Err(cleanup) => cleanup.cleanup_failures().to_vec(),
+                }
+            } else {
+                self.cleanup_created(&account, &mut shares, &mut acl_grants)
+            };
+            return Err(error.with_cleanup_failures(failures));
         }
 
         for (index, mount) in config.mounts.iter().enumerate() {
@@ -128,10 +237,32 @@ where
                 match generate_smb_share_name(&config.instance_id, index, &mut self.passwords) {
                     Ok(name) => name,
                     Err(error) => {
-                        let failures = self.cleanup_created(&account, &mut shares, &mut acl_grants);
+                        let failures = if let Some(path) = manifest_path {
+                            match self.recover_cleanup_manifest(path) {
+                                Ok(()) => Vec::new(),
+                                Err(cleanup) => cleanup.cleanup_failures().to_vec(),
+                            }
+                        } else {
+                            self.cleanup_created(&account, &mut shares, &mut acl_grants)
+                        };
                         return Err(error.with_cleanup_failures(failures));
                     }
                 };
+            journal.shares.push(WindowsSmbCleanupShare {
+                name: share_name.as_str().to_string(),
+                path: mount.source.clone(),
+                principal: account.principal.clone(),
+                access: mount.access,
+            });
+            if let Some(path) = manifest_path {
+                if let Err(error) = write_windows_smb_cleanup_journal(path, &journal) {
+                    let failures = match self.recover_cleanup_manifest(path) {
+                        Ok(()) => Vec::new(),
+                        Err(cleanup) => cleanup.cleanup_failures().to_vec(),
+                    };
+                    return Err(error.with_cleanup_failures(failures));
+                }
+            }
             let share = match self.shares.create_share(WindowsSmbShareCreateRequest {
                 name: share_name,
                 path: mount.source.clone(),
@@ -140,7 +271,14 @@ where
             }) {
                 Ok(share) => share,
                 Err(error) => {
-                    let failures = self.cleanup_created(&account, &mut shares, &mut acl_grants);
+                    let failures = if let Some(path) = manifest_path {
+                        match self.recover_cleanup_manifest(path) {
+                            Ok(()) => Vec::new(),
+                            Err(cleanup) => cleanup.cleanup_failures().to_vec(),
+                        }
+                    } else {
+                        self.cleanup_created(&account, &mut shares, &mut acl_grants)
+                    };
                     return Err(error.with_cleanup_failures(failures));
                 }
             };
@@ -195,7 +333,7 @@ where
     ) -> Vec<WindowsSmbCleanupFailure> {
         let mut failures = Vec::new();
 
-        while let Some(share) = shares.pop() {
+        for share in shares.iter().rev() {
             if let Err(error) = self.shares.remove_share(&share) {
                 failures.push(WindowsSmbCleanupFailure::new(
                     WindowsSmbLifecyclePhase::ShareRemove,
@@ -203,8 +341,26 @@ where
                 ));
             }
         }
+        if !failures.is_empty() {
+            return failures;
+        }
 
-        while let Some(grant) = acl_grants.pop() {
+        let mut account = account.clone();
+        if !acl_grants.is_empty() {
+            if let Err(error) = self.users.resolve_account_sid(&mut account) {
+                failures.push(WindowsSmbCleanupFailure::new(
+                    WindowsSmbLifecyclePhase::AclRevoke,
+                    error.to_string(),
+                ));
+                return failures;
+            }
+            for grant in acl_grants.iter_mut() {
+                if grant.sid.is_empty() {
+                    grant.sid = account.sid.clone();
+                }
+            }
+        }
+        for grant in acl_grants.iter().rev() {
             if let Err(error) = self.acls.revoke_access(&grant) {
                 failures.push(WindowsSmbCleanupFailure::new(
                     WindowsSmbLifecyclePhase::AclRevoke,
@@ -212,8 +368,11 @@ where
                 ));
             }
         }
+        if !failures.is_empty() {
+            return failures;
+        }
 
-        if let Err(error) = self.users.delete_user(account) {
+        if let Err(error) = self.users.delete_user(&account) {
             failures.push(WindowsSmbCleanupFailure::new(
                 WindowsSmbLifecyclePhase::UserDelete,
                 error.to_string(),
@@ -296,15 +455,36 @@ pub struct WindowsSmbCleanupManifest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WindowsSmbCleanupAccount {
     pub name: String,
+    #[serde(default)]
     pub domain: String,
+    #[serde(default)]
     pub principal: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WindowsSmbCleanupAclGrant {
     pub path: PathBuf,
+    #[serde(default)]
     pub principal: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sid: Option<String>,
     pub access: super::types::WindowsSmbAccess,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_dacl_control: Option<u16>,
+}
+
+impl WindowsSmbCleanupAclGrant {
+    fn from_grant(grant: &WindowsSmbAclGrant) -> Self {
+        Self {
+            path: grant.path.clone(),
+            principal: grant.principal.clone(),
+            sid: Some(grant.sid.clone()),
+            access: grant.access,
+            original_dacl_control: grant.original_dacl_control,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -316,26 +496,38 @@ pub struct WindowsSmbCleanupShare {
 }
 
 impl WindowsSmbCleanupManifest {
+    fn new(instance_id: String, account_name: String) -> Self {
+        Self {
+            schema_version: WINDOWS_SMB_CLEANUP_SCHEMA_VERSION,
+            instance_id,
+            account: WindowsSmbCleanupAccount {
+                name: account_name,
+                domain: String::new(),
+                principal: String::new(),
+                sid: None,
+            },
+            acl_grants: Vec::new(),
+            shares: Vec::new(),
+        }
+    }
+
     pub fn from_active_resources(
         instance_id: impl Into<String>,
         resources: &WindowsSmbActiveResources,
     ) -> Self {
         Self {
-            schema_version: 1,
+            schema_version: WINDOWS_SMB_CLEANUP_SCHEMA_VERSION,
             instance_id: instance_id.into(),
             account: WindowsSmbCleanupAccount {
                 name: resources.account.name.as_str().to_string(),
                 domain: resources.account.domain.clone(),
                 principal: resources.account.principal.clone(),
+                sid: Some(resources.account.sid.clone()),
             },
             acl_grants: resources
                 .acl_grants
                 .iter()
-                .map(|grant| WindowsSmbCleanupAclGrant {
-                    path: grant.path.clone(),
-                    principal: grant.principal.clone(),
-                    access: grant.access,
-                })
+                .map(WindowsSmbCleanupAclGrant::from_grant)
                 .collect(),
             shares: resources
                 .shares
@@ -351,7 +543,7 @@ impl WindowsSmbCleanupManifest {
     }
 
     fn into_active_resources(self) -> Result<WindowsSmbActiveResources, WindowsSmbLifecycleError> {
-        if self.schema_version != 1 {
+        if self.schema_version != 1 && self.schema_version != WINDOWS_SMB_CLEANUP_SCHEMA_VERSION {
             return Err(WindowsSmbLifecycleError::operation_failed(
                 WindowsSmbLifecyclePhase::CleanupManifest,
                 format!(
@@ -370,6 +562,7 @@ impl WindowsSmbCleanupManifest {
                 name: WindowsSmbUserName::new_unchecked(self.account.name),
                 domain: self.account.domain,
                 principal: self.account.principal,
+                sid: self.account.sid.unwrap_or_default(),
             },
             acl_grants: self
                 .acl_grants
@@ -377,7 +570,9 @@ impl WindowsSmbCleanupManifest {
                 .map(|grant| WindowsSmbAclGrant {
                     path: grant.path,
                     principal: grant.principal,
+                    sid: grant.sid.unwrap_or_default(),
                     access: grant.access,
+                    original_dacl_control: grant.original_dacl_control,
                 })
                 .collect(),
             shares: self
@@ -401,7 +596,14 @@ pub fn write_windows_smb_cleanup_manifest(
     resources: &WindowsSmbActiveResources,
 ) -> Result<(), WindowsSmbLifecycleError> {
     let manifest = WindowsSmbCleanupManifest::from_active_resources(instance_id, resources);
-    let json = serde_json::to_vec_pretty(&manifest).map_err(|error| {
+    write_windows_smb_cleanup_journal(path, &manifest)
+}
+
+fn write_windows_smb_cleanup_journal(
+    path: &Path,
+    manifest: &WindowsSmbCleanupManifest,
+) -> Result<(), WindowsSmbLifecycleError> {
+    let json = serde_json::to_vec_pretty(manifest).map_err(|error| {
         WindowsSmbLifecycleError::operation_failed(
             WindowsSmbLifecyclePhase::CleanupManifest,
             format!("failed to serialize cleanup manifest: {error}"),
@@ -420,7 +622,17 @@ pub fn write_windows_smb_cleanup_manifest(
     }
 
     let temp_path = path.with_extension("json.tmp");
-    fs::write(&temp_path, json).map_err(|error| {
+    let write_result = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temp_path)?;
+        file.write_all(&json)?;
+        file.sync_all()
+    })();
+    write_result.map_err(|error| {
         WindowsSmbLifecycleError::operation_failed(
             WindowsSmbLifecyclePhase::CleanupManifest,
             format!(
@@ -429,18 +641,7 @@ pub fn write_windows_smb_cleanup_manifest(
             ),
         )
     })?;
-    if path.exists() {
-        fs::remove_file(path).map_err(|error| {
-            WindowsSmbLifecycleError::operation_failed(
-                WindowsSmbLifecyclePhase::CleanupManifest,
-                format!(
-                    "failed to replace cleanup manifest '{}': {error}",
-                    path.display()
-                ),
-            )
-        })?;
-    }
-    fs::rename(&temp_path, path).map_err(|error| {
+    replace_cleanup_journal(&temp_path, path).map_err(|error| {
         WindowsSmbLifecycleError::operation_failed(
             WindowsSmbLifecyclePhase::CleanupManifest,
             format!(
@@ -449,6 +650,50 @@ pub fn write_windows_smb_cleanup_manifest(
             ),
         )
     })
+}
+
+#[cfg(windows)]
+fn replace_cleanup_journal(source: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, ReplaceFileW, MOVEFILE_WRITE_THROUGH, REPLACEFILE_WRITE_THROUGH,
+    };
+    let wide = |path: &Path| {
+        path.as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>()
+    };
+    let source = wide(source);
+    let target_w = wide(target);
+    let ok = if target.exists() {
+        unsafe {
+            ReplaceFileW(
+                target_w.as_ptr(),
+                source.as_ptr(),
+                std::ptr::null(),
+                REPLACEFILE_WRITE_THROUGH,
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        }
+    } else {
+        unsafe { MoveFileExW(source.as_ptr(), target_w.as_ptr(), MOVEFILE_WRITE_THROUGH) }
+    };
+    if ok == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_cleanup_journal(source: &Path, target: &Path) -> std::io::Result<()> {
+    fs::rename(source, target)?;
+    if let Some(parent) = target.parent() {
+        fs::File::open(parent)?.sync_all()?;
+    }
+    Ok(())
 }
 
 pub fn read_windows_smb_cleanup_manifest(
@@ -800,6 +1045,7 @@ mod tests {
                 name: name.clone(),
                 domain: "WINHOST".to_string(),
                 principal: format!(r"WINHOST\{name}"),
+                sid: "S-1-5-21-1000-1001-1002-1003".to_string(),
             })
         }
 
@@ -844,7 +1090,9 @@ mod tests {
             Ok(WindowsSmbAclGrant {
                 path: request.path,
                 principal: request.account.principal,
+                sid: request.account.sid,
                 access: request.access,
+                original_dacl_control: None,
             })
         }
 
@@ -1074,7 +1322,11 @@ mod tests {
 
         let manifest =
             read_windows_smb_cleanup_manifest(&manifest_path).expect("manifest should parse");
-        assert_eq!(manifest.schema_version, 1);
+        assert_eq!(manifest.schema_version, 2);
+        assert_eq!(
+            manifest.account.sid.as_deref(),
+            Some("S-1-5-21-1000-1001-1002-1003")
+        );
         assert_eq!(manifest.shares.len(), 2);
 
         let recover_log = EventLog::default();
@@ -1186,6 +1438,266 @@ mod tests {
         drop(resources);
     }
 
+    #[test]
+    fn schema_one_manifest_parses_but_never_heuristically_revokes_an_unresolved_ace() {
+        let root = temp_dir("schema-one");
+        std::fs::create_dir_all(&root).expect("manifest dir");
+        let manifest_path = windows_smb_cleanup_manifest_path(&root);
+        std::fs::write(
+            &manifest_path,
+            br#"{
+              "schema_version": 1,
+              "instance_id": "legacy",
+              "account": {
+                "name": "lsb_001122334455",
+                "domain": "OLDHOST",
+                "principal": "OLDHOST\\lsb_001122334455"
+              },
+              "acl_grants": [{
+                "path": "/host/legacy",
+                "principal": "OLDHOST\\lsb_001122334455",
+                "access": "ReadOnly"
+              }],
+              "shares": []
+            }"#,
+        )
+        .expect("legacy fixture");
+
+        let manifest =
+            read_windows_smb_cleanup_manifest(&manifest_path).expect("schema 1 should parse");
+        assert_eq!(manifest.schema_version, 1);
+        assert!(manifest.account.sid.is_none());
+
+        let log = EventLog::default();
+        let mut manager = fake_manager(log.clone(), Vec::<Vec<u8>>::new());
+        let error = manager
+            .recover_cleanup_manifest(&manifest_path)
+            .expect_err("unresolvable legacy SID must remain for manual recovery");
+        assert!(error.to_string().contains("cleanup failed"));
+        assert!(manifest_path.exists());
+        assert!(log
+            .snapshot()
+            .iter()
+            .all(|event| !event.starts_with("revoke_acl:") && !event.starts_with("delete_user:")));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn journal_records_sid_and_acl_intent_before_a_partial_acl_failure() {
+        let root = temp_dir("acl-intent");
+        std::fs::create_dir_all(&root).expect("manifest dir");
+        let manifest_path = windows_smb_cleanup_manifest_path(&root);
+        let log = EventLog::default();
+        let mut manager = fake_manager(log.clone(), [vec![0, 1, 2, 3, 4, 5]]);
+        manager.acls.fail_grant_index = Some(0);
+        manager.acls.fail_revoke = true;
+
+        manager
+            .prepare_with_cleanup_manifest(&config(), &manifest_path)
+            .expect_err("ACL grant should fail");
+
+        let manifest = read_windows_smb_cleanup_manifest(&manifest_path).expect("journal retained");
+        assert_eq!(manifest.schema_version, 2);
+        assert_eq!(
+            manifest.account.sid.as_deref(),
+            Some("S-1-5-21-1000-1001-1002-1003")
+        );
+        assert_eq!(manifest.acl_grants.len(), 1);
+        assert_eq!(
+            manifest.acl_grants[0].sid.as_deref(),
+            manifest.account.sid.as_deref()
+        );
+        assert!(manifest.shares.is_empty());
+        assert!(log
+            .snapshot()
+            .iter()
+            .all(|event| !event.starts_with("delete_user:")));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn windows_smb_sid_recovery_retries_cleanup_without_name_lookup() {
+        let root = temp_dir("sid-retry");
+        std::fs::create_dir_all(&root).expect("manifest dir");
+        let manifest_path = windows_smb_cleanup_manifest_path(&root);
+        let prepare_log = EventLog::default();
+        let mut prepare = fake_manager(
+            prepare_log,
+            [
+                vec![0, 1, 2, 3, 4, 5],
+                vec![0xaa, 0xbb, 0xcc, 0xdd],
+                vec![0xee, 0xff, 0x10, 0x20],
+            ],
+        );
+        let resources = prepare.prepare(&config()).expect("prepare");
+        write_windows_smb_cleanup_manifest(&manifest_path, "Instance Mounts 01", &resources)
+            .expect("journal");
+
+        let failed_log = EventLog::default();
+        let mut failed = fake_manager(failed_log.clone(), Vec::<Vec<u8>>::new());
+        failed.acls.fail_revoke = true;
+        failed
+            .recover_cleanup_manifest(&manifest_path)
+            .expect_err("first cleanup should fail");
+        assert!(manifest_path.exists());
+        assert!(failed_log
+            .snapshot()
+            .iter()
+            .all(|event| !event.starts_with("delete_user:")));
+
+        let retry_log = EventLog::default();
+        let mut retry = fake_manager(retry_log.clone(), Vec::<Vec<u8>>::new());
+        retry
+            .recover_cleanup_manifest(&manifest_path)
+            .expect("stored SID should make retry independent of name lookup");
+        assert!(!manifest_path.exists());
+        assert!(retry_log
+            .snapshot()
+            .iter()
+            .any(|event| event.starts_with("delete_user:")));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_smb_sid_recovery_after_account_deletion_and_manager_restart() {
+        use std::process::Command;
+
+        fn powershell(script: &str) -> String {
+            let output = Command::new("pwsh.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", script])
+                .output()
+                .expect("run PowerShell");
+            assert!(
+                output.status.success(),
+                "PowerShell failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        }
+
+        fn quote(path: &Path) -> String {
+            path.display().to_string().replace('\'', "''")
+        }
+
+        fn net_resource_exists(kind: &str, name: &str) -> bool {
+            Command::new("net.exe")
+                .args([kind, name])
+                .output()
+                .expect("query net resource")
+                .status
+                .success()
+        }
+
+        let root = temp_dir("native-sid-recovery");
+        let mount = root.join("mount");
+        let protected = mount.join("mis-it-center");
+        let skill = protected.join("SKILL.md");
+        let instance = root.join("instance");
+        std::fs::create_dir_all(&protected).expect("protected test tree");
+        std::fs::create_dir_all(&instance).expect("instance dir");
+        std::fs::write(&skill, b"protected-skill-input").expect("skill fixture");
+        powershell(&format!(
+            "$a=Get-Acl -LiteralPath '{}';$a.SetAccessRuleProtection($true,$true);Set-Acl -LiteralPath '{}' -AclObject $a",
+            quote(&protected),
+            quote(&protected)
+        ));
+        let before = [
+            powershell(&format!("(Get-Acl -LiteralPath '{}').Sddl", quote(&mount))),
+            powershell(&format!(
+                "(Get-Acl -LiteralPath '{}').Sddl",
+                quote(&protected)
+            )),
+            powershell(&format!("(Get-Acl -LiteralPath '{}').Sddl", quote(&skill))),
+        ];
+
+        let manifest_path = windows_smb_cleanup_manifest_path(&instance);
+        let config = WindowsSmbLifecycleConfig::new(
+            format!("native-sid-recovery-{}", std::process::id()),
+            vec![WindowsSmbMount::read_only(mount.clone(), "/skills")],
+        );
+        let mut preparing = WindowsSmbLifecycleManager::native();
+        let resources = preparing
+            .prepare_with_cleanup_manifest(&config, &manifest_path)
+            .expect("prepare native SMB resources and committed journal");
+        let user_name = resources.account.name.as_str().to_string();
+        let sid = resources.account.sid.clone();
+        let share_names = resources
+            .shares
+            .iter()
+            .map(|share| share.name.as_str().to_string())
+            .collect::<Vec<_>>();
+        let journal =
+            read_windows_smb_cleanup_manifest(&manifest_path).expect("committed SID journal");
+        let journal_has_sid = journal.account.sid.as_deref() == Some(sid.as_str())
+            && journal
+                .acl_grants
+                .iter()
+                .all(|grant| grant.sid.as_deref() == Some(sid.as_str()));
+        let user_existed_before_crash = net_resource_exists("user", &user_name);
+        let shares_existed_before_crash = share_names
+            .iter()
+            .all(|name| net_resource_exists("share", name));
+
+        // Simulate the old failure ordering: the account disappears while the
+        // SID ACE and committed cleanup journal remain, then the process restarts.
+        let deleted = Command::new("net.exe")
+            .args(["user", &user_name, "/delete"])
+            .output()
+            .expect("delete temporary user before recovery")
+            .status
+            .success();
+        let name_lookup_unavailable = !net_resource_exists("user", &user_name);
+        drop(resources);
+        drop(preparing);
+
+        let renamed = mount.join("mis-it-center-renamed");
+        let rename_result = std::fs::rename(&protected, &renamed);
+        let renamed_skill = renamed.join("SKILL.md");
+
+        let mut recovering = WindowsSmbLifecycleManager::native();
+        recovering
+            .recover_cleanup_manifest(&manifest_path)
+            .expect("fresh manager should recover by stored SID");
+
+        let after = [
+            powershell(&format!("(Get-Acl -LiteralPath '{}').Sddl", quote(&mount))),
+            powershell(&format!(
+                "(Get-Acl -LiteralPath '{}').Sddl",
+                quote(&renamed)
+            )),
+            powershell(&format!(
+                "(Get-Acl -LiteralPath '{}').Sddl",
+                quote(&renamed_skill)
+            )),
+        ];
+        let shares_removed = share_names
+            .iter()
+            .all(|name| !net_resource_exists("share", name));
+
+        assert!(journal_has_sid, "journal must retain the canonical SID");
+        assert!(user_existed_before_crash);
+        assert!(shares_existed_before_crash);
+        assert!(deleted);
+        assert!(name_lookup_unavailable);
+        assert!(rename_result.is_ok(), "protected boundary rename");
+        assert!(
+            !manifest_path.exists(),
+            "successful recovery removes journal"
+        );
+        assert!(shares_removed);
+        assert!(
+            !net_resource_exists("user", &user_name),
+            "temporary user remains absent"
+        );
+        assert_eq!(after, before, "exact SDDL after SID-only recovery");
+        assert!(
+            after.iter().all(|sddl| !sddl.contains(&sid)),
+            "no explicit generated SID ACE remains"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[cfg(windows)]
     #[test]
     fn stale_recovery_skips_manifest_when_instance_lock_is_held() {
@@ -1289,7 +1801,7 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_continues_after_individual_failures() {
+    fn cleanup_stops_at_failed_dependency_and_retains_account() {
         let log = EventLog::default();
         let mut manager = fake_manager(
             log.clone(),
@@ -1312,11 +1824,11 @@ mod tests {
             error,
             WindowsSmbLifecycleError::CleanupFailed { .. }
         ));
-        assert_eq!(error.cleanup_failures().len(), 5);
-        assert_eq!(
-            log.snapshot().last().expect("last event"),
-            "delete_user:lsb_000102030405"
-        );
+        assert_eq!(error.cleanup_failures().len(), 2);
+        assert!(log
+            .snapshot()
+            .iter()
+            .all(|event| !event.starts_with("revoke_acl:") && !event.starts_with("delete_user:")));
     }
 
     #[test]

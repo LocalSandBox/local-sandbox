@@ -43,6 +43,7 @@ foreach ($name in @(
     'evidence-installed-smoke.json',
     'evidence-node-mount-free.json',
     'evidence-node-direct-mounts.json',
+    'evidence-node-direct-mounts-repeat.json',
     'evidence-node-network.json',
     'evidence-node-sequential.json',
     'evidence-uninstall.json'

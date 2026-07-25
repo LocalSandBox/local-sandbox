@@ -194,6 +194,15 @@ pub(crate) fn revoke_network_logon_right(principal: &str) -> Result<(), WindowsS
 }
 
 #[cfg(windows)]
+pub(crate) fn revoke_network_logon_right_for_sid(
+    sid: &str,
+) -> Result<(), WindowsSmbLifecycleError> {
+    let phase = WindowsSmbLifecyclePhase::UserNetworkLogonRevoke;
+    let sid = sid_from_string(sid, phase)?;
+    update_account_right(sid.0, SE_NETWORK_LOGON_RIGHT, false, phase)
+}
+
+#[cfg(windows)]
 fn update_named_account_right(
     principal: &str,
     right_name: &str,
@@ -212,7 +221,7 @@ fn update_account_right_for_sid(
     right_name: &str,
     grant: bool,
 ) -> Result<(), WindowsSmbLifecycleError> {
-    let sid = sid_from_string(sid)?;
+    let sid = sid_from_string(sid, WindowsSmbLifecyclePhase::SmbPolicyPreflight)?;
     update_account_right(
         sid.0,
         right_name,
@@ -463,6 +472,20 @@ fn lookup_account_sid(
 }
 
 #[cfg(windows)]
+pub(crate) fn lookup_account_sid_string(
+    principal: &str,
+    phase: WindowsSmbLifecyclePhase,
+) -> Result<String, WindowsSmbLifecycleError> {
+    let sid = lookup_account_sid(principal, phase)?.ok_or_else(|| {
+        WindowsSmbLifecycleError::operation_failed(
+            phase,
+            format!("newly-created account '{principal}' could not be resolved to a SID"),
+        )
+    })?;
+    sid_to_string(sid.as_ptr().cast_mut().cast())
+}
+
+#[cfg(windows)]
 struct LocalSid(windows_sys::Win32::Security::PSID);
 
 #[cfg(windows)]
@@ -479,7 +502,10 @@ impl Drop for LocalSid {
 }
 
 #[cfg(windows)]
-fn sid_from_string(sid: &str) -> Result<LocalSid, WindowsSmbLifecycleError> {
+fn sid_from_string(
+    sid: &str,
+    phase: WindowsSmbLifecyclePhase,
+) -> Result<LocalSid, WindowsSmbLifecycleError> {
     use std::ptr;
 
     use windows_sys::Win32::Foundation::GetLastError;
@@ -491,7 +517,7 @@ fn sid_from_string(sid: &str) -> Result<LocalSid, WindowsSmbLifecycleError> {
     if ok == 0 {
         let code = unsafe { GetLastError() };
         return Err(WindowsSmbLifecycleError::operation_failed(
-            WindowsSmbLifecyclePhase::SmbPolicyPreflight,
+            phase,
             format!("ConvertStringSidToSidW failed for {sid}: win32 error {code}"),
         ));
     }

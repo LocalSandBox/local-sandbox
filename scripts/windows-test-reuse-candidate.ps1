@@ -288,12 +288,20 @@ $sourceBase = if ($null -ne $releaseEvidence.PSObject.Properties['base_commit'])
 else {
     [string]$releaseManifest.local_sandbox_commit
 }
-$stateText = Get-Content -LiteralPath 'state.md' -Raw
-$versionMatch = [regex]::Match($stateText, '(?m)^- Candidate version: `([^`]+)`$')
-if (-not $versionMatch.Success -or $sourceTree -cne $currentTree -or
+$workspaceMetadata = (& cargo.exe metadata --locked --no-deps --format-version 1 |
+    Out-String |
+    ConvertFrom-Json)
+if ($LASTEXITCODE -ne 0) {
+    throw "cargo metadata failed while resolving the service version with exit code $LASTEXITCODE"
+}
+$servicePackage = @($workspaceMetadata.packages |
+    Where-Object { [string]$_.name -eq 'lsb-seawork-service' })
+if ($servicePackage.Count -ne 1 -or
+    [string]$servicePackage[0].version -notmatch '^\d+\.\d+\.\d+-[0-9A-Za-z.-]+$' -or
+    $sourceTree -cne $currentTree -or
     $sourceBase -cne $currentBase -or
     $releaseManifest.local_sandbox_commit -cne $currentBase -or
-    [string]$releaseEvidence.version -cne $versionMatch.Groups[1].Value) {
+    [string]$releaseEvidence.version -cne [string]$servicePackage[0].version) {
     throw 'Source candidate tree, base commit, or version does not exactly match this run.'
 }
 
