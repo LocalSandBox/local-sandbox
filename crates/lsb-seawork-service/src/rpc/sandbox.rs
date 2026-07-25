@@ -718,6 +718,7 @@ mod tests {
             &identity,
             sandbox_id,
             PrepareInstanceOptions {
+                correlation_id: "correlation".to_string(),
                 cpus: 2,
                 memory_mib: 1024,
                 disk_mib: 1,
