@@ -184,7 +184,7 @@ production configuration is:
 ```json
 {
   "schema_version": 1,
-  "config_revision": 1,
+  "config_revision": 3,
   "quotas": {
     "connections_global": 32,
     "connections_per_user": 4,
@@ -193,8 +193,11 @@ production configuration is:
     "sandboxes_per_connection": 2,
     "memory_mib_global": 24576
   },
-  "publisher_thumbprints": ["<40-or-64-hex-signer-thumbprint>"],
-  "client_roots": ["C:\\Program Files\\SeaWork"],
+  "publisher_thumbprints": ["<64-hex-SHA-256-signer-thumbprint>"],
+  "client_roots": [
+    "%CALLER_LOCALAPPDATA%\\Programs\\SeaWork",
+    "%CALLER_LOCALAPPDATA%\\Programs\\SeaWork Test"
+  ],
   "maintenance_roots": ["C:\\Program Files\\SeaWork"],
   "egress_allow": [],
   "upstream_proxy": null,
@@ -202,10 +205,12 @@ production configuration is:
 }
 ```
 
-`client_roots` must contain the protected installed app binary that opens
-normal sandbox sessions. `maintenance_roots` must contain only protected,
-elevated installer/repair entry points. Every accepted binary must have a valid
-Authenticode chain whose embedded signer matches `publisher_thumbprints`.
+Revision 3 resolves `%CALLER_LOCALAPPDATA%` from each authenticated pipe
+client's token, never from the LocalSystem service environment. Caller-relative
+roots authorize caller-owned ordinary clients only. `maintenance_roots` remain
+canonical absolute protected paths containing only elevated installer/repair
+entry points. Every accepted binary must have a valid Authenticode chain whose
+embedded SHA-256 signer matches `publisher_thumbprints`.
 `egress_allow` is the installer-protected product host policy. Empty permits all
 otherwise-safe public hosts; a non-empty list is intersected with every caller allowlist.
 An optional product CA bundle must be installed at

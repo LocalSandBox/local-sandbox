@@ -55,6 +55,7 @@ struct VersionOutput<'a> {
     supported_min_minor: u16,
     supported_max_minor: u16,
     ledger_schema: u32,
+    service_configuration_revision: u32,
 }
 
 #[derive(Serialize)]
@@ -92,6 +93,7 @@ fn main() -> Result<()> {
                     supported_min_minor: SUPPORTED.min_minor,
                     supported_max_minor: SUPPORTED.max_minor,
                     ledger_schema: LEDGER_SCHEMA_VERSION,
+                    service_configuration_revision: bundle::SERVICE_CONFIGURATION_REVISION,
                 })?
             );
             Ok(())

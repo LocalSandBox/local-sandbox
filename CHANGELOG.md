@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- Added LocalSandbox service configuration revision 3 with authenticated
+  caller-relative `%CALLER_LOCALAPPDATA%` client roots, reparse-safe executable
+  admission, caller ownership checks, and SHA-256 publisher pinning while
+  retaining revision-2 parsing for rollback.
 - Added opt-in HTTPS HTTP/1.1 request-header interception across `lsb.json`,
   the Rust SDK, and the Node.js binding, including caller-supplied User-Agent
   values, per-request set/replace semantics, and SNI-based allow/deny scopes.

@@ -32,6 +32,7 @@ use crate::ipc::connection::{
     ConnectionState, RateLimiter, RequestDeadline, DEFAULT_BOOT_DEADLINE,
     DEFAULT_TRANSFER_DEADLINE, DEFAULT_UNARY_DEADLINE, MAX_REQUEST_DEADLINE,
 };
+use crate::logging::{EventId, ServiceLogger};
 use crate::maintenance::MaintenanceManager;
 use crate::resource::process::{GuestProcessResource, ManagedProcessOutput};
 use crate::resource::watch::WatchResource;
@@ -352,13 +353,14 @@ pub struct HealthContext {
     update_check_requested: Arc<AtomicBool>,
     committed_identity: Arc<Mutex<Option<BundleIdentity>>>,
     update_observation: Arc<Mutex<RuntimeUpdateObservation>>,
-    client_roots: Vec<String>,
+    client_roots: Vec<crate::config::ClientRootPolicy>,
     maintenance_roots: Vec<String>,
     publisher_thumbprints: Vec<String>,
     protected_egress_allow: Vec<String>,
     product_ca_bundle_pem: Vec<u8>,
     upstream_proxy: Option<lsb_proxy::UpstreamProxyConfig>,
     telemetry: Telemetry,
+    logger: Option<Arc<ServiceLogger>>,
 }
 
 #[derive(Debug, Clone)]
@@ -431,6 +433,7 @@ impl HealthContext {
             product_ca_bundle_pem: Vec::new(),
             upstream_proxy: None,
             telemetry: Telemetry::disabled(),
+            logger: None,
         }
     }
 
@@ -441,6 +444,11 @@ impl HealthContext {
 
     pub fn with_telemetry(mut self, telemetry: Telemetry) -> Self {
         self.telemetry = telemetry;
+        self
+    }
+
+    pub fn with_logger(mut self, logger: Arc<ServiceLogger>) -> Self {
+        self.logger = Some(logger);
         self
     }
 
@@ -458,7 +466,7 @@ impl HealthContext {
     pub fn with_client_policy(
         mut self,
         maintenance: MaintenanceManager,
-        client_roots: Vec<String>,
+        client_roots: Vec<crate::config::ClientRootPolicy>,
         maintenance_roots: Vec<String>,
         publisher_thumbprints: Vec<String>,
         protected_egress_allow: Vec<String>,
@@ -545,14 +553,41 @@ impl HealthContext {
         identity.elevated
             && identity.administrator
             && identity
-                .authorize_process_image(&self.maintenance_roots, &self.publisher_thumbprints)
+                .authorize_maintenance_process_image(
+                    &self.maintenance_roots,
+                    &self.publisher_thumbprints,
+                )
                 .is_ok()
     }
 
-    fn client_authorized(&self, identity: &ClientIdentity) -> bool {
-        identity
-            .authorize_process_image(&self.client_roots, &self.publisher_thumbprints)
-            .is_ok()
+    fn authorize_client(&self, identity: &ClientIdentity) -> Result<()> {
+        identity.authorize_client_process_image(&self.client_roots, &self.publisher_thumbprints)
+    }
+
+    fn record_client_trust_failure(&self, error: &anyhow::Error) {
+        let detail = format!("{error:#}");
+        let stable_code = if detail.contains("known-folder")
+            || detail.contains("KnownFolder")
+            || detail.contains("LocalAppData")
+        {
+            "CALLER_FOLDER_RESOLUTION_FAILED"
+        } else if detail.contains("owner") {
+            "CLIENT_IMAGE_OWNER_REJECTED"
+        } else if detail.contains("outside configured client roots")
+            || detail.contains("caller-relative root")
+            || detail.contains("reparse point")
+        {
+            "CLIENT_IMAGE_ROOT_REJECTED"
+        } else if detail.contains("Authenticode") || detail.contains("WinVerifyTrust") {
+            "CLIENT_IMAGE_SIGNATURE_REJECTED"
+        } else if detail.contains("publisher allowlist") {
+            "CLIENT_IMAGE_PUBLISHER_REJECTED"
+        } else {
+            "CLIENT_IDENTITY_REJECTED"
+        };
+        if let Some(logger) = &self.logger {
+            let _ = logger.write(EventId::ClientTrustFailed, "client.trust", stable_code);
+        }
     }
 
     fn health(&self) -> Health {
@@ -745,9 +780,12 @@ impl HealthPipe {
                 Err(_) => continue,
             };
             let context = self.context.clone();
+            let diagnostic_context = context.clone();
             let preauth = self.preauth.clone();
             tokio::spawn(async move {
-                let _ = handle_client(connected, context, preauth, global).await;
+                if let Err(error) = handle_client(connected, context, preauth, global).await {
+                    diagnostic_context.record_client_trust_failure(&error);
+                }
             });
         }
     }
@@ -786,12 +824,16 @@ async fn handle_client(
 ) -> Result<()> {
     let identity = ClientIdentity::from_named_pipe(pipe.as_raw_handle())?;
     let preauth = preauth.admit_pid(identity.process_id, global)?;
+    let client_authorization = context.authorize_client(&identity);
     let authorization = ConnectionAuthorization {
-        client: context.client_authorized(&identity),
+        client: client_authorization.is_ok(),
         maintenance: context.maintenance_authorized(&identity),
     };
     if !authorization.client && !authorization.maintenance {
-        bail!("client image is not authorized by a protected publisher policy");
+        return Err(
+            client_authorization.expect_err("failed client authorization must retain its error")
+        )
+        .context("client image is not authorized by a protected publisher policy");
     }
     let process = identity.duplicate_process_handle()?;
     let session_id = context.sessions.open(identity.key.clone())?;
@@ -2592,7 +2634,9 @@ mod tests {
             .with_whpx(HealthState::Ready);
         context
             .client_roots
-            .push(r"C:\Program Files\SeaWork".to_string());
+            .push(crate::config::ClientRootPolicy::Absolute(
+                r"C:\Program Files\SeaWork".to_string(),
+            ));
         context.publisher_thumbprints.push("test".to_string());
 
         let (mut client, server) = tokio::io::duplex(1024 * 1024);

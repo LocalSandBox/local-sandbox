@@ -1,11 +1,57 @@
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 pub use lsb_seawork_update::ReleaseChannel as UpdateChannel;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 const MAX_CONFIG_SIZE: u64 = 256 * 1024;
 const MAX_PRODUCT_CA_BUNDLE_SIZE: u64 = lsb_proxy::config::MAX_PRODUCT_CA_BUNDLE_BYTES as u64;
+const CALLER_LOCALAPPDATA_TOKEN: &str = "%CALLER_LOCALAPPDATA%";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientRootPolicy {
+    Absolute(String),
+    CallerLocalAppData { suffix: PathBuf },
+}
+
+impl ClientRootPolicy {
+    fn parse(value: String) -> Self {
+        if value
+            .get(..CALLER_LOCALAPPDATA_TOKEN.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(CALLER_LOCALAPPDATA_TOKEN))
+            && (value.len() == CALLER_LOCALAPPDATA_TOKEN.len()
+                || value.as_bytes()[CALLER_LOCALAPPDATA_TOKEN.len()] == b'\\')
+        {
+            let suffix = value
+                .get(CALLER_LOCALAPPDATA_TOKEN.len()..)
+                .unwrap_or_default()
+                .strip_prefix('\\')
+                .unwrap_or_default();
+            Self::CallerLocalAppData {
+                suffix: PathBuf::from(suffix),
+            }
+        } else {
+            Self::Absolute(value)
+        }
+    }
+
+    pub fn caller_suffix(&self) -> Option<&Path> {
+        match self {
+            Self::CallerLocalAppData { suffix } => Some(suffix),
+            Self::Absolute(_) => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ClientRootPolicy {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Self::parse(String::deserialize(deserializer)?))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -19,7 +65,7 @@ pub struct ServiceConfig {
     #[serde(default)]
     pub publisher_thumbprints: Vec<String>,
     #[serde(default)]
-    pub client_roots: Vec<String>,
+    pub client_roots: Vec<ClientRootPolicy>,
     #[serde(default)]
     pub maintenance_roots: Vec<String>,
     #[serde(default)]
@@ -144,7 +190,7 @@ impl ServiceConfig {
         if self.schema_version != 1 {
             bail!("unsupported service config schema {}", self.schema_version);
         }
-        if !matches!(self.config_revision, 1 | 2) {
+        if !matches!(self.config_revision, 1..=3) {
             bail!(
                 "unsupported service config revision {}",
                 self.config_revision
@@ -177,8 +223,31 @@ impl ServiceConfig {
         {
             bail!("publisher thumbprint allowlist is invalid");
         }
-        validate_roots(&self.client_roots, "client")?;
-        validate_roots(&self.maintenance_roots, "maintenance")?;
+        if self.config_revision == 3
+            && self
+                .publisher_thumbprints
+                .iter()
+                .any(|value| value.len() != 64)
+        {
+            bail!("service config revision 3 requires SHA-256 publisher thumbprints");
+        }
+        if self.config_revision < 3 {
+            let legacy_client_roots = self
+                .client_roots
+                .iter()
+                .map(|root| match root {
+                    ClientRootPolicy::Absolute(value) => Ok(value.clone()),
+                    ClientRootPolicy::CallerLocalAppData { .. } => {
+                        bail!("caller-relative client roots require config revision 3")
+                    }
+                })
+                .collect::<Result<Vec<_>>>()?;
+            validate_roots(&legacy_client_roots, "client")?;
+            validate_roots(&self.maintenance_roots, "maintenance")?;
+        } else {
+            validate_revision_three_client_roots(&self.client_roots)?;
+            validate_revision_three_absolute_roots(&self.maintenance_roots, "maintenance")?;
+        }
         if self.egress_allow.len() > 256 {
             bail!("protected egress allowlist exceeds compiled bounds");
         }
@@ -243,6 +312,93 @@ fn validate_roots(roots: &[String], policy: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_revision_three_client_roots(roots: &[ClientRootPolicy]) -> Result<()> {
+    if roots.len() > 8 {
+        bail!("client image root allowlist is invalid");
+    }
+    let mut normalized = HashSet::new();
+    for root in roots {
+        let key = match root {
+            ClientRootPolicy::Absolute(value) => {
+                validate_canonical_windows_absolute_root(value, "client")?;
+                normalize_windows_root(value)
+            }
+            ClientRootPolicy::CallerLocalAppData { suffix } => {
+                validate_caller_relative_suffix(suffix)?;
+                format!(
+                    "{}\\{}",
+                    CALLER_LOCALAPPDATA_TOKEN.to_ascii_lowercase(),
+                    normalize_windows_root(&suffix.to_string_lossy())
+                )
+                .trim_end_matches('\\')
+                .to_string()
+            }
+        };
+        if !normalized.insert(key) {
+            bail!("client image root allowlist contains duplicate roots");
+        }
+    }
+    Ok(())
+}
+
+fn validate_revision_three_absolute_roots(roots: &[String], policy: &str) -> Result<()> {
+    if roots.len() > 8 {
+        bail!("{policy} image root allowlist is invalid");
+    }
+    let mut normalized = HashSet::new();
+    for root in roots {
+        validate_canonical_windows_absolute_root(root, policy)?;
+        if !normalized.insert(normalize_windows_root(root)) {
+            bail!("{policy} image root allowlist contains duplicate roots");
+        }
+    }
+    Ok(())
+}
+
+fn validate_caller_relative_suffix(suffix: &Path) -> Result<()> {
+    let suffix = suffix.to_string_lossy();
+    if suffix.len() > 1024
+        || suffix.contains('\0')
+        || suffix.contains(['%', '*', '?', '/'])
+        || suffix.starts_with('\\')
+        || suffix.split('\\').any(invalid_windows_component)
+    {
+        bail!("caller-relative client image root is invalid");
+    }
+    Ok(())
+}
+
+fn validate_canonical_windows_absolute_root(value: &str, policy: &str) -> Result<()> {
+    let bytes = value.as_bytes();
+    if value.len() > 1024
+        || value.contains('\0')
+        || value.contains(['%', '*', '?', '/'])
+        || bytes.len() < 3
+        || !bytes[0].is_ascii_alphabetic()
+        || bytes[1] != b':'
+        || bytes[2] != b'\\'
+        || value.starts_with(r"\\")
+        || value[3..].split('\\').any(invalid_windows_component)
+    {
+        bail!("{policy} image root allowlist is invalid");
+    }
+    Ok(())
+}
+
+fn invalid_windows_component(component: &str) -> bool {
+    component.is_empty()
+        || matches!(component, "." | "..")
+        || component.ends_with(['.', ' '])
+        || component.contains(':')
+}
+
+fn normalize_windows_root(value: &str) -> String {
+    value
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_lowercase()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,7 +448,7 @@ mod tests {
         )
         .is_err());
         let mut unsupported = ServiceConfig::default();
-        unsupported.config_revision = 3;
+        unsupported.config_revision = 4;
         assert!(unsupported.validate().is_err());
     }
 
@@ -300,23 +456,126 @@ mod tests {
     fn maintenance_policy_is_bounded_and_normalized() {
         let mut config = ServiceConfig::default();
         config.publisher_thumbprints = vec!["a".repeat(40)];
-        config.client_roots = vec![if cfg!(windows) {
+        config.client_roots = vec![ClientRootPolicy::Absolute(if cfg!(windows) {
             r"C:\Program Files\SeaWork".to_string()
         } else {
             "/Applications/SeaWork".to_string()
-        }];
+        })];
         config.maintenance_roots = vec![if cfg!(windows) {
             r"C:\Program Files\LocalSandbox".to_string()
         } else {
             "/Library/Application Support/LocalSandbox".to_string()
         }];
         assert!(config.validate().is_ok());
-        config.client_roots = vec![if cfg!(windows) {
+        config.client_roots = vec![ClientRootPolicy::Absolute(if cfg!(windows) {
             r"C:\Program Files\..\Windows".to_string()
         } else {
             "/Applications/../System".to_string()
-        }];
+        })];
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn revision_three_accepts_structured_caller_relative_roots() {
+        let config: ServiceConfig = serde_json::from_str(
+            r#"{
+                "schema_version": 1,
+                "config_revision": 3,
+                "publisher_thumbprints": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+                "client_roots": [
+                    "%caller_localappdata%\\Programs\\SeaWork",
+                    "%CALLER_LOCALAPPDATA%\\Programs\\SeaWork Test"
+                ],
+                "maintenance_roots": ["C:\\Program Files\\SeaWork"]
+            }"#,
+        )
+        .unwrap();
+        config.validate().unwrap();
+        assert_eq!(
+            config.client_roots[0].caller_suffix(),
+            Some(Path::new(r"Programs\SeaWork"))
+        );
+    }
+
+    #[test]
+    fn revision_three_rejects_ambiguous_or_unsafe_roots() {
+        let invalid_client_roots = [
+            r"%CALLER_LOCALAPPDATA%\Programs\..\SeaWork",
+            r"%CALLER_LOCALAPPDATA%\\Programs\SeaWork",
+            r"prefix%CALLER_LOCALAPPDATA%\SeaWork",
+            r"%LOCALAPPDATA%\Programs\SeaWork",
+            r"%CALLER_LOCALAPPDATA%-copy\SeaWork",
+            r"%CALLER_LOCALAPPDATA%\Programs\Sea*",
+            r"\\server\share\SeaWork",
+            r"C:Programs\SeaWork",
+            r"C:\Programs\.\SeaWork",
+        ];
+        for root in invalid_client_roots {
+            let mut config = ServiceConfig {
+                config_revision: 3,
+                client_roots: vec![ClientRootPolicy::parse(root.to_string())],
+                ..ServiceConfig::default()
+            };
+            assert!(config.validate().is_err(), "accepted {root}");
+            config.client_roots.clear();
+        }
+
+        let mut maintenance = ServiceConfig {
+            config_revision: 3,
+            maintenance_roots: vec![r"%CALLER_LOCALAPPDATA%\Programs\SeaWork".to_string()],
+            ..ServiceConfig::default()
+        };
+        assert!(maintenance.validate().is_err());
+        maintenance.maintenance_roots = vec![r"C:\Program Files\SeaWork".to_string()];
+        maintenance.validate().unwrap();
+    }
+
+    #[test]
+    fn revision_three_rejects_case_insensitive_duplicate_roots() {
+        let mut config = ServiceConfig {
+            config_revision: 3,
+            client_roots: vec![
+                ClientRootPolicy::parse(r"%CALLER_LOCALAPPDATA%\Programs\SeaWork".to_string()),
+                ClientRootPolicy::parse(r"%caller_localappdata%\programs\seawork".to_string()),
+            ],
+            ..ServiceConfig::default()
+        };
+        assert!(config.validate().is_err());
+        config.client_roots = Vec::new();
+        config.maintenance_roots = vec![
+            r"C:\Program Files\SeaWork".to_string(),
+            r"c:\program files\seawork".to_string(),
+        ];
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn revision_two_rejects_revision_three_token() {
+        let config: ServiceConfig = serde_json::from_str(
+            r#"{
+                "schema_version": 1,
+                "config_revision": 2,
+                "client_roots": ["%CALLER_LOCALAPPDATA%\\Programs\\SeaWork"]
+            }"#,
+        )
+        .unwrap();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn revision_three_requires_sha256_publisher_thumbprints() {
+        let revision_two = ServiceConfig {
+            config_revision: 2,
+            publisher_thumbprints: vec!["a".repeat(40)],
+            ..ServiceConfig::default()
+        };
+        revision_two.validate().unwrap();
+        let revision_three = ServiceConfig {
+            config_revision: 3,
+            publisher_thumbprints: vec!["a".repeat(40)],
+            ..ServiceConfig::default()
+        };
+        assert!(revision_three.validate().is_err());
     }
 
     #[test]

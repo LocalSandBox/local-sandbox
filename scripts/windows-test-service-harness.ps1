@@ -18,7 +18,7 @@ Set-StrictMode -Version Latest
 $serviceName = 'LocalSandboxSeaWork'
 $owner = 'local-sandbox-agent-install-smoke'
 $installStatePath = Join-Path $RunRoot 'installed-service-state.json'
-$clientHarnessSddl = 'O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)'
+$clientSigningHarnessSddl = 'O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)'
 $postRebootServiceWaitSeconds = 300
 
 function Invoke-Native {
@@ -56,10 +56,21 @@ function Get-InteractiveClientIdentity {
     if ($sid.Value -notmatch '^S-1-5-21-(?:\d+-){3}\d+$') {
         throw "The interactive console user '$accountName' does not have a supported user SID."
     }
+    $profiles = @(Get-CimInstance Win32_UserProfile | Where-Object SID -eq $sid.Value)
+    if ($profiles.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$profiles[0].LocalPath)) {
+        throw "The interactive console user '$accountName' does not have one loaded local profile."
+    }
+    $localAppData = Join-Path ([string]$profiles[0].LocalPath) 'AppData\Local'
+    if (-not (Test-Path -LiteralPath $localAppData -PathType Container) -or
+        (Get-Item -LiteralPath $localAppData -Force).Attributes -band
+            [IO.FileAttributes]::ReparsePoint) {
+        throw "The interactive console user's LocalAppData is absent or a reparse point."
+    }
     return [pscustomobject]@{
         identity = $accountName
         name = $accountName.Substring($accountName.LastIndexOf('\') + 1)
         sid = [string]$sid.Value
+        local_app_data = $localAppData
     }
 }
 
@@ -112,6 +123,18 @@ function Set-Sddl {
     $acl = [Security.AccessControl.DirectorySecurity]::new()
     $acl.SetSecurityDescriptorBinaryForm($bytes)
     Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
+function Set-PathOwner {
+    param([string] $Path, [string] $Sid)
+    $ownerSid = [Security.Principal.SecurityIdentifier]::new($Sid)
+    $acl = Get-Acl -LiteralPath $Path
+    $acl.SetOwner($ownerSid)
+    Set-Acl -LiteralPath $Path -AclObject $acl
+    $observed = (Get-Acl -LiteralPath $Path).Owner
+    if ($observed -notin @($Sid, $ownerSid.Translate([Security.Principal.NTAccount]).Value)) {
+        throw "Owner verification failed for $Path"
+    }
 }
 
 function Set-ServicePreshutdownTimeout {
@@ -467,12 +490,18 @@ function Invoke-ClientSmoke {
         [switch] $Mounts,
         [switch] $Network,
         [switch] $Sequential,
+        [switch] $AdmissionRejected,
+        [string] $ClientHarnessRoot = '',
+        [string] $ClientExecutableName = 'node.exe',
         [string] $Suffix
     )
     $scenarioCount = [int]$Mounts.IsPresent + [int]$Network.IsPresent + [int]$Sequential.IsPresent
     if ($scenarioCount -gt 1) {
         throw 'Only one specialized client smoke scenario may be selected.'
     }
+    $harnessRoot = if ([string]::IsNullOrWhiteSpace($ClientHarnessRoot)) {
+        [string]$State.client_harness_root
+    } else { $ClientHarnessRoot }
     $clientData = Join-Path $State.client_data_root $Suffix
     New-Item -ItemType Directory -Path $clientData | Out-Null
     Set-Sddl $clientData ("O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{0})" -f $State.client_user_sid)
@@ -508,7 +537,7 @@ function Invoke-ClientSmoke {
     } else { @() }
     $configPath = Join-Path $clientData 'client-config.json'
     $clientConfig = [ordered]@{
-        bindingEntry = Join-Path $State.client_harness_root 'index.js'
+        bindingEntry = Join-Path $harnessRoot 'index.js'
         instanceId = "acceptance-$Suffix"
         mounts = $mountList
         resultPath = $resultPath
@@ -537,9 +566,9 @@ function Invoke-ClientSmoke {
     $clientConfig | ConvertTo-Json -Depth 8 |
         Set-Content -LiteralPath $configPath -Encoding utf8NoBOM
 
-    $clientExecutable = Join-Path $State.client_harness_root 'node.exe'
+    $clientExecutable = Join-Path $harnessRoot $ClientExecutableName
     $clientArguments = @(
-        (Join-Path $State.client_harness_root 'service-acceptance.mjs'),
+        (Join-Path $harnessRoot 'service-acceptance.mjs'),
         $configPath
     )
     $tokenProofPath = Join-Path $clientData 'client-token-proof.json'
@@ -548,15 +577,33 @@ function Invoke-ClientSmoke {
             -State $State `
             -Executable $clientExecutable `
             -Arguments $clientArguments `
-            -WorkingDirectory $State.client_harness_root `
+            -WorkingDirectory $harnessRoot `
             -ProofPath $tokenProofPath `
             -TaskSuffix $Suffix `
             -TimeoutSeconds 1800
         if ([int]$tokenProof.process_exit_code -ne 0) {
             if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
                 $failedResult = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
-                Copy-Item -LiteralPath $resultPath `
-                    -Destination (Join-Path $RunRoot "evidence-node-$Suffix-failed.json")
+                $failedEvidence = Join-Path $RunRoot "evidence-node-$Suffix-failed.json"
+                Copy-Item -LiteralPath $resultPath -Destination $failedEvidence
+                if ($AdmissionRejected) {
+                    if ($failedResult.status -ne 'failed' -or
+                        $failedResult.failed_stage -ne 'connect-service') {
+                        throw "The rejected client '$Suffix' failed outside service admission."
+                    }
+                    [ordered]@{
+                        schema_version = 1
+                        status = 'passed'
+                        admission_rejected = $true
+                        client_root = $harnessRoot
+                        executable_name = $ClientExecutableName
+                        client_token = $tokenProof
+                        observed_failure = $failedResult
+                    } | ConvertTo-Json -Depth 8 |
+                        Set-Content -LiteralPath (Join-Path $RunRoot "evidence-node-$Suffix.json") `
+                            -Encoding utf8NoBOM
+                    return
+                }
                 $stableDetail = if ($null -ne $failedResult.PSObject.Properties['stable_detail']) {
                     [string]$failedResult.stable_detail
                 }
@@ -567,6 +614,9 @@ function Invoke-ClientSmoke {
             }
             throw "The filtered-token Node smoke '$Suffix' exited " +
                 "$($tokenProof.process_exit_code) without a result."
+        }
+        if ($AdmissionRejected) {
+            throw "The client '$Suffix' unexpectedly passed service admission."
         }
         if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
             throw 'The filtered-token Node smoke did not produce a result.'
@@ -632,7 +682,6 @@ function Invoke-ClientSmoke {
 }
 
 function Install-And-Smoke {
-    Assert-Sddl $clientHarnessSddl 'test client harness ACL' | Out-Null
     if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
         throw 'Refusing to touch an existing LocalSandboxSeaWork service.'
     }
@@ -647,11 +696,6 @@ function Install-And-Smoke {
     if (Test-Path -LiteralPath $installRoot) {
         throw 'Refusing to adopt an existing LocalSandbox install root.'
     }
-    $clientHarness = Join-Path $programFiles "SeaWork\LocalSandboxTestHarness\$($evidence.snapshot_sha.Substring(0, 12))"
-    $clientHarnessBase = Split-Path -Parent $clientHarness
-    if (Test-Path -LiteralPath $clientHarnessBase) {
-        throw 'Refusing to adopt an existing LocalSandbox test-client root.'
-    }
     $stateRoot = Join-Path $env:ProgramData 'LocalSandbox\SeaWork'
     if (Test-Path -LiteralPath $stateRoot) {
         throw 'Refusing to adopt an existing LocalSandboxSeaWork state root.'
@@ -660,12 +704,6 @@ function Install-And-Smoke {
     if (Test-Path -LiteralPath $clientDataRoot) {
         throw 'Refusing to adopt an existing standard-user smoke root.'
     }
-    New-Item -ItemType Directory -Path (Join-Path $installRoot 'versions'), $clientHarness, $stateRoot, $clientDataRoot | Out-Null
-    Write-OwnerMarker $installMarker 'install-root'
-    Write-OwnerMarker (Join-Path $clientHarnessBase '.local-sandbox-agent-client.json') 'client-root'
-    Write-OwnerMarker (Join-Path $stateRoot '.local-sandbox-agent-state.json') 'state-root'
-    Write-OwnerMarker (Join-Path $clientDataRoot '.local-sandbox-agent-client-data.json') 'client-data-root'
-
     $versionRoot = Join-Path $installRoot "versions\$version"
     $bundle = Join-Path $RunRoot "release-work\out\lsb-seawork-service-v$version-windows-x86_64-stage\LocalSandbox"
     $serviceBinary = Join-Path $versionRoot 'bin\localsandbox-seawork-service.exe'
@@ -674,6 +712,38 @@ function Install-And-Smoke {
     $clientUserIdentity = [string]$clientIdentity.identity
     $clientUserName = [string]$clientIdentity.name
     $clientUserSid = [string]$clientIdentity.sid
+    $clientLocalAppData = [string]$clientIdentity.local_app_data
+    $clientPrograms = Join-Path $clientLocalAppData 'Programs'
+    $clientHarness = Join-Path $clientPrograms 'SeaWork'
+    $clientTestHarness = Join-Path $clientPrograms 'SeaWork Test'
+    $clientCollisionHarness = Join-Path $clientPrograms "SeaWork-copy-$($evidence.snapshot_sha.Substring(0, 12))"
+    $clientSigningHarness = Join-Path $programFiles `
+        "SeaWork\LocalSandboxTestHarness\$($evidence.snapshot_sha.Substring(0, 12))"
+    $clientSigningHarnessBase = Split-Path -Parent $clientSigningHarness
+    foreach ($path in @($clientHarness, $clientTestHarness, $clientCollisionHarness)) {
+        if (Test-Path -LiteralPath $path) {
+            throw "Refusing to adopt an existing LocalAppData test-client root: $path"
+        }
+    }
+    if (Test-Path -LiteralPath $clientSigningHarnessBase) {
+        throw 'Refusing to adopt an existing LocalSandbox signing-fixture root.'
+    }
+    New-Item -ItemType Directory -Force -Path $clientPrograms | Out-Null
+    New-Item -ItemType Directory -Path `
+        (Join-Path $installRoot 'versions'), $clientHarness, $clientTestHarness,
+        $clientCollisionHarness, $clientSigningHarness, $stateRoot, $clientDataRoot |
+        Out-Null
+    Write-OwnerMarker $installMarker 'install-root'
+    Write-OwnerMarker (Join-Path $clientHarness '.local-sandbox-agent-client.json') `
+        'client-root'
+    Write-OwnerMarker (Join-Path $clientTestHarness '.local-sandbox-agent-client.json') `
+        'test-client-root'
+    Write-OwnerMarker (Join-Path $clientCollisionHarness '.local-sandbox-agent-client.json') `
+        'collision-client-root'
+    Write-OwnerMarker (Join-Path $clientSigningHarnessBase '.local-sandbox-agent-client.json') `
+        'signing-client-root'
+    Write-OwnerMarker (Join-Path $stateRoot '.local-sandbox-agent-state.json') 'state-root'
+    Write-OwnerMarker (Join-Path $clientDataRoot '.local-sandbox-agent-client-data.json') 'client-data-root'
     $clientTaskPrefix = "LocalSandboxAgent-$($SnapshotSha.Substring(0, 8))"
     if (Get-ScheduledTask | Where-Object TaskName -like "$clientTaskPrefix-*") {
         throw 'Refusing to adopt an existing filtered client task.'
@@ -683,7 +753,12 @@ function Install-And-Smoke {
         schema_version = 1; owner = $owner; snapshot_sha = $SnapshotSha; run_id = $runId
         version = $version; service_binary = $serviceBinary; install_root = $installRoot
         install_marker = $installMarker; state_root = $stateRoot; event_key = $eventKey
-        client_harness_root = $clientHarness; client_harness_base = $clientHarnessBase
+        client_harness_root = $clientHarness
+        client_test_harness_root = $clientTestHarness
+        client_collision_harness_root = $clientCollisionHarness
+        client_signing_harness_root = $clientSigningHarness
+        client_signing_harness_base = $clientSigningHarnessBase
+        client_local_app_data = $clientLocalAppData
         client_data_root = $clientDataRoot
         client_user_identity = $clientUserIdentity
         client_user_name = $clientUserName
@@ -710,19 +785,43 @@ function Install-And-Smoke {
             Invoke-Native corepack @('yarn', 'patch-loader') 'Node loader patch'
         } finally { Pop-Location }
     } finally { $env:SEAWORK_PUBLISHER_SHA256 = $priorPublisher }
-    Copy-Item -LiteralPath (Get-Command node.exe).Source -Destination (Join-Path $clientHarness 'node.exe')
-    Copy-Item -LiteralPath 'bindings\nodejs\index.js' -Destination $clientHarness
-    Copy-Item -LiteralPath 'bindings\nodejs\lsb-nodejs.win32-x64-msvc.node' -Destination $clientHarness
-    Copy-Item -LiteralPath 'scripts\windows-test-suites\service-acceptance.mjs' -Destination $clientHarness
-    Set-Sddl $clientHarnessBase $clientHarnessSddl
+    Copy-Item -LiteralPath (Get-Command node.exe).Source `
+        -Destination (Join-Path $clientSigningHarness 'node.exe')
+    Copy-Item -LiteralPath 'bindings\nodejs\index.js' -Destination $clientSigningHarness
+    Copy-Item -LiteralPath 'bindings\nodejs\lsb-nodejs.win32-x64-msvc.node' `
+        -Destination $clientSigningHarness
+    Copy-Item -LiteralPath 'scripts\windows-test-suites\service-acceptance.mjs' `
+        -Destination $clientSigningHarness
+    Set-Sddl $clientSigningHarnessBase $clientSigningHarnessSddl
     Invoke-Native 'scripts\sign-seawork-service.ps1' @(
-        '-Mode', 'SignTestNode', '-ClientBinary', (Join-Path $clientHarness 'node.exe'),
+        '-Mode', 'SignTestNode',
+        '-ClientBinary', (Join-Path $clientSigningHarness 'node.exe'),
         '-UseLocalMachineStore',
         '-PfxPath', $env:SEAWORK_WINDOWS_PFX_PATH,
         '-PasswordFile', $env:SEAWORK_WINDOWS_PFX_PASSWORD_FILE,
         '-ExpectedPublisherSubject', [string]$evidence.publisher_subject,
         '-ExpectedPublisherSha256', [string]$evidence.publisher_sha256
     ) 'test Node executable signing'
+    foreach ($root in @($clientHarness, $clientTestHarness, $clientCollisionHarness)) {
+        Copy-Item -Path (Join-Path $clientSigningHarness '*') -Destination $root `
+            -Recurse -Force
+    }
+    Copy-Item -LiteralPath (Get-Command node.exe).Source `
+        -Destination (Join-Path $clientTestHarness 'node-untrusted.exe')
+    Write-OwnerMarker (Join-Path $clientHarness '.local-sandbox-agent-client.json') `
+        'client-root'
+    Write-OwnerMarker (Join-Path $clientTestHarness '.local-sandbox-agent-client.json') `
+        'test-client-root'
+    Write-OwnerMarker (Join-Path $clientCollisionHarness '.local-sandbox-agent-client.json') `
+        'collision-client-root'
+    $clientRootSddl = "O:$clientUserSid" +
+        "G:$clientUserSid" +
+        "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;$clientUserSid)"
+    foreach ($root in @($clientHarness, $clientTestHarness, $clientCollisionHarness)) {
+        Set-Sddl $root $clientRootSddl
+        Set-PathOwner (Join-Path $root 'node.exe') $clientUserSid
+    }
+    Set-PathOwner (Join-Path $clientTestHarness 'node-untrusted.exe') $clientUserSid
 
     $binaryPath = '"{0}" --service' -f $serviceBinary
     Invoke-Native sc.exe @('create', $serviceName, 'binPath=', $binaryPath, 'start=', 'auto', 'obj=', 'LocalSystem', 'DisplayName=', 'LocalSandbox for SeaWork') 'service creation'
@@ -738,10 +837,13 @@ function Install-And-Smoke {
     Set-Sddl $stateRoot 'O:SYG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
     New-Item -ItemType Directory -Path (Join-Path $stateRoot 'config') | Out-Null
     [ordered]@{
-        schema_version = 1; config_revision = 1
+        schema_version = 1; config_revision = 3
         quotas = [ordered]@{ connections_global = 32; connections_per_user = 4; sandboxes_global = 8; sandboxes_per_user = 4; sandboxes_per_connection = 2; memory_mib_global = 24576 }
         publisher_thumbprints = @([string]$evidence.publisher_sha256)
-        client_roots = @(Join-Path $programFiles 'SeaWork')
+        client_roots = @(
+            '%CALLER_LOCALAPPDATA%\Programs\SeaWork',
+            '%CALLER_LOCALAPPDATA%\Programs\SeaWork Test'
+        )
         maintenance_roots = @(Join-Path $programFiles 'SeaWork')
         egress_allow = @(); upstream_proxy = $null; ports_enabled = $false
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $stateRoot 'config\service.json') -Encoding utf8NoBOM
@@ -758,6 +860,16 @@ function Install-And-Smoke {
     $state = Read-InstallState
     $before = Get-CompatibilityResources
     Invoke-ClientSmoke $state -Suffix 'mount-free'
+    Invoke-ClientSmoke $state -ClientHarnessRoot $clientTestHarness -Suffix 'caller-test-root'
+    Invoke-ClientSmoke $state -AdmissionRejected `
+        -ClientHarnessRoot $clientCollisionHarness -Suffix 'caller-prefix-collision'
+    Invoke-ClientSmoke $state -AdmissionRejected `
+        -ClientHarnessRoot $clientTestHarness -ClientExecutableName 'node-untrusted.exe' `
+        -Suffix 'caller-wrong-publisher'
+    Set-PathOwner (Join-Path $clientTestHarness 'node.exe') 'S-1-5-32-544'
+    Invoke-ClientSmoke $state -AdmissionRejected `
+        -ClientHarnessRoot $clientTestHarness -Suffix 'caller-wrong-owner'
+    Set-PathOwner (Join-Path $clientTestHarness 'node.exe') $clientUserSid
     Invoke-ClientSmoke $state -Mounts -Suffix 'direct-mounts'
     Invoke-ClientSmoke $state -Mounts -Suffix 'direct-mounts-repeat'
     Invoke-ClientSmoke $state -Network -Suffix 'network'
@@ -773,6 +885,11 @@ function Install-And-Smoke {
             privilege_behavior_validated = $true
             medium_integrity = $true
             non_admin = $true
+            caller_relative_production_root = $true
+            caller_relative_test_root = $true
+            prefix_collision_rejected = $true
+            wrong_publisher_client_rejected = $true
+            wrong_owner_rejected = $true
             separate_account_profile_validated = $false
         }
         uac_after_install = $false
@@ -829,11 +946,23 @@ function Uninstall-Owned {
         Unregister-ScheduledTask -TaskName $task.TaskName -Confirm:$false
     }
     Assert-OwnerMarker $state.install_marker 'install-root'
-    Assert-OwnerMarker (Join-Path $state.client_harness_base '.local-sandbox-agent-client.json') 'client-root'
+    Assert-OwnerMarker (Join-Path $state.client_harness_root '.local-sandbox-agent-client.json') `
+        'client-root'
+    Assert-OwnerMarker (Join-Path $state.client_test_harness_root '.local-sandbox-agent-client.json') `
+        'test-client-root'
+    Assert-OwnerMarker (Join-Path $state.client_collision_harness_root '.local-sandbox-agent-client.json') `
+        'collision-client-root'
+    Assert-OwnerMarker (Join-Path $state.client_signing_harness_base '.local-sandbox-agent-client.json') `
+        'signing-client-root'
     Assert-OwnerMarker (Join-Path $state.state_root '.local-sandbox-agent-state.json') 'state-root'
     Assert-OwnerMarker (Join-Path $state.client_data_root '.local-sandbox-agent-client-data.json') 'client-data-root'
     Remove-Item -LiteralPath $state.install_root -Recurse -Force -ErrorAction Stop
-    Remove-Item -LiteralPath $state.client_harness_base -Recurse -Force -ErrorAction Stop
+    Remove-Item -LiteralPath $state.client_harness_root -Recurse -Force -ErrorAction Stop
+    Remove-Item -LiteralPath $state.client_test_harness_root -Recurse -Force -ErrorAction Stop
+    Remove-Item -LiteralPath $state.client_collision_harness_root -Recurse -Force `
+        -ErrorAction Stop
+    Remove-Item -LiteralPath $state.client_signing_harness_base -Recurse -Force `
+        -ErrorAction Stop
     Remove-Item -LiteralPath $state.state_root -Recurse -Force -ErrorAction Stop
     Remove-Item -LiteralPath $state.client_data_root -Recurse -Force -ErrorAction Stop
     Remove-Item -LiteralPath $installStatePath -Force -ErrorAction Stop

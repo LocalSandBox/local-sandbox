@@ -42,6 +42,10 @@ $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 foreach ($name in @(
     'evidence-installed-smoke.json',
     'evidence-node-mount-free.json',
+    'evidence-node-caller-test-root.json',
+    'evidence-node-caller-prefix-collision.json',
+    'evidence-node-caller-wrong-publisher.json',
+    'evidence-node-caller-wrong-owner.json',
     'evidence-node-direct-mounts.json',
     'evidence-node-direct-mounts-repeat.json',
     'evidence-node-network.json',

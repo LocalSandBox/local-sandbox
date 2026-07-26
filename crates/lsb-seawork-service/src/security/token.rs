@@ -7,10 +7,10 @@ use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Security::{
     AllocateAndInitializeSid, CheckTokenMembership, DuplicateTokenEx, FreeSid, GetSidSubAuthority,
     GetSidSubAuthorityCount, GetTokenInformation, SecurityImpersonation, TokenElevation,
-    TokenGroups, TokenImpersonation, TokenIntegrityLevel, TokenIsAppContainer, TokenSessionId,
-    TokenStatistics, TokenUser, PSID, SECURITY_NT_AUTHORITY, SID_IDENTIFIER_AUTHORITY,
-    TOKEN_DUPLICATE, TOKEN_ELEVATION, TOKEN_GROUPS, TOKEN_IMPERSONATE, TOKEN_INFORMATION_CLASS,
-    TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_USER,
+    TokenGroups, TokenImpersonation, TokenIntegrityLevel, TokenIsAppContainer, TokenPrimary,
+    TokenSessionId, TokenStatistics, TokenUser, PSID, SECURITY_NT_AUTHORITY,
+    SID_IDENTIFIER_AUTHORITY, TOKEN_DUPLICATE, TOKEN_ELEVATION, TOKEN_GROUPS, TOKEN_IMPERSONATE,
+    TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_STATISTICS, TOKEN_USER,
 };
 use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
 use windows_sys::Win32::System::SystemServices::{
@@ -21,10 +21,14 @@ use windows_sys::Win32::System::Threading::{
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
 };
 
+use crate::config::ClientRootPolicy;
 use crate::session::ClientIdentityKey;
 
 use super::access::authorize_interactive_client;
-use super::client_image::{authorize_maintenance_image_handle, pin_process_image};
+use super::client_image::{
+    authorize_client_image_handle, authorize_maintenance_image_handle, pin_process_image,
+    resolve_caller_local_app_data,
+};
 use super::impersonation::ImpersonationGuard;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +50,7 @@ pub struct ClientIdentity {
     pub elevated: bool,
     pub administrator: bool,
     pub process_image: std::path::PathBuf,
+    caller_local_app_data: std::path::PathBuf,
     _process: OwnedHandle,
     process_image_handle: OwnedHandle,
     _impersonation_token: OwnedHandle,
@@ -68,6 +73,8 @@ impl ClientIdentity {
         let thread_token = open_thread_token()?;
         let pipe_snapshot = snapshot(&thread_token)?;
         authorize_interactive_client(&pipe_snapshot)?;
+        let folder_token = duplicate_primary_token(&thread_token)?;
+        let caller_local_app_data = resolve_caller_local_app_data(&folder_token)?;
         let duplicated_token = duplicate_impersonation_token(&thread_token)?;
         guard.revert()?;
 
@@ -106,6 +113,7 @@ impl ClientIdentity {
             elevated: pipe_snapshot.elevated,
             administrator: pipe_snapshot.administrator,
             process_image,
+            caller_local_app_data,
             _process: process,
             process_image_handle,
             _impersonation_token: duplicated_token,
@@ -120,7 +128,7 @@ impl ClientIdentity {
         self._process.try_clone()
     }
 
-    pub fn authorize_process_image(
+    pub fn authorize_maintenance_process_image(
         &self,
         roots: &[String],
         publisher_thumbprints: &[String],
@@ -129,6 +137,21 @@ impl ClientIdentity {
             &self.process_image,
             &self.process_image_handle,
             roots,
+            publisher_thumbprints,
+        )
+    }
+
+    pub fn authorize_client_process_image(
+        &self,
+        roots: &[ClientRootPolicy],
+        publisher_thumbprints: &[String],
+    ) -> Result<()> {
+        authorize_client_image_handle(
+            &self.process_image,
+            &self.process_image_handle,
+            roots,
+            &self.caller_local_app_data,
+            &self.key.user_sid,
             publisher_thumbprints,
         )
     }
@@ -179,6 +202,27 @@ fn duplicate_impersonation_token(token: &OwnedHandle) -> Result<OwnedHandle> {
     {
         bail!(
             "DuplicateTokenEx failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(owned(duplicate))
+}
+
+fn duplicate_primary_token(token: &OwnedHandle) -> Result<OwnedHandle> {
+    let mut duplicate = ptr::null_mut();
+    if unsafe {
+        DuplicateTokenEx(
+            raw(token),
+            TOKEN_QUERY,
+            ptr::null(),
+            SecurityImpersonation,
+            TokenPrimary,
+            &mut duplicate,
+        )
+    } == 0
+    {
+        bail!(
+            "DuplicateTokenEx for known-folder resolution failed: {}",
             std::io::Error::last_os_error()
         );
     }

@@ -221,6 +221,7 @@ fn run_registered(
         admissions,
     )
     .with_telemetry(telemetry.clone())
+    .with_logger(logger.clone())
     .with_engine(engine)
     .with_whpx(whpx)
     .with_committed_identity(committed_identity)

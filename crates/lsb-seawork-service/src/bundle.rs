@@ -5,7 +5,7 @@ use lsb_seawork_update::{PackagePolicy, PackageVerification};
 
 use crate::{LEDGER_SCHEMA_VERSION, PIPE_NAME, PIPE_SDDL, SERVICE_NAME};
 
-pub const SERVICE_CONFIGURATION_REVISION: u32 = 2;
+pub const SERVICE_CONFIGURATION_REVISION: u32 = 3;
 
 pub fn verify_adjacent_bundle() -> Result<PackageVerification> {
     let executable = std::env::current_exe().context("resolve service executable")?;

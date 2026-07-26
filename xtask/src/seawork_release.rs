@@ -17,7 +17,7 @@ use crate::context::copy_file;
 
 const BUNDLE_SCHEMA_VERSION: u32 = 1;
 const SERVICE_CONTRACT_SCHEMA_VERSION: u32 = 1;
-const SERVICE_CONFIGURATION_REVISION: u32 = 2;
+const SERVICE_CONFIGURATION_REVISION: u32 = 3;
 const UPDATER_PROTOCOL_MAJOR: u16 = 1;
 const UPDATER_PROTOCOL_MIN: u16 = 1;
 const UPDATER_PROTOCOL_MAX: u16 = 1;
@@ -1299,7 +1299,7 @@ mod tests {
         let development =
             serde_json::to_value(service_contract(ServiceProfile::Development)).unwrap();
         assert_eq!(production["service"]["name"], "LocalSandboxSeaWork");
-        assert_eq!(production["revision"], 2);
+        assert_eq!(production["revision"], 3);
         assert_eq!(production["update"]["default_channel"], "stable");
         assert_eq!(
             production["update"]["repository"],
