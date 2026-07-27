@@ -7,6 +7,7 @@ mod package;
 mod policy;
 mod preinstall;
 mod state;
+mod termination;
 #[cfg(windows)]
 mod windows_trust;
 
@@ -27,6 +28,7 @@ pub use preinstall::{
     PreinstallReceipt, PreinstallReceiptEnvelope, PreinstallRequest, PreinstallRequestEnvelope,
 };
 pub use state::{archive_file, create_json, load_json, remove_file_if_exists, write_json_atomic};
+pub use termination::TerminationIntent;
 #[cfg(windows)]
 pub use windows_trust::{
     verify_windows_directory_protection, verify_windows_file_protection,

@@ -3,6 +3,8 @@ mod diagnostics;
 #[cfg(all(windows, feature = "sentry-telemetry"))]
 mod native;
 mod run_marker;
+#[cfg(windows)]
+mod windows_events;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -17,6 +19,8 @@ pub use diagnostics::{
     collect_incident, Attachment, DiagnosticLimits, IncidentMetadata, RetentionPolicy,
 };
 pub use run_marker::{PreviousRun, RunState};
+#[cfg(windows)]
+pub(crate) use windows_events::capture_termination_evidence;
 
 pub const TRANSACTION_SERVICE_STARTUP: &str = "service.startup";
 pub const TRANSACTION_SANDBOX_START: &str = "sandbox.start";
@@ -131,6 +135,12 @@ impl FailureEvent {
         self
     }
 
+    pub fn with_tag(mut self, key: &'static str, value: impl Into<String>) -> Self {
+        self.tags
+            .insert(key.to_string(), bounded(value.into(), 256));
+        self
+    }
+
     pub fn retryable(mut self, retryable: bool) -> Self {
         self.retryable = retryable;
         self
@@ -173,6 +183,10 @@ impl SpanDescription {
 }
 
 pub trait Adapter: Send + Sync {
+    fn set_run_id(&self, _run_id: &str) -> Result<(), ()> {
+        Ok(())
+    }
+
     fn breadcrumb(&self, breadcrumb: Breadcrumb) -> Result<(), ()>;
     fn capture_failure(&self, event: FailureEvent) -> Result<Option<String>, ()>;
     fn start_span(&self, parent_id: Option<u64>, span: SpanDescription) -> Result<Option<u64>, ()>;
@@ -221,8 +235,15 @@ impl Telemetry {
     }
 
     pub fn with_run_state(mut self, run_state: Arc<RunState>) -> Self {
+        if let Ok(run_id) = run_state.run_id() {
+            let _ = self.adapter.set_run_id(&run_id);
+        }
         self.run_state = Some(run_state);
         self
+    }
+
+    pub fn run_id(&self) -> Option<String> {
+        self.run_state.as_ref()?.run_id().ok()
     }
 
     pub fn breadcrumb(&self, breadcrumb: Breadcrumb) {
@@ -265,10 +286,11 @@ impl Telemetry {
         let _ = run_state.update(phase.into(), resource_id, instance_path, boundary_completed);
     }
 
-    pub fn close_run(&self) {
+    pub fn close_run(&self) -> bool {
         if let Some(run_state) = &self.run_state {
-            let _ = run_state.close();
+            return run_state.close().is_ok();
         }
+        false
     }
 }
 
@@ -358,6 +380,7 @@ mod tests {
 
     #[derive(Default)]
     struct FakeState {
+        run_ids: Vec<String>,
         breadcrumbs: Vec<Breadcrumb>,
         events: Vec<FailureEvent>,
         spans: Vec<(u64, Option<u64>, SpanDescription)>,
@@ -372,6 +395,11 @@ mod tests {
     }
 
     impl Adapter for FakeAdapter {
+        fn set_run_id(&self, run_id: &str) -> Result<(), ()> {
+            self.state.lock().unwrap().run_ids.push(run_id.to_string());
+            Ok(())
+        }
+
         fn breadcrumb(&self, breadcrumb: Breadcrumb) -> Result<(), ()> {
             let mut state = self.state.lock().unwrap();
             if state.fail_calls {
@@ -459,6 +487,20 @@ mod tests {
     }
 
     #[test]
+    fn attaching_run_state_indexes_the_run_id() {
+        let root = std::env::temp_dir().join(format!(
+            "lsbs-telemetry-run-id-{}",
+            crate::session::ResourceHandle::random().unwrap()
+        ));
+        let (run_state, _) = RunState::begin(&root, "2026-07-27T12:00:00Z").unwrap();
+        let run_id = run_state.run_id().unwrap();
+        let adapter = Arc::new(FakeAdapter::default());
+        let _telemetry = Telemetry::new(adapter.clone()).with_run_state(Arc::new(run_state));
+        assert_eq!(adapter.state.lock().unwrap().run_ids, vec![run_id]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn child_span_records_its_parent() {
         let adapter = Arc::new(FakeAdapter::default());
         let telemetry = Telemetry::new(adapter.clone());
@@ -538,6 +580,7 @@ mod tests {
             "first free-form error",
         )
         .with_correlation_id("correlation-1")
+        .with_tag("run_id", "run-1")
         .with_resource_id("sandbox-1");
         let second = FailureEvent::new(
             "sandbox.start",

@@ -14,6 +14,7 @@ pub struct ServicePaths {
     pub users: PathBuf,
     pub quarantine: PathBuf,
     pub runtime: PathBuf,
+    pub termination_intent: PathBuf,
     pub logs: PathBuf,
 }
 
@@ -65,6 +66,7 @@ impl ServicePaths {
             },
             users: root.join("state").join("users"),
             quarantine: root.join("state").join("quarantine"),
+            termination_intent: root.join("runtime").join("termination-intent.json"),
             runtime: root.join("runtime"),
             logs: root.join("logs"),
             root,
@@ -160,6 +162,7 @@ mod tests {
         assert!(paths.updates.staging.starts_with(&paths.root));
         assert!(paths.updates.current_transaction.starts_with(&paths.root));
         assert!(paths.updates.history.starts_with(&paths.root));
+        assert!(paths.termination_intent.starts_with(&paths.runtime));
         assert!(paths.require_below_root(&base.join("elsewhere")).is_err());
     }
 }

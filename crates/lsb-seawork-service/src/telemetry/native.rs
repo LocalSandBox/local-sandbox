@@ -109,6 +109,20 @@ impl NativeAdapter {
 }
 
 impl Adapter for NativeAdapter {
+    fn set_run_id(&self, run_id: &str) -> Result<(), ()> {
+        if run_id.len() != 32 || !run_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(());
+        }
+        unsafe {
+            set_global_tag("run_id", run_id);
+            let context = sentry_value_new_object();
+            set_string(&context, "run_id", run_id)?;
+            let name = CString::new("service_run").expect("static string");
+            sentry_set_context(name.as_ptr(), context);
+        }
+        Ok(())
+    }
+
     fn breadcrumb(&self, breadcrumb: Breadcrumb) -> Result<(), ()> {
         let message = CString::new(breadcrumb.message).map_err(|_| ())?;
         let category = CString::new(breadcrumb.category).map_err(|_| ())?;

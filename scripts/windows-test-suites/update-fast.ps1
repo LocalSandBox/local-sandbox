@@ -47,7 +47,7 @@ Invoke-Native cargo @(
     'test',
     '-p', 'lsb-seawork-updater',
     '--locked',
-    'windows::tests::manifest_sddl_round_trips_through_scm_with_mapped_generic_rights',
+    'windows::tests::manifest_sddl_and_delayed_start_round_trip_through_scm',
     '--',
     '--ignored',
     '--exact'

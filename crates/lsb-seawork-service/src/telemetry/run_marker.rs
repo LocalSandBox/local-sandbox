@@ -22,6 +22,8 @@ pub struct PreviousRun {
     pub active_instances: BTreeMap<String, String>,
     pub marker_path: PathBuf,
     pub context_path: PathBuf,
+    pub termination_intent: Option<lsb_seawork_update::TerminationIntent>,
+    pub termination_intent_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,10 +158,17 @@ fn read_previous(
     marker_path: &Path,
     context_path: &Path,
 ) -> Result<Option<PreviousRun>> {
+    let active_intent_path = runtime_root.join("termination-intent.json");
     let Some(marker) = read_document(marker_path)? else {
+        let _ = lsb_seawork_update::remove_file_if_exists(&active_intent_path);
         return Ok(None);
     };
+    let termination_intent =
+        lsb_seawork_update::load_json::<lsb_seawork_update::TerminationIntent>(&active_intent_path)
+            .ok()
+            .filter(|intent| intent.validate().is_ok() && intent.run_id == marker.run_id);
     if marker.orderly_stop {
+        let _ = lsb_seawork_update::remove_file_if_exists(&active_intent_path);
         return Ok(None);
     }
     let context = read_document(context_path)?.unwrap_or_else(|| marker.clone());
@@ -169,10 +178,17 @@ fn read_previous(
         .join(&marker.run_id);
     let snapshot_marker = snapshot_root.join(MARKER_NAME);
     let snapshot_context = snapshot_root.join(CONTEXT_NAME);
+    let snapshot_intent = snapshot_root.join("termination-intent.json");
     crate::ledger::atomic::write_value(&snapshot_marker, &marker)
         .context("snapshot previous telemetry run marker")?;
     crate::ledger::atomic::write_value(&snapshot_context, &context)
         .context("snapshot previous telemetry crash context")?;
+    let termination_intent_path = termination_intent.as_ref().and_then(|intent| {
+        crate::ledger::atomic::write_value(&snapshot_intent, intent)
+            .ok()
+            .map(|()| snapshot_intent)
+    });
+    let _ = lsb_seawork_update::remove_file_if_exists(&active_intent_path);
     prune_previous_runs(
         snapshot_root
             .parent()
@@ -187,6 +203,8 @@ fn read_previous(
         active_instances: context.active_instances,
         marker_path: snapshot_marker,
         context_path: snapshot_context,
+        termination_intent,
+        termination_intent_path,
     }))
 }
 
@@ -329,6 +347,33 @@ mod tests {
         assert!(std::fs::read_to_string(&previous.context_path)
             .unwrap()
             .contains(&previous_id));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unclean_run_snapshots_matching_updater_termination_intent() {
+        let root = root("termination-intent");
+        let (state, _) = RunState::begin(&root, "2026-07-25T00:00:00Z").unwrap();
+        let run_id = state.run_id().unwrap();
+        let intent = lsb_seawork_update::TerminationIntent::update_activation(
+            run_id,
+            "2".repeat(32),
+            "2026-07-25T00:00:01Z",
+            "0.5.1",
+        )
+        .unwrap();
+        let intent_path = root.join("termination-intent.json");
+        lsb_seawork_update::write_json_atomic(&intent_path, &intent).unwrap();
+        drop(state);
+
+        let (_, previous) = RunState::begin(&root, "2026-07-25T00:01:00Z").unwrap();
+        let previous = previous.unwrap();
+        assert_eq!(previous.termination_intent, Some(intent));
+        assert!(previous
+            .termination_intent_path
+            .as_ref()
+            .is_some_and(|path| path.is_file()));
+        assert!(!intent_path.exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 

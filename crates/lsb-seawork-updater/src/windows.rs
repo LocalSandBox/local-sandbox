@@ -19,6 +19,7 @@ use lsb_seawork_update::{
 use lsb_service_proto::{
     BundleIdentity, HealthState, UpdatePhase, PIPE_NAME, SERVICE_NAME, SUPPORTED,
 };
+use serde::Deserialize;
 use windows_service::define_windows_service;
 use windows_service::service::{
     ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceControlAccept,
@@ -616,6 +617,7 @@ fn verify_fixed_directories(paths: &FixedPaths) -> Result<()> {
         &paths.updater,
         &paths.versions,
         &paths.state_root,
+        &paths.runtime,
         &paths.updates,
         &paths.staging,
         &paths.transactions,
@@ -671,6 +673,43 @@ fn stop_service_and_confirm_process_exit(
         }
     }
     Ok(())
+}
+
+#[derive(Deserialize)]
+struct RunMarkerIdentity {
+    run_id: String,
+}
+
+fn record_update_termination_intent(
+    paths: &FixedPaths,
+    transaction: &UpdateTransaction,
+    rollback: bool,
+) -> Result<()> {
+    let marker: RunMarkerIdentity = protected_load_json(&paths.run_marker)
+        .context("load active service run identity for termination intent")?;
+    let arguments = (
+        marker.run_id,
+        transaction.transaction_id.clone(),
+        now_utc()?,
+        transaction.target_bundle_identity.version.clone(),
+    );
+    let intent = if rollback {
+        lsb_seawork_update::TerminationIntent::update_rollback(
+            arguments.0,
+            arguments.1,
+            arguments.2,
+            arguments.3,
+        )?
+    } else {
+        lsb_seawork_update::TerminationIntent::update_activation(
+            arguments.0,
+            arguments.1,
+            arguments.2,
+            arguments.3,
+        )?
+    };
+    write_json_atomic(&paths.termination_intent, &intent)
+        .context("persist updater service termination intent")
 }
 
 impl UpdateBackend for WindowsBackend {
@@ -745,6 +784,9 @@ impl UpdateBackend for WindowsBackend {
         self.ensure_target_verified(&transaction.transaction)?;
         self.require_main_command(&transaction.transaction.old_image_path)?;
         let service = self.main_service(ServiceAccess::QUERY_STATUS | ServiceAccess::STOP)?;
+        if service.query_status()?.current_state != ServiceState::Stopped {
+            let _ = record_update_termination_intent(&self.paths, &transaction.transaction, false);
+        }
         stop_service_and_confirm_process_exit(&service)
     }
 
@@ -912,6 +954,9 @@ impl UpdateBackend for WindowsBackend {
             return Ok(());
         }
         let service = self.main_service(ServiceAccess::QUERY_STATUS | ServiceAccess::STOP)?;
+        if service.query_status()?.current_state != ServiceState::Stopped {
+            let _ = record_update_termination_intent(&self.paths, &transaction.transaction, true);
+        }
         stop_service_and_confirm_process_exit(&service)
     }
 
@@ -1616,6 +1661,9 @@ struct FixedPaths {
     updater: PathBuf,
     updater_executable: PathBuf,
     state_root: PathBuf,
+    runtime: PathBuf,
+    run_marker: PathBuf,
+    termination_intent: PathBuf,
     updates: PathBuf,
     committed: PathBuf,
     failed_target: PathBuf,
@@ -1633,12 +1681,15 @@ impl FixedPaths {
         let program_data = known_folder(&windows_sys::Win32::UI::Shell::FOLDERID_ProgramData)?;
         let program_files = known_folder(&windows_sys::Win32::UI::Shell::FOLDERID_ProgramFiles)?;
         let state_root = program_data.join("LocalSandbox").join("SeaWork");
+        let runtime = state_root.join("runtime");
         let updates = state_root.join("updates");
         let transactions = updates.join("transactions");
         let product = program_files.join("SeaWork").join("LocalSandbox");
         let updater = product.join("updater");
         Ok(Self {
             updater_executable: updater.join(UPDATER_EXE),
+            run_marker: runtime.join("run-marker.json"),
+            termination_intent: runtime.join("termination-intent.json"),
             committed: updates.join("committed.json"),
             failed_target: updates.join("failed-target.json"),
             staging: updates.join("staging"),
@@ -1650,6 +1701,7 @@ impl FixedPaths {
             product,
             updater,
             state_root,
+            runtime,
             updates,
             transactions,
         })

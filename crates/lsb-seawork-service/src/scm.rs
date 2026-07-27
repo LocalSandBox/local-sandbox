@@ -94,17 +94,20 @@ fn run_registered(
     if let Some(previous) = previous_run {
         capture_unclean_previous_exit(&telemetry, &paths, &common_context, previous);
     }
+    telemetry.update_crash_context("service.configuration", None, None, false);
     verify_protected_configuration(&paths)?;
     let logger = std::sync::Arc::new(ServiceLogger::new(&paths.logs)?);
     logger.write(EventId::ServiceStartPending, "startup", "START_PENDING")?;
     advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
     let config = ServiceConfig::load_or_default(&paths.config)?;
     let product_ca_bundle_pem = crate::config::load_product_ca_bundle(&paths.product_ca_bundle)?;
+    telemetry.update_crash_context("service.configuration", None, None, true);
     advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
     let bundle_span = startup_span.start_child(SpanDescription::child(
         "bundle.verify",
         "bundle/config verification",
     ));
+    telemetry.update_crash_context("service.bundle_verification", None, None, false);
     let engine = match run_startup_operation(
         &mut startup_checkpoint,
         STARTUP_HEARTBEAT,
@@ -125,6 +128,7 @@ fn run_registered(
         Ok((_files_verified, engine)) => {
             bundle_span.finish(SpanStatus::Ok);
             logger.write(EventId::BundleVerified, "bundle", "BUNDLE_VERIFIED")?;
+            telemetry.update_crash_context("service.bundle_verified", None, None, true);
             Some(engine)
         }
         Err(error) => {
@@ -140,6 +144,7 @@ fn run_registered(
                 "bundle",
                 "BUNDLE_INVALID",
             )?;
+            telemetry.update_crash_context("service.bundle_rejected", None, None, true);
             None
         }
     };
@@ -148,6 +153,7 @@ fn run_registered(
         "ledger.reconcile",
         "ledger load/recovery/reconciliation",
     ));
+    telemetry.update_crash_context("service.ledger_reconcile", None, None, false);
     let reconciliation = if let Some(engine) = &engine {
         let mut cleaner = ledger::windows_cleaner::WindowsResourceCleaner::new(
             engine.bundle_root(),
@@ -158,6 +164,7 @@ fn run_registered(
         ledger::reconcile(&paths.ledger, &paths.quarantine)?
     };
     ledger_span.finish(SpanStatus::Ok);
+    telemetry.update_crash_context("service.ledger_reconciled", None, None, true);
     if !reconciliation.admissions_open {
         let stable_code = if reconciliation.valid_documents == 0 {
             "HEALTH_ONLY_QUARANTINE"
@@ -242,7 +249,9 @@ fn run_registered(
         &mut startup_checkpoint,
         Duration::from_secs(30),
     )?;
+    telemetry.update_crash_context("service.pipe_bind", None, None, false);
     let pipe = runtime.block_on(async { HealthPipe::bind(context.clone()) })?;
+    telemetry.update_crash_context("service.pipe_bound", None, None, true);
     let mut update_coordinator = match startup_recovery {
         crate::update::StartupRecovery::None => Some(crate::update::start(
             context.clone(),
@@ -272,12 +281,19 @@ fn run_registered(
     )?;
 
     status_handle.set_service_status(status::running())?;
+    telemetry.update_crash_context("service.running", None, None, true);
     startup_span.finish(SpanStatus::Ok);
     telemetry.breadcrumb(Breadcrumb::lifecycle("service", "running"));
     logger.write(EventId::ServiceStarted, "runtime", "RUNNING")?;
     let control = match runtime.block_on(wait_for_runtime_exit(&mut control_rx, &mut pipe_task)) {
         RuntimeExit::Control(Some(control)) => control,
         RuntimeExit::Control(None) => {
+            telemetry.update_crash_context(
+                "service.control_channel_disconnected",
+                None,
+                None,
+                false,
+            );
             if let Some(mut coordinator) = update_coordinator.take() {
                 coordinator.stop();
             }
@@ -293,6 +309,7 @@ fn run_registered(
             anyhow::bail!("SCM control channel disconnected");
         }
         RuntimeExit::Pipe(result) => {
+            telemetry.update_crash_context("service.pipe_exited", None, None, false);
             if let Some(mut coordinator) = update_coordinator.take() {
                 coordinator.stop();
             }
@@ -305,6 +322,7 @@ fn run_registered(
             }
         }
     };
+    acknowledge_termination_intent(&paths, &telemetry);
     if let Some(mut coordinator) = update_coordinator.take() {
         coordinator.stop();
     }
@@ -320,7 +338,9 @@ fn run_registered(
         "STOP_PENDING"
     };
     logger.write(EventId::ServiceStopPending, "shutdown", stop_code)?;
+    telemetry.update_crash_context("service.stop_requested", None, None, true);
     telemetry.breadcrumb(Breadcrumb::lifecycle("service", "stop requested"));
+    telemetry.update_crash_context("service.draining", None, None, false);
     drain_sessions(&context, &logger);
     let _ = shutdown_tx.send(());
     let pipe_drain = runtime.block_on(wait_for_pipe_drain(
@@ -354,7 +374,9 @@ fn run_registered(
     }
     let _ = logger.write(EventId::ServiceStopped, "shutdown", "STOPPED");
     telemetry.breadcrumb(Breadcrumb::lifecycle("service", "stopped"));
-    telemetry.close_run();
+    if telemetry.close_run() {
+        let _ = lsb_seawork_update::remove_file_if_exists(&paths.termination_intent);
+    }
     telemetry.flush(Duration::from_secs(2));
     status_handle.set_service_status(status::stopped())?;
     Ok(())
@@ -366,6 +388,16 @@ fn capture_unclean_previous_exit(
     common_context: &crate::telemetry::CommonContext,
     previous: crate::telemetry::PreviousRun,
 ) {
+    let termination_evidence = crate::telemetry::capture_termination_evidence(&previous).ok();
+    let termination_intent_attachment =
+        previous
+            .termination_intent_path
+            .as_ref()
+            .map(|path| crate::telemetry::Attachment {
+                path: path.clone(),
+                filename: "termination-intent.json".to_string(),
+                content_type: "application/json",
+            });
     let mut instances = previous
         .active_instances
         .iter()
@@ -412,6 +444,12 @@ fn capture_unclean_previous_exit(
                 content_type: "application/json",
             },
         ]);
+        if let Some(attachment) = &termination_intent_attachment {
+            attachments.push(attachment.clone());
+        }
+        if let Some(attachment) = &termination_evidence {
+            attachments.push(attachment.clone());
+        }
         let mut event = FailureEvent::new(
             "service.startup",
             "UNCLEAN_PREVIOUS_EXIT",
@@ -423,8 +461,18 @@ fn capture_unclean_previous_exit(
         )
         .with_event_id(event_id)
         .with_correlation_id(&previous.run_id)
+        .with_tag("run_id", &previous.run_id)
         .with_phase("previous_run")
         .with_attachments(attachments);
+        if let Some(intent) = &previous.termination_intent {
+            event = event
+                .with_tag("termination.actor", &intent.actor)
+                .with_tag("termination.reason", &intent.reason)
+                .with_tag(
+                    "termination.acknowledged",
+                    intent.acknowledged_utc.is_some().to_string(),
+                );
+        }
         if let Some(resource_id) = resource_id {
             event = event.with_resource_id(resource_id);
         }
@@ -447,17 +495,7 @@ fn capture_unclean_previous_exit(
         }
     }
     if !reported {
-        let mut event = FailureEvent::new(
-            "service.startup",
-            "UNCLEAN_PREVIOUS_EXIT",
-            Level::Error,
-            format!(
-                "previous service run ended during {}",
-                previous.current_phase
-            ),
-        )
-        .with_correlation_id(&previous.run_id)
-        .with_attachments(vec![
+        let mut attachments = vec![
             crate::telemetry::Attachment {
                 path: previous.marker_path.clone(),
                 filename: "previous-run-marker.json".to_string(),
@@ -468,12 +506,63 @@ fn capture_unclean_previous_exit(
                 filename: "previous-crash-context.json".to_string(),
                 content_type: "application/json",
             },
-        ]);
+        ];
+        if let Some(attachment) = termination_intent_attachment {
+            attachments.push(attachment);
+        }
+        if let Some(attachment) = termination_evidence {
+            attachments.push(attachment);
+        }
+        let mut event = FailureEvent::new(
+            "service.startup",
+            "UNCLEAN_PREVIOUS_EXIT",
+            Level::Error,
+            format!(
+                "previous service run ended during {}",
+                previous.current_phase
+            ),
+        )
+        .with_correlation_id(&previous.run_id)
+        .with_tag("run_id", &previous.run_id)
+        .with_attachments(attachments);
+        if let Some(intent) = &previous.termination_intent {
+            event = event
+                .with_tag("termination.actor", &intent.actor)
+                .with_tag("termination.reason", &intent.reason)
+                .with_tag(
+                    "termination.acknowledged",
+                    intent.acknowledged_utc.is_some().to_string(),
+                );
+        }
         event.contexts.insert(
             "previous_run".to_string(),
             serde_json::to_value(previous).unwrap_or(serde_json::Value::Null),
         );
         telemetry.capture_failure(event);
+    }
+}
+
+fn acknowledge_termination_intent(paths: &ServicePaths, telemetry: &Telemetry) {
+    let Some(run_id) = telemetry.run_id() else {
+        return;
+    };
+    let Ok(mut intent) = lsb_seawork_update::load_json::<lsb_seawork_update::TerminationIntent>(
+        &paths.termination_intent,
+    ) else {
+        return;
+    };
+    if intent.validate().is_err() || intent.run_id != run_id {
+        return;
+    }
+    if intent
+        .acknowledge(
+            time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|_| "unknown".to_string()),
+        )
+        .is_ok()
+    {
+        let _ = lsb_seawork_update::write_json_atomic(&paths.termination_intent, &intent);
     }
 }
 
