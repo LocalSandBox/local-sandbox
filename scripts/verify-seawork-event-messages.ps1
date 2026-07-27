@@ -10,7 +10,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:Utf8NoBom = [Text.UTF8Encoding]::new($false)
-$script:ExpectedMessageIds = 1..16
+$script:ExpectedMessageIds = 1..17
 
 if (-not $IsWindows) {
     throw 'event message verification requires Windows'
@@ -98,14 +98,14 @@ try {
     $unexpectedLength = [LocalSandbox.EventMessageNative]::FormatMessageW(
         $formatMessageFromHmodule -bor $formatMessageIgnoreInserts -bor $formatMessageMaxWidthMask,
         $module,
-        17,
+        18,
         0x0409,
         $unexpected,
         [uint32]$unexpected.Capacity,
         [IntPtr]::Zero
     )
     if ($unexpectedLength -ne 0) {
-        throw 'the embedded event catalog contains an unreviewed message ID 17'
+        throw 'the embedded event catalog contains an unreviewed message ID 18'
     }
 } finally {
     if (-not [LocalSandbox.EventMessageNative]::FreeLibrary($module)) {
@@ -118,7 +118,7 @@ $evidence = [ordered]@{
     service_sha256 = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
     language_id = '0x0409'
     message_ids = @($verified)
-    first_unassigned_message_id = 17
+    first_unassigned_message_id = 18
 }
 [IO.File]::WriteAllText(
     $output,
