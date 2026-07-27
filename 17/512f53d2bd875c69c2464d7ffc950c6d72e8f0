@@ -1,0 +1,32 @@
+CHANGELOG.md
+  s_12744456d72358::t_e68fb21b0a4e66 7-10
+scripts/windows-test-suites/system-maintenance-ipc.ps1
+  s_12744456d72358::t_fd72e471cbd084 1-147
+crates/lsb-seawork-service/src/security/access.rs
+  s_12744456d72358::t_c6a4b2ec408b2a 2-4,16-19,85,95-97
+  s_12744456d72358::t_fdf38e3f248da3 8-15,20-23,28,42,63,65-68,70,73,75-81,83-84,86-94,98
+crates/lsb-seawork-service/src/security/token.rs
+  s_12744456d72358::t_88232dfcacd160 463
+  s_12744456d72358::t_fdf38e3f248da3 27,53-54,76-82,99,105,123,139-142,161-167,172,265
+  s_12744456d72358::t_fd72e471cbd084 422,425-426,428,432,455-462,464-485
+  s_12744456d72358::t_5acbfbf9f92b6a 486
+crates/lsb-seawork-service/src/pipe.rs
+  s_12744456d72358::t_c2470edfbb4e88 842-843
+  s_12744456d72358::t_fdf38e3f248da3 552-561,578,830,833,836-839,841
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "17512f53d2bd875c69c2464d7ffc950c6d72e8f0",
+  "prompts": {},
+  "sessions": {
+    "s_12744456d72358": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa3b9-4bb6-79d2-9927-f222d2c7a705",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
