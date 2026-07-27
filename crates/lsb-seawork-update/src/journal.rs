@@ -43,6 +43,47 @@ pub enum TransactionPhase {
     Quarantined,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateFailureStep {
+    HandoffVerify,
+    TargetStart,
+    TargetConnect,
+    TargetHealthAssertion,
+    RollbackTargetStop,
+    RollbackRestoreConfiguration,
+    RollbackOldStart,
+    RollbackAbortConnect,
+    RollbackIdentityAssertion,
+    RollbackHealthAssertion,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateFailureCode {
+    OperationFailed,
+    TargetConnectTimeout,
+    TargetHealthAssertionFailed,
+    RollbackAbortConnectTimeout,
+    RollbackIdentityContradiction,
+    RollbackHealthAssertionFailed,
+    ProtectedStateContradiction,
+}
+
+impl UpdateFailureCode {
+    pub fn stable_code(self) -> &'static str {
+        match self {
+            Self::OperationFailed => "UPDATE_OPERATION_FAILED",
+            Self::TargetConnectTimeout => "TARGET_CONNECT_TIMEOUT",
+            Self::TargetHealthAssertionFailed => "TARGET_HEALTH_ASSERTION_FAILED",
+            Self::RollbackAbortConnectTimeout => "ROLLBACK_ABORT_CONNECT_TIMEOUT",
+            Self::RollbackIdentityContradiction => "ROLLBACK_IDENTITY_CONTRADICTION",
+            Self::RollbackHealthAssertionFailed => "ROLLBACK_HEALTH_ASSERTION_FAILED",
+            Self::ProtectedStateContradiction => "PROTECTED_STATE_CONTRADICTION",
+        }
+    }
+}
+
 impl TransactionPhase {
     pub fn is_terminal(self) -> bool {
         matches!(
@@ -115,6 +156,10 @@ pub struct UpdateTransaction {
     pub attempt_count: u8,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error_category: Option<UpdateCheckCategory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure_step: Option<UpdateFailureStep>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure_code: Option<UpdateFailureCode>,
 }
 
 impl UpdateTransaction {
@@ -152,6 +197,7 @@ impl UpdateTransaction {
             || self.old_event_message_path == self.target_event_message_path
             || self.attempt_count == 0
             || self.attempt_count > 3
+            || self.last_failure_step.is_some() != self.last_failure_code.is_some()
         {
             bail!("transaction mutation identity or attempt count is invalid");
         }
@@ -208,6 +254,18 @@ impl TransactionEnvelope {
         self.checksum_sha256 = sha256_json(&self.transaction)?;
         Ok(())
     }
+
+    pub fn record_failure(
+        &mut self,
+        step: UpdateFailureStep,
+        code: UpdateFailureCode,
+    ) -> Result<()> {
+        self.validate()?;
+        self.transaction.last_failure_step = Some(step);
+        self.transaction.last_failure_code = Some(code);
+        self.checksum_sha256 = sha256_json(&self.transaction)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -255,6 +313,8 @@ mod tests {
             helper_protocol: HelperProtocol { major: 1, minor: 1 },
             attempt_count: 1,
             last_error_category: None,
+            last_failure_step: None,
+            last_failure_code: None,
         }
     }
 
@@ -263,6 +323,24 @@ mod tests {
         let mut envelope = TransactionEnvelope::new(transaction()).unwrap();
         envelope.validate().unwrap();
         envelope.transaction.target_image_path.push_str(".tampered");
+        assert!(envelope.validate().is_err());
+    }
+
+    #[test]
+    fn bounded_failure_diagnostics_are_checksum_protected() {
+        let mut envelope = TransactionEnvelope::new(transaction()).unwrap();
+        envelope
+            .record_failure(
+                UpdateFailureStep::RollbackAbortConnect,
+                UpdateFailureCode::RollbackAbortConnectTimeout,
+            )
+            .unwrap();
+        envelope.validate().unwrap();
+        assert_eq!(
+            envelope.transaction.last_failure_code,
+            Some(UpdateFailureCode::RollbackAbortConnectTimeout)
+        );
+        envelope.transaction.last_failure_step = None;
         assert!(envelope.validate().is_err());
     }
 

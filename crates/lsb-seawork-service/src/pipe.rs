@@ -361,6 +361,7 @@ pub struct HealthContext {
     upstream_proxy: Option<lsb_proxy::UpstreamProxyConfig>,
     telemetry: Telemetry,
     logger: Option<Arc<ServiceLogger>>,
+    recovery_journal: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -434,6 +435,7 @@ impl HealthContext {
             upstream_proxy: None,
             telemetry: Telemetry::disabled(),
             logger: None,
+            recovery_journal: None,
         }
     }
 
@@ -449,6 +451,11 @@ impl HealthContext {
 
     pub fn with_logger(mut self, logger: Arc<ServiceLogger>) -> Self {
         self.logger = Some(logger);
+        self
+    }
+
+    pub fn with_recovery_journal(mut self, path: std::path::PathBuf) -> Self {
+        self.recovery_journal = Some(path);
         self
     }
 
@@ -565,7 +572,7 @@ impl HealthContext {
         identity.authorize_client_process_image(&self.client_roots, &self.publisher_thumbprints)
     }
 
-    fn record_client_trust_failure(&self, error: &anyhow::Error) {
+    fn record_authorization_failure(&self, error: &anyhow::Error, maintenance: bool) {
         let detail = format!("{error:#}");
         let stable_code = if detail.contains("known-folder")
             || detail.contains("KnownFolder")
@@ -588,11 +595,67 @@ impl HealthContext {
             "CLIENT_IDENTITY_REJECTED"
         };
         if let Some(logger) = &self.logger {
-            let _ = logger.write(EventId::ClientTrustFailed, "client.trust", stable_code);
+            let phase = if maintenance {
+                "maintenance.authorization"
+            } else {
+                "client.authorization"
+            };
+            let _ = logger.write(EventId::ClientTrustFailed, phase, stable_code);
+        }
+    }
+
+    fn record_connection_failure(&self, error: &anyhow::Error) {
+        match error.downcast_ref::<ConnectionDiagnostic>() {
+            Some(ConnectionDiagnostic::ClientAuthorization) => {
+                self.record_authorization_failure(error, false);
+            }
+            Some(ConnectionDiagnostic::MaintenanceAuthorization) => {
+                self.record_authorization_failure(error, true);
+            }
+            Some(ConnectionDiagnostic::HelloHandshake) => {
+                if let Some(logger) = &self.logger {
+                    let _ = logger.write(
+                        EventId::ConnectionFailed,
+                        "pipe.hello",
+                        "HELLO_HANDSHAKE_FAILED",
+                    );
+                }
+            }
+            Some(ConnectionDiagnostic::PipeIo) => {
+                if let Some(logger) = &self.logger {
+                    let _ =
+                        logger.write(EventId::ConnectionFailed, "pipe.io", "PIPE_IO_DISCONNECT");
+                }
+            }
+            None => {
+                let stable_code = if error
+                    .chain()
+                    .any(|cause| cause.downcast_ref::<std::io::Error>().is_some())
+                {
+                    "PIPE_IO_DISCONNECT"
+                } else {
+                    "PIPE_HANDLER_FAILED"
+                };
+                if let Some(logger) = &self.logger {
+                    let _ = logger.write(EventId::ConnectionFailed, "pipe.io", stable_code);
+                }
+            }
+        }
+    }
+
+    fn refresh_recovery_quarantine(&self) {
+        let Some(path) = &self.recovery_journal else {
+            return;
+        };
+        if crate::update::recovery_journal_requires_quarantine(path) {
+            if let Some(maintenance) = &self.maintenance {
+                maintenance.quarantine_recovery();
+            }
         }
     }
 
     fn health(&self) -> Health {
+        self.refresh_recovery_quarantine();
         Health {
             ready: self.admissions_open(),
             admissions_open: self.admissions_open(),
@@ -691,6 +754,29 @@ struct ConnectionAuthorization {
     maintenance: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ConnectionDiagnostic {
+    ClientAuthorization,
+    MaintenanceAuthorization,
+    HelloHandshake,
+    PipeIo,
+}
+
+impl std::fmt::Display for ConnectionDiagnostic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClientAuthorization => formatter.write_str("client authorization rejection"),
+            Self::MaintenanceAuthorization => {
+                formatter.write_str("maintenance authorization rejection")
+            }
+            Self::HelloHandshake => formatter.write_str("Hello handshake failure"),
+            Self::PipeIo => formatter.write_str("pipe I/O or disconnect"),
+        }
+    }
+}
+
+impl std::error::Error for ConnectionDiagnostic {}
+
 impl PreAuthGate {
     fn new() -> Self {
         Self {
@@ -767,9 +853,15 @@ impl HealthPipe {
     }
 
     pub async fn run(mut self, mut shutdown: oneshot::Receiver<()>) -> Result<()> {
+        let mut recovery_poll = tokio::time::interval(Duration::from_millis(500));
+        recovery_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 _ = &mut shutdown => return Ok(()),
+                _ = recovery_poll.tick() => {
+                    self.context.refresh_recovery_quarantine();
+                    continue;
+                }
                 connected = self.server.connect() => connected.context("accept health pipe client")?,
             }
             let connected = self.server;
@@ -786,7 +878,7 @@ impl HealthPipe {
             let preauth = self.preauth.clone();
             tokio::spawn(async move {
                 if let Err(error) = handle_client(connected, context, preauth, global).await {
-                    diagnostic_context.record_client_trust_failure(&error);
+                    diagnostic_context.record_connection_failure(&error);
                 }
             });
         }
@@ -833,14 +925,22 @@ async fn handle_client(
         maintenance: maintenance_authorization.is_ok(),
     };
     if !authorization.client && !authorization.maintenance {
-        let error = if identity.is_local_system_maintenance() {
+        let maintenance =
+            identity.is_local_system_maintenance() || (identity.elevated && identity.administrator);
+        let error = if maintenance {
             maintenance_authorization
                 .expect_err("failed maintenance authorization must retain its error")
         } else {
             client_authorization.expect_err("failed client authorization must retain its error")
         };
+        let diagnostic = if maintenance {
+            ConnectionDiagnostic::MaintenanceAuthorization
+        } else {
+            ConnectionDiagnostic::ClientAuthorization
+        };
         return Err(error)
-            .context("client image is not authorized by a protected publisher policy");
+            .context("client image is not authorized by a protected publisher policy")
+            .context(diagnostic);
     }
     let process = identity.duplicate_process_handle()?;
     let session_id = context.sessions.open(identity.key.clone())?;
@@ -860,11 +960,19 @@ async fn handle_client(
     let _ = context.sessions.close(session_id, &identity.key);
     drop(writer);
     let writer_result = tokio::time::timeout(Duration::from_secs(5), writer_task).await;
-    result?;
+    if let Err(error) = result {
+        if error.downcast_ref::<ConnectionDiagnostic>().is_some() {
+            return Err(error);
+        }
+        return Err(error.context(ConnectionDiagnostic::PipeIo));
+    }
     match writer_result {
         Ok(Ok(result)) => result,
-        Ok(Err(error)) => Err(anyhow::anyhow!("outbound writer task failed: {error}")),
-        Err(_) => Err(anyhow::anyhow!("outbound writer drain deadline exceeded")),
+        Ok(Err(error)) => Err(error)
+            .context("outbound writer task failed")
+            .context(ConnectionDiagnostic::PipeIo),
+        Err(_) => Err(anyhow::anyhow!("outbound writer drain deadline exceeded")
+            .context(ConnectionDiagnostic::PipeIo)),
     }
 }
 
@@ -890,20 +998,28 @@ where
             return Ok(());
         }
         frame = tokio::time::timeout(crate::ipc::pipe::HELLO_TIMEOUT, read_frame(&mut pipe)) => {
-            frame.context("Hello deadline exceeded")??
+            frame
+                .context("Hello deadline exceeded")
+                .and_then(|frame| frame)
+                .context(ConnectionDiagnostic::HelloHandshake)?
         }
     };
     if hello_frame.header.kind != FrameKind::Hello
         || hello_frame.header.correlation != Correlation::default()
         || hello_frame.header.protocol.major != CURRENT.major
     {
-        bail!("first frame is not a valid Hello");
+        return Err(anyhow::anyhow!("first frame is not a valid Hello")
+            .context(ConnectionDiagnostic::HelloHandshake));
     }
-    let hello: Hello = parse_control(&hello_frame.payload)?;
-    hello.validate()?;
-    let selected = negotiate(SUPPORTED, hello.range(hello_frame.header.protocol.major))?;
+    let hello: Hello =
+        parse_control(&hello_frame.payload).context(ConnectionDiagnostic::HelloHandshake)?;
+    hello
+        .validate()
+        .context(ConnectionDiagnostic::HelloHandshake)?;
+    let selected = negotiate(SUPPORTED, hello.range(hello_frame.header.protocol.major))
+        .context(ConnectionDiagnostic::HelloHandshake)?;
     let selected_feature_bits = hello.feature_bits_hex.0 & SERVICE_FEATURE_BITS;
-    let epoch = random_epoch()?;
+    let epoch = random_epoch().context(ConnectionDiagnostic::HelloHandshake)?;
     let events = EventSequence::new(epoch);
     let streams = StreamRegistry::default();
     let reply = HelloReply {
@@ -925,7 +1041,8 @@ where
         },
         &reply,
     )
-    .await?;
+    .await
+    .context(ConnectionDiagnostic::HelloHandshake)?;
     drop(preauth);
 
     let connection = Arc::new(Mutex::new(ConnectionState::new(epoch)?));
@@ -1806,6 +1923,7 @@ async fn dispatch_request(
             ResponseValue::UpdatePrepared { update_id }
         }
         RequestOp::GetUpdateStatus {} => {
+            context.refresh_recovery_quarantine();
             let maintenance = context
                 .maintenance
                 .as_ref()

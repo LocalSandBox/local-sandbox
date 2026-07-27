@@ -31,10 +31,11 @@ pub enum EventId {
     RuntimeCapabilityUnavailable = 14,
     BundleVerified = 15,
     SessionsDrained = 16,
+    ConnectionFailed = 17,
 }
 
 impl EventId {
-    const ALL: [Self; 16] = [
+    const ALL: [Self; 17] = [
         Self::ServiceStarted,
         Self::ServiceStopped,
         Self::LedgerQuarantined,
@@ -51,6 +52,7 @@ impl EventId {
         Self::RuntimeCapabilityUnavailable,
         Self::BundleVerified,
         Self::SessionsDrained,
+        Self::ConnectionFailed,
     ];
 
     fn severity(self) -> Severity {
@@ -58,6 +60,7 @@ impl EventId {
             Self::ServiceFatalExit
             | Self::BundleVerificationFailed
             | Self::ClientTrustFailed
+            | Self::ConnectionFailed
             | Self::ResourceCleanupFailed => Severity::Error,
             Self::LedgerQuarantined | Self::QuotaRejected | Self::RuntimeCapabilityUnavailable => {
                 Severity::Warning

@@ -1,5 +1,47 @@
 use anyhow::{Context, Result};
-use lsb_seawork_update::{TransactionEnvelope, TransactionPhase};
+use lsb_seawork_update::{
+    TransactionEnvelope, TransactionPhase, UpdateFailureCode, UpdateFailureStep,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureDisposition {
+    Retryable,
+    Quarantine,
+}
+
+#[derive(Debug)]
+pub struct RecoveryFailure {
+    pub step: UpdateFailureStep,
+    pub code: UpdateFailureCode,
+    pub disposition: FailureDisposition,
+}
+
+impl std::fmt::Display for RecoveryFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.code.stable_code())
+    }
+}
+
+impl std::error::Error for RecoveryFailure {}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl RecoveryFailure {
+    pub fn retryable(step: UpdateFailureStep, code: UpdateFailureCode) -> Self {
+        Self {
+            step,
+            code,
+            disposition: FailureDisposition::Retryable,
+        }
+    }
+
+    pub fn quarantine(step: UpdateFailureStep, code: UpdateFailureCode) -> Self {
+        Self {
+            step,
+            code,
+            disposition: FailureDisposition::Quarantine,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoveryOutcome {
@@ -90,14 +132,47 @@ pub fn recover_transaction(
         };
 
         if let Err(error) = result {
-            if is_rollback_phase(phase) || phase == TransactionPhase::Prepared {
+            let failure = error
+                .downcast_ref::<RecoveryFailure>()
+                .map(|failure| (failure.step, failure.code, failure.disposition))
+                .unwrap_or_else(|| {
+                    (
+                        failure_step_for_phase(phase),
+                        UpdateFailureCode::OperationFailed,
+                        FailureDisposition::Retryable,
+                    )
+                });
+            transaction.record_failure(failure.0, failure.1)?;
+            store
+                .persist(transaction)
+                .context("persist bounded update recovery failure")?;
+            if failure.2 == FailureDisposition::Quarantine {
                 transition(transaction, store, TransactionPhase::Quarantined)
                     .context("persist update recovery quarantine")?;
                 return Err(error).context("update recovery entered quarantine");
             }
+            if is_rollback_phase(phase) || phase == TransactionPhase::Prepared {
+                return Err(error).context("update recovery remains resumable");
+            }
             transition(transaction, store, TransactionPhase::RollbackRequested)
                 .context("persist update rollback request")?;
         }
+    }
+}
+
+fn failure_step_for_phase(phase: TransactionPhase) -> UpdateFailureStep {
+    match phase {
+        TransactionPhase::Prepared => UpdateFailureStep::HandoffVerify,
+        TransactionPhase::ImagePathChanged | TransactionPhase::TargetStartRequested => {
+            UpdateFailureStep::TargetStart
+        }
+        TransactionPhase::TargetHealthPending => UpdateFailureStep::TargetHealthAssertion,
+        TransactionPhase::RollbackRequested => UpdateFailureStep::RollbackTargetStop,
+        TransactionPhase::TargetStopped => UpdateFailureStep::RollbackRestoreConfiguration,
+        TransactionPhase::OldPathRestored | TransactionPhase::OldServiceRestarted => {
+            UpdateFailureStep::RollbackOldStart
+        }
+        _ => UpdateFailureStep::TargetHealthAssertion,
     }
 }
 
@@ -143,13 +218,22 @@ mod tests {
     struct Backend {
         calls: Vec<&'static str>,
         fail: Option<&'static str>,
+        failure: Option<(UpdateFailureStep, UpdateFailureCode, FailureDisposition)>,
     }
 
     impl Backend {
         fn call(&mut self, name: &'static str) -> Result<()> {
             self.calls.push(name);
             if self.fail == Some(name) {
-                anyhow::bail!("injected {name} failure");
+                let error = anyhow::anyhow!("injected {name} failure");
+                if let Some((step, code, disposition)) = self.failure {
+                    return Err(error.context(RecoveryFailure {
+                        step,
+                        code,
+                        disposition,
+                    }));
+                }
+                return Err(error);
             }
             Ok(())
         }
@@ -281,13 +365,69 @@ mod tests {
     }
 
     #[test]
-    fn rollback_failure_quarantines_without_fallback() {
+    fn rollback_operational_failure_remains_resumable() {
         let mut transaction = transaction(TransactionPhase::RollbackRequested);
         let mut store = MemoryStore::default();
         let mut backend = Backend {
             fail: Some("restore"),
             ..Backend::default()
         };
+        assert!(recover_transaction(&mut transaction, &mut store, &mut backend).is_err());
+        assert_eq!(
+            transaction.transaction.phase,
+            TransactionPhase::TargetStopped
+        );
+        assert_eq!(
+            transaction.transaction.last_failure_step,
+            Some(UpdateFailureStep::RollbackRestoreConfiguration)
+        );
+        assert_eq!(
+            transaction.transaction.last_failure_code,
+            Some(UpdateFailureCode::OperationFailed)
+        );
+        assert_eq!(store.phases.last(), Some(&TransactionPhase::TargetStopped));
+    }
+
+    #[test]
+    fn rollback_connect_timeout_persists_exact_code_without_quarantine() {
+        let mut transaction = transaction(TransactionPhase::OldPathRestored);
+        let mut store = MemoryStore::default();
+        let mut backend = Backend {
+            fail: Some("restart_old"),
+            failure: Some((
+                UpdateFailureStep::RollbackAbortConnect,
+                UpdateFailureCode::RollbackAbortConnectTimeout,
+                FailureDisposition::Retryable,
+            )),
+            ..Backend::default()
+        };
+
+        assert!(recover_transaction(&mut transaction, &mut store, &mut backend).is_err());
+        assert_eq!(
+            transaction.transaction.phase,
+            TransactionPhase::OldPathRestored
+        );
+        assert_eq!(
+            transaction.transaction.last_failure_code,
+            Some(UpdateFailureCode::RollbackAbortConnectTimeout)
+        );
+        assert_ne!(store.phases.last(), Some(&TransactionPhase::Quarantined));
+    }
+
+    #[test]
+    fn protected_state_contradiction_quarantines() {
+        let mut transaction = transaction(TransactionPhase::TargetStopped);
+        let mut store = MemoryStore::default();
+        let mut backend = Backend {
+            fail: Some("restore"),
+            failure: Some((
+                UpdateFailureStep::RollbackRestoreConfiguration,
+                UpdateFailureCode::ProtectedStateContradiction,
+                FailureDisposition::Quarantine,
+            )),
+            ..Backend::default()
+        };
+
         assert!(recover_transaction(&mut transaction, &mut store, &mut backend).is_err());
         assert_eq!(transaction.transaction.phase, TransactionPhase::Quarantined);
         assert_eq!(store.phases.last(), Some(&TransactionPhase::Quarantined));
@@ -310,6 +450,8 @@ mod tests {
             helper_protocol: HelperProtocol { major: 1, minor: 1 },
             attempt_count: 1,
             last_error_category: None,
+            last_failure_step: None,
+            last_failure_code: None,
         }).unwrap();
         advance_to(&mut envelope, phase);
         envelope

@@ -229,6 +229,7 @@ fn run_registered(
     )
     .with_telemetry(telemetry.clone())
     .with_logger(logger.clone())
+    .with_recovery_journal(paths.updates.current_transaction.clone())
     .with_engine(engine)
     .with_whpx(whpx)
     .with_committed_identity(committed_identity)

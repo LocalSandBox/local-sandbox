@@ -112,6 +112,17 @@ pub fn inspect_startup(paths: &ServicePaths) -> StartupRecovery {
     }
 }
 
+pub fn recovery_journal_requires_quarantine(path: &Path) -> bool {
+    match protected_load_json::<TransactionEnvelope>(path) {
+        Ok(transaction) => {
+            transaction.validate().is_err()
+                || transaction.transaction.phase == TransactionPhase::Quarantined
+        }
+        Err(error) if is_not_found(&error) => false,
+        Err(_) => true,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CoordinatorStatus {
@@ -480,6 +491,8 @@ impl Coordinator {
                 helper_protocol: request.request.helper_protocol,
                 attempt_count: 1,
                 last_error_category: None,
+                last_failure_step: None,
+                last_failure_code: None,
             })?;
             create_json(&self.paths.updates.current_transaction, &transaction)?;
             journal_created = true;

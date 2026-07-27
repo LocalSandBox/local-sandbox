@@ -97,3 +97,9 @@ SymbolicName=LSBSW_SESSIONS_DRAINED
 Language=English
 LocalSandbox for SeaWork drained active sessions.
 .
+
+MessageId=0x11
+SymbolicName=LSBSW_CONNECTION_FAILED
+Language=English
+LocalSandbox for SeaWork rejected or lost a pipe connection.
+.

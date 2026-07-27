@@ -14,7 +14,7 @@ use lsb_seawork_update::{
     verify_windows_file_publisher, verify_windows_package, write_json_atomic, CommittedState,
     CommittedStateEnvelope, FailedTargetState, PackagePolicy, PreinstallReceipt,
     PreinstallReceiptEnvelope, PreinstallRequest, PreinstallRequestEnvelope, TransactionEnvelope,
-    UpdateTransaction,
+    UpdateFailureCode, UpdateFailureStep, UpdateTransaction,
 };
 use lsb_service_proto::{
     BundleIdentity, HealthState, UpdatePhase, PIPE_NAME, SERVICE_NAME, SUPPORTED,
@@ -52,7 +52,9 @@ use windows_sys::Win32::System::Threading::{
     CreateMutexW, OpenProcess, ReleaseMutex, WaitForSingleObject, PROCESS_SYNCHRONIZE,
 };
 
-use crate::recovery::{recover_transaction, RecoveryOutcome, TransactionStore, UpdateBackend};
+use crate::recovery::{
+    recover_transaction, RecoveryFailure, RecoveryOutcome, TransactionStore, UpdateBackend,
+};
 use crate::relative::{self, Kind};
 use crate::{HELPER_PROTOCOL_MAJOR, HELPER_PROTOCOL_MINOR, UPDATER_SERVICE_NAME};
 
@@ -178,10 +180,25 @@ fn run_recovery(stop_rx: &std::sync::mpsc::Receiver<()>) -> Result<()> {
     let outcome = match recover_transaction(&mut transaction, &mut store, &mut backend) {
         Ok(outcome) => outcome,
         Err(error) => {
+            let quarantined =
+                transaction.transaction.phase == lsb_seawork_update::TransactionPhase::Quarantined;
+            let stable_code = transaction
+                .transaction
+                .last_failure_code
+                .map(lsb_seawork_update::UpdateFailureCode::stable_code)
+                .unwrap_or(if quarantined {
+                    "UPDATE_RECOVERY_QUARANTINE"
+                } else {
+                    "UPDATE_RECOVERY_RETRY"
+                });
             let _ = report_update_event(
                 12,
-                "update_recovery_quarantine",
-                "UPDATE_RECOVERY_QUARANTINE",
+                if quarantined {
+                    "update_recovery_quarantine"
+                } else {
+                    "update_recovery_retry"
+                },
+                stable_code,
                 &transaction.transaction.target_bundle_identity.version,
                 &transaction
                     .transaction
@@ -907,6 +924,16 @@ impl UpdateBackend for WindowsBackend {
                 self.record_failed_target(update).with_context(|| {
                     format!("record failed target after activation health failure: {error:#}")
                 })?;
+                return Err(error.context(RecoveryFailure::retryable(
+                    UpdateFailureStep::TargetHealthAssertion,
+                    UpdateFailureCode::TargetHealthAssertionFailed,
+                )));
+            }
+            if is_connect_timeout(&error) {
+                return Err(error.context(RecoveryFailure::retryable(
+                    UpdateFailureStep::TargetConnect,
+                    UpdateFailureCode::TargetConnectTimeout,
+                )));
             }
             return Err(error);
         }
@@ -948,7 +975,13 @@ impl UpdateBackend for WindowsBackend {
                 &update.target_event_message_path,
             )
         {
-            bail!("refusing to stop a main service with unrelated ImagePath");
+            return Err(anyhow::anyhow!(
+                "refusing to stop a main service with unrelated ImagePath"
+            )
+            .context(RecoveryFailure::quarantine(
+                UpdateFailureStep::RollbackTargetStop,
+                UpdateFailureCode::ProtectedStateContradiction,
+            )));
         }
         if command == old_command {
             return Ok(());
@@ -962,6 +995,25 @@ impl UpdateBackend for WindowsBackend {
 
     fn restore_old_configuration(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
         let update = &transaction.transaction;
+        let command = current_main_command()?;
+        let event = query_event_message_path()?;
+        if !matches_transaction_value(
+            &command,
+            &service_command(&update.old_image_path),
+            &service_command(&update.target_image_path),
+        ) || !matches_transaction_value(
+            &event,
+            &update.old_event_message_path,
+            &update.target_event_message_path,
+        ) {
+            return Err(anyhow::anyhow!(
+                "rollback configuration differs from protected transaction identities"
+            )
+            .context(RecoveryFailure::quarantine(
+                UpdateFailureStep::RollbackRestoreConfiguration,
+                UpdateFailureCode::ProtectedStateContradiction,
+            )));
+        }
         change_main_configuration(
             &update.target_image_path,
             &update.old_image_path,
@@ -972,24 +1024,32 @@ impl UpdateBackend for WindowsBackend {
 
     fn start_and_abort_old(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
         let update = &transaction.transaction;
-        let old_root = bundle_root_for_image(
-            &self.paths.versions,
-            &update.old_image_path,
-            &update.old_bundle_identity.version,
-        )?;
-        self.verify_package_identity(
-            &old_root,
-            &update.old_bundle_identity,
-            update.helper_protocol,
-        )?;
-        self.require_main_command(&update.old_image_path)?;
+        let identity_check = (|| {
+            let old_root = bundle_root_for_image(
+                &self.paths.versions,
+                &update.old_image_path,
+                &update.old_bundle_identity.version,
+            )?;
+            self.verify_package_identity(
+                &old_root,
+                &update.old_bundle_identity,
+                update.helper_protocol,
+            )?;
+            self.require_main_command(&update.old_image_path)
+        })();
+        if let Err(error) = identity_check {
+            return Err(error.context(RecoveryFailure::quarantine(
+                UpdateFailureStep::RollbackIdentityAssertion,
+                UpdateFailureCode::RollbackIdentityContradiction,
+            )));
+        }
         let service = self.main_service(ServiceAccess::QUERY_STATUS | ServiceAccess::START)?;
         if service.query_status()?.current_state == ServiceState::Stopped {
             service.start::<&OsStr>(&[])?;
         }
         self.wait_main_state(ServiceState::Running)?;
         let runtime = self.connect_runtime()?;
-        runtime.block_on(async {
+        let result = runtime.block_on(async {
             let client = lsb_service_client::connect(lsb_service_client::ConnectOptions {
                 timeout: CONNECT_TIMEOUT,
             })
@@ -998,7 +1058,7 @@ impl UpdateBackend for WindowsBackend {
             if info.service_version != update.old_bundle_identity.version
                 || info.bundle_version != update.old_bundle_identity.version
             {
-                anyhow::bail!("rollback service identity is not the recorded old version");
+                return Err(RollbackAssertionFailure::Identity.into());
             }
             let status = client.get_update_status().await?;
             if status.target.as_ref() == Some(&update.target_bundle_identity) {
@@ -1006,15 +1066,73 @@ impl UpdateBackend for WindowsBackend {
             }
             let health = client.health_check().await?;
             if !health.ready || !health.admissions_open || health.stable_code != "READY" {
-                anyhow::bail!("old service did not return to READY after rollback");
+                return Err(RollbackAssertionFailure::Health.into());
             }
             Ok::<_, anyhow::Error>(())
-        })
+        });
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) if is_connect_timeout(&error) => {
+                Err(error.context(RecoveryFailure::retryable(
+                    UpdateFailureStep::RollbackAbortConnect,
+                    UpdateFailureCode::RollbackAbortConnectTimeout,
+                )))
+            }
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<RollbackAssertionFailure>(),
+                    Some(RollbackAssertionFailure::Identity)
+                ) =>
+            {
+                Err(error.context(RecoveryFailure::quarantine(
+                    UpdateFailureStep::RollbackIdentityAssertion,
+                    UpdateFailureCode::RollbackIdentityContradiction,
+                )))
+            }
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<RollbackAssertionFailure>(),
+                    Some(RollbackAssertionFailure::Health)
+                ) =>
+            {
+                Err(error.context(RecoveryFailure::retryable(
+                    UpdateFailureStep::RollbackHealthAssertion,
+                    UpdateFailureCode::RollbackHealthAssertionFailed,
+                )))
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 
 #[derive(Debug)]
 struct TargetHealthFailure(&'static str);
+
+#[derive(Debug)]
+enum RollbackAssertionFailure {
+    Identity,
+    Health,
+}
+
+impl std::fmt::Display for RollbackAssertionFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Identity => formatter.write_str("rollback service identity is contradictory"),
+            Self::Health => formatter.write_str("rollback service health assertion failed"),
+        }
+    }
+}
+
+impl std::error::Error for RollbackAssertionFailure {}
+
+fn is_connect_timeout(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<lsb_service_client::ClientError>(),
+            Some(lsb_service_client::ClientError::ServiceUnavailable(_))
+        )
+    })
+}
 
 fn post_commit_status_is_ready(phase: UpdatePhase, target_present: bool) -> bool {
     !target_present
@@ -1828,6 +1946,8 @@ mod tests {
             helper_protocol: HelperProtocol { major: 1, minor: 1 },
             attempt_count: 1,
             last_error_category: None,
+            last_failure_step: None,
+            last_failure_code: None,
         }
     }
 

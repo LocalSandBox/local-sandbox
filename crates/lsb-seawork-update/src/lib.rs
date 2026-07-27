@@ -14,7 +14,10 @@ mod windows_trust;
 pub use archive::{extract_zip_archive, ArchiveExtraction};
 pub use committed::{CommittedState, CommittedStateEnvelope, FailedTargetState};
 pub use discovery::{ReleaseCandidate, ReleaseChannel, ReleaseSelector};
-pub use journal::{HelperProtocol, TransactionEnvelope, TransactionPhase, UpdateTransaction};
+pub use journal::{
+    HelperProtocol, TransactionEnvelope, TransactionPhase, UpdateFailureCode, UpdateFailureStep,
+    UpdateTransaction,
+};
 pub use package::{verify_bundle_root, PackagePolicy, PackageVerification, PublisherIdentity};
 #[cfg(feature = "coordinator-policy")]
 pub use policy::{
