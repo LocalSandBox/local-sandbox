@@ -671,7 +671,7 @@ fn capture_vm_failure(
     };
     let snapshot = crate::telemetry::collect_incident(
         &engine.telemetry_root().join("incidents"),
-        &spec.instance_dir,
+        &crate::telemetry::vm_diagnostics_dir(&spec.instance_dir),
         Some(engine.service_log()),
         &metadata,
         crate::telemetry::DiagnosticLimits::default(),
@@ -683,7 +683,7 @@ fn capture_vm_failure(
         operation,
         stable_error_code,
         crate::telemetry::Level::Error,
-        error.to_string(),
+        crate::telemetry::format_error_chain(error),
     )
     .with_event_id(event_id)
     .with_correlation_id(&spec.correlation_id)
@@ -1129,6 +1129,29 @@ mod tests {
         let limits = job_limits(&spec).expect("bounded request should produce Job limits");
         assert_eq!(limits.active_processes, 8);
         assert_eq!(limits.memory_bytes, 6144 * 1024 * 1024usize);
+    }
+
+    #[test]
+    fn vm_incident_diagnostics_are_read_from_platform_artifact_directory() {
+        let instance_dir = PathBuf::from(r"C:\ProgramData\LocalSandbox\instance");
+
+        assert_eq!(
+            crate::telemetry::vm_diagnostics_dir(&instance_dir),
+            instance_dir.join("diagnostics")
+        );
+    }
+
+    #[test]
+    fn vm_incident_message_preserves_the_complete_error_chain() {
+        let error = anyhow::anyhow!("guest-ready handshake timed out")
+            .context("start Windows QEMU")
+            .context("Failed to start VM");
+
+        let message = crate::telemetry::format_error_chain(&error);
+
+        assert!(message.contains("Failed to start VM"));
+        assert!(message.contains("start Windows QEMU"));
+        assert!(message.contains("guest-ready handshake timed out"));
     }
 
     #[test]

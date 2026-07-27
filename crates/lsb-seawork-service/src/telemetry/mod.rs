@@ -11,6 +11,8 @@ use std::time::Duration;
 #[cfg(all(windows, feature = "sentry-telemetry"))]
 pub use context::SERVICE_NAME;
 pub use context::{CommonContext, COMPONENT};
+#[cfg(windows)]
+pub(crate) use diagnostics::vm_diagnostics_dir;
 pub use diagnostics::{
     collect_incident, Attachment, DiagnosticLimits, IncidentMetadata, RetentionPolicy,
 };
@@ -19,6 +21,10 @@ pub use run_marker::{PreviousRun, RunState};
 pub const TRANSACTION_SERVICE_STARTUP: &str = "service.startup";
 pub const TRANSACTION_SANDBOX_START: &str = "sandbox.start";
 pub const TRANSACTION_SANDBOX_STOP: &str = "sandbox.stop";
+
+pub(crate) fn format_error_chain(error: &anyhow::Error) -> String {
+    format!("{error:#}")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
@@ -547,6 +553,19 @@ mod tests {
         assert!(!fingerprint.iter().any(|part| part.contains("correlation-")));
         assert!(!fingerprint.iter().any(|part| part.contains("sandbox-1")));
         assert!(!fingerprint.iter().any(|part| part.contains("free-form")));
+    }
+
+    #[test]
+    fn incident_error_message_preserves_the_complete_error_chain() {
+        let error = anyhow::anyhow!("guest-ready handshake timed out")
+            .context("start Windows QEMU")
+            .context("Failed to start VM");
+
+        let message = format_error_chain(&error);
+
+        assert!(message.contains("Failed to start VM"));
+        assert!(message.contains("start Windows QEMU"));
+        assert!(message.contains("guest-ready handshake timed out"));
     }
 
     #[test]

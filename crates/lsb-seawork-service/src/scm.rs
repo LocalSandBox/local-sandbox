@@ -392,7 +392,7 @@ fn capture_unclean_previous_exit(
         };
         let Ok(snapshot) = crate::telemetry::collect_incident(
             &paths.runtime.join("telemetry").join("incidents"),
-            &instance_path,
+            &crate::telemetry::vm_diagnostics_dir(&instance_path),
             Some(&paths.logs.join("service.jsonl")),
             &metadata,
             crate::telemetry::DiagnosticLimits::default(),

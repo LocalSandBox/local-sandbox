@@ -80,6 +80,10 @@ pub struct IncidentSnapshot {
     pub total_bytes: u64,
 }
 
+pub(crate) fn vm_diagnostics_dir(instance_dir: &Path) -> PathBuf {
+    instance_dir.join("diagnostics")
+}
+
 impl IncidentSnapshot {
     pub fn remove(self) -> Result<()> {
         fs::remove_dir_all(&self.directory).context("remove accepted telemetry incident snapshot")
@@ -145,7 +149,7 @@ enum FileStatus {
 
 pub fn collect_incident(
     incident_root: &Path,
-    instance_dir: &Path,
+    diagnostics_dir: &Path,
     service_log: Option<&Path>,
     metadata: &IncidentMetadata,
     limits: DiagnosticLimits,
@@ -158,7 +162,7 @@ pub fn collect_incident(
     }
     fs::create_dir_all(&directory).context("create telemetry incident directory")?;
 
-    let result = collect_into(&directory, instance_dir, service_log, metadata, limits);
+    let result = collect_into(&directory, diagnostics_dir, service_log, metadata, limits);
     if result.is_err() {
         let _ = fs::remove_dir_all(&directory);
     }
@@ -167,7 +171,7 @@ pub fn collect_incident(
 
 fn collect_into(
     directory: &Path,
-    instance_dir: &Path,
+    diagnostics_dir: &Path,
     service_log: Option<&Path>,
     metadata: &IncidentMetadata,
     limits: DiagnosticLimits,
@@ -179,7 +183,7 @@ fn collect_into(
 
     for name in SMALL_FILES {
         capture_file(
-            &instance_dir.join(name),
+            &diagnostics_dir.join(name),
             name,
             false,
             limits.small_file_bytes,
@@ -192,7 +196,7 @@ fn collect_into(
     }
     for name in ROLLING_FILES {
         capture_file(
-            &instance_dir.join(name),
+            &diagnostics_dir.join(name),
             name,
             true,
             limits.rolling_file_bytes,
@@ -553,6 +557,13 @@ mod tests {
         assert!(snapshot.directory.join("machine.json").is_file());
         snapshot.remove().unwrap();
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resolves_vm_diagnostics_below_the_platform_artifact_directory() {
+        let instance = PathBuf::from(r"C:\ProgramData\LocalSandbox\instance");
+
+        assert_eq!(vm_diagnostics_dir(&instance), instance.join("diagnostics"));
     }
 
     #[test]
