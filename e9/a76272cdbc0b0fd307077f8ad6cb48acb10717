@@ -1,0 +1,19 @@
+scripts/verify-seawork-event-messages.ps1
+  s_5e76005811096b::t_505725cfc9aa43 13,101,108,121
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "e9a76272cdbc0b0fd307077f8ad6cb48acb10717",
+  "prompts": {},
+  "sessions": {
+    "s_5e76005811096b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa3f9-0947-7dd2-a36b-0ddf3ea57cc5",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
