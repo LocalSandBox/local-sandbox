@@ -549,15 +549,16 @@ impl HealthContext {
         }
     }
 
-    fn maintenance_authorized(&self, identity: &ClientIdentity) -> bool {
-        identity.elevated
-            && identity.administrator
-            && identity
-                .authorize_maintenance_process_image(
-                    &self.maintenance_roots,
-                    &self.publisher_thumbprints,
-                )
-                .is_ok()
+    fn authorize_maintenance(&self, identity: &ClientIdentity) -> Result<()> {
+        if !identity.is_local_system_maintenance()
+            && (!identity.elevated || !identity.administrator)
+        {
+            anyhow::bail!("client token is not authorized for maintenance");
+        }
+        identity.authorize_maintenance_process_image(
+            &self.maintenance_roots,
+            &self.publisher_thumbprints,
+        )
     }
 
     fn authorize_client(&self, identity: &ClientIdentity) -> Result<()> {
@@ -574,6 +575,7 @@ impl HealthContext {
         } else if detail.contains("owner") {
             "CLIENT_IMAGE_OWNER_REJECTED"
         } else if detail.contains("outside configured client roots")
+            || detail.contains("outside configured maintenance roots")
             || detail.contains("caller-relative root")
             || detail.contains("reparse point")
         {
@@ -825,15 +827,20 @@ async fn handle_client(
     let identity = ClientIdentity::from_named_pipe(pipe.as_raw_handle())?;
     let preauth = preauth.admit_pid(identity.process_id, global)?;
     let client_authorization = context.authorize_client(&identity);
+    let maintenance_authorization = context.authorize_maintenance(&identity);
     let authorization = ConnectionAuthorization {
         client: client_authorization.is_ok(),
-        maintenance: context.maintenance_authorized(&identity),
+        maintenance: maintenance_authorization.is_ok(),
     };
     if !authorization.client && !authorization.maintenance {
-        return Err(
+        let error = if identity.is_local_system_maintenance() {
+            maintenance_authorization
+                .expect_err("failed maintenance authorization must retain its error")
+        } else {
             client_authorization.expect_err("failed client authorization must retain its error")
-        )
-        .context("client image is not authorized by a protected publisher policy");
+        };
+        return Err(error)
+            .context("client image is not authorized by a protected publisher policy");
     }
     let process = identity.duplicate_process_handle()?;
     let session_id = context.sessions.open(identity.key.clone())?;

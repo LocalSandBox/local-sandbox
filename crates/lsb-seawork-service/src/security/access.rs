@@ -1,14 +1,31 @@
 use anyhow::{bail, Result};
-use windows_sys::Win32::System::SystemServices::SECURITY_MANDATORY_MEDIUM_RID;
+use windows_sys::Win32::System::SystemServices::{
+    SECURITY_MANDATORY_MEDIUM_RID, SECURITY_MANDATORY_SYSTEM_RID,
+};
 
 use super::token::TokenSnapshot;
 
-pub fn authorize_interactive_client(token: &TokenSnapshot) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientTokenClass {
+    Interactive,
+    LocalSystemMaintenance,
+}
+
+pub fn classify_client_token(token: &TokenSnapshot) -> Result<ClientTokenClass> {
+    if token.user_sid.eq_ignore_ascii_case("S-1-5-18") {
+        if token.session_id != 0
+            || token.is_app_container
+            || token.integrity_rid < SECURITY_MANDATORY_SYSTEM_RID as u32
+        {
+            bail!("LocalSystem maintenance client token is inconsistent");
+        }
+        return Ok(ClientTokenClass::LocalSystemMaintenance);
+    }
     if token.session_id == 0
         || token.user_sid.is_empty()
         || matches!(
             token.user_sid.to_ascii_uppercase().as_str(),
-            "S-1-5-7" | "S-1-5-18" | "S-1-5-19" | "S-1-5-20"
+            "S-1-5-7" | "S-1-5-19" | "S-1-5-20"
         )
     {
         bail!("anonymous and service identities are not accepted");
@@ -22,7 +39,7 @@ pub fn authorize_interactive_client(token: &TokenSnapshot) -> Result<()> {
     if token.logon_sid.is_empty() {
         bail!("client token has no interactive logon SID");
     }
-    Ok(())
+    Ok(ClientTokenClass::Interactive)
 }
 
 #[cfg(test)]
@@ -43,16 +60,41 @@ mod tests {
     }
 
     #[test]
-    fn rejects_low_integrity_and_appcontainer() {
+    fn classifies_interactive_clients_and_rejects_untrusted_token_classes() {
         let mut token = snapshot();
-        assert!(authorize_interactive_client(&token).is_ok());
+        assert_eq!(
+            classify_client_token(&token).unwrap(),
+            ClientTokenClass::Interactive
+        );
         token.integrity_rid = 0x1000;
-        assert!(authorize_interactive_client(&token).is_err());
+        assert!(classify_client_token(&token).is_err());
         token.integrity_rid = SECURITY_MANDATORY_MEDIUM_RID as u32;
         token.is_app_container = true;
-        assert!(authorize_interactive_client(&token).is_err());
+        assert!(classify_client_token(&token).is_err());
         token.is_app_container = false;
+        token.user_sid = "S-1-5-19".to_string();
+        assert!(classify_client_token(&token).is_err());
+    }
+
+    #[test]
+    fn admits_only_session_zero_local_system_as_maintenance() {
+        let mut token = snapshot();
         token.user_sid = "S-1-5-18".to_string();
-        assert!(authorize_interactive_client(&token).is_err());
+        token.session_id = 0;
+        token.logon_sid.clear();
+        token.integrity_rid = SECURITY_MANDATORY_SYSTEM_RID as u32;
+        assert_eq!(
+            classify_client_token(&token).unwrap(),
+            ClientTokenClass::LocalSystemMaintenance
+        );
+
+        token.session_id = 1;
+        assert!(classify_client_token(&token).is_err());
+        token.session_id = 0;
+        token.is_app_container = true;
+        assert!(classify_client_token(&token).is_err());
+        token.is_app_container = false;
+        token.integrity_rid = SECURITY_MANDATORY_MEDIUM_RID as u32;
+        assert!(classify_client_token(&token).is_err());
     }
 }

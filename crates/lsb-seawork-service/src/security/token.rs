@@ -24,7 +24,7 @@ use windows_sys::Win32::System::Threading::{
 use crate::config::ClientRootPolicy;
 use crate::session::ClientIdentityKey;
 
-use super::access::authorize_interactive_client;
+use super::access::{classify_client_token, ClientTokenClass};
 use super::client_image::{
     authorize_client_image_handle, authorize_maintenance_image_handle, pin_process_image,
     resolve_caller_local_app_data,
@@ -50,7 +50,8 @@ pub struct ClientIdentity {
     pub elevated: bool,
     pub administrator: bool,
     pub process_image: std::path::PathBuf,
-    caller_local_app_data: std::path::PathBuf,
+    token_class: ClientTokenClass,
+    caller_local_app_data: Option<std::path::PathBuf>,
     _process: OwnedHandle,
     process_image_handle: OwnedHandle,
     _impersonation_token: OwnedHandle,
@@ -72,9 +73,13 @@ impl ClientIdentity {
         let guard = ImpersonationGuard::for_named_pipe(pipe)?;
         let thread_token = open_thread_token()?;
         let pipe_snapshot = snapshot(&thread_token)?;
-        authorize_interactive_client(&pipe_snapshot)?;
-        let folder_token = duplicate_primary_token(&thread_token)?;
-        let caller_local_app_data = resolve_caller_local_app_data(&folder_token)?;
+        let token_class = classify_client_token(&pipe_snapshot)?;
+        let caller_local_app_data = if token_class == ClientTokenClass::Interactive {
+            let folder_token = duplicate_primary_token(&thread_token)?;
+            Some(resolve_caller_local_app_data(&folder_token)?)
+        } else {
+            None
+        };
         let duplicated_token = duplicate_impersonation_token(&thread_token)?;
         guard.revert()?;
 
@@ -91,11 +96,13 @@ impl ClientIdentity {
         let process = owned(process_raw);
         let process_token = open_process_token(process_raw)?;
         let process_snapshot = snapshot(&process_token)?;
+        let process_token_class = classify_client_token(&process_snapshot)?;
         if pipe_snapshot.user_sid != process_snapshot.user_sid
             || pipe_snapshot.logon_sid != process_snapshot.logon_sid
             || pipe_snapshot.authentication_luid != process_snapshot.authentication_luid
             || pipe_snapshot.session_id != process_snapshot.session_id
             || pipe_snapshot.administrator != process_snapshot.administrator
+            || token_class != process_token_class
         {
             bail!("pipe and process token identities do not match");
         }
@@ -113,6 +120,7 @@ impl ClientIdentity {
             elevated: pipe_snapshot.elevated,
             administrator: pipe_snapshot.administrator,
             process_image,
+            token_class,
             caller_local_app_data,
             _process: process,
             process_image_handle,
@@ -126,6 +134,10 @@ impl ClientIdentity {
 
     pub fn duplicate_process_handle(&self) -> std::io::Result<OwnedHandle> {
         self._process.try_clone()
+    }
+
+    pub fn is_local_system_maintenance(&self) -> bool {
+        self.token_class == ClientTokenClass::LocalSystemMaintenance
     }
 
     pub fn authorize_maintenance_process_image(
@@ -146,11 +158,18 @@ impl ClientIdentity {
         roots: &[ClientRootPolicy],
         publisher_thumbprints: &[String],
     ) -> Result<()> {
+        if self.token_class != ClientTokenClass::Interactive {
+            bail!("service identities are restricted to maintenance operations");
+        }
+        let caller_local_app_data = self
+            .caller_local_app_data
+            .as_deref()
+            .context("interactive client has no resolved LocalAppData")?;
         authorize_client_image_handle(
             &self.process_image,
             &self.process_image_handle,
             roots,
-            &self.caller_local_app_data,
+            caller_local_app_data,
             &self.key.user_sid,
             publisher_thumbprints,
         )
@@ -243,7 +262,7 @@ fn snapshot(token: &OwnedHandle) -> Result<TokenSnapshot> {
                 return sid_string(group.Sid);
             }
         }
-        bail!("token has no logon SID")
+        Ok(String::new())
     })??;
     let session_id = token_value::<u32>(token, TokenSessionId)?;
     let statistics = token_value::<TOKEN_STATISTICS>(token, TokenStatistics)?;
@@ -400,13 +419,17 @@ fn owned(handle: HANDLE) -> OwnedHandle {
 
 #[cfg(test)]
 mod tests {
+    use std::os::windows::io::AsRawHandle;
     use std::ptr;
 
+    use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
+    use tokio::sync::oneshot;
     use windows_sys::Win32::Security::{TOKEN_DUPLICATE, TOKEN_QUERY};
+    use windows_sys::Win32::Storage::FileSystem::SECURITY_IMPERSONATION;
     use windows_sys::Win32::System::SystemServices::SECURITY_MANDATORY_MEDIUM_RID;
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-    use super::{is_administrator, owned, raw};
+    use super::{is_administrator, owned, raw, ClientIdentity};
 
     #[test]
     fn medium_integrity_constant_matches_policy() {
@@ -428,5 +451,37 @@ mod tests {
         );
         let token = owned(token);
         assert!(is_administrator(raw(&token)).is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires execution as LocalSystem in Windows session 0"]
+    async fn local_system_named_pipe_identity_is_accepted_for_maintenance() {
+        let pipe_name = format!(
+            r"\\.\pipe\LocalSandbox.SeaWork.LocalSystemIdentityTest.{}",
+            std::process::id()
+        );
+        let server = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&pipe_name)
+            .unwrap();
+        let (release_client, hold_client) = oneshot::channel();
+        let client_name = pipe_name.clone();
+        let client = tokio::spawn(async move {
+            let pipe = ClientOptions::new()
+                .security_qos_flags(SECURITY_IMPERSONATION)
+                .open(&client_name)
+                .unwrap();
+            let _ = hold_client.await;
+            drop(pipe);
+        });
+
+        server.connect().await.unwrap();
+        let identity = ClientIdentity::from_named_pipe(server.as_raw_handle()).unwrap();
+        assert!(identity.is_local_system_maintenance());
+        assert_eq!(identity.key.user_sid, "S-1-5-18");
+        assert_eq!(identity.key.session_id, 0);
+
+        let _ = release_client.send(());
+        client.await.unwrap();
     }
 }

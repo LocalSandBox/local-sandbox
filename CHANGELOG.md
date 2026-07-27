@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- Fixed controlled self-update activation and rollback on Windows by admitting
+  the signed, maintenance-root-pinned LocalSystem updater to the service IPC
+  endpoint while keeping service identities excluded from normal client
+  operations.
 - Added LocalSandbox service configuration revision 3 with authenticated
   caller-relative `%CALLER_LOCALAPPDATA%` client roots, reparse-safe executable
   admission, caller ownership checks, and SHA-256 publisher pinning while
