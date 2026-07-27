@@ -1,0 +1,56 @@
+crates/lsb-seawork-service/src/logging.rs
+  s_911b760cc6f8eb::t_719bfab2ec5f96 34,38,55,63
+crates/lsb-seawork-updater/src/recovery.rs
+  s_911b760cc6f8eb::t_479c84f321aca4 176,221,228-236,368,375,380-430
+  s_911b760cc6f8eb::t_ae44ad26166095 376-379
+  s_911b760cc6f8eb::t_1039aacbe3df97 27
+  s_911b760cc6f8eb::t_d4e793c4e9ef30 2-26,28-44,135-149,154-156,163-175,177,453-454
+  s_911b760cc6f8eb::t_07f20a3ca97f11 178
+crates/lsb-seawork-update/src/lib.rs
+  s_911b760cc6f8eb::t_d4e793c4e9ef30 17-20
+crates/lsb-seawork-updater/src/windows.rs
+  s_911b760cc6f8eb::t_d4e793c4e9ef30 1949-1950
+  s_911b760cc6f8eb::t_6bc37d7a08fa76 17,55-57,927-936,978-984,998-1016,1027-1045,1052,1061,1069,1072-1104,1111-1135
+  s_911b760cc6f8eb::t_8533d36a1ca4d4 183-193,196-201
+  s_911b760cc6f8eb::t_8703719cddcd88 1136
+crates/lsb-seawork-update/src/journal.rs
+  s_911b760cc6f8eb::t_ae44ad26166095 258-262
+  s_911b760cc6f8eb::t_d4e793c4e9ef30 46-86,159-162,268,316-317,345
+  s_911b760cc6f8eb::t_00e340d4732543 200,329-343
+  s_911b760cc6f8eb::t_7c462eeaeca872 257,263-265
+  s_911b760cc6f8eb::t_1a3a46e4f2c4d0 266-267
+  s_911b760cc6f8eb::t_3173801b4107ef 344
+  s_911b760cc6f8eb::t_889d54af77a880 346
+crates/lsb-seawork-service/src/update/mod.rs
+  s_911b760cc6f8eb::t_d687ab7378922b 115-125
+  s_911b760cc6f8eb::t_d4e793c4e9ef30 494-495
+crates/lsb-seawork-service/src/pipe.rs
+  s_911b760cc6f8eb::t_d1b5527feffd4a 626-627,963-968,1013
+  s_911b760cc6f8eb::t_e9ce149fed64c1 575,598-623,630-642,757-761,763-772,774-779,881,930,936-940,942-943
+  s_911b760cc6f8eb::t_d687ab7378922b 650
+  s_911b760cc6f8eb::t_a91c1a184a2ecd 624-625,628-629,762,773,971-975
+  s_911b760cc6f8eb::t_5c8f985ad3f9b0 1001-1004,1014-1020,1022,1044-1045
+  s_911b760cc6f8eb::t_f80a86fe27ad44 856-857,861-864
+  s_911b760cc6f8eb::t_483ba7275cd8df 364,438,457-461,643-649,651-653,658,1926
+  s_911b760cc6f8eb::t_ae44ad26166095 928-929,1011-1012
+crates/lsb-seawork-service/src/scm.rs
+  s_911b760cc6f8eb::t_483ba7275cd8df 232
+crates/lsb-seawork-service/resources/LocalSandboxSeaWork.mc
+  s_911b760cc6f8eb::t_719bfab2ec5f96 100-105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "3cf6824e0f4ba691cefbaf98cafa01d29f05b935",
+  "prompts": {},
+  "sessions": {
+    "s_911b760cc6f8eb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa3ea-dffa-7b81-98a8-dbc312b7a01a",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
