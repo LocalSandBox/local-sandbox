@@ -205,7 +205,10 @@ fn request_quit_endpoint(stream: QmpPipeStream) -> io::Result<()> {
         let _ = sender.send(result);
     });
     match receiver.recv_timeout(QMP_QUIT_DEADLINE) {
-        Ok(result) => result,
+        Ok(result) => {
+            let _ = worker.join();
+            result
+        }
         Err(_) => {
             cancel_synchronous_worker(&worker);
             Err(io::Error::new(
@@ -253,12 +256,18 @@ fn capture_endpoint(
         let _ = sender.send(result);
     });
     match receiver.recv_timeout(QMP_CAPTURE_DEADLINE) {
-        Ok(Ok(snapshot)) => snapshot,
-        Ok(Err(error)) => QemuQmpSnapshot {
-            connected: true,
-            error: Some(bounded_error(&error.to_string())),
-            ..QemuQmpSnapshot::default()
-        },
+        Ok(Ok(snapshot)) => {
+            let _ = worker.join();
+            snapshot
+        }
+        Ok(Err(error)) => {
+            let _ = worker.join();
+            QemuQmpSnapshot {
+                connected: true,
+                error: Some(bounded_error(&error.to_string())),
+                ..QemuQmpSnapshot::default()
+            }
+        }
         Err(_) => {
             cancel_synchronous_worker(&worker);
             QemuQmpSnapshot {
