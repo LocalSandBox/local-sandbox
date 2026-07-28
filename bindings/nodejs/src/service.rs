@@ -1084,7 +1084,7 @@ impl SeaWorkSandbox {
       .client
       .stop_sandbox(&self.sandbox)
       .await
-      .map_err(service_error);
+      .map_err(|error| sandbox_service_error(error, self.sandbox.id()));
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     Err(unsupported_platform_error())
   }
@@ -1252,7 +1252,32 @@ fn service_error(error: lsb_service_client::ClientError) -> napi::Error {
 }
 
 fn stable_service_error_reason(error: &lsb_service_proto::ErrorEnvelope) -> String {
-  format!("[{}] {}", error.code.as_str(), error.message)
+  format!(
+    "[{}] {} (correlation_id={})",
+    error.code.as_str(),
+    error.message,
+    error.correlation_id
+  )
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn sandbox_service_error(error: lsb_service_client::ClientError, resource_id: &str) -> napi::Error {
+  match error {
+    lsb_service_client::ClientError::Service(envelope) => {
+      napi::Error::from_reason(stable_sandbox_service_error_reason(&envelope, resource_id))
+    }
+    other => napi::Error::from_reason(format!("{other} (resource_id={resource_id})")),
+  }
+}
+
+fn stable_sandbox_service_error_reason(
+  error: &lsb_service_proto::ErrorEnvelope,
+  resource_id: &str,
+) -> String {
+  format!(
+    "{} (resource_id={resource_id})",
+    stable_service_error_reason(error)
+  )
 }
 
 #[cfg(test)]
@@ -1377,25 +1402,38 @@ mod tests {
   fn service_errors_preserve_stable_codes_for_adapter_recovery() {
     let error = lsb_service_proto::ErrorEnvelope::safe(
       lsb_service_proto::ErrorCode::StartResultExpired,
-      "correlation-not-exposed",
+      "00000000000000000000000000000001",
     );
     let reason = stable_service_error_reason(&error);
 
     assert!(reason.starts_with("[START_RESULT_EXPIRED] "));
     assert!(reason.contains("new instanceId"));
-    assert!(!reason.contains("correlation-not-exposed"));
+    assert!(reason.contains("correlation_id=00000000000000000000000000000001"));
   }
 
   #[test]
   fn service_errors_distinguish_cancellation_that_lost_the_commit_race() {
     let error = lsb_service_proto::ErrorEnvelope::safe(
       lsb_service_proto::ErrorCode::CancellationTooLate,
-      "correlation-not-exposed",
+      "00000000000000000000000000000002",
     );
     let reason = stable_service_error_reason(&error);
 
     assert!(reason.starts_with("[CANCELLATION_TOO_LATE] "));
     assert!(reason.contains("commit point"));
-    assert!(!reason.contains("correlation-not-exposed"));
+    assert!(reason.contains("correlation_id=00000000000000000000000000000002"));
+  }
+
+  #[test]
+  fn sandbox_stop_errors_surface_correlation_and_resource_ids() {
+    let error = lsb_service_proto::ErrorEnvelope::safe(
+      lsb_service_proto::ErrorCode::DeadlineExceeded,
+      "00000000000000000000000000000003",
+    );
+    let reason = stable_sandbox_service_error_reason(&error, "00000000000000000000000000000004");
+
+    assert!(reason.starts_with("[DEADLINE_EXCEEDED] "));
+    assert!(reason.contains("correlation_id=00000000000000000000000000000003"));
+    assert!(reason.contains("resource_id=00000000000000000000000000000004"));
   }
 }

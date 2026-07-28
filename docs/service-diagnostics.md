@@ -95,8 +95,9 @@ process-snapshot, dump, nil-event-UUID, and flush failures increment bounded
 in-process telemetry counters and emit a reviewed local error without exposing
 protected paths or command lines. The incident manifest, live artifacts, dump
 manifest, boot status, preflight report, progress records, and timeline records
-carry the same incident, correlation, and resource IDs. Service start/stop
-errors surface the correlation and resource IDs for downstream support lookup.
+carry the same incident, correlation, and resource IDs. App-visible service
+errors surface the correlation ID, and sandbox stop errors also surface the
+resource ID for downstream support lookup.
 
 The service-side stop watchdog allows 45 seconds so a dump still inside its
 30-second deadline plus the termination margin is treated as progress.
