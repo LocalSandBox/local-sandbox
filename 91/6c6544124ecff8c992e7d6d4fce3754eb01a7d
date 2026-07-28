@@ -1,0 +1,22 @@
+scripts/verify-seawork-event-messages.ps1
+  s_31ad4f53b04974::t_013d668c4105da 101,108,121
+crates/lsb-seawork-service/src/logging.rs
+  s_31ad4f53b04974::t_013d668c4105da 555-561
+  s_31ad4f53b04974::t_708a6de261e906 562-563
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "916c6544124ecff8c992e7d6d4fce3754eb01a7d",
+  "prompts": {},
+  "sessions": {
+    "s_31ad4f53b04974": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa7b0-4d69-7d01-ae26-6595cb9ecc1b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
