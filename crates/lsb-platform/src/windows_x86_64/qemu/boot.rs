@@ -22,8 +22,8 @@ use super::config::{
 };
 use super::discovery::{QemuDiscovery, StdQemuDiscoveryHost};
 use super::hang::{
-    write_initial_hang_artifact, QemuProcessSnapshot, QemuProgressSnapshot, QemuProgressWriter,
-    QemuTimeline, QemuTimelinePhase,
+    capture_dump, write_initial_hang_artifact, QemuHangTelemetryPolicy, QemuProcessSnapshot,
+    QemuProgressSnapshot, QemuProgressWriter, QemuTimeline, QemuTimelinePhase,
 };
 use super::preflight::{QemuPreflight, QemuPreflightReport};
 use super::process::{
@@ -69,6 +69,7 @@ pub(crate) struct WindowsQemuBootConfig {
     pub control_endpoint: Option<VirtioSerialControlEndpoint>,
     pub forward_endpoint: Option<VirtioSerialControlEndpoint>,
     pub network: QemuNetworkConfig,
+    pub hang_context: Option<crate::PlatformQemuTelemetryContext>,
 }
 
 impl WindowsQemuBootConfig {
@@ -97,6 +98,7 @@ impl WindowsQemuBootConfig {
             control_endpoint: None,
             forward_endpoint: None,
             network: QemuNetworkConfig::None,
+            hang_context: None,
         }
     }
 }
@@ -878,6 +880,8 @@ pub(crate) fn launch_windows_qemu_boot(
             progress.as_mut(),
             timeline.as_ref(),
             qmp_endpoint.as_ref(),
+            config.hang_context.as_ref(),
+            QemuHangTelemetryPolicy::default(),
             config.guest_ready_timeout,
             ready_reader,
             GuestTransport::VirtioSerial,
@@ -1277,6 +1281,8 @@ fn wait_for_guest_ready_with_telemetry<R>(
     mut progress_writer: Option<&mut QemuProgressWriter>,
     timeline: Option<&QemuTimeline>,
     qmp_endpoint: Option<&QmpEndpoint>,
+    hang_context: Option<&crate::PlatformQemuTelemetryContext>,
+    hang_policy: QemuHangTelemetryPolicy,
     timeout: Duration,
     reader: R,
     expected_transport: GuestTransport,
@@ -1400,6 +1406,17 @@ where
                     ..super::hang::QemuQmpSnapshot::default()
                 }
             };
+            let dump = capture_dump(
+                supervisor.raw_process_handle(),
+                &process,
+                hang_context,
+                timeline
+                    .map(QemuTimeline::incident_id)
+                    .unwrap_or("unavailable"),
+                &artifacts.directory,
+                hang_policy,
+                timeline,
+            );
             if let Some(timeline) = timeline {
                 let _ = write_initial_hang_artifact(
                     &artifacts.directory,
@@ -1409,6 +1426,7 @@ where
                     &process,
                     &progress,
                     &qmp,
+                    &dump,
                 );
             }
             supervisor.record_timeline_result(
@@ -1446,6 +1464,8 @@ where
         None,
         None,
         None,
+        None,
+        QemuHangTelemetryPolicy::default(),
         timeout,
         reader,
         expected_transport,
@@ -2252,6 +2272,8 @@ mod tests {
             Some(&mut progress),
             Some(&timeline),
             None,
+            None,
+            QemuHangTelemetryPolicy::default(),
             Duration::from_millis(100),
             BlockingReader { receiver },
             GuestTransport::VirtioSerial,

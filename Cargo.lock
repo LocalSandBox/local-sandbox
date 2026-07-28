@@ -988,6 +988,7 @@ dependencies = [
  "objc2-virtualization",
  "serde",
  "serde_json",
+ "sha2",
  "time",
  "windows-sys 0.61.2",
 ]
@@ -1022,6 +1023,15 @@ dependencies = [
  "webpki-roots",
  "windows-sys 0.61.2",
  "zeroize",
+]
+
+[[package]]
+name = "lsb-qemu-dump-helper"
+version = "0.5.2"
+dependencies = [
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

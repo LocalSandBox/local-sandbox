@@ -362,6 +362,13 @@ pub fn stage_bundle(
         bail!("--service-binary must name localsandbox-seawork-service.exe");
     }
     require_service_profile_binary(&service_binary, profile)?;
+    let dump_helper = input_file(args, "--dump-helper", workspace_root)?;
+    if dump_helper.file_name().and_then(|name| name.to_str())
+        != Some("localsandbox-qemu-dump-helper.exe")
+    {
+        bail!("--dump-helper must name localsandbox-qemu-dump-helper.exe");
+    }
+    require_amd64_pe(&dump_helper)?;
     let crashpad_handler = input_file(args, "--crashpad-handler", workspace_root)?;
     if crashpad_handler.file_name().and_then(|name| name.to_str()) != Some("crashpad_handler.exe") {
         bail!("--crashpad-handler must name crashpad_handler.exe");
@@ -411,6 +418,10 @@ pub fn stage_bundle(
     copy_file(
         &service_binary,
         &bundle_root.join("bin/localsandbox-seawork-service.exe"),
+    )?;
+    copy_file(
+        &dump_helper,
+        &bundle_root.join("bin/localsandbox-qemu-dump-helper.exe"),
     )?;
     copy_file(
         &crashpad_handler,
@@ -638,6 +649,7 @@ fn verify_staged_bundle(
     let service_binary = bundle_root.join("bin/localsandbox-seawork-service.exe");
     require_amd64_pe(&service_binary)?;
     require_service_profile_binary(&service_binary, profile)?;
+    require_amd64_pe(&bundle_root.join("bin/localsandbox-qemu-dump-helper.exe"))?;
     require_amd64_pe(&bundle_root.join("bin/crashpad_handler.exe"))?;
     require_amd64_pe(&bundle_root.join("bin/crashpad_wer.dll"))?;
     require_regular_file(&bundle_root.join("manifests/LocalSandboxSeaWork.cat"))?;
@@ -1436,6 +1448,11 @@ mod tests {
         )
         .unwrap();
         fs::write(
+            inputs.join("localsandbox-qemu-dump-helper.exe"),
+            fake_amd64_pe(ServiceProfile::Production),
+        )
+        .unwrap();
+        fs::write(
             inputs.join("crashpad_handler.exe"),
             fake_amd64_pe(ServiceProfile::Production),
         )
@@ -1451,6 +1468,11 @@ mod tests {
             "--service-binary".into(),
             inputs
                 .join("localsandbox-seawork-service.exe")
+                .display()
+                .to_string(),
+            "--dump-helper".into(),
+            inputs
+                .join("localsandbox-qemu-dump-helper.exe")
                 .display()
                 .to_string(),
             "--crashpad-handler".into(),
@@ -1486,6 +1508,9 @@ mod tests {
         assert!(files
             .iter()
             .any(|file| file["path"] == "bin/crashpad_handler.exe"));
+        assert!(files
+            .iter()
+            .any(|file| file["path"] == "bin/localsandbox-qemu-dump-helper.exe"));
         assert!(files
             .iter()
             .any(|file| file["path"] == "bin/crashpad_wer.dll"));

@@ -312,6 +312,15 @@ pub struct PlatformVmConfig {
     pub shared_dirs: Vec<PlatformSharedDir>,
 }
 
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlatformQemuTelemetryContext {
+    pub telemetry_root: PathBuf,
+    pub run_id: Option<String>,
+    pub correlation_id: String,
+    pub resource_id: String,
+}
+
 /// Opaque service-owned process containment boundary. The Windows QEMU backend
 /// assigns the suspended child through this interface and never creates a second
 /// Job when one is supplied.
@@ -320,6 +329,10 @@ pub trait PlatformProcessContainment: std::fmt::Debug + Send + Sync {
     /// Persist any service-owned creation intent before the child process exists.
     fn prepare_process(&self) -> Result<()> {
         Ok(())
+    }
+
+    fn qemu_telemetry_context(&self) -> Option<PlatformQemuTelemetryContext> {
+        None
     }
 
     fn assign_process(&self, process: &Child) -> Result<()>;

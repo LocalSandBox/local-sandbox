@@ -464,6 +464,20 @@ impl QemuSupervisor {
         process_snapshot(child)
     }
 
+    #[cfg(windows)]
+    pub(crate) fn raw_process_handle(&self) -> Option<isize> {
+        use std::os::windows::io::AsRawHandle;
+
+        self.child
+            .as_ref()
+            .map(|child| child.as_raw_handle() as isize)
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) fn raw_process_handle(&self) -> Option<isize> {
+        None
+    }
+
     pub(crate) fn exit_status(&self) -> Option<&QemuExitStatus> {
         self.exit_status.as_ref()
     }

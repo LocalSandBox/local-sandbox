@@ -210,6 +210,12 @@ impl ManagedVm {
         validate_spec(engine, &spec)?;
         let image_relative_path = engine.qemu_image_relative_path()?;
         let mut containment = SandboxJob::create(job_limits(&spec)?)?;
+        containment.attach_qemu_telemetry(lsb_platform::PlatformQemuTelemetryContext {
+            telemetry_root: engine.telemetry_root(),
+            run_id: telemetry.run_id(),
+            correlation_id: spec.correlation_id.clone(),
+            resource_id: spec.resource_id.clone(),
+        });
         transaction.set_state(LifecycleState::Preparing)?;
         containment.attach_journal(
             transaction,

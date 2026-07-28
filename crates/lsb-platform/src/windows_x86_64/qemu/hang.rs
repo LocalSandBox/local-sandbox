@@ -1,10 +1,11 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
@@ -228,7 +229,7 @@ struct QemuHangArtifact<'a> {
     process: &'a QemuProcessSnapshot,
     progress: &'a QemuProgressSnapshot,
     qmp: &'a QemuQmpSnapshot,
-    dump: QemuDumpPlaceholder,
+    dump: &'a QemuDumpCaptureSummary,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -252,11 +253,11 @@ pub(crate) struct QemuQmpQuery {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
-struct QemuDumpPlaceholder {
-    attempted: bool,
-    completed: bool,
-    manifest: Option<&'static str>,
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct QemuDumpCaptureSummary {
+    pub attempted: bool,
+    pub completed: bool,
+    pub manifest: Option<String>,
 }
 
 pub(crate) fn write_initial_hang_artifact(
@@ -267,6 +268,7 @@ pub(crate) fn write_initial_hang_artifact(
     process: &QemuProcessSnapshot,
     progress: &QemuProgressSnapshot,
     qmp: &QemuQmpSnapshot,
+    dump: &QemuDumpCaptureSummary,
 ) -> io::Result<()> {
     let hang_signature = classify_hang_signature(process, progress);
     let artifact = QemuHangArtifact {
@@ -278,15 +280,390 @@ pub(crate) fn write_initial_hang_artifact(
         process,
         progress,
         qmp,
-        dump: QemuDumpPlaceholder {
-            attempted: false,
-            completed: false,
-            manifest: None,
-        },
+        dump,
     };
     let mut encoded = serde_json::to_vec_pretty(&artifact).map_err(io::Error::other)?;
     encoded.push(b'\n');
     write_atomic(directory, HANG_FILE, &encoded)
+}
+
+const DUMP_FLAGS: &[&str] = &[
+    "MiniDumpNormal",
+    "MiniDumpWithThreadInfo",
+    "MiniDumpWithHandleData",
+    "MiniDumpWithUnloadedModules",
+    "MiniDumpWithFullMemoryInfo",
+    "MiniDumpWithProcessThreadData",
+    "MiniDumpWithIndirectlyReferencedMemory",
+];
+const DUMP_TYPE_VALUE: i32 = 6500;
+
+#[derive(Debug, Serialize)]
+struct DumpManifest<'a> {
+    schema_version: u32,
+    incident_id: &'a str,
+    sentry_event_id: Option<&'a str>,
+    run_id: &'a Option<String>,
+    correlation_id: &'a str,
+    resource_id: &'a str,
+    qemu_pid: u32,
+    qemu_creation_time: u64,
+    dump_started_utc: &'a str,
+    dump_completed_utc: &'a str,
+    elapsed_ms: u128,
+    dump_type: &'static str,
+    dump_type_value: i32,
+    dump_flags: &'static [&'static str],
+    dump_byte_size: Option<u64>,
+    sha256: Option<&'a str>,
+    success: bool,
+    failure: Option<&'a str>,
+    win32_error: Option<u32>,
+    relative_local_path: &'a str,
+    retention: DumpRetentionManifest,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+struct DumpRetentionManifest {
+    max_completed_incidents: usize,
+    pruned_completed_incidents: usize,
+    reconciliation_error: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct DumpHelperResult {
+    schema_version: u32,
+    success: bool,
+    win32_error: Option<u32>,
+}
+
+pub(crate) fn capture_dump(
+    process_handle: Option<isize>,
+    process: &QemuProcessSnapshot,
+    context: Option<&crate::PlatformQemuTelemetryContext>,
+    incident_id: &str,
+    artifact_directory: &Path,
+    policy: QemuHangTelemetryPolicy,
+    timeline: Option<&QemuTimeline>,
+) -> QemuDumpCaptureSummary {
+    let Some(context) = context else {
+        return QemuDumpCaptureSummary {
+            attempted: true,
+            completed: false,
+            manifest: None,
+        };
+    };
+    let dump_root = context.telemetry_root.join("qemu-dumps");
+    let retention = match reconcile_dump_retention(
+        &dump_root,
+        policy
+            .local_dump_retention
+            .completed_incident_count
+            .saturating_sub(1),
+    ) {
+        Ok(pruned) => DumpRetentionManifest {
+            max_completed_incidents: policy.local_dump_retention.completed_incident_count,
+            pruned_completed_incidents: pruned,
+            reconciliation_error: false,
+        },
+        Err(_) => DumpRetentionManifest {
+            max_completed_incidents: policy.local_dump_retention.completed_incident_count,
+            pruned_completed_incidents: 0,
+            reconciliation_error: true,
+        },
+    };
+    let incident_directory = dump_root.join(incident_id);
+    let _ = fs::create_dir_all(&incident_directory);
+    let dump_started_utc = utc_timestamp().unwrap_or_else(|_| "unknown".to_string());
+    let started_at = Instant::now();
+    if let Some(timeline) = timeline {
+        let _ = timeline.record(QemuTimelinePhase::DumpStarted);
+    }
+    let outcome = write_dump_with_helper(
+        process_handle,
+        process.pid,
+        &incident_directory,
+        policy.dump_deadline,
+        timeline,
+    );
+    let dump_completed_utc = utc_timestamp().unwrap_or_else(|_| "unknown".to_string());
+    let elapsed = started_at.elapsed();
+    let relative_path = format!("qemu-dumps/{incident_id}/qemu-hang.dmp");
+    let manifest = DumpManifest {
+        schema_version: 1,
+        incident_id,
+        sentry_event_id: None,
+        run_id: &context.run_id,
+        correlation_id: &context.correlation_id,
+        resource_id: &context.resource_id,
+        qemu_pid: process.pid,
+        qemu_creation_time: process.creation_time,
+        dump_started_utc: &dump_started_utc,
+        dump_completed_utc: &dump_completed_utc,
+        elapsed_ms: elapsed.as_millis(),
+        dump_type: "diagnostic_qemu_hang",
+        dump_type_value: DUMP_TYPE_VALUE,
+        dump_flags: DUMP_FLAGS,
+        dump_byte_size: outcome.byte_size,
+        sha256: outcome.sha256.as_deref(),
+        success: outcome.success,
+        failure: outcome.failure.as_deref(),
+        win32_error: outcome.win32_error,
+        relative_local_path: &relative_path,
+        retention,
+    };
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest)
+        .map(|mut bytes| {
+            bytes.push(b'\n');
+            bytes
+        })
+        .unwrap_or_default();
+    let manifest_name = "qemu-hang-dump.json";
+    let local_manifest_written =
+        write_atomic(&incident_directory, manifest_name, &manifest_bytes).is_ok();
+    let diagnostic_manifest_written =
+        write_atomic(artifact_directory, manifest_name, &manifest_bytes).is_ok();
+    if let Some(timeline) = timeline {
+        let _ = timeline.record_result(
+            QemuTimelinePhase::DumpCompleted,
+            Some(elapsed),
+            Some(if outcome.success {
+                "success"
+            } else {
+                "failure"
+            }),
+            outcome.failure.as_deref().map(|_| "dump"),
+        );
+    }
+    QemuDumpCaptureSummary {
+        attempted: true,
+        completed: outcome.success,
+        manifest: (local_manifest_written && diagnostic_manifest_written)
+            .then(|| manifest_name.to_string()),
+    }
+}
+
+struct DumpOutcome {
+    success: bool,
+    byte_size: Option<u64>,
+    sha256: Option<String>,
+    failure: Option<String>,
+    win32_error: Option<u32>,
+}
+
+#[cfg(not(windows))]
+fn write_dump_with_helper(
+    _process_handle: Option<isize>,
+    _pid: u32,
+    _incident_directory: &Path,
+    _deadline: Duration,
+    _timeline: Option<&QemuTimeline>,
+) -> DumpOutcome {
+    DumpOutcome {
+        success: false,
+        byte_size: None,
+        sha256: None,
+        failure: Some("dump helper is available only on Windows".to_string()),
+        win32_error: None,
+    }
+}
+
+#[cfg(windows)]
+fn write_dump_with_helper(
+    process_handle: Option<isize>,
+    _pid: u32,
+    incident_directory: &Path,
+    deadline: Duration,
+    timeline: Option<&QemuTimeline>,
+) -> DumpOutcome {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use std::process::{Command, Stdio};
+
+    use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE};
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    let failure = |message: String| DumpOutcome {
+        success: false,
+        byte_size: None,
+        sha256: None,
+        failure: Some(message),
+        win32_error: None,
+    };
+    let Some(process_handle) = process_handle else {
+        return failure("QEMU process handle was unavailable".to_string());
+    };
+    let helper_path = match std::env::current_exe().ok().and_then(|path| {
+        path.parent()
+            .map(|parent| parent.join("localsandbox-qemu-dump-helper.exe"))
+    }) {
+        Some(path) if path.is_file() => path,
+        _ => return failure("packaged QEMU dump helper was unavailable".to_string()),
+    };
+    let pending_path = incident_directory.join("qemu-hang.dmp.pending");
+    let final_path = incident_directory.join("qemu-hang.dmp");
+    let output = match OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(&pending_path)
+    {
+        Ok(file) => file,
+        Err(error) => return failure(format!("create pending dump: {error}")),
+    };
+    let duplicate = |source: HANDLE| -> io::Result<OwnedHandle> {
+        let mut target = std::ptr::null_mut();
+        if unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                source,
+                GetCurrentProcess(),
+                &mut target,
+                0,
+                1,
+                DUPLICATE_SAME_ACCESS,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(unsafe { OwnedHandle::from_raw_handle(target as _) })
+    };
+    let inherited_process = match duplicate(process_handle as HANDLE) {
+        Ok(handle) => handle,
+        Err(error) => return failure(format!("duplicate QEMU process handle: {error}")),
+    };
+    let inherited_output = match duplicate(output.as_raw_handle() as HANDLE) {
+        Ok(handle) => handle,
+        Err(error) => return failure(format!("duplicate dump output handle: {error}")),
+    };
+    let mut command = Command::new(helper_path);
+    command
+        .arg("--process-handle")
+        .arg((inherited_process.as_raw_handle() as usize).to_string())
+        .arg("--output-handle")
+        .arg((inherited_output.as_raw_handle() as usize).to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    crate::windows_x86_64::apply_qemu_no_window_creation_flags(&mut command);
+    let mut helper = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => return failure(format!("start QEMU dump helper: {error}")),
+    };
+    drop(inherited_process);
+    drop(inherited_output);
+    if let Some(timeline) = timeline {
+        let _ = timeline.record(QemuTimelinePhase::DumpHelperStarted);
+    }
+    let helper_deadline = Instant::now() + deadline;
+    let status = loop {
+        match helper.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < helper_deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => {
+                let _ = helper.kill();
+                let _ = helper.wait();
+                if let Some(timeline) = timeline {
+                    let _ = timeline.record(QemuTimelinePhase::DumpHelperTimedOut);
+                }
+                let _ = fs::remove_file(&pending_path);
+                return failure("QEMU dump helper exceeded its fixed deadline".to_string());
+            }
+            Err(error) => return failure(format!("poll QEMU dump helper: {error}")),
+        }
+    };
+    if let Some(timeline) = timeline {
+        let _ = timeline.record(QemuTimelinePhase::DumpHelperExited);
+    }
+    let mut result_bytes = Vec::new();
+    if let Some(mut stdout) = helper.stdout.take() {
+        let _ = stdout.by_ref().take(4096).read_to_end(&mut result_bytes);
+    }
+    let helper_result = serde_json::from_slice::<DumpHelperResult>(&result_bytes).ok();
+    if status.is_none_or(|status| !status.success())
+        || helper_result
+            .as_ref()
+            .is_none_or(|result| result.schema_version != 1 || !result.success)
+    {
+        let win32_error = helper_result.and_then(|result| result.win32_error);
+        let _ = fs::remove_file(&pending_path);
+        return DumpOutcome {
+            win32_error,
+            ..failure("QEMU dump helper reported failure".to_string())
+        };
+    }
+    if let Err(error) = output.sync_all() {
+        let _ = fs::remove_file(&pending_path);
+        return failure(format!("flush QEMU dump: {error}"));
+    }
+    drop(output);
+    let (byte_size, sha256) = match hash_file(&pending_path) {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = fs::remove_file(&pending_path);
+            return failure(format!("hash QEMU dump: {error}"));
+        }
+    };
+    if let Err(error) = fs::rename(&pending_path, &final_path) {
+        let _ = fs::remove_file(&pending_path);
+        return failure(format!("commit QEMU dump: {error}"));
+    }
+    DumpOutcome {
+        success: true,
+        byte_size: Some(byte_size),
+        sha256: Some(sha256),
+        failure: None,
+        win32_error: None,
+    }
+}
+
+fn hash_file(path: &Path) -> io::Result<(u64, String)> {
+    let mut file = File::open(path)?;
+    let mut hash = Sha256::new();
+    let bytes = io::copy(&mut file, &mut hash)?;
+    Ok((bytes, format!("{:x}", hash.finalize())))
+}
+
+fn reconcile_dump_retention(root: &Path, retain: usize) -> io::Result<usize> {
+    fs::create_dir_all(root)?;
+    let root_metadata = fs::symlink_metadata(root)?;
+    if !root_metadata.is_dir() || root_metadata.file_type().is_symlink() {
+        return Err(io::Error::other(
+            "QEMU dump root is not a regular directory",
+        ));
+    }
+    let canonical_root = fs::canonicalize(root)?;
+    let mut completed = Vec::new();
+    for entry in fs::read_dir(root)?.take(128) {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.len() != 32 || !name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        if !entry.path().join("qemu-hang-dump.json").is_file() {
+            continue;
+        }
+        let canonical = fs::canonicalize(entry.path())?;
+        if canonical.parent() != Some(canonical_root.as_path()) {
+            continue;
+        }
+        completed.push((metadata.modified()?, canonical));
+    }
+    completed.sort_by_key(|(modified, _)| *modified);
+    let remove_count = completed.len().saturating_sub(retain);
+    for (_, path) in completed.into_iter().take(remove_count) {
+        fs::remove_dir_all(path)?;
+    }
+    Ok(remove_count)
 }
 
 pub(crate) fn classify_hang_signature(
@@ -565,6 +942,7 @@ mod tests {
             &process,
             &progress,
             &QemuQmpSnapshot::default(),
+            &QemuDumpCaptureSummary::default(),
         )
         .unwrap();
 
@@ -582,6 +960,58 @@ mod tests {
         );
         assert_eq!(hang_json["process"]["cpu_user_100ns"], 12);
         assert_eq!(hang_json["dump"]["attempted"], false);
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn retention_keeps_only_the_newest_completed_incidents() {
+        let directory = temp_dir("retention");
+        let root = directory.join("qemu-dumps");
+        fs::create_dir_all(&root).unwrap();
+        let ids = [
+            "00000000000000000000000000000001",
+            "00000000000000000000000000000002",
+            "00000000000000000000000000000003",
+            "00000000000000000000000000000004",
+        ];
+        for id in ids {
+            let incident = root.join(id);
+            fs::create_dir(&incident).unwrap();
+            fs::write(incident.join("qemu-hang-dump.json"), b"{}\n").unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let pending = root.join("ffffffffffffffffffffffffffffffff");
+        fs::create_dir(&pending).unwrap();
+        fs::write(pending.join("qemu-hang.dmp.pending"), b"partial").unwrap();
+
+        assert_eq!(reconcile_dump_retention(&root, 3).unwrap(), 1);
+        assert!(!root.join(ids[0]).exists());
+        assert!(ids[1..].iter().all(|id| root.join(id).is_dir()));
+        assert!(pending.is_dir(), "active pending incidents must be ignored");
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retention_never_follows_reparse_like_symlinks_outside_root() {
+        use std::os::unix::fs::symlink;
+
+        let directory = temp_dir("retention-symlink");
+        let root = directory.join("qemu-dumps");
+        let outside = directory.join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("keep.txt"), b"keep").unwrap();
+        symlink(&outside, root.join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")).unwrap();
+
+        assert_eq!(reconcile_dump_retention(&root, 0).unwrap(), 0);
+        assert_eq!(fs::read(outside.join("keep.txt")).unwrap(), b"keep");
+
+        let linked_root = directory.join("linked-root");
+        symlink(&root, &linked_root).unwrap();
+        assert!(reconcile_dump_retention(&linked_root, 0).is_err());
 
         fs::remove_dir_all(directory).unwrap();
     }

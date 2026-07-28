@@ -88,6 +88,7 @@ pub struct SandboxJob {
     completion_port: OwnedHandle,
     monitor: Mutex<JobMonitor>,
     journal: Option<Mutex<QemuJournal>>,
+    qemu_telemetry: Option<lsb_platform::PlatformQemuTelemetryContext>,
 }
 
 impl SandboxJob {
@@ -121,6 +122,7 @@ impl SandboxJob {
             completion_port: unsafe { OwnedHandle::from_raw_handle(completion_raw as _) },
             monitor: Mutex::new(JobMonitor::default()),
             journal: None,
+            qemu_telemetry: None,
         };
         let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -161,6 +163,10 @@ impl SandboxJob {
             );
         }
         Ok(job)
+    }
+
+    pub fn attach_qemu_telemetry(&mut self, context: lsb_platform::PlatformQemuTelemetryContext) {
+        self.qemu_telemetry = Some(context);
     }
 
     pub fn check_notifications(&self) -> Result<()> {
@@ -374,6 +380,10 @@ fn notification_pid(value: usize) -> Result<u32> {
 impl lsb_vm::PlatformProcessContainment for SandboxJob {
     fn prepare_process(&self) -> Result<()> {
         self.prepare_journal()
+    }
+
+    fn qemu_telemetry_context(&self) -> Option<lsb_platform::PlatformQemuTelemetryContext> {
+        self.qemu_telemetry.clone()
     }
 
     fn assign_process(&self, process: &std::process::Child) -> Result<()> {

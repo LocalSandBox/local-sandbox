@@ -1,10 +1,11 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('SignPe', 'SignTelemetryPe', 'SignUpdaterPe', 'VerifyUpdaterPe', 'SignTestNode', 'Catalog', 'Verify')]
+    [ValidateSet('SignPe', 'SignDumpHelperPe', 'SignTelemetryPe', 'SignUpdaterPe', 'VerifyUpdaterPe', 'SignTestNode', 'Catalog', 'Verify')]
     [string]$Mode,
 
     [string]$ServiceBinary,
+    [string]$DumpHelperBinary,
     [string[]]$TelemetryBinary,
     [string]$UpdaterBinary,
     [string]$ClientBinary,
@@ -387,10 +388,12 @@ function Verify-BundleSignatures {
     try {
         $catalog = Resolve-ExistingFile (Join-Path $root 'manifests\LocalSandboxSeaWork.cat') 'catalog'
         $service = Resolve-ExistingFile (Join-Path $root 'bin\localsandbox-seawork-service.exe') 'service binary'
+        $dumpHelper = Resolve-ExistingFile (Join-Path $root 'bin\localsandbox-qemu-dump-helper.exe') 'QEMU dump helper'
         $handler = Resolve-ExistingFile (Join-Path $root 'bin\crashpad_handler.exe') 'Crashpad handler'
         $wer = Resolve-ExistingFile (Join-Path $root 'bin\crashpad_wer.dll') 'Crashpad WER module'
         $files = Get-BundleFiles $root -ExcludeCatalog
         Assert-Signer $service -RequireTimestamp:(-not $SkipTimestamp) | Out-Null
+        Assert-Signer $dumpHelper -RequireTimestamp:(-not $SkipTimestamp) | Out-Null
         Assert-Signer $handler -RequireTimestamp:(-not $SkipTimestamp) | Out-Null
         Assert-Signer $wer -RequireTimestamp:(-not $SkipTimestamp) | Out-Null
         Assert-Signer $catalog -RequireTimestamp:(-not $SkipTimestamp) | Out-Null
@@ -411,6 +414,7 @@ function Verify-BundleSignatures {
             }
             $representativeMembers = @(
                 'bin/localsandbox-seawork-service.exe'
+                'bin/localsandbox-qemu-dump-helper.exe'
                 'bin/crashpad_handler.exe'
                 'bin/crashpad_wer.dll'
                 'manifests/bundle.json'
@@ -441,6 +445,14 @@ switch ($Mode) {
             throw 'ServiceBinary has an unexpected filename'
         }
         $result = Invoke-Sign $service
+        $result | ConvertTo-Json -Compress
+    }
+    'SignDumpHelperPe' {
+        $helper = Resolve-ExistingFile $DumpHelperBinary 'DumpHelperBinary'
+        if ((Split-Path -Leaf $helper) -cne 'localsandbox-qemu-dump-helper.exe') {
+            throw 'DumpHelperBinary has an unexpected filename'
+        }
+        $result = Invoke-Sign $helper
         $result | ConvertTo-Json -Compress
     }
     'SignTelemetryPe' {

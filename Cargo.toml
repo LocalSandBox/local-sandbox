@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/lsb-cli",
     "crates/lsb-platform",
+    "crates/lsb-qemu-dump-helper",
     "crates/lsb-proto",
     "crates/lsb-proxy",
     "crates/lsb-sdk",

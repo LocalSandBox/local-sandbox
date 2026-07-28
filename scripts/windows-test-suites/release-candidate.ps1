@@ -171,6 +171,7 @@ else {
     [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
 }
 $service = Join-Path $targetRoot 'x86_64-pc-windows-msvc\release\localsandbox-seawork-service.exe'
+$dumpHelper = Join-Path $targetRoot 'x86_64-pc-windows-msvc\release\localsandbox-qemu-dump-helper.exe'
 $pdb = Join-Path $targetRoot 'x86_64-pc-windows-msvc\release\localsandbox_seawork_service.pdb'
 $eventTools = Resolve-EventMessageTools
 $priorRustFlags = $env:RUSTFLAGS
@@ -180,7 +181,7 @@ $priorRcPath = $env:LSB_WINDOWS_RC_PATH
 $priorPublisher = $env:SEAWORK_PUBLISHER_SHA256
 $priorPreviousPublisher = $env:SEAWORK_PUBLISHER_SHA256_PREVIOUS
 try {
-    foreach ($outputPath in @($service, $pdb)) {
+    foreach ($outputPath in @($service, $dumpHelper, $pdb)) {
         if (Test-Path -LiteralPath $outputPath) {
             Resolve-RegularFile $outputPath 'cached release output' | Out-Null
             Remove-Item -LiteralPath $outputPath -Force
@@ -193,7 +194,7 @@ try {
     $env:SEAWORK_PUBLISHER_SHA256 = [string]$certificateInfo.sha256_thumbprint
     $env:SEAWORK_PUBLISHER_SHA256_PREVIOUS = ''
     Invoke-Native cargo @(
-        'build', '-p', 'lsb-seawork-service', '--locked', '--release',
+        'build', '-p', 'lsb-seawork-service', '-p', 'lsb-qemu-dump-helper', '--locked', '--release',
         '--target', 'x86_64-pc-windows-msvc', '--features', 'sentry-telemetry'
     ) 'production service build'
 }
@@ -206,6 +207,7 @@ finally {
     $env:SEAWORK_PUBLISHER_SHA256_PREVIOUS = $priorPreviousPublisher
 }
 Resolve-RegularFile $service 'release service PE' | Out-Null
+Resolve-RegularFile $dumpHelper 'release QEMU dump helper PE' | Out-Null
 Resolve-RegularFile $pdb 'release service PDB' | Out-Null
 
 $eventUnsigned = Join-Path $releaseRoot 'event-messages-unsigned.json'
@@ -223,6 +225,15 @@ Invoke-Native (Join-Path $PWD 'scripts\sign-seawork-service.ps1') @(
     '-ExpectedPublisherSubject', [string]$certificateInfo.subject,
     '-ExpectedPublisherSha256', [string]$certificateInfo.sha256_thumbprint
 ) 'service PE signing'
+Invoke-Native (Join-Path $PWD 'scripts\sign-seawork-service.ps1') @(
+    '-Mode', 'SignDumpHelperPe',
+    '-UseLocalMachineStore',
+    '-DumpHelperBinary', $dumpHelper,
+    '-PfxPath', $pfx,
+    '-PasswordFile', $passwordFile,
+    '-ExpectedPublisherSubject', [string]$certificateInfo.subject,
+    '-ExpectedPublisherSha256', [string]$certificateInfo.sha256_thumbprint
+) 'QEMU dump helper PE signing'
 & (Join-Path $PWD 'scripts\sign-seawork-service.ps1') `
     -Mode SignTelemetryPe `
     -UseLocalMachineStore `
@@ -273,6 +284,7 @@ Invoke-Native cargo @(
     '--version', $version,
     '--output-dir', $out,
     '--service-binary', $service,
+    '--dump-helper', $dumpHelper,
     '--crashpad-handler', $crashpadHandler,
     '--crashpad-wer', $crashpadWer,
     '--runtime-dir', $runtime,
