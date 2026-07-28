@@ -191,6 +191,7 @@ pub struct ManagedVm {
     commands: mpsc::SyncSender<Command>,
     thread: Option<std::thread::JoinHandle<()>>,
     containment: Arc<SandboxJob>,
+    telemetry: crate::telemetry::Telemetry,
 }
 
 impl std::fmt::Debug for ManagedVm {
@@ -207,6 +208,7 @@ impl ManagedVm {
         session_cancellation: CancellationToken,
         startup_cancellation: CancellationToken,
         telemetry: crate::telemetry::Telemetry,
+        trace_parent: crate::telemetry::SpanParent,
     ) -> Result<Self> {
         validate_spec(engine, &spec)?;
         let image_relative_path = engine.qemu_image_relative_path()?;
@@ -217,6 +219,7 @@ impl ManagedVm {
             correlation_id: spec.correlation_id.clone(),
             resource_id: spec.resource_id.clone(),
         });
+        containment.attach_qemu_lifecycle(telemetry.clone(), trace_parent.clone());
         transaction.set_state(LifecycleState::Preparing)?;
         containment.attach_journal(
             transaction,
@@ -226,6 +229,7 @@ impl ManagedVm {
         let containment = Arc::new(containment);
         let thread_containment = containment.clone();
         let engine = engine.clone();
+        let managed_telemetry = telemetry.clone();
         let (commands, receiver) = mpsc::sync_channel(8);
         let (ready, started) = mpsc::sync_channel(1);
         let thread = std::thread::Builder::new()
@@ -240,6 +244,7 @@ impl ManagedVm {
                     receiver,
                     ready,
                     telemetry,
+                    trace_parent,
                 )
             })
             .context("spawn managed VM thread")?;
@@ -251,6 +256,7 @@ impl ManagedVm {
                 commands,
                 thread: Some(thread),
                 containment,
+                telemetry: managed_telemetry,
             }),
             Err(error) => {
                 let _ = thread.join();
@@ -259,7 +265,15 @@ impl ManagedVm {
         }
     }
 
-    pub fn stop(mut self, timeout: Duration) -> Result<()> {
+    pub fn stop(
+        mut self,
+        timeout: Duration,
+        trace_parent: Option<crate::telemetry::SpanParent>,
+    ) -> Result<()> {
+        if let Some(parent) = trace_parent {
+            self.containment
+                .attach_qemu_lifecycle(self.telemetry.clone(), parent);
+        }
         let (reply, response) = mpsc::sync_channel(1);
         // A live shutdown-timeout snapshot may legitimately spend 30 seconds in
         // the dump helper. Keep the service watchdog outside that reviewed
@@ -489,6 +503,7 @@ fn run(
     commands: mpsc::Receiver<Command>,
     ready: mpsc::SyncSender<Result<()>>,
     telemetry: crate::telemetry::Telemetry,
+    trace_parent: crate::telemetry::SpanParent,
 ) {
     telemetry.update_crash_context(
         "sandbox.boot",
@@ -502,7 +517,12 @@ fn run(
         let _ = ready.send(Err(anyhow::anyhow!("operation cancelled")));
         return;
     }
-    let result = build_and_start(&engine, &mut spec, process_containment.clone());
+    let result = build_and_start(
+        &engine,
+        &mut spec,
+        process_containment.clone(),
+        &trace_parent,
+    );
     let Ok((sandbox, proxy_handle)) = result else {
         if let Err(error) = &result {
             capture_vm_failure(&telemetry, &engine, &spec, error, "boot");
@@ -547,6 +567,7 @@ fn run(
         Some(&spec.instance_dir),
         true,
     );
+    process_containment.clear_qemu_lifecycle();
     loop {
         if let Err(error) = process_containment.check_notifications() {
             eprintln!("authoritative QEMU Job monitor failed: {error}");
@@ -946,8 +967,30 @@ fn stop_and_cleanup(
         .to_string();
     let file_id = crate::resource::mount::protected_identity(&spec.instance_dir)?;
     containment.require_staging_identity(&relative_path, &file_id)?;
-    cleanup_instance(engine, spec)?;
-    containment.finish_transaction()
+    let cleanup_span = containment.start_lifecycle_span(
+        "sandbox.instance_cleanup",
+        "remove protected sandbox instance",
+    );
+    let cleanup_result = cleanup_instance(engine, spec);
+    if let Some(span) = cleanup_span {
+        span.finish(if cleanup_result.is_ok() {
+            crate::telemetry::SpanStatus::Ok
+        } else {
+            crate::telemetry::SpanStatus::InternalError
+        });
+    }
+    cleanup_result?;
+    let ledger_span =
+        containment.start_lifecycle_span("sandbox.ledger_finish", "finish sandbox resource ledger");
+    let ledger_result = containment.finish_transaction();
+    if let Some(span) = ledger_span {
+        span.finish(if ledger_result.is_ok() {
+            crate::telemetry::SpanStatus::Ok
+        } else {
+            crate::telemetry::SpanStatus::InternalError
+        });
+    }
+    ledger_result
 }
 
 fn spawn(sandbox: &lsb_vm::Sandbox, spec: ManagedExecSpec) -> Result<ManagedProcess> {
@@ -1200,23 +1243,36 @@ fn build_and_start(
     engine: &ServiceEngineConfig,
     spec: &mut ManagedVmSpec,
     process_containment: Arc<SandboxJob>,
+    trace_parent: &crate::telemetry::SpanParent,
 ) -> Result<(lsb_vm::Sandbox, Option<lsb_proxy::ProxyHandle>)> {
-    let (network_attachment, proxy_handle) = match spec.proxy_config.take() {
-        Some(config) => {
-            let link = lsb_proxy::create_proxy_link()?;
-            let attachment = match link.vm {
-                lsb_proxy::VmNetworkAttachment::FileDescriptor(fd) => {
-                    lsb_vm::PlatformNetworkAttachment::file_descriptor(fd)
-                }
-                lsb_proxy::VmNetworkAttachment::QemuStream { host, port } => {
-                    lsb_vm::PlatformNetworkAttachment::qemu_stream(host, port)
-                }
-            };
-            let handle = lsb_proxy::start_link(link.host, config)?;
-            (Some(attachment), Some(handle))
-        }
-        None => (None, None),
-    };
+    let proxy_span = trace_parent.start_child(crate::telemetry::SpanDescription::child(
+        "sandbox.proxy_start",
+        "create protected sandbox proxy",
+    ));
+    let proxy_result = (|| {
+        Ok(match spec.proxy_config.take() {
+            Some(config) => {
+                let link = lsb_proxy::create_proxy_link()?;
+                let attachment = match link.vm {
+                    lsb_proxy::VmNetworkAttachment::FileDescriptor(fd) => {
+                        lsb_vm::PlatformNetworkAttachment::file_descriptor(fd)
+                    }
+                    lsb_proxy::VmNetworkAttachment::QemuStream { host, port } => {
+                        lsb_vm::PlatformNetworkAttachment::qemu_stream(host, port)
+                    }
+                };
+                let handle = lsb_proxy::start_link(link.host, config)?;
+                (Some(attachment), Some(handle))
+            }
+            None => (None, None),
+        })
+    })();
+    proxy_span.finish(if proxy_result.is_ok() {
+        crate::telemetry::SpanStatus::Ok
+    } else {
+        crate::telemetry::SpanStatus::InternalError
+    });
+    let (network_attachment, proxy_handle) = proxy_result?;
     let mut builder = lsb_vm::Sandbox::builder()
         .data_dir(path_text(engine.resources_root())?)
         .service_qemu_executable(path_text(engine.qemu_executable())?)
@@ -1238,7 +1294,17 @@ fn build_and_start(
         });
     }
     let sandbox = builder.build()?;
-    sandbox.start()?;
+    let mount_span = trace_parent.start_child(crate::telemetry::SpanDescription::child(
+        "sandbox.mount_initialize",
+        "initialize sandbox mounts and boot VM",
+    ));
+    let start_result = sandbox.start();
+    mount_span.finish(if start_result.is_ok() {
+        crate::telemetry::SpanStatus::Ok
+    } else {
+        crate::telemetry::SpanStatus::InternalError
+    });
+    start_result?;
     if let Some(handle) = &proxy_handle {
         if handle.requires_guest_ca {
             if let Err(error) = install_proxy_ca(&sandbox, &handle.ca_cert_pem) {
@@ -1439,5 +1505,94 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("cancelled"));
+    }
+
+    #[cfg(feature = "qemu-hang-test-hooks")]
+    #[test]
+    #[ignore = "requires Windows 11 x86_64 with WHPX and provisioned QEMU/runtime assets"]
+    fn windows_service_owned_qemu_hang_smoke() {
+        let assets = PathBuf::from(
+            std::env::var_os("LSB_WINDOWS_TEST_ASSETS_ROOT").expect("LSB_WINDOWS_TEST_ASSETS_ROOT"),
+        );
+        let service_root = PathBuf::from(
+            std::env::var_os("LSB_QEMU_HANG_TEST_SERVICE_ROOT")
+                .expect("LSB_QEMU_HANG_TEST_SERVICE_ROOT"),
+        );
+        let paths = ServicePaths::for_test(service_root);
+        paths.prepare().unwrap();
+        let engine = ServiceEngineConfig::from_verified_bundle(
+            assets.clone(),
+            assets.join("qemu/qemu-system-x86_64.exe"),
+            assets.join("runtime/Image"),
+            assets.join("runtime/initramfs.cpio.gz"),
+            assets.join("runtime/rootfs.ext4"),
+            &paths,
+        )
+        .unwrap();
+        let identity =
+            crate::session::ClientIdentityKey::for_test("S-1-5-21-qemu-smoke", "S-1-5-5-1-1", 1);
+        let resource = ResourceHandle::random().unwrap();
+        let instance_dir = engine.resources_root().join(resource.to_string());
+        std::fs::create_dir(&instance_dir).unwrap();
+        let rootfs_image = instance_dir.join("rootfs.ext4");
+        std::fs::copy(engine.base_rootfs(), &rootfs_image).unwrap();
+        let transaction = crate::resource::transaction::ResourceTransaction::reserve(
+            engine.ledger_root(),
+            &resource.to_string(),
+            &identity,
+        )
+        .unwrap();
+        let telemetry = crate::telemetry::Telemetry::disabled();
+        let transaction_span = telemetry.start_span(
+            crate::telemetry::SpanDescription::transaction("sandbox.start"),
+        );
+        let result = ManagedVm::start(
+            &engine,
+            transaction,
+            ManagedVmSpec {
+                correlation_id: "windows-service-qemu-hang-smoke".to_string(),
+                resource_id: resource.to_string(),
+                instance_dir,
+                rootfs_image,
+                cpus: 2,
+                memory_mib: 2048,
+                mounts: Vec::new(),
+                proxy_config: None,
+            },
+            CancellationToken::default(),
+            CancellationToken::default(),
+            telemetry,
+            transaction_span.parent(),
+        );
+        transaction_span.finish(crate::telemetry::SpanStatus::InternalError);
+        let error = result.expect_err("test hook must force a service-owned QEMU timeout");
+        assert!(error.to_string().contains("guest-ready"));
+
+        let incident_root = engine.telemetry_root().join("incidents");
+        let incidents = std::fs::read_dir(&incident_root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.is_dir())
+            .collect::<Vec<_>>();
+        assert_eq!(incidents.len(), 1);
+        let incident = &incidents[0];
+        let hang: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(incident.join("qemu-hang.json")).unwrap())
+                .unwrap();
+        assert_eq!(hang["failure_kind"], "guest_ready_timeout");
+        assert_eq!(hang["job"]["active_pids"], serde_json::json!([]));
+        assert_eq!(hang["job"]["active_process_zero_observed"], true);
+        assert_eq!(hang["job"]["termination_requested"], true);
+        assert_eq!(hang["job"]["termination_succeeded"], true);
+        let hyperv: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(incident.join("hyperv-events.json")).unwrap())
+                .unwrap();
+        assert_eq!(hyperv["channels"].as_array().map(Vec::len), Some(3));
+        assert!(incident.join("incident.json").is_file());
+        let mut archive =
+            zip::ZipArchive::new(File::open(incident.join("incident.zip")).unwrap()).unwrap();
+        assert!(archive.by_name("qemu-hang.json").is_ok());
+        assert!(archive.by_name("hyperv-events.json").is_ok());
+        assert!(archive.by_name("qemu-hang.dmp").is_err());
     }
 }

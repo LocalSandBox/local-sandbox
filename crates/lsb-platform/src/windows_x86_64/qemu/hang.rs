@@ -60,11 +60,14 @@ pub(crate) enum QemuTimelinePhase {
     ForwardPipeOpenStarted,
     ForwardPipeOpened,
     GuestReadyWaitStarted,
+    GuestReadyWaitCompleted,
     FirstSerialByte,
     FirstStdoutByte,
     FirstStderrByte,
     FirstControlByte,
     GuestReadyTimeout,
+    HangSnapshotStarted,
+    HangSnapshotCompleted,
     QmpSnapshotStarted,
     QmpSnapshotCompleted,
     HypervSnapshotStarted,
@@ -77,7 +80,10 @@ pub(crate) enum QemuTimelinePhase {
     QemuShutdownTimeout,
     TerminationRequested,
     TerminateJobReturned,
+    WaitExitStarted,
+    WaitExitTimedOut,
     QemuProcessExited,
+    JobDrainStarted,
     JobActiveProcessZero,
     ControlReaderExited,
     ForwardReaderExited,
@@ -755,10 +761,18 @@ pub(crate) struct QemuTimeline {
     path: Arc<PathBuf>,
     started_at: Instant,
     state: Arc<Mutex<TimelineState>>,
+    lifecycle_observer: Option<Arc<dyn crate::PlatformProcessContainment>>,
 }
 
 impl QemuTimeline {
     pub(crate) fn create(directory: &Path) -> io::Result<Self> {
+        Self::create_with_observer(directory, None)
+    }
+
+    pub(crate) fn create_with_observer(
+        directory: &Path,
+        lifecycle_observer: Option<Arc<dyn crate::PlatformProcessContainment>>,
+    ) -> io::Result<Self> {
         fs::create_dir_all(directory)?;
         let path = directory.join(TIMELINE_FILE);
         let file = OpenOptions::new()
@@ -771,6 +785,7 @@ impl QemuTimeline {
             path: Arc::new(path),
             started_at: Instant::now(),
             state: Arc::new(Mutex::new(TimelineState { file, sequence: 0 })),
+            lifecycle_observer,
         })
     }
 
@@ -824,7 +839,96 @@ impl QemuTimeline {
         state.file.write_all(&encoded)?;
         state.file.flush()?;
         state.sequence = sequence.saturating_add(1);
+        drop(state);
+        self.notify_lifecycle(phase, outcome);
         Ok(())
+    }
+
+    fn notify_lifecycle(&self, phase: QemuTimelinePhase, outcome: Option<&str>) {
+        let Some(observer) = &self.lifecycle_observer else {
+            return;
+        };
+        use crate::{
+            PlatformQemuLifecycleEvent as Event, PlatformQemuLifecyclePhase as Phase,
+            PlatformQemuLifecycleState as State,
+        };
+        let succeeded = || Some(outcome == Some("success"));
+        let events = match phase {
+            QemuTimelinePhase::PreflightStarted => vec![(Phase::Preflight, State::Started, None)],
+            QemuTimelinePhase::PreflightCompleted => {
+                vec![(Phase::Preflight, State::Completed, Some(true))]
+            }
+            QemuTimelinePhase::QemuSpawnRequested => vec![(Phase::Spawn, State::Started, None)],
+            QemuTimelinePhase::QemuSpawnedSuspended => vec![
+                (Phase::Spawn, State::Completed, Some(true)),
+                (Phase::JobAssign, State::Started, None),
+            ],
+            QemuTimelinePhase::QemuJobAssigned => {
+                vec![(Phase::JobAssign, State::Completed, Some(true))]
+            }
+            QemuTimelinePhase::ControlPipeOpenStarted => {
+                vec![(Phase::ControlOpen, State::Started, None)]
+            }
+            QemuTimelinePhase::ControlPipeOpened => {
+                vec![(Phase::ControlOpen, State::Completed, succeeded())]
+            }
+            QemuTimelinePhase::ForwardPipeOpenStarted => {
+                vec![(Phase::ForwardOpen, State::Started, None)]
+            }
+            QemuTimelinePhase::ForwardPipeOpened => {
+                vec![(Phase::ForwardOpen, State::Completed, succeeded())]
+            }
+            QemuTimelinePhase::GuestReadyWaitStarted => {
+                vec![(Phase::GuestReadyWait, State::Started, None)]
+            }
+            QemuTimelinePhase::GuestReadyWaitCompleted => {
+                vec![(Phase::GuestReadyWait, State::Completed, succeeded())]
+            }
+            QemuTimelinePhase::GuestReadyTimeout => {
+                vec![(Phase::GuestReadyWait, State::Completed, Some(false))]
+            }
+            QemuTimelinePhase::HangSnapshotStarted => {
+                vec![(Phase::HangSnapshot, State::Started, None)]
+            }
+            QemuTimelinePhase::HangSnapshotCompleted => {
+                vec![(Phase::HangSnapshot, State::Completed, succeeded())]
+            }
+            QemuTimelinePhase::DumpStarted => vec![(Phase::Dump, State::Started, None)],
+            QemuTimelinePhase::DumpCompleted
+            | QemuTimelinePhase::DumpHelperTimedOut
+            | QemuTimelinePhase::DumpHelperExited => {
+                if matches!(phase, QemuTimelinePhase::DumpCompleted) {
+                    vec![(Phase::Dump, State::Completed, succeeded())]
+                } else {
+                    Vec::new()
+                }
+            }
+            QemuTimelinePhase::TerminationRequested => {
+                vec![(Phase::Terminate, State::Started, None)]
+            }
+            QemuTimelinePhase::TerminateJobReturned => {
+                vec![(Phase::Terminate, State::Completed, succeeded())]
+            }
+            QemuTimelinePhase::WaitExitStarted => vec![(Phase::WaitExit, State::Started, None)],
+            QemuTimelinePhase::WaitExitTimedOut => {
+                vec![(Phase::WaitExit, State::Completed, Some(false))]
+            }
+            QemuTimelinePhase::QemuProcessExited => {
+                vec![(Phase::WaitExit, State::Completed, Some(true))]
+            }
+            QemuTimelinePhase::JobDrainStarted => vec![(Phase::JobDrain, State::Started, None)],
+            QemuTimelinePhase::JobActiveProcessZero => {
+                vec![(Phase::JobDrain, State::Completed, Some(true))]
+            }
+            _ => Vec::new(),
+        };
+        for (phase, state, succeeded) in events {
+            let _ = observer.qemu_lifecycle_event(Event {
+                phase,
+                state,
+                succeeded,
+            });
+        }
     }
 }
 
@@ -863,6 +967,30 @@ fn generate_incident_id() -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Child;
+
+    #[derive(Debug, Default)]
+    struct LifecycleRecorder {
+        events: Mutex<Vec<crate::PlatformQemuLifecycleEvent>>,
+    }
+
+    impl crate::PlatformProcessContainment for LifecycleRecorder {
+        fn qemu_lifecycle_event(
+            &self,
+            event: crate::PlatformQemuLifecycleEvent,
+        ) -> anyhow::Result<()> {
+            self.events.lock().unwrap().push(event);
+            Ok(())
+        }
+
+        fn assign_process(&self, _process: &Child) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn terminate(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -919,6 +1047,68 @@ mod tests {
         assert_eq!(second["outcome"], "success");
         assert!(!contents.contains('\r'));
 
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn timeline_drives_sentry_independent_lifecycle_events() {
+        let directory = temp_dir("lifecycle");
+        let recorder = Arc::new(LifecycleRecorder::default());
+        let timeline =
+            QemuTimeline::create_with_observer(&directory, Some(recorder.clone())).unwrap();
+        timeline
+            .record(QemuTimelinePhase::QemuSpawnRequested)
+            .unwrap();
+        timeline
+            .record(QemuTimelinePhase::QemuSpawnedSuspended)
+            .unwrap();
+        timeline.record(QemuTimelinePhase::QemuJobAssigned).unwrap();
+        timeline
+            .record(QemuTimelinePhase::GuestReadyWaitStarted)
+            .unwrap();
+        timeline
+            .record_result(
+                QemuTimelinePhase::GuestReadyTimeout,
+                None,
+                Some("failure"),
+                Some("timeout"),
+            )
+            .unwrap();
+        assert_eq!(
+            *recorder.events.lock().unwrap(),
+            [
+                crate::PlatformQemuLifecycleEvent {
+                    phase: crate::PlatformQemuLifecyclePhase::Spawn,
+                    state: crate::PlatformQemuLifecycleState::Started,
+                    succeeded: None,
+                },
+                crate::PlatformQemuLifecycleEvent {
+                    phase: crate::PlatformQemuLifecyclePhase::Spawn,
+                    state: crate::PlatformQemuLifecycleState::Completed,
+                    succeeded: Some(true),
+                },
+                crate::PlatformQemuLifecycleEvent {
+                    phase: crate::PlatformQemuLifecyclePhase::JobAssign,
+                    state: crate::PlatformQemuLifecycleState::Started,
+                    succeeded: None,
+                },
+                crate::PlatformQemuLifecycleEvent {
+                    phase: crate::PlatformQemuLifecyclePhase::JobAssign,
+                    state: crate::PlatformQemuLifecycleState::Completed,
+                    succeeded: Some(true),
+                },
+                crate::PlatformQemuLifecycleEvent {
+                    phase: crate::PlatformQemuLifecyclePhase::GuestReadyWait,
+                    state: crate::PlatformQemuLifecycleState::Started,
+                    succeeded: None,
+                },
+                crate::PlatformQemuLifecycleEvent {
+                    phase: crate::PlatformQemuLifecyclePhase::GuestReadyWait,
+                    state: crate::PlatformQemuLifecycleState::Completed,
+                    succeeded: Some(false),
+                },
+            ]
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 

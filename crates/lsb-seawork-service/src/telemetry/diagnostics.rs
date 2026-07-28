@@ -792,6 +792,69 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(feature = "qemu-hang-test-hooks")]
+    #[test]
+    #[ignore = "requires artifacts from the Windows QEMU hang telemetry smoke"]
+    fn windows_qemu_incident_packaging_smoke() {
+        let source = PathBuf::from(
+            std::env::var_os("LSB_QEMU_HANG_TEST_SOURCE_ARTIFACT_DIR")
+                .expect("LSB_QEMU_HANG_TEST_SOURCE_ARTIFACT_DIR"),
+        );
+        let incident_root = PathBuf::from(
+            std::env::var_os("LSB_QEMU_HANG_TEST_INCIDENT_ROOT")
+                .expect("LSB_QEMU_HANG_TEST_INCIDENT_ROOT"),
+        );
+        let snapshot = collect_incident(
+            &incident_root,
+            &source,
+            None,
+            &metadata(),
+            DiagnosticLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            snapshot
+                .attachments
+                .iter()
+                .map(|attachment| attachment.filename.as_str())
+                .collect::<Vec<_>>(),
+            ["incident.json", "incident.zip"]
+        );
+        for required in [
+            "qemu-hang.json",
+            "qemu-progress.jsonl",
+            "qemu-timeline.jsonl",
+            "qemu-hang-dump.json",
+            "boot.status.json",
+            "preflight.json",
+            "qemu.argv.redacted.txt",
+            "qemu.status.json",
+        ] {
+            assert!(
+                snapshot.directory.join(required).is_file(),
+                "packaged incident omitted {required}"
+            );
+        }
+        let mut archive =
+            ZipArchive::new(File::open(snapshot.directory.join("incident.zip")).unwrap()).unwrap();
+        let names = (0..archive.len())
+            .map(|index| archive.by_index(index).unwrap().name().to_string())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"incident.json".to_string()));
+        assert!(!names.iter().any(|name| name.ends_with(".dmp")));
+        assert!(!names
+            .iter()
+            .any(|name| !ARCHIVE_FILES.contains(&name.as_str())));
+        let mut argv = String::new();
+        archive
+            .by_name("qemu.argv.redacted.txt")
+            .unwrap()
+            .read_to_string(&mut argv)
+            .unwrap();
+        assert!(!argv.contains(r"\\.\pipe\"));
+        assert!(!argv.contains("LSB_QEMU_HANG_TEST"));
+    }
+
     #[test]
     fn rejected_snapshots_are_retained_under_a_count_bound() {
         let root = temporary_root("retention");

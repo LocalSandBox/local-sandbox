@@ -355,7 +355,36 @@ pub struct SpanGuard {
     status: SpanStatus,
 }
 
+#[derive(Clone)]
+pub(crate) struct SpanParent {
+    adapter: Arc<dyn Adapter>,
+    span_id: Option<u64>,
+}
+
+impl SpanParent {
+    pub(crate) fn start_child(&self, span: SpanDescription) -> SpanGuard {
+        let span_id = self.span_id.and_then(|parent_id| {
+            self.adapter
+                .start_span(Some(parent_id), span)
+                .ok()
+                .flatten()
+        });
+        SpanGuard {
+            adapter: self.adapter.clone(),
+            span_id,
+            status: SpanStatus::InternalError,
+        }
+    }
+}
+
 impl SpanGuard {
+    pub(crate) fn parent(&self) -> SpanParent {
+        SpanParent {
+            adapter: self.adapter.clone(),
+            span_id: self.span_id,
+        }
+    }
+
     pub fn start_child(&self, span: SpanDescription) -> SpanGuard {
         let span_id = self.adapter.start_span(self.span_id, span).ok().flatten();
         SpanGuard {
@@ -572,6 +601,28 @@ mod tests {
         let state = adapter.state.lock().unwrap();
         assert_eq!(state.spans[0].1, None);
         assert_eq!(state.spans[1].1, Some(1));
+    }
+
+    #[test]
+    fn cloned_span_parent_preserves_cross_thread_parentage() {
+        let adapter = Arc::new(FakeAdapter::default());
+        let telemetry = Telemetry::new(adapter.clone());
+        let transaction =
+            telemetry.start_span(SpanDescription::transaction(TRANSACTION_SANDBOX_START));
+        let parent = transaction.parent();
+        std::thread::spawn(move || {
+            parent
+                .start_child(SpanDescription::child("qemu.preflight", "qemu.preflight"))
+                .finish(SpanStatus::Ok);
+        })
+        .join()
+        .unwrap();
+        transaction.finish(SpanStatus::Ok);
+
+        let state = adapter.state.lock().unwrap();
+        assert_eq!(state.spans[1].1, Some(1));
+        assert_eq!(state.spans[1].2.operation, "qemu.preflight");
+        assert_eq!(state.finished, [(2, SpanStatus::Ok), (1, SpanStatus::Ok)]);
     }
 
     #[test]

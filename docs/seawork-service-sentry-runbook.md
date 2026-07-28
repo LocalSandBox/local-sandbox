@@ -69,6 +69,14 @@ unresponsive QMP endpoint, a failed/partial dump, Hyper-V channel errors, and
 whether serial or stderr output was observed. Disabled or empty Hyper-V
 channels are evidence, not a capture failure.
 
+The `sandbox.start` trace contains bounded child spans for instance preparation,
+rootfs cloning, proxy startup, QEMU preflight/spawn/Job assignment, control and
+forward channel opening, guest-ready wait, and mount initialization. The
+`sandbox.stop` trace contains hang snapshot, dump, termination, process-exit,
+Job-drain, instance-cleanup, and ledger-finish spans. Platform lifecycle events
+drive these spans through a Sentry-independent callback; the local timeline
+remains authoritative when trace sampling drops a transaction.
+
 Only the newest three completed local QEMU dump incidents are retained. A
 missing `sentry-receipt.json` means local evidence was captured but no Sentry
 acceptance receipt was committed. A retained incident under

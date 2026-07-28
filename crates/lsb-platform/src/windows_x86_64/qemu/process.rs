@@ -656,9 +656,11 @@ impl QemuSupervisor {
             },
             terminate_result.as_ref().err().map(process_error_category),
         );
+        self.record_timeline(QemuTimelinePhase::WaitExitStarted);
         let wait_result = self.wait_for_exit_without_status(self.config.terminate_timeout);
         if wait_result.is_ok() {
             self.record_timeline(QemuTimelinePhase::QemuProcessExited);
+            self.record_timeline(QemuTimelinePhase::JobDrainStarted);
         }
 
         match (terminate_result, wait_result) {

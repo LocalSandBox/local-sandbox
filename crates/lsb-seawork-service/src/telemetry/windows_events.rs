@@ -529,4 +529,38 @@ mod tests {
         );
         assert_eq!(xml_element(xml, "EventRecordID").as_deref(), Some("42"));
     }
+
+    #[cfg(feature = "qemu-hang-test-hooks")]
+    #[test]
+    #[ignore = "requires artifacts from the Windows QEMU hang telemetry smoke"]
+    fn windows_hyperv_evidence_smoke() {
+        let source = std::path::PathBuf::from(
+            std::env::var_os("LSB_QEMU_HANG_TEST_SOURCE_ARTIFACT_DIR")
+                .expect("LSB_QEMU_HANG_TEST_SOURCE_ARTIFACT_DIR"),
+        );
+        let output = std::path::PathBuf::from(
+            std::env::var_os("LSB_QEMU_HANG_TEST_HYPERV_ARTIFACT_DIR")
+                .expect("LSB_QEMU_HANG_TEST_HYPERV_ARTIFACT_DIR"),
+        );
+        std::fs::create_dir_all(&output).unwrap();
+        let hang: Value =
+            serde_json::from_slice(&std::fs::read(source.join("qemu-hang.json")).unwrap()).unwrap();
+        let incident = lsb_platform::PlatformQemuLiveIncident {
+            incident_id: hang["incident_id"].as_str().unwrap().to_string(),
+            artifact_directory: output.clone(),
+            qemu_creation_time_100ns: hang["process"]["creation_time"].as_u64().unwrap(),
+            snapshot_elapsed_ms: hang["elapsed_ms"].as_u64().unwrap(),
+        };
+        capture_hyperv_evidence(&incident).unwrap();
+        let evidence: Value =
+            serde_json::from_slice(&std::fs::read(output.join("hyperv-events.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            evidence["channels"].as_array().map(Vec::len),
+            Some(HYPERV_CHANNELS.len())
+        );
+        assert!(evidence["events"]
+            .as_array()
+            .is_some_and(|events| events.len() <= MAX_EVENTS));
+    }
 }

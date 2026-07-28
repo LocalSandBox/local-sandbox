@@ -228,10 +228,21 @@ impl WindowsQemuBoot {
             .as_ref()
             .map(QmpEndpoint::request_quit)
             .transpose();
+        if let Some(timeline) = &self.timeline {
+            let _ = timeline.record(QemuTimelinePhase::WaitExitStarted);
+        }
         let result = match self.supervisor.wait(DEFAULT_QEMU_SHUTDOWN_TIMEOUT) {
-            Ok(status) => Ok(Some(status)),
+            Ok(status) => {
+                if let Some(timeline) = &self.timeline {
+                    let _ = timeline.record(QemuTimelinePhase::QemuProcessExited);
+                    let _ = timeline.record(QemuTimelinePhase::JobDrainStarted);
+                }
+                self.update_final_job_snapshot();
+                Ok(Some(status))
+            }
             Err(QemuProcessError::WaitTimeout { .. }) => {
                 if let Some(timeline) = &self.timeline {
+                    let _ = timeline.record(QemuTimelinePhase::WaitExitTimedOut);
                     let _ = timeline.record(QemuTimelinePhase::QemuShutdownTimeout);
                 }
                 capture_live_timeout(
@@ -266,6 +277,20 @@ impl WindowsQemuBoot {
                 artifacts: self.artifacts.clone(),
             }),
         };
+        let control_mux_existed = self.control_mux.take().is_some();
+        let control_stream_existed = self.control_stream.take().is_some();
+        let control_reader_existed = control_mux_existed || control_stream_existed;
+        if control_reader_existed {
+            if let Some(timeline) = &self.timeline {
+                let _ = timeline.record(QemuTimelinePhase::ControlReaderExited);
+            }
+        }
+        let forward_reader_existed = self.forward_stream.take().is_some();
+        if forward_reader_existed {
+            if let Some(timeline) = &self.timeline {
+                let _ = timeline.record(QemuTimelinePhase::ForwardReaderExited);
+            }
+        }
         if let Some(timeline) = &self.timeline {
             let _ = timeline.record_result(
                 QemuTimelinePhase::InstanceCleanupCompleted,
@@ -674,7 +699,11 @@ pub(crate) fn launch_windows_qemu_boot(
     let artifacts = resolve_artifacts(&config)?;
     let observation_goal = BootObservationGoal::for_config(&config);
     prepare_artifacts(&artifacts)?;
-    let timeline = QemuTimeline::create(&artifacts.directory).ok();
+    let timeline = QemuTimeline::create_with_observer(
+        &artifacts.directory,
+        config.process_containment.clone(),
+    )
+    .ok();
     let qmp_endpoint = timeline
         .as_ref()
         .and_then(|timeline| QmpEndpoint::for_incident(timeline.incident_id()).ok());
@@ -954,6 +983,14 @@ pub(crate) fn launch_windows_qemu_boot(
             Ok(result) => {
                 let elapsed = result.elapsed;
                 let message = result.message;
+                if let Some(timeline) = &timeline {
+                    let _ = timeline.record_result(
+                        QemuTimelinePhase::GuestReadyWaitCompleted,
+                        Some(elapsed),
+                        Some("success"),
+                        None,
+                    );
+                }
                 if guest_has_session_mux(&message) {
                     let stream = control_stream.take().ok_or_else(|| {
                         QemuBootError::GuestReadyTransport {
@@ -1527,6 +1564,9 @@ fn capture_live_timeout(
     control_pipe_open: bool,
     guest_ready_bytes_received: u64,
 ) {
+    if let Some(timeline) = timeline {
+        let _ = timeline.record(QemuTimelinePhase::HangSnapshotStarted);
+    }
     let process = supervisor
         .process_snapshot()
         .unwrap_or_else(|_| QemuProcessSnapshot {
@@ -1585,7 +1625,7 @@ fn capture_live_timeout(
         timeline,
     );
     if let Some(timeline) = timeline {
-        let _ = write_initial_hang_artifact(
+        let hang_result = write_initial_hang_artifact(
             &artifacts.directory,
             timeline.incident_id(),
             failure_kind,
@@ -1595,6 +1635,16 @@ fn capture_live_timeout(
             &progress,
             &qmp,
             &dump,
+        );
+        let _ = timeline.record_result(
+            QemuTimelinePhase::HangSnapshotCompleted,
+            None,
+            Some(if hang_result.is_ok() {
+                "success"
+            } else {
+                "failure"
+            }),
+            hang_result.as_ref().err().map(|_| "artifact"),
         );
     }
 }

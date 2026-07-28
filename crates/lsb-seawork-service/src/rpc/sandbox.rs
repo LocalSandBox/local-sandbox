@@ -64,6 +64,7 @@ pub async fn start(
             .with_data("requested_memory_mib", memory_mib.to_string())
             .with_data("requested_disk_mib", disk_mib.to_string()),
     );
+    let prepare_parent = prepare_span.parent();
     let result = start_inner(
         telemetry.clone(),
         correlation_id.clone(),
@@ -83,6 +84,7 @@ pub async fn start(
         ports,
         network,
         cancellation,
+        prepare_parent,
     )
     .await;
     prepare_span.finish(if result.is_ok() {
@@ -130,6 +132,7 @@ async fn start_inner(
     ports: Vec<ServicePortSpec>,
     network: Option<ServiceNetworkSpec>,
     cancellation: CancellationToken,
+    trace_parent: crate::telemetry::SpanParent,
 ) -> Result<ResponseValue, ErrorCode> {
     if from.is_some() {
         return Err(ErrorCode::CheckpointUnsupported);
@@ -238,6 +241,7 @@ async fn start_inner(
             },
             &cancellation,
             &mut transaction,
+            &trace_parent,
         ) {
             Ok(spec) => spec,
             Err(error) => {
@@ -264,6 +268,7 @@ async fn start_inner(
             spec,
             cancellation,
             telemetry,
+            trace_parent,
         );
         match started {
             Ok(handle) => {
@@ -283,6 +288,7 @@ async fn start_inner(
                             &identity,
                             handle,
                             Duration::from_secs(30),
+                            None,
                         );
                         return Err(ErrorCode::ServiceUnavailable);
                     }
@@ -459,7 +465,16 @@ pub async fn stop(
         "sandbox.cleanup",
         "stop QEMU and clean sandbox resources",
     ));
-    let result = stop_inner(sessions, session_id, identity, &sandbox_id, deadline_ms).await;
+    let cleanup_parent = cleanup_span.parent();
+    let result = stop_inner(
+        sessions,
+        session_id,
+        identity,
+        &sandbox_id,
+        deadline_ms,
+        cleanup_parent,
+    )
+    .await;
     cleanup_span.finish(if result.is_ok() {
         SpanStatus::Ok
     } else {
@@ -491,13 +506,14 @@ async fn stop_inner(
     identity: ClientIdentityKey,
     sandbox_id: &str,
     deadline_ms: Option<u32>,
+    trace_parent: crate::telemetry::SpanParent,
 ) -> Result<ResponseValue, ErrorCode> {
     let handle = ResourceHandle::parse(sandbox_id).map_err(|_| ErrorCode::InvalidRequest)?;
     let timeout =
         Duration::from_millis(u64::from(deadline_ms.unwrap_or(30_000).clamp(100, 60_000)));
     tokio::task::spawn_blocking(move || {
         sessions
-            .stop_managed_vm(session_id, &identity, handle, timeout)
+            .stop_managed_vm(session_id, &identity, handle, timeout, Some(trace_parent))
             .map_err(|_| ErrorCode::ServiceUnavailable)
             .and_then(|found| {
                 if found {
@@ -583,6 +599,7 @@ fn prepare_instance(
     options: PrepareInstanceOptions,
     cancellation: &CancellationToken,
     transaction: &mut ResourceTransaction,
+    trace_parent: &crate::telemetry::SpanParent,
 ) -> Result<ManagedVmSpec> {
     cancellation.check()?;
     let identity_dir = engine.resources_root().join(identity_hash(identity));
@@ -612,6 +629,10 @@ fn prepare_instance(
         },
     )?;
     let rootfs_image = instance_dir.join("rootfs.ext4");
+    let clone_span = trace_parent.start_child(SpanDescription::child(
+        "sandbox.clone_rootfs",
+        "clone and size sandbox rootfs",
+    ));
     let result = (|| {
         copy_with_cancellation(engine.base_rootfs(), &rootfs_image, cancellation)
             .context("copy protected base rootfs")?;
@@ -636,6 +657,11 @@ fn prepare_instance(
             proxy_config: options.proxy_config,
         })
     })();
+    clone_span.finish(if result.is_ok() {
+        SpanStatus::Ok
+    } else {
+        SpanStatus::InternalError
+    });
     if result.is_err()
         && transaction
             .require_staging_identity(&relative_path, &instance_file_id)
@@ -732,6 +758,10 @@ mod tests {
         let mut transaction =
             ResourceTransaction::reserve(engine.ledger_root(), &sandbox_id.to_string(), &identity)
                 .unwrap();
+        let telemetry = Telemetry::disabled();
+        let trace_span =
+            telemetry.start_span(SpanDescription::transaction("test.prepare_instance"));
+        let trace_parent = trace_span.parent();
 
         let spec = prepare_instance(
             &engine,
@@ -747,6 +777,7 @@ mod tests {
             },
             &CancellationToken::default(),
             &mut transaction,
+            &trace_parent,
         )
         .unwrap();
         assert_eq!(

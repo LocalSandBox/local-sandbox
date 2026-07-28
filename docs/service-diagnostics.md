@@ -100,3 +100,10 @@ The service-side stop watchdog allows 45 seconds so a dump still inside its
 Downstream callers must use a deadline of at least 45 seconds and preserve the
 service correlation/resource IDs in `LOCAL_SANDBOX_STOP_TIMEOUT` and quarantine
 events.
+
+The focused `qemu-telemetry-smoke` Windows suite preserves digest-bound
+evidence for normal WHPX boot, four forced live timeouts, QMP responses,
+scheduled/final process samples, three-entry dump retention, helper timeout,
+the authoritative service Job reaching active-process-zero, bounded Hyper-V
+queries, the two-file incident package, production hook exclusion, and WinDbg
+execution of `!analyze -hang`, `~* k`, `!runaway`, and `lm`.

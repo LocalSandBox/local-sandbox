@@ -616,6 +616,7 @@ impl SessionManager {
         spec: ManagedVmSpec,
         startup_cancellation: CancellationToken,
         telemetry: crate::telemetry::Telemetry,
+        trace_parent: crate::telemetry::SpanParent,
     ) -> Result<ResourceHandle> {
         let cancellation = {
             let state = self
@@ -644,6 +645,7 @@ impl SessionManager {
             cancellation,
             startup_cancellation,
             telemetry,
+            trace_parent,
         );
         let mut state = self
             .state
@@ -651,7 +653,7 @@ impl SessionManager {
             .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
         let Some(session) = state.sessions.get_mut(&session_id) else {
             if let Ok(vm) = started {
-                let _ = vm.stop(std::time::Duration::from_secs(30));
+                let _ = vm.stop(std::time::Duration::from_secs(30), None);
             }
             bail!("session closed during VM startup");
         };
@@ -662,7 +664,7 @@ impl SessionManager {
                 .is_none_or(|slot| slot.vm.is_some())
         {
             if let Ok(vm) = started {
-                let _ = vm.stop(std::time::Duration::from_secs(30));
+                let _ = vm.stop(std::time::Duration::from_secs(30), None);
             }
             bail!("session changed during VM startup");
         }
@@ -690,6 +692,7 @@ impl SessionManager {
         identity: &ClientIdentityKey,
         handle: ResourceHandle,
         timeout: std::time::Duration,
+        trace_parent: Option<crate::telemetry::SpanParent>,
     ) -> Result<bool> {
         let (vm, processes, watches) = {
             let mut state = self
@@ -763,7 +766,7 @@ impl SessionManager {
             .vm
             .take()
             .context("running sandbox lost its VM")?
-            .stop(timeout);
+            .stop(timeout, trace_parent);
         let mut state = self
             .state
             .lock()

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::sync::Mutex;
@@ -23,6 +23,7 @@ use windows_sys::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletion
 
 use crate::ledger::schema::{LifecycleState, ResourceRecord};
 use crate::resource::transaction::ResourceTransaction;
+use crate::telemetry::{Breadcrumb, SpanDescription, SpanGuard, SpanParent, SpanStatus, Telemetry};
 
 struct QemuJournal {
     transaction: ResourceTransaction,
@@ -52,6 +53,86 @@ struct JobMonitor {
     last_notification_utc: Option<String>,
     termination_requested: bool,
     termination_succeeded: Option<bool>,
+}
+
+#[derive(Default)]
+struct QemuLifecycleTrace {
+    parent: Option<SpanParent>,
+    telemetry: Option<Telemetry>,
+    active: HashMap<lsb_platform::PlatformQemuLifecyclePhase, SpanGuard>,
+}
+
+impl QemuLifecycleTrace {
+    fn attach(&mut self, telemetry: Telemetry, parent: SpanParent) {
+        self.active.clear();
+        self.telemetry = Some(telemetry);
+        self.parent = Some(parent);
+    }
+
+    fn clear(&mut self) {
+        self.active.clear();
+        self.telemetry = None;
+        self.parent = None;
+    }
+
+    fn record(&mut self, event: lsb_platform::PlatformQemuLifecycleEvent) {
+        let operation = lifecycle_operation(event.phase);
+        match event.state {
+            lsb_platform::PlatformQemuLifecycleState::Started => {
+                if let (Some(parent), Some(telemetry)) = (&self.parent, &self.telemetry) {
+                    self.active.remove(&event.phase);
+                    self.active.insert(
+                        event.phase,
+                        parent.start_child(SpanDescription::child(operation, operation)),
+                    );
+                    telemetry.breadcrumb(
+                        Breadcrumb::lifecycle("qemu", "phase_started")
+                            .with_data("phase", operation),
+                    );
+                }
+            }
+            lsb_platform::PlatformQemuLifecycleState::Completed => {
+                if let Some(span) = self.active.remove(&event.phase) {
+                    span.finish(if event.succeeded == Some(true) {
+                        SpanStatus::Ok
+                    } else {
+                        SpanStatus::InternalError
+                    });
+                }
+                if let Some(telemetry) = &self.telemetry {
+                    telemetry.breadcrumb(
+                        Breadcrumb::lifecycle("qemu", "phase_completed")
+                            .with_data("phase", operation)
+                            .with_data(
+                                "outcome",
+                                if event.succeeded == Some(true) {
+                                    "success"
+                                } else {
+                                    "failure"
+                                },
+                            ),
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn lifecycle_operation(phase: lsb_platform::PlatformQemuLifecyclePhase) -> &'static str {
+    use lsb_platform::PlatformQemuLifecyclePhase as Phase;
+    match phase {
+        Phase::Preflight => "qemu.preflight",
+        Phase::Spawn => "qemu.spawn",
+        Phase::JobAssign => "qemu.job_assign",
+        Phase::ControlOpen => "qemu.control_open",
+        Phase::ForwardOpen => "qemu.forward_open",
+        Phase::GuestReadyWait => "qemu.guest_ready_wait",
+        Phase::HangSnapshot => "qemu.hang_snapshot",
+        Phase::Dump => "qemu.dump",
+        Phase::Terminate => "qemu.terminate",
+        Phase::WaitExit => "qemu.wait_exit",
+        Phase::JobDrain => "qemu.job_drain",
+    }
 }
 
 impl JobMonitor {
@@ -127,6 +208,7 @@ pub struct SandboxJob {
     limits: JobLimits,
     journal: Option<Mutex<QemuJournal>>,
     qemu_telemetry: Option<lsb_platform::PlatformQemuTelemetryContext>,
+    lifecycle_trace: Mutex<QemuLifecycleTrace>,
 }
 
 impl SandboxJob {
@@ -162,6 +244,7 @@ impl SandboxJob {
             limits,
             journal: None,
             qemu_telemetry: None,
+            lifecycle_trace: Mutex::new(QemuLifecycleTrace::default()),
         };
         let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -206,6 +289,31 @@ impl SandboxJob {
 
     pub fn attach_qemu_telemetry(&mut self, context: lsb_platform::PlatformQemuTelemetryContext) {
         self.qemu_telemetry = Some(context);
+    }
+
+    pub fn attach_qemu_lifecycle(&self, telemetry: Telemetry, parent: SpanParent) {
+        if let Ok(mut trace) = self.lifecycle_trace.lock() {
+            trace.attach(telemetry, parent);
+        }
+    }
+
+    pub fn clear_qemu_lifecycle(&self) {
+        if let Ok(mut trace) = self.lifecycle_trace.lock() {
+            trace.clear();
+        }
+    }
+
+    pub fn start_lifecycle_span(
+        &self,
+        operation: &'static str,
+        description: &'static str,
+    ) -> Option<SpanGuard> {
+        self.lifecycle_trace
+            .lock()
+            .ok()?
+            .parent
+            .as_ref()
+            .map(|parent| parent.start_child(SpanDescription::child(operation, description)))
     }
 
     pub fn check_notifications(&self) -> Result<()> {
@@ -452,6 +560,15 @@ impl lsb_vm::PlatformProcessContainment for SandboxJob {
         Ok(Some(monitor.snapshot(self.limits)))
     }
 
+    fn qemu_lifecycle_event(&self, event: lsb_platform::PlatformQemuLifecycleEvent) -> Result<()> {
+        let mut trace = self
+            .lifecycle_trace
+            .lock()
+            .map_err(|_| anyhow::anyhow!("QEMU lifecycle trace lock poisoned"))?;
+        trace.record(event);
+        Ok(())
+    }
+
     fn assign_process(&self, process: &std::process::Child) -> Result<()> {
         SandboxJob::assign_process(self, process.as_raw_handle())?;
         self.commit_journal(process)
@@ -579,5 +696,19 @@ mod tests {
             process.wait(Duration::from_secs(2)).unwrap().is_some(),
             "contained child should exit after authoritative Job termination"
         );
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let snapshot = loop {
+            let snapshot = lsb_vm::PlatformProcessContainment::qemu_job_snapshot(&job)
+                .unwrap()
+                .unwrap();
+            if snapshot.active_process_zero_observed || std::time::Instant::now() >= deadline {
+                break snapshot;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(snapshot.active_pids.is_empty());
+        assert!(snapshot.active_process_zero_observed);
+        assert!(snapshot.termination_requested);
+        assert_eq!(snapshot.termination_succeeded, Some(true));
     }
 }

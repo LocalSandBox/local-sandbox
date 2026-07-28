@@ -344,6 +344,37 @@ pub struct PlatformQemuJobSnapshot {
     pub termination_succeeded: Option<bool>,
 }
 
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlatformQemuLifecyclePhase {
+    Preflight,
+    Spawn,
+    JobAssign,
+    ControlOpen,
+    ForwardOpen,
+    GuestReadyWait,
+    HangSnapshot,
+    Dump,
+    Terminate,
+    WaitExit,
+    JobDrain,
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlatformQemuLifecycleState {
+    Started,
+    Completed,
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlatformQemuLifecycleEvent {
+    pub phase: PlatformQemuLifecyclePhase,
+    pub state: PlatformQemuLifecycleState,
+    pub succeeded: Option<bool>,
+}
+
 /// Opaque service-owned process containment boundary. The Windows QEMU backend
 /// assigns the suspended child through this interface and never creates a second
 /// Job when one is supplied.
@@ -364,6 +395,10 @@ pub trait PlatformProcessContainment: std::fmt::Debug + Send + Sync {
 
     fn qemu_job_snapshot(&self) -> Result<Option<PlatformQemuJobSnapshot>> {
         Ok(None)
+    }
+
+    fn qemu_lifecycle_event(&self, _event: PlatformQemuLifecycleEvent) -> Result<()> {
+        Ok(())
     }
 
     fn assign_process(&self, process: &Child) -> Result<()>;
