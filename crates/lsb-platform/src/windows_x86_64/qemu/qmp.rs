@@ -20,6 +20,7 @@ const MAX_QMP_MESSAGES_PER_REQUEST: usize = 32;
 const MAX_QMP_RESPONSE_BYTES: usize = 16 * 1024;
 const QMP_STARTUP_CONNECT_DEADLINE: Duration = Duration::from_secs(30);
 const QMP_STARTUP_PROTOCOL_DEADLINE: Duration = Duration::from_secs(15);
+const QMP_PIPE_SERVER_SETTLE_DELAY: Duration = Duration::from_millis(100);
 const QMP_CAPTURE_DEADLINE: Duration = Duration::from_secs(5);
 const QMP_QUIT_DEADLINE: Duration = Duration::from_secs(2);
 
@@ -294,6 +295,16 @@ fn capture_endpoint(
 #[cfg(windows)]
 fn open_with_deadline(path: &Path, timeout: Duration) -> io::Result<QmpPipeStream> {
     let deadline = Instant::now() + timeout;
+    wait_for_pipe_server(path, deadline)?;
+    // QEMU's Windows pipe backend calls CreateNamedPipe followed by
+    // ConnectNamedPipe. WaitNamedPipe can observe the instance between those
+    // calls; connecting in that interval makes QEMU mishandle
+    // ERROR_PIPE_CONNECTED and block forever in GetOverlappedResult. Give the
+    // server thread a bounded interval to post its overlapped connect first.
+    std::thread::sleep(
+        QMP_PIPE_SERVER_SETTLE_DELAY.min(deadline.saturating_duration_since(Instant::now())),
+    );
+
     loop {
         match QmpPipeStream::open(path) {
             Ok(stream) => return Ok(stream),
@@ -305,6 +316,33 @@ fn open_with_deadline(path: &Path, timeout: Duration) -> io::Result<QmpPipeStrea
             Err(error) => return Err(error),
         }
     }
+}
+
+#[cfg(windows)]
+fn wait_for_pipe_server(path: &Path, deadline: Instant) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let path = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    loop {
+        // SAFETY: `path` is a live, NUL-terminated UTF-16 buffer.
+        if unsafe { windows_sys::Win32::System::Pipes::WaitNamedPipeW(path.as_ptr(), 25) } != 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if pipe_wait_error_is_retryable(error.raw_os_error()) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+            continue;
+        }
+        return Err(error);
+    }
+}
+
+fn pipe_wait_error_is_retryable(raw_os_error: Option<i32>) -> bool {
+    matches!(raw_os_error, Some(2 | 121 | 231))
 }
 
 #[cfg(windows)]
@@ -620,6 +658,16 @@ mod tests {
         );
         assert!(QmpEndpoint::for_incident("../caller-selected").is_err());
         assert!(QmpEndpoint::for_incident("ABCDEF0123456789ABCDEF0123456789").is_err());
+    }
+
+    #[test]
+    fn pipe_server_wait_retries_only_expected_transient_windows_errors() {
+        assert!(pipe_wait_error_is_retryable(Some(2)));
+        assert!(pipe_wait_error_is_retryable(Some(121)));
+        assert!(pipe_wait_error_is_retryable(Some(231)));
+        assert!(!pipe_wait_error_is_retryable(Some(5)));
+        assert!(!pipe_wait_error_is_retryable(None));
+        assert!(QMP_PIPE_SERVER_SETTLE_DELAY < QMP_STARTUP_CONNECT_DEADLINE);
     }
 
     #[test]
