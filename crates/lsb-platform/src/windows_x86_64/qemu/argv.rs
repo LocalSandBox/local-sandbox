@@ -7,7 +7,7 @@ use super::config::{
     QemuBootConfig, QemuControlChannelConfig, QemuDataDiskConfig, QemuDiskConfig, QemuKernelAppend,
     QemuNetworkConfig, QemuProxyStreamNetworkConfig, QemuQmpEndpoint, QemuSerialConfig,
     CONTROL_BUS_ID, CONTROL_CHARDEV_ID, DEFAULT_CPU_MODEL, DEFAULT_MACHINE_TYPE,
-    FORWARD_CHARDEV_ID, PROXY_NETDEV_ID, ROOT_DRIVE_ID,
+    FORWARD_CHARDEV_ID, PROXY_NETDEV_ID, QMP_CHARDEV_ID, ROOT_DRIVE_ID,
 };
 use super::preflight::PRODUCTION_ACCELERATOR;
 
@@ -436,9 +436,14 @@ fn push_qmp(command: &mut QemuCommandParts, qmp: &QemuQmpEndpoint) -> Result<(),
             validate_qemu_suboption("qmp.pipe_name", pipe_name)?;
             push_pair_redacted(
                 command,
-                "-qmp",
-                format!("pipe:{pipe_name},server=on,wait=off"),
-                "pipe:<qmp-pipe>,server=on,wait=off",
+                "-chardev",
+                format!("pipe,id={QMP_CHARDEV_ID},path={pipe_name}"),
+                format!("pipe,id={QMP_CHARDEV_ID},path=<qmp-pipe>"),
+            );
+            push_pair(
+                command,
+                "-mon",
+                format!("chardev={QMP_CHARDEV_ID},mode=control"),
             );
         }
     }
@@ -762,8 +767,10 @@ mod tests {
                 "pipe,id=lsbctl,path=lsb-abc-control",
                 "-device",
                 "virtserialport,chardev=lsbctl,name=org.localsandbox.control",
-                "-qmp",
-                "pipe:lsb-abc-qmp,server=on,wait=off",
+                "-chardev",
+                "pipe,id=lsbqmp,path=lsb-abc-qmp",
+                "-mon",
+                "chardev=lsbqmp,mode=control",
                 "-nic",
                 "none",
             ])
@@ -932,15 +939,21 @@ mod tests {
 
         let command = build(config);
         let argv = argv_as_strings(&command);
-        let qmp_arg = argv
+        let qmp_chardev = argv
             .windows(2)
-            .find(|pair| pair[0] == "-qmp")
+            .find(|pair| pair[0] == "-chardev" && pair[1].contains("id=lsbqmp"))
             .map(|pair| pair[1].clone())
-            .expect("qmp arg should be present");
+            .expect("QMP chardev should be present");
+        let qmp_monitor = argv
+            .windows(2)
+            .find(|pair| pair[0] == "-mon")
+            .map(|pair| pair[1].clone())
+            .expect("QMP monitor should be present");
 
-        assert_eq!(qmp_arg, "pipe:lsb-abc-qmp,server=on,wait=off");
-        assert!(!qmp_arg.contains("tcp:"));
-        assert!(!qmp_arg.contains("0.0.0.0"));
+        assert_eq!(qmp_chardev, "pipe,id=lsbqmp,path=lsb-abc-qmp");
+        assert_eq!(qmp_monitor, "chardev=lsbqmp,mode=control");
+        assert!(!qmp_chardev.contains("tcp:"));
+        assert!(!qmp_chardev.contains("0.0.0.0"));
     }
 
     #[test]
@@ -970,7 +983,7 @@ mod tests {
         assert!(display.contains("file=<root-disk>"));
         assert!(display.contains("file:<serial-log>"));
         assert!(display.contains("path=<control-pipe>"));
-        assert!(display.contains("pipe:<qmp-pipe>,server=on,wait=off"));
+        assert!(display.contains("pipe,id=lsbqmp,path=<qmp-pipe>"));
         assert!(command.sanitized_argv().contains(&"<initrd>".to_string()));
     }
 

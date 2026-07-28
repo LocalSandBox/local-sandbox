@@ -1005,7 +1005,7 @@ fn normalize_qemu_failure_kind(kind: &str) -> &'static str {
     match kind {
         "asset_missing" => "asset_missing",
         "invalid_config" | "artifact_io" | "preflight" | "argv" => "preflight",
-        "process_start" | "process_status" => "process_start",
+        "process_start" | "process_status" | "qmp_open" => "process_start",
         "control_open" => "control_open",
         "guest_boot_exited" | "guest_ready_process_exited" => "guest_process_exited",
         "guest_ready_timeout" => "guest_ready_timeout",
@@ -1651,6 +1651,11 @@ mod tests {
         );
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn qmp_open_failure_uses_process_start_grouping() {
+        assert_eq!(normalize_qemu_failure_kind("qmp_open"), "process_start");
     }
 
     #[test]

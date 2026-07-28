@@ -340,6 +340,7 @@ pub(crate) enum QemuBootErrorKind {
     Preflight,
     Argv,
     ProcessStart,
+    QmpOpen,
     ControlOpen,
     ProcessStatus,
     GuestBootExited,
@@ -362,6 +363,7 @@ impl QemuBootErrorKind {
             Self::Preflight => "preflight",
             Self::Argv => "argv",
             Self::ProcessStart => "process_start",
+            Self::QmpOpen => "qmp_open",
             Self::ControlOpen => "control_open",
             Self::ProcessStatus => "process_status",
             Self::GuestBootExited => "guest_boot_exited",
@@ -406,6 +408,10 @@ pub(crate) enum QemuBootError {
     },
     ProcessStart {
         source: QemuProcessError,
+        artifacts: QemuBootArtifacts,
+    },
+    QmpOpen {
+        detail: String,
         artifacts: QemuBootArtifacts,
     },
     ControlOpen {
@@ -478,6 +484,7 @@ impl QemuBootError {
             Self::Preflight { .. } => QemuBootErrorKind::Preflight,
             Self::Argv { .. } => QemuBootErrorKind::Argv,
             Self::ProcessStart { .. } => QemuBootErrorKind::ProcessStart,
+            Self::QmpOpen { .. } => QemuBootErrorKind::QmpOpen,
             Self::ControlOpen { .. } => QemuBootErrorKind::ControlOpen,
             Self::ProcessStatus { .. } => QemuBootErrorKind::ProcessStatus,
             Self::GuestBootExited { .. } => QemuBootErrorKind::GuestBootExited,
@@ -500,6 +507,7 @@ impl QemuBootError {
             | Self::Preflight { artifacts, .. }
             | Self::Argv { artifacts, .. }
             | Self::ProcessStart { artifacts, .. }
+            | Self::QmpOpen { artifacts, .. }
             | Self::ControlOpen { artifacts, .. }
             | Self::ProcessStatus { artifacts, .. }
             | Self::GuestBootExited { artifacts, .. }
@@ -567,6 +575,11 @@ impl fmt::Display for QemuBootError {
             Self::ProcessStart { source, .. } => write!(
                 f,
                 "failed to start Windows QEMU direct boot: {source}.{}",
+                self.artifact_sentence()
+            ),
+            Self::QmpOpen { detail, .. } => write!(
+                f,
+                "failed to connect the private Windows QMP pipe during QEMU boot: {detail}.{}",
                 self.artifact_sentence()
             ),
             Self::ControlOpen { source, .. } => write!(
@@ -972,6 +985,24 @@ pub(crate) fn launch_windows_qemu_boot(
     } else {
         None
     };
+
+    if let Some(endpoint) = &qmp_endpoint {
+        if let Err(source) = endpoint.connect() {
+            let error = QemuBootError::QmpOpen {
+                detail: source.to_string(),
+                artifacts: artifacts.clone(),
+            };
+            record_failure(
+                &artifacts,
+                config.boot_observation_timeout,
+                observation_goal,
+                &error,
+            );
+            let _ = supervisor.terminate();
+            update_final_job_snapshot(&supervisor, &artifacts);
+            return Err(error);
+        }
+    }
 
     let mut guest_ready = None;
     let mut control_mux = None;
@@ -3100,7 +3131,8 @@ mod tests {
                     lsb_proto::CAP_CIFS_MOUNT.to_string(),
                     lsb_proto::CAP_SESSION_MUX.to_string(),
                     lsb_proto::CAP_DEFERRED_FILE_SYNC.to_string(),
-                    lsb_proto::CAP_MOUNT_CACHE_V1.to_string()
+                    lsb_proto::CAP_MOUNT_CACHE_V1.to_string(),
+                    lsb_proto::CAP_MOUNT_CACHE_IMPORT_BATCH_V1.to_string(),
                 ]
             );
             let status = fs::read_to_string(&boot.artifacts().boot_status)

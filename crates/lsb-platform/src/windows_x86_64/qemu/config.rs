@@ -7,6 +7,7 @@ pub(crate) const DEFAULT_ROOT_DEVICE: &str = "/dev/vda";
 pub(crate) const CONTROL_BUS_ID: &str = "lsbserial0";
 pub(crate) const CONTROL_CHARDEV_ID: &str = "lsbctl";
 pub(crate) const FORWARD_CHARDEV_ID: &str = "lsbfwd";
+pub(crate) const QMP_CHARDEV_ID: &str = "lsbqmp";
 #[cfg(test)]
 pub(crate) const CONTROL_PORT_NAME: &str = lsb_proto::VIRTIO_SERIAL_CONTROL_PORT_NAME;
 #[cfg(test)]
