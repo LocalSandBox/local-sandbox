@@ -115,6 +115,9 @@ Invoke-Cargo @(
     'windows_x86_64::qemu::boot::tests::windows_qemu_boot_smoke',
     '--', '--ignored', '--exact', '--nocapture'
 )
+# WHPX teardown can outlive process exit briefly on the shared hardware host.
+# Pace distinct VM incidents without weakening any per-incident assertion.
+Start-Sleep -Milliseconds 1000
 
 $telemetryRoot = Join-Path $RunRoot 'telemetry'
 $env:LSB_QEMU_HANG_TEST_TELEMETRY_ROOT = $telemetryRoot
@@ -175,7 +178,8 @@ foreach ($index in 1..4) {
     $rawPipeMarker = "lsb-$([string]$hang.incident_id)-qmp"
     foreach ($textArtifact in Get-ChildItem -LiteralPath $artifact -File -Force |
         Where-Object { $_.Extension -in @('.json', '.jsonl', '.txt', '.log') }) {
-        $text = [string](Get-Content -LiteralPath $textArtifact.FullName -Raw)
+        $text = Get-Content -LiteralPath $textArtifact.FullName -Raw
+        if ($null -eq $text) { $text = [string]::Empty }
         if ($text.Contains($rawPipeMarker, [StringComparison]::Ordinal) -or
             $text.Contains($secretCanary, [StringComparison]::Ordinal)) {
             throw "Incident $index leaked a private pipe name or parent secret into diagnostics."
@@ -232,6 +236,7 @@ foreach ($index in 1..4) {
         dump_sha256 = $hash
         qmp_queries = @($hang.qmp.queries | ForEach-Object request_name)
     }
+    if ($index -lt 4) { Start-Sleep -Milliseconds 1000 }
 }
 $retained = @(Get-ChildItem -LiteralPath (Join-Path $telemetryRoot 'qemu-dumps') -Directory -Force)
 if ($retained.Count -ne 3) {
@@ -294,7 +299,8 @@ foreach ($requiredPhase in @(
 $shutdownRawPipeMarker = "lsb-$([string]$shutdownHang.incident_id)-qmp"
 foreach ($textArtifact in Get-ChildItem -LiteralPath $shutdownArtifacts -File -Force |
     Where-Object { $_.Extension -in @('.json', '.jsonl', '.txt', '.log') }) {
-    $text = [string](Get-Content -LiteralPath $textArtifact.FullName -Raw)
+    $text = Get-Content -LiteralPath $textArtifact.FullName -Raw
+    if ($null -eq $text) { $text = [string]::Empty }
     if ($text.Contains($shutdownRawPipeMarker, [StringComparison]::Ordinal) -or
         $text.Contains($secretCanary, [StringComparison]::Ordinal)) {
         throw 'The QEMU shutdown-timeout diagnostics leaked private parent state.'
@@ -306,14 +312,16 @@ if (Get-Process -Name 'qemu-system-x86_64' -ErrorAction SilentlyContinue) {
 $env:LSB_QEMU_HANG_TEST_FORCE_SHUTDOWN_TIMEOUT = '0'
 
 $blockedHelper = Join-Path $RunRoot 'blocked-dump-helper.exe'
-$source = @'
-using System;
-using System.Threading;
-public static class BlockedDumpHelper {
-    public static int Main(string[] args) { Thread.Sleep(60000); return 0; }
+$blockedHelperSource = Join-Path $RunRoot 'blocked-dump-helper.rs'
+Set-Content -LiteralPath $blockedHelperSource -Encoding utf8NoBOM -Value @'
+fn main() {
+    std::thread::sleep(std::time::Duration::from_secs(60));
 }
 '@
-Add-Type -TypeDefinition $source -OutputAssembly $blockedHelper -OutputType ConsoleApplication
+& rustc --edition=2021 $blockedHelperSource -o $blockedHelper
+if ($LASTEXITCODE -ne 0) {
+    throw "rustc failed to build the blocked dump helper with exit code $LASTEXITCODE"
+}
 Assert-RegularFile $blockedHelper 8MB | Out-Null
 $env:LSB_QEMU_HANG_TEST_HELPER = $blockedHelper
 $env:LSB_QEMU_HANG_TEST_FORCE_GUEST_READY_TIMEOUT = '1'
@@ -357,7 +365,8 @@ $incidentArchive = Assert-RegularFile (Join-Path $packaged 'incident.zip') 10MB
 $archiveInspection = Join-Path $RunRoot 'service-archive-inspection'
 Expand-Archive -LiteralPath $incidentArchive.FullName -DestinationPath $archiveInspection
 foreach ($textArtifact in Get-ChildItem -LiteralPath $archiveInspection -File -Recurse -Force) {
-    $text = [string](Get-Content -LiteralPath $textArtifact.FullName -Raw)
+    $text = Get-Content -LiteralPath $textArtifact.FullName -Raw
+    if ($null -eq $text) { $text = [string]::Empty }
     if ($text.Contains($secretCanary, [StringComparison]::Ordinal) -or
         $text -match 'lsb-[0-9a-f]{32}-qmp') {
         throw 'Service incident archive leaked a private pipe name or parent secret.'
@@ -419,7 +428,8 @@ Expand-Archive -LiteralPath $serviceStopArchives[0].FullName `
     -DestinationPath $serviceStopArchiveInspection
 foreach ($textArtifact in Get-ChildItem -LiteralPath $serviceStopArchiveInspection `
     -File -Recurse -Force) {
-    $text = [string](Get-Content -LiteralPath $textArtifact.FullName -Raw)
+    $text = Get-Content -LiteralPath $textArtifact.FullName -Raw
+    if ($null -eq $text) { $text = [string]::Empty }
     if ($text.Contains($secretCanary, [StringComparison]::Ordinal) -or
         $text -match 'lsb-[0-9a-f]{32}-qmp') {
         throw 'Service stop incident archive leaked a private pipe name or parent secret.'
