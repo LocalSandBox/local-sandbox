@@ -7,7 +7,7 @@ param(
     [ValidatePattern('^[a-z0-9][a-z0-9._-]{0,95}$')]
     [string] $StageName,
 
-    [string] $StateRoot = (Join-Path $env:ProgramData 'LocalSandbox\DevTest')
+    [string] $StateRoot = 'C:\dev\local-sandbox-agent-state'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -96,7 +96,7 @@ function Get-RuntimeInfo {
 }
 
 $state = [IO.Path]::GetFullPath($StateRoot).TrimEnd('\', '/')
-if ((Split-Path -Leaf $state) -cne 'DevTest' -or
+if ((Split-Path -Leaf $state) -cne 'local-sandbox-agent-state' -or
     -not (Test-Path -LiteralPath (Join-Path $state '.local-sandbox-agent-test-root.json') -PathType Leaf)) {
     throw 'The Windows test state root is not initialized.'
 }

@@ -4,7 +4,7 @@ param(
     [ValidatePattern('^[a-z0-9][a-z0-9._-]{0,95}$')]
     [string] $RunId,
 
-    [string] $StateRoot = (Join-Path $env:ProgramData 'LocalSandbox\DevTest')
+    [string] $StateRoot = 'C:\dev\local-sandbox-agent-state'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,8 +36,8 @@ function Test-AllowlistedName {
 }
 
 $state = [IO.Path]::GetFullPath($StateRoot).TrimEnd('\', '/')
-if ((Split-Path -Leaf $state) -cne 'DevTest') {
-    throw 'StateRoot must end in the dedicated DevTest directory.'
+if ((Split-Path -Leaf $state) -cne 'local-sandbox-agent-state') {
+    throw 'StateRoot must end in the dedicated local-sandbox-agent-state directory.'
 }
 $stateMarker = Join-Path $state '.local-sandbox-agent-test-root.json'
 if (-not (Test-Path -LiteralPath $stateMarker -PathType Leaf)) {

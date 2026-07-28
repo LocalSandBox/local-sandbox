@@ -10,11 +10,15 @@ C:\dev\local-sandbox-agent\
   repo                   disposable checkout of one exact test snapshot
   cache\cargo-target     persistent Cargo build cache
 
-C:\ProgramData\LocalSandbox\DevTest\
+C:\dev\local-sandbox-agent-state\
   assets                 persistent, operator-provided runtime assets
   locks                  exclusive host-runner lock
   runs\<run-id>           logs, phase results, and reboot continuation state
 ```
+
+The test state root is deliberately outside `%ProgramData%\LocalSandbox`. That
+namespace is reserved for protected product/service state, and both setup and bootstrap
+reject any custom test state path inside it.
 
 `plan.md`, `state.md`, and `backlog.md` are not part of this testing setup.
 
@@ -64,7 +68,7 @@ transported as a base64-encoded, NUL-delimited argument vector; they are never e
 as a PowerShell expression.
 
 Signing provisioning creates a unique protected staging directory below
-`C:\ProgramData\LocalSandbox\DevTest\assets`, transfers the PFX and password directly
+`C:\dev\local-sandbox-agent-state\assets`, transfers the PFX and password directly
 over SSH, validates their bounded shape and certificate, and atomically installs them at
 `assets\signing`. It refuses reparse points, loose ACLs, an existing destination, and
 unowned roots. Output contains only presence/ACL status plus the public certificate
@@ -98,7 +102,7 @@ hard-resets and cleans only the dedicated checkout. The persistent Cargo cache a
 results are outside that checkout.
 
 Each invocation prints its run ID and snapshot SHA. Windows records are retained under
-`C:\ProgramData\LocalSandbox\DevTest\runs\<run-id>`. These are developer diagnostics,
+`C:\dev\local-sandbox-agent-state\runs\<run-id>`. These are developer diagnostics,
 not automatically release-qualified evidence; inspect and redact them before using the
 separate Windows acceptance-evidence flow.
 

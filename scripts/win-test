@@ -3,6 +3,7 @@ set -euo pipefail
 
 host="${WIN_TEST_HOST:-win-test}"
 windows_root='C:/dev/local-sandbox-agent'
+windows_state_root='C:/dev/local-sandbox-agent-state'
 snapshot_index=''
 snapshot_objects=''
 runtime_assets_temp=''
@@ -100,7 +101,7 @@ provision_signing() {
     local pfx_path="${SEAWORK_WINDOWS_PFX_PATH:-}"
     local password_path="${SEAWORK_WINDOWS_PFX_PASSWORD_FILE:-}"
     local stage_name="$(date -u '+%Y%m%dt%H%M%Sz')-$$"
-    local remote_stage="C:/ProgramData/LocalSandbox/DevTest/assets/.signing-stage-$stage_name"
+    local remote_stage="${windows_state_root}/assets/.signing-stage-$stage_name"
     [[ -n "$pfx_path" && -f "$pfx_path" ]] || \
         fail 'SEAWORK_WINDOWS_PFX_PATH must name the local PFX file'
     [[ -n "$password_path" && -f "$password_path" ]] || \
@@ -139,7 +140,7 @@ provision_signing_windows() {
 provision_runtime() {
     local runtime_root="${LSB_WINDOWS_RUNTIME_ROOT:-}"
     local stage_name="$(date -u '+%Y%m%dt%H%M%Sz')-$$"
-    local remote_stage="C:/ProgramData/LocalSandbox/DevTest/assets/.runtime-stage-$stage_name"
+    local remote_stage="${windows_state_root}/assets/.runtime-stage-$stage_name"
     local archive_dir archive_path
     [[ -n "$runtime_root" && -d "$runtime_root" ]] || \
         fail 'LSB_WINDOWS_RUNTIME_ROOT must name the local runtime asset directory'
@@ -189,7 +190,7 @@ fetch_artifacts() {
         [[ "$expected_sha" =~ ^[0-9a-f]{64}$ ]] || fail "remote artifact hash is invalid: $name"
         [[ "$expected_size" =~ ^[0-9]+$ ]] || fail "remote artifact size is invalid: $name"
         scp -q -o BatchMode=yes -o ConnectTimeout=8 \
-            "${host}:C:/ProgramData/LocalSandbox/DevTest/runs/${fetch_run_id}/${name}" \
+            "${host}:${windows_state_root}/runs/${fetch_run_id}/${name}" \
             "$destination/$name"
         [[ "$(wc -c < "$destination/$name" | tr -d ' ')" == "$expected_size" ]] || \
             fail "downloaded artifact size mismatch: $name"

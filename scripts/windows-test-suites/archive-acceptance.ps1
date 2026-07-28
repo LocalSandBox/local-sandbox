@@ -80,7 +80,13 @@ function Assert-SafeZip {
     }
 }
 
-$stateRoot = [IO.Path]::GetFullPath((Join-Path $env:ProgramData 'LocalSandbox\DevTest'))
+if ([string]::IsNullOrWhiteSpace($env:LSB_WINDOWS_TEST_STATE_ROOT)) {
+    throw 'LSB_WINDOWS_TEST_STATE_ROOT is not configured by the Windows test runner.'
+}
+$stateRoot = [IO.Path]::GetFullPath($env:LSB_WINDOWS_TEST_STATE_ROOT).TrimEnd('\', '/')
+if ((Split-Path -Leaf $stateRoot) -cne 'local-sandbox-agent-state') {
+    throw 'The Windows test state root has an unexpected identity.'
+}
 $runsRoot = Join-Path $stateRoot 'runs'
 $sourceRoot = [IO.Path]::GetFullPath((Join-Path $runsRoot $ReuseRunId)).TrimEnd('\')
 if ((Split-Path -Parent $sourceRoot) -cne [IO.Path]::GetFullPath($runsRoot).TrimEnd('\')) {

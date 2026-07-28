@@ -21,7 +21,7 @@ param(
     [ValidatePattern('^$|^[a-z0-9][a-z0-9._-]{0,95}$')]
     [string] $ReuseRunId = '',
     [string] $Root = 'C:\dev\local-sandbox-agent',
-    [string] $StateRoot = (Join-Path $env:ProgramData 'LocalSandbox\DevTest'),
+    [string] $StateRoot = 'C:\dev\local-sandbox-agent-state',
     [int] $LockTimeoutSeconds = 120
 )
 
@@ -117,6 +117,17 @@ function Sync-Checkout {
 Initialize-RustupEnvironment
 $rootPath = [IO.Path]::GetFullPath($Root)
 $statePath = [IO.Path]::GetFullPath($StateRoot)
+$productStatePath = [IO.Path]::GetFullPath(
+    (Join-Path $env:ProgramData 'LocalSandbox')
+).TrimEnd('\', '/')
+$normalizedStatePath = $statePath.TrimEnd('\', '/')
+if ($normalizedStatePath.Equals($productStatePath, [StringComparison]::OrdinalIgnoreCase) -or
+    $normalizedStatePath.StartsWith(
+        "$productStatePath\",
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+    throw 'Windows test state must remain outside protected LocalSandbox product state.'
+}
 $marker = Join-Path $rootPath '.local-sandbox-agent-test-root.json'
 if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) {
     throw "The Windows test host is not initialized: $marker"
@@ -168,6 +179,7 @@ try {
     $env:CARGO_TARGET_DIR = Join-Path $rootPath 'cache\cargo-target'
     $env:CARGO_INCREMENTAL = '1'
     $env:RUST_BACKTRACE = '1'
+    $env:LSB_WINDOWS_TEST_STATE_ROOT = $statePath
     $env:LSB_WINDOWS_TEST_RUN_ROOT = $runPath
     $env:LSB_WINDOWS_TEST_ASSETS_ROOT = Join-Path $statePath 'assets'
     $env:SEAWORK_WINDOWS_PFX_PATH = Join-Path $statePath 'assets\signing\SeaWork-CodeSign.pfx'

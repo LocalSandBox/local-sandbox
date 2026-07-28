@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string] $Root = 'C:\dev\local-sandbox-agent',
-    [string] $StateRoot = (Join-Path $env:ProgramData 'LocalSandbox\DevTest'),
+    [string] $StateRoot = 'C:\dev\local-sandbox-agent-state',
     [string] $BootstrapSource = (Join-Path $PSScriptRoot 'windows-test-bootstrap.ps1'),
     [string] $SigningAssetsSource = (Join-Path $PSScriptRoot 'windows-test-signing-assets.ps1'),
     [string] $RuntimeAssetsSource = (Join-Path $PSScriptRoot 'windows-test-runtime-assets.ps1'),
@@ -28,6 +28,19 @@ function Resolve-SafeRoot {
         throw "$Label must end in the dedicated '$ExpectedLeaf' directory and cannot be a filesystem root: $fullPath"
     }
     return $fullPath
+}
+
+function Assert-OutsideProductState {
+    param([Parameter(Mandatory = $true)][string] $Path)
+
+    $productState = [IO.Path]::GetFullPath(
+        (Join-Path $env:ProgramData 'LocalSandbox')
+    ).TrimEnd('\', '/')
+    $candidate = [IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+    if ($candidate.Equals($productState, [StringComparison]::OrdinalIgnoreCase) -or
+        $candidate.StartsWith("$productState\", [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Windows test state must remain outside protected LocalSandbox product state: $candidate"
+    }
 }
 
 function Assert-Administrator {
@@ -293,7 +306,9 @@ function Test-HostConfiguration {
 Initialize-RustupEnvironment
 $currentUserSid = Assert-Administrator
 $rootPath = Resolve-SafeRoot -Path $Root -ExpectedLeaf 'local-sandbox-agent' -Label 'Root'
-$statePath = Resolve-SafeRoot -Path $StateRoot -ExpectedLeaf 'DevTest' -Label 'StateRoot'
+$statePath = Resolve-SafeRoot -Path $StateRoot -ExpectedLeaf 'local-sandbox-agent-state' `
+    -Label 'StateRoot'
+Assert-OutsideProductState -Path $statePath
 $rootMarker = Join-Path $rootPath $markerName
 $stateMarker = Join-Path $statePath $markerName
 

@@ -11,7 +11,7 @@ param(
     [ValidatePattern('^[a-z0-9][a-z0-9._-]{0,95}$')]
     [string] $SourceRunId,
 
-    [string] $StateRoot = (Join-Path $env:ProgramData 'LocalSandbox\DevTest')
+    [string] $StateRoot = 'C:\dev\local-sandbox-agent-state'
 )
 
 $ErrorActionPreference = 'Stop'

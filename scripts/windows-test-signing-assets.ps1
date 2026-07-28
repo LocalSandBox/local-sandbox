@@ -9,7 +9,7 @@ param(
 
     [string] $SourceRoot,
 
-    [string] $StateRoot = (Join-Path $env:ProgramData 'LocalSandbox\DevTest')
+    [string] $StateRoot = 'C:\dev\local-sandbox-agent-state'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,8 +21,8 @@ $owner = 'local-sandbox-agent-signing-flow'
 
 function Resolve-StateRoot {
     $full = [IO.Path]::GetFullPath($StateRoot).TrimEnd('\', '/')
-    if ((Split-Path -Leaf $full) -cne 'DevTest') {
-        throw "StateRoot must end in the dedicated DevTest directory: $full"
+    if ((Split-Path -Leaf $full) -cne 'local-sandbox-agent-state') {
+        throw "StateRoot must end in the dedicated local-sandbox-agent-state directory: $full"
     }
     $marker = Join-Path $full '.local-sandbox-agent-test-root.json'
     if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) {

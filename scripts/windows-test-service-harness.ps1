@@ -700,7 +700,7 @@ function Install-And-Smoke {
     if (Test-Path -LiteralPath $stateRoot) {
         throw 'Refusing to adopt an existing LocalSandboxSeaWork state root.'
     }
-    $clientDataRoot = Join-Path $env:ProgramData "LocalSandbox\DevTest\client-runs\$($evidence.snapshot_sha.Substring(0, 12))"
+    $clientDataRoot = Join-Path $RunRoot "client-data-$($evidence.snapshot_sha.Substring(0, 12))"
     if (Test-Path -LiteralPath $clientDataRoot) {
         throw 'Refusing to adopt an existing standard-user smoke root.'
     }
