@@ -1,0 +1,19 @@
+crates/lsb-platform/src/windows_x86_64/qemu/qmp.rs
+  s_31ad4f53b04974::t_32a848e55704fc 174,192,200-207,237,251-257,265,267-273,282-288,475-479,481-514
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "60a2beda1c56925133ba16d515677c1782f50257",
+  "prompts": {},
+  "sessions": {
+    "s_31ad4f53b04974": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa7b0-4d69-7d01-ae26-6595cb9ecc1b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
