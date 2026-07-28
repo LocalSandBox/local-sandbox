@@ -1749,6 +1749,11 @@ mod tests {
             &paths,
         )
         .unwrap();
+        std::fs::write(
+            engine.service_log(),
+            b"{\"level\":\"info\",\"message\":\"qemu telemetry smoke\"}\n",
+        )
+        .unwrap();
         let identity =
             crate::session::ClientIdentityKey::for_test("S-1-5-21-qemu-smoke", "S-1-5-5-1-1", 1);
         let resource = ResourceHandle::random().unwrap();
@@ -1905,6 +1910,11 @@ mod tests {
             assets.join("runtime/initramfs.cpio.gz"),
             assets.join("runtime/rootfs.ext4"),
             &paths,
+        )
+        .unwrap();
+        std::fs::write(
+            engine.service_log(),
+            b"{\"level\":\"info\",\"message\":\"qemu shutdown telemetry smoke\"}\n",
         )
         .unwrap();
         let identity = crate::session::ClientIdentityKey::for_test(
