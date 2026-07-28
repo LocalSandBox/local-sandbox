@@ -1,0 +1,24 @@
+crates/lsb-seawork-service/src/telemetry/windows_events.rs
+  s_31ad4f53b04974::t_c8aea483e6ac37 539-541
+  s_31ad4f53b04974::t_257612803ad362 58,207
+  s_31ad4f53b04974::t_780690ee39fe84 18-19,175-183,225-236,570-580
+  s_31ad4f53b04974::t_ef47a7f7f1f8d4 237-238,581-582
+scripts/windows-test-suites/qemu-telemetry-smoke.ps1
+  s_31ad4f53b04974::t_e338afaa8c9bf2 396-397,426-428,432
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "5515c267d98738f4b513749cb708b683c1606394",
+  "prompts": {},
+  "sessions": {
+    "s_31ad4f53b04974": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa7b0-4d69-7d01-ae26-6595cb9ecc1b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
