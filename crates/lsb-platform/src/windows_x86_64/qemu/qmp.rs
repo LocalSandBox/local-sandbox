@@ -171,7 +171,7 @@ where
         ));
     }
     send_request(&mut stream, "qmp_capabilities", "capabilities")?;
-    read_response(&mut stream, "capabilities")?;
+    require_success(read_response(&mut stream, "capabilities")?)?;
 
     let mut snapshot = QemuQmpSnapshot {
         connected: true,
@@ -189,13 +189,21 @@ where
             .saturating_add(capture_started_at.elapsed())
             .as_millis();
         match result {
-            Ok(response) => snapshot.queries.push(QemuQmpQuery {
+            Ok(QmpResponse::Success(response)) => snapshot.queries.push(QemuQmpQuery {
                 request_name: name.to_string(),
                 start_monotonic_ms: start,
                 end_monotonic_ms: end,
                 status: "success".to_string(),
                 response: Some(sanitize_response(response)),
                 error: None,
+            }),
+            Ok(QmpResponse::CommandError) => snapshot.queries.push(QemuQmpQuery {
+                request_name: name.to_string(),
+                start_monotonic_ms: start,
+                end_monotonic_ms: end,
+                status: "failure".to_string(),
+                response: None,
+                error: Some("QMP returned an error".to_string()),
             }),
             Err(error) => {
                 snapshot.responsive = false;
@@ -226,7 +234,7 @@ where
         ));
     }
     send_request(&mut stream, "qmp_capabilities", "capabilities")?;
-    read_response(&mut stream, "capabilities")?;
+    require_success(read_response(&mut stream, "capabilities")?)?;
     // QEMU may close the pipe as soon as quit is accepted, so successful delivery
     // of the bounded command is the acknowledgement used by the shutdown waiter.
     send_request(&mut stream, "quit", "quit")
@@ -240,7 +248,13 @@ fn send_request(stream: &mut impl Write, execute: &str, id: &str) -> io::Result<
     stream.flush()
 }
 
-fn read_response(stream: &mut impl Read, expected_id: &str) -> io::Result<Value> {
+#[derive(Debug, PartialEq)]
+enum QmpResponse {
+    Success(Value),
+    CommandError,
+}
+
+fn read_response(stream: &mut impl Read, expected_id: &str) -> io::Result<QmpResponse> {
     for _ in 0..MAX_QMP_MESSAGES_PER_REQUEST {
         let value = read_json_line(stream)?;
         if value.get("id").and_then(Value::as_str) == Some(expected_id) {
@@ -248,17 +262,28 @@ fn read_response(stream: &mut impl Read, expected_id: &str) -> io::Result<Value>
                 // QMP error objects may echo image paths or backend details. The four
                 // reviewed queries need only a stable failure category; raw error
                 // payloads must never enter the diagnostic archive.
-                return Err(io::Error::other("QMP returned an error"));
+                return Ok(QmpResponse::CommandError);
             }
-            return value.get("return").cloned().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "QMP response omitted return")
-            });
+            return value
+                .get("return")
+                .cloned()
+                .map(QmpResponse::Success)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "QMP response omitted return")
+                });
         }
     }
     Err(io::Error::new(
         io::ErrorKind::InvalidData,
         "QMP response message bound exceeded",
     ))
+}
+
+fn require_success(response: QmpResponse) -> io::Result<Value> {
+    match response {
+        QmpResponse::Success(value) => Ok(value),
+        QmpResponse::CommandError => Err(io::Error::other("QMP returned an error")),
+    }
 }
 
 fn read_json_line(stream: &mut impl Read) -> io::Result<Value> {
@@ -447,9 +472,45 @@ mod tests {
             "id": "query"
         })]);
 
-        let error = read_response(&mut stream, "query").unwrap_err();
+        let response = read_response(&mut stream, "query").unwrap();
 
-        assert_eq!(error.to_string(), "QMP returned an error");
-        assert!(!error.to_string().contains("secret"));
+        assert_eq!(response, QmpResponse::CommandError);
+        assert!(!format!("{response:?}").contains("secret"));
+    }
+
+    #[test]
+    fn command_errors_do_not_prevent_the_remaining_reviewed_queries() {
+        let mut lines = vec![
+            json!({"QMP": {"version": {"qemu": {"major": 11}}}}),
+            json!({"return": {}, "id": "capabilities"}),
+            json!({
+                "error": {
+                    "class": "GenericError",
+                    "desc": r"Could not open C:\secret\root.qcow2"
+                },
+                "id": format!("lsb-{}", QMP_QUERIES[0])
+            }),
+        ];
+        for name in &QMP_QUERIES[1..] {
+            lines.push(json!({
+                "return": {"status": "running"},
+                "id": format!("lsb-{name}")
+            }));
+        }
+
+        let snapshot = run_protocol(ScriptedStream::new(&lines), Duration::ZERO).unwrap();
+
+        assert!(snapshot.connected);
+        assert!(snapshot.responsive);
+        assert_eq!(snapshot.queries.len(), QMP_QUERIES.len());
+        assert_eq!(snapshot.queries[0].status, "failure");
+        assert_eq!(
+            snapshot.queries[0].error.as_deref(),
+            Some("QMP returned an error")
+        );
+        assert!(snapshot.queries[1..]
+            .iter()
+            .all(|query| query.status == "success"));
+        assert!(!serde_json::to_string(&snapshot).unwrap().contains("secret"));
     }
 }
