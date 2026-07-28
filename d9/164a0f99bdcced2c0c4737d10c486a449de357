@@ -1,0 +1,22 @@
+crates/lsb-seawork-service/src/resource/vm.rs
+  s_31ad4f53b04974::t_72acc456965b07 901-902,919,923,925,930
+  s_31ad4f53b04974::t_e12e7f82106d87 903-907
+  s_31ad4f53b04974::t_6f010f4c33f346 1565-1613
+  s_31ad4f53b04974::t_db10429b60f901 1564
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "d9164a0f99bdcced2c0c4737d10c486a449de357",
+  "prompts": {},
+  "sessions": {
+    "s_31ad4f53b04974": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa7b0-4d69-7d01-ae26-6595cb9ecc1b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
