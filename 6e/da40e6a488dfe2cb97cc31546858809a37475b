@@ -1,0 +1,34 @@
+crates/lsb-seawork-service/src/resource/vm.rs
+  s_31ad4f53b04974::t_4d658c79d53dbc 1063
+crates/lsb-platform/src/windows_x86_64/qemu/hang.rs
+  s_31ad4f53b04974::t_e2121764b4385f 937-945
+crates/lsb-platform/src/lib.rs
+  s_31ad4f53b04974::t_4d658c79d53dbc 548-551
+crates/lsb-platform/src/windows_x86_64/backend.rs
+  s_31ad4f53b04974::t_c00a1f58a99841 125-127,169-171
+  s_31ad4f53b04974::t_905fff4e1868c8 193,411-438
+  s_31ad4f53b04974::t_4d658c79d53dbc 19,26,39,183-192
+  s_31ad4f53b04974::t_4b83354de1ad55 194
+  s_31ad4f53b04974::t_46a516952b2ca6 410
+crates/lsb-vm/src/sandbox.rs
+  s_31ad4f53b04974::t_4d658c79d53dbc 1149-1153
+crates/lsb-platform/src/windows_x86_64/qemu/boot.rs
+  s_31ad4f53b04974::t_4d658c79d53dbc 184-185
+  s_31ad4f53b04974::t_9ed75efda04e13 182-183
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "6eda40e6a488dfe2cb97cc31546858809a37475b",
+  "prompts": {},
+  "sessions": {
+    "s_31ad4f53b04974": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa7b0-4d69-7d01-ae26-6595cb9ecc1b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
