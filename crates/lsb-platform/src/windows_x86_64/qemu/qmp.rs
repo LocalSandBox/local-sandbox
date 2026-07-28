@@ -18,6 +18,7 @@ const MAX_QMP_MESSAGES_PER_REQUEST: usize = 32;
 const MAX_QMP_RESPONSE_BYTES: usize = 16 * 1024;
 const QMP_CONNECT_DEADLINE: Duration = Duration::from_secs(2);
 const QMP_CAPTURE_DEADLINE: Duration = Duration::from_secs(5);
+const QMP_QUIT_DEADLINE: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QmpEndpoint {
@@ -56,6 +57,41 @@ impl QmpEndpoint {
     pub(crate) fn capture(&self, timeline_elapsed: Duration) -> QemuQmpSnapshot {
         capture_endpoint(&self.pipe_path, timeline_elapsed)
     }
+
+    pub(crate) fn request_quit(&self) -> io::Result<()> {
+        request_quit_endpoint(&self.pipe_path)
+    }
+}
+
+#[cfg(windows)]
+fn request_quit_endpoint(path: &Path) -> io::Result<()> {
+    use std::sync::mpsc;
+
+    let stream = open_with_deadline(path, QMP_CONNECT_DEADLINE)?;
+    let cancellation = stream.clone();
+    let (sender, receiver) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let result = run_quit_protocol(stream);
+        let _ = sender.send(result);
+    });
+    match receiver.recv_timeout(QMP_QUIT_DEADLINE) {
+        Ok(result) => result,
+        Err(_) => {
+            let _ = cancellation.close();
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "QMP quit exceeded its fixed deadline",
+            ))
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn request_quit_endpoint(_path: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "QMP named pipes are available only on Windows",
+    ))
 }
 
 #[cfg(windows)]
@@ -176,6 +212,24 @@ where
         }
     }
     Ok(snapshot)
+}
+
+fn run_quit_protocol<S>(mut stream: S) -> io::Result<()>
+where
+    S: Read + Write,
+{
+    let greeting = read_json_line(&mut stream)?;
+    if greeting.get("QMP").is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "QMP greeting is missing the QMP object",
+        ));
+    }
+    send_request(&mut stream, "qmp_capabilities", "capabilities")?;
+    read_response(&mut stream, "capabilities")?;
+    // QEMU may close the pipe as soon as quit is accepted, so successful delivery
+    // of the bounded command is the acknowledgement used by the shutdown waiter.
+    send_request(&mut stream, "quit", "quit")
 }
 
 fn send_request(stream: &mut impl Write, execute: &str, id: &str) -> io::Result<()> {
@@ -348,6 +402,19 @@ mod tests {
         let encoded = serde_json::to_string(&snapshot).unwrap();
         assert!(!encoded.contains("secret"));
         assert!(encoded.contains("<redacted-path>"));
+    }
+
+    #[test]
+    fn quit_protocol_negotiates_capabilities_before_requesting_shutdown() {
+        let stream = ScriptedStream::new(&[
+            json!({"QMP": {"version": {"qemu": {"major": 11}}}}),
+            json!({"return": {}, "id": "capabilities"}),
+        ]);
+        let mut inspect = stream;
+        run_quit_protocol(&mut inspect).unwrap();
+        let writes = String::from_utf8(inspect.writes).unwrap();
+        assert!(writes.contains(r#""execute":"qmp_capabilities""#));
+        assert!(writes.contains(r#""execute":"quit""#));
     }
 
     #[test]

@@ -482,6 +482,13 @@ impl QemuSupervisor {
         self.exit_status.as_ref()
     }
 
+    pub(crate) fn capture_live_evidence(
+        &self,
+        incident: &crate::PlatformQemuLiveIncident,
+    ) -> anyhow::Result<()> {
+        self.containment.capture_live_evidence(incident)
+    }
+
     #[cfg(test)]
     pub(crate) fn diagnostics(&self) -> QemuProcessDiagnostics {
         QemuProcessDiagnostics {
@@ -616,7 +623,6 @@ impl QemuSupervisor {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn wait(&mut self, timeout: Duration) -> Result<QemuExitStatus, QemuProcessError> {
         if self.child.is_none() {
             return self.exit_status.clone().ok_or(QemuProcessError::NotStarted);
@@ -1198,6 +1204,16 @@ impl ProcessContainment {
             }),
         }
     }
+
+    fn capture_live_evidence(
+        &self,
+        incident: &crate::PlatformQemuLiveIncident,
+    ) -> anyhow::Result<()> {
+        match self {
+            Self::External(external) => external.capture_qemu_live_evidence(incident),
+            Self::None | Self::Platform(_) => Ok(()),
+        }
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1235,6 +1251,16 @@ impl ProcessContainment {
                     detail: format!("external service containment termination failed: {error}"),
                 }
             }),
+        }
+    }
+
+    fn capture_live_evidence(
+        &self,
+        incident: &crate::PlatformQemuLiveIncident,
+    ) -> anyhow::Result<()> {
+        match self {
+            Self::External(external) => external.capture_qemu_live_evidence(incident),
+            Self::None => Ok(()),
         }
     }
 }

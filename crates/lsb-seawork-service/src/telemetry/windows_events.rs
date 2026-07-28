@@ -15,6 +15,11 @@ const MAX_SCANNED_EVENTS: usize = 256;
 const MAX_EVENT_BYTES: usize = 32 * 1024;
 const MAX_TOTAL_BYTES: usize = 256 * 1024;
 const MAX_LOOKBACK_MS: i128 = 24 * 60 * 60 * 1_000;
+const HYPERV_CHANNELS: &[&str] = &[
+    "Microsoft-Windows-Hyper-V-Hypervisor-Operational",
+    "Microsoft-Windows-Hyper-V-Hypervisor-Admin",
+    "Microsoft-Windows-Hyper-V-VID-Admin",
+];
 
 #[derive(Serialize)]
 struct Evidence<'a> {
@@ -38,6 +43,36 @@ struct QueryError {
 struct Event {
     channel: &'static str,
     xml: String,
+}
+
+#[derive(Serialize)]
+struct HypervEvidence<'a> {
+    schema_version: u32,
+    incident_id: &'a str,
+    qemu_creation_time_100ns: u64,
+    captured_utc: String,
+    truncated: bool,
+    channels: Vec<HypervChannel>,
+    events: Vec<HypervEvent>,
+}
+
+#[derive(Serialize)]
+struct HypervChannel {
+    channel: &'static str,
+    scanned_count: usize,
+    selected_count: usize,
+    query_error: Option<u32>,
+    truncated: bool,
+}
+
+#[derive(Serialize)]
+struct HypervEvent {
+    channel: &'static str,
+    provider: Option<String>,
+    level: Option<String>,
+    timestamp_utc: Option<String>,
+    record_id: Option<String>,
+    rendered_xml: String,
 }
 
 struct EventHandle(EVT_HANDLE);
@@ -127,6 +162,144 @@ pub(crate) fn capture_termination_evidence(previous: &PreviousRun) -> Result<Att
         filename: "windows-termination-events.json".to_string(),
         content_type: "application/json",
     })
+}
+
+pub(crate) fn capture_hyperv_evidence(
+    incident: &lsb_platform::PlatformQemuLiveIncident,
+) -> Result<()> {
+    let lookback_ms = incident.snapshot_elapsed_ms.saturating_add(30_000);
+    let query = format!("*[System[TimeCreated[timediff(@SystemTime) <= {lookback_ms}]]]");
+    let mut events = Vec::new();
+    let mut channels = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut truncated = false;
+    for channel in HYPERV_CHANNELS {
+        channels.push(collect_hyperv_channel(
+            channel,
+            &query,
+            &mut events,
+            &mut total_bytes,
+            &mut truncated,
+        ));
+    }
+    let mut evidence = HypervEvidence {
+        schema_version: 1,
+        incident_id: &incident.incident_id,
+        qemu_creation_time_100ns: incident.qemu_creation_time_100ns,
+        captured_utc: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|_| "unknown".to_string()),
+        truncated,
+        channels,
+        events,
+    };
+    while serde_json::to_vec_pretty(&evidence).is_ok_and(|bytes| bytes.len() > MAX_TOTAL_BYTES) {
+        evidence.truncated = true;
+        if evidence.events.pop().is_none() {
+            anyhow::bail!("Hyper-V evidence metadata exceeds compiled bound");
+        }
+    }
+    crate::ledger::atomic::write_value(
+        &incident.artifact_directory.join("hyperv-events.json"),
+        &evidence,
+    )
+    .context("write bounded Hyper-V evidence")
+}
+
+fn collect_hyperv_channel(
+    channel: &'static str,
+    query: &str,
+    events: &mut Vec<HypervEvent>,
+    total_bytes: &mut usize,
+    overall_truncated: &mut bool,
+) -> HypervChannel {
+    let mut result = HypervChannel {
+        channel,
+        scanned_count: 0,
+        selected_count: 0,
+        query_error: None,
+        truncated: false,
+    };
+    let channel_wide = wide(OsStr::new(channel));
+    let query_wide = wide(OsStr::new(query));
+    let handle = unsafe {
+        EvtQuery(
+            0,
+            channel_wide.as_ptr(),
+            query_wide.as_ptr(),
+            EvtQueryChannelPath | EvtQueryReverseDirection,
+        )
+    };
+    if handle == 0 {
+        result.query_error = Some(last_error_code());
+        return result;
+    }
+    let handle = EventHandle(handle);
+    loop {
+        if result.scanned_count >= MAX_SCANNED_EVENTS
+            || events.len() >= MAX_EVENTS
+            || *total_bytes >= MAX_TOTAL_BYTES
+        {
+            result.truncated = true;
+            *overall_truncated = true;
+            break;
+        }
+        let mut raw_event = 0;
+        let mut returned = 0;
+        if unsafe { EvtNext(handle.0, 1, &mut raw_event, 0, 0, &mut returned) } == 0 {
+            let code = last_error_code();
+            if code != 259 {
+                result.query_error = Some(code);
+            }
+            break;
+        }
+        if returned != 1 || raw_event == 0 {
+            break;
+        }
+        result.scanned_count += 1;
+        let raw_event = EventHandle(raw_event);
+        let Ok(xml) = render_xml(raw_event.0) else {
+            continue;
+        };
+        if total_bytes.saturating_add(xml.len()) > MAX_TOTAL_BYTES {
+            result.truncated = true;
+            *overall_truncated = true;
+            break;
+        }
+        *total_bytes += xml.len();
+        result.selected_count += 1;
+        events.push(HypervEvent {
+            channel,
+            provider: xml_attribute(&xml, "Provider Name"),
+            level: xml_element(&xml, "Level"),
+            timestamp_utc: xml_attribute(&xml, "TimeCreated SystemTime"),
+            record_id: xml_element(&xml, "EventRecordID"),
+            rendered_xml: xml,
+        });
+    }
+    result
+}
+
+fn xml_element(xml: &str, name: &str) -> Option<String> {
+    let start = format!("<{name}>");
+    let end = format!("</{name}>");
+    let value = xml.split_once(&start)?.1.split_once(&end)?.0;
+    Some(value.chars().take(256).collect())
+}
+
+fn xml_attribute(xml: &str, marker: &str) -> Option<String> {
+    let (element, attribute) = marker.split_once(' ')?;
+    let start = xml.find(&format!("<{element} "))?;
+    let fragment = &xml[start..xml[start..].find('>')?.saturating_add(start)];
+    for quote in ['\'', '"'] {
+        let prefix = format!("{attribute}={quote}");
+        if let Some(value) = fragment.split_once(&prefix).map(|(_, tail)| tail) {
+            return value
+                .split_once(quote)
+                .map(|(value, _)| value.chars().take(256).collect());
+        }
+    }
+    None
 }
 
 fn collect_channel(

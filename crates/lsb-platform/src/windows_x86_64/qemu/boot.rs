@@ -35,6 +35,7 @@ use super::{lossy_excerpt, QemuPreflightError, StdQemuCommandRunner};
 
 pub(crate) const DEFAULT_BOOT_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const DEFAULT_GUEST_READY_TIMEOUT: Duration = Duration::from_secs(90);
+const DEFAULT_QEMU_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const BOOT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SERIAL_LOG_FILE: &str = "serial.log";
 const PREFLIGHT_FILE: &str = "preflight.json";
@@ -153,6 +154,9 @@ pub(crate) struct WindowsQemuBoot {
     guest_ready: Option<GuestReady>,
     timeline: Option<QemuTimeline>,
     qmp_endpoint: Option<QmpEndpoint>,
+    progress: Option<QemuProgressWriter>,
+    hang_context: Option<crate::PlatformQemuTelemetryContext>,
+    hang_policy: QemuHangTelemetryPolicy,
     #[cfg(test)]
     guest_ready_elapsed: Option<Duration>,
 }
@@ -216,13 +220,48 @@ impl WindowsQemuBoot {
     }
 
     pub(crate) fn stop(&mut self) -> Result<Option<QemuExitStatus>, QemuBootError> {
-        let result = self
-            .supervisor
-            .terminate()
-            .map_err(|source| QemuBootError::StopFailed {
+        let _quit_result = self
+            .qmp_endpoint
+            .as_ref()
+            .map(QmpEndpoint::request_quit)
+            .transpose();
+        let result = match self.supervisor.wait(DEFAULT_QEMU_SHUTDOWN_TIMEOUT) {
+            Ok(status) => Ok(Some(status)),
+            Err(QemuProcessError::WaitTimeout { .. }) => {
+                if let Some(timeline) = &self.timeline {
+                    let _ = timeline.record(QemuTimelinePhase::QemuShutdownTimeout);
+                }
+                capture_live_timeout(
+                    &mut self.supervisor,
+                    &self.artifacts,
+                    self.progress.as_mut(),
+                    self.timeline.as_ref(),
+                    self.qmp_endpoint.as_ref(),
+                    self.hang_context.as_ref(),
+                    self.hang_policy,
+                    "qemu_shutdown_timeout",
+                    DEFAULT_QEMU_SHUTDOWN_TIMEOUT,
+                    self.control_stream.is_some() || self.control_mux.is_some(),
+                    0,
+                );
+                let terminate_result = self.supervisor.terminate();
+                if let Err(source) = terminate_result {
+                    Err(QemuBootError::StopFailed {
+                        source,
+                        artifacts: self.artifacts.clone(),
+                    })
+                } else {
+                    Err(QemuBootError::QemuShutdownTimeout {
+                        timeout: DEFAULT_QEMU_SHUTDOWN_TIMEOUT,
+                        artifacts: self.artifacts.clone(),
+                    })
+                }
+            }
+            Err(source) => Err(QemuBootError::StopFailed {
                 source,
                 artifacts: self.artifacts.clone(),
-            });
+            }),
+        };
         if let Some(timeline) = &self.timeline {
             let _ = timeline.record_result(
                 QemuTimelinePhase::InstanceCleanupCompleted,
@@ -253,6 +292,7 @@ pub(crate) enum QemuBootErrorKind {
     GuestReadyTransport,
     UnsupportedWindowsRuntimeCapability,
     SerialOutputMissing,
+    QemuShutdownTimeout,
     StopFailed,
 }
 
@@ -274,6 +314,7 @@ impl QemuBootErrorKind {
             Self::GuestReadyTransport => "guest_ready_transport",
             Self::UnsupportedWindowsRuntimeCapability => "unsupported_windows_runtime_capability",
             Self::SerialOutputMissing => "serial_output_missing",
+            Self::QemuShutdownTimeout => "qemu_shutdown_timeout",
             Self::StopFailed => "stop_failed",
         }
     }
@@ -361,6 +402,10 @@ pub(crate) enum QemuBootError {
         artifacts: QemuBootArtifacts,
         stderr_excerpt: String,
     },
+    QemuShutdownTimeout {
+        timeout: Duration,
+        artifacts: QemuBootArtifacts,
+    },
     StopFailed {
         source: QemuProcessError,
         artifacts: QemuBootArtifacts,
@@ -387,6 +432,7 @@ impl QemuBootError {
                 QemuBootErrorKind::UnsupportedWindowsRuntimeCapability
             }
             Self::SerialOutputMissing { .. } => QemuBootErrorKind::SerialOutputMissing,
+            Self::QemuShutdownTimeout { .. } => QemuBootErrorKind::QemuShutdownTimeout,
             Self::StopFailed { .. } => QemuBootErrorKind::StopFailed,
         }
     }
@@ -406,6 +452,7 @@ impl QemuBootError {
             | Self::GuestReadyTransport { artifacts, .. }
             | Self::UnsupportedWindowsRuntimeCapability { artifacts, .. }
             | Self::SerialOutputMissing { artifacts, .. }
+            | Self::QemuShutdownTimeout { artifacts, .. }
             | Self::StopFailed { artifacts, .. } => Some(artifacts),
             Self::InvalidConfig { artifacts, .. } | Self::ArtifactIo { artifacts, .. } => {
                 artifacts.as_ref()
@@ -581,6 +628,12 @@ impl fmt::Display for QemuBootError {
                 empty_as_placeholder(stderr_excerpt),
                 self.artifact_sentence()
             ),
+            Self::QemuShutdownTimeout { timeout, .. } => write!(
+                f,
+                "Windows QEMU did not exit within {} ms after the private QMP quit request; live diagnostics were captured before forced Job termination.{}",
+                timeout.as_millis(),
+                self.artifact_sentence()
+            ),
             Self::StopFailed { source, .. } => write!(
                 f,
                 "failed to stop Windows QEMU direct boot process: {source}.{}",
@@ -607,6 +660,9 @@ impl std::error::Error for QemuBootError {
 pub(crate) fn launch_windows_qemu_boot(
     config: WindowsQemuBootConfig,
 ) -> Result<WindowsQemuBoot, QemuBootError> {
+    #[cfg(feature = "qemu-hang-test-hooks")]
+    let config = apply_qemu_hang_test_hooks(config);
+    let hang_policy = qemu_hang_telemetry_policy();
     let artifacts = resolve_artifacts(&config)?;
     let observation_goal = BootObservationGoal::for_config(&config);
     prepare_artifacts(&artifacts)?;
@@ -881,7 +937,7 @@ pub(crate) fn launch_windows_qemu_boot(
             timeline.as_ref(),
             qmp_endpoint.as_ref(),
             config.hang_context.as_ref(),
-            QemuHangTelemetryPolicy::default(),
+            hang_policy,
             config.guest_ready_timeout,
             ready_reader,
             GuestTransport::VirtioSerial,
@@ -984,6 +1040,9 @@ pub(crate) fn launch_windows_qemu_boot(
         guest_ready,
         timeline,
         qmp_endpoint,
+        progress,
+        hang_context: config.hang_context,
+        hang_policy,
         #[cfg(test)]
         guest_ready_elapsed,
     })
@@ -1307,22 +1366,25 @@ where
     });
 
     loop {
-        match receiver.try_recv() {
-            Ok(Ok(message)) => {
-                return Ok(GuestReadyResult {
-                    message,
-                    elapsed: started_at.elapsed(),
-                });
+        if !force_guest_ready_timeout_hook() {
+            match receiver.try_recv() {
+                Ok(Ok(message)) => {
+                    return Ok(GuestReadyResult {
+                        message,
+                        elapsed: started_at.elapsed(),
+                    });
+                }
+                Ok(Err(error)) => return Err(map_guest_ready_frame_error(error, artifacts)),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(QemuBootError::GuestReadyTransport {
+                        detail: "guest-ready reader thread ended before sending a result"
+                            .to_string(),
+                        artifacts: artifacts.clone(),
+                        serial_excerpt: read_excerpt(&artifacts.serial),
+                    });
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
             }
-            Ok(Err(error)) => return Err(map_guest_ready_frame_error(error, artifacts)),
-            Err(mpsc::TryRecvError::Disconnected) => {
-                return Err(QemuBootError::GuestReadyTransport {
-                    detail: "guest-ready reader thread ended before sending a result".to_string(),
-                    artifacts: artifacts.clone(),
-                    serial_excerpt: read_excerpt(&artifacts.serial),
-                });
-            }
-            Err(mpsc::TryRecvError::Empty) => {}
         }
 
         match supervisor.try_status() {
@@ -1372,63 +1434,19 @@ where
         }
 
         if Instant::now() >= deadline {
-            let process = supervisor
-                .process_snapshot()
-                .unwrap_or_else(|_| QemuProcessSnapshot {
-                    pid: supervisor.pid().unwrap_or_default(),
-                    ..QemuProcessSnapshot::default()
-                });
-            let progress = progress_snapshot(
+            capture_live_timeout(
+                supervisor,
                 artifacts,
+                progress_writer.as_deref_mut(),
+                timeline,
+                qmp_endpoint,
+                hang_context,
+                hang_policy,
+                "guest_ready_timeout",
+                started_at.elapsed(),
                 true,
                 guest_ready_bytes_received.load(Ordering::Relaxed),
             );
-            if let Some(writer) = progress_writer.as_deref_mut() {
-                let _ = writer.record_final(&process, &progress);
-            }
-            let qmp = if let (Some(timeline), Some(endpoint)) = (timeline, qmp_endpoint) {
-                let _ = timeline.record(QemuTimelinePhase::QmpSnapshotStarted);
-                let snapshot = endpoint.capture(timeline.elapsed());
-                let _ = timeline.record_result(
-                    QemuTimelinePhase::QmpSnapshotCompleted,
-                    None,
-                    Some(if snapshot.responsive {
-                        "success"
-                    } else {
-                        "failure"
-                    }),
-                    snapshot.error.as_deref().map(|_| "qmp"),
-                );
-                snapshot
-            } else {
-                super::hang::QemuQmpSnapshot {
-                    error: Some("QMP endpoint was unavailable".to_string()),
-                    ..super::hang::QemuQmpSnapshot::default()
-                }
-            };
-            let dump = capture_dump(
-                supervisor.raw_process_handle(),
-                &process,
-                hang_context,
-                timeline
-                    .map(QemuTimeline::incident_id)
-                    .unwrap_or("unavailable"),
-                &artifacts.directory,
-                hang_policy,
-                timeline,
-            );
-            if let Some(timeline) = timeline {
-                let _ = write_initial_hang_artifact(
-                    &artifacts.directory,
-                    timeline.incident_id(),
-                    "guest_ready_timeout",
-                    started_at.elapsed(),
-                    &process,
-                    &progress,
-                    &qmp,
-                    &dump,
-                );
-            }
             supervisor.record_timeline_result(
                 QemuTimelinePhase::GuestReadyTimeout,
                 Some("timeout"),
@@ -1444,6 +1462,129 @@ where
         }
 
         std::thread::sleep(BOOT_POLL_INTERVAL);
+    }
+}
+
+fn qemu_hang_telemetry_policy() -> QemuHangTelemetryPolicy {
+    let policy = QemuHangTelemetryPolicy::default();
+    #[cfg(feature = "qemu-hang-test-hooks")]
+    {
+        if let Ok(value) = env::var("LSB_QEMU_HANG_TEST_DUMP_DEADLINE_MS") {
+            if let Ok(milliseconds @ 50..=5_000) = value.parse::<u64>() {
+                return QemuHangTelemetryPolicy {
+                    dump_deadline: Duration::from_millis(milliseconds),
+                    ..policy
+                };
+            }
+        }
+    }
+    policy
+}
+
+#[cfg(feature = "qemu-hang-test-hooks")]
+fn apply_qemu_hang_test_hooks(mut config: WindowsQemuBootConfig) -> WindowsQemuBootConfig {
+    if force_guest_ready_timeout_hook() {
+        if let Ok(value) = env::var("LSB_QEMU_HANG_TEST_GUEST_READY_TIMEOUT_MS") {
+            if let Ok(milliseconds @ 100..=10_000) = value.parse::<u64>() {
+                config.guest_ready_timeout = Duration::from_millis(milliseconds);
+            }
+        }
+    }
+    config
+}
+
+#[cfg(feature = "qemu-hang-test-hooks")]
+fn force_guest_ready_timeout_hook() -> bool {
+    env::var("LSB_QEMU_HANG_TEST_FORCE_GUEST_READY_TIMEOUT").as_deref() == Ok("1")
+}
+
+#[cfg(not(feature = "qemu-hang-test-hooks"))]
+fn force_guest_ready_timeout_hook() -> bool {
+    false
+}
+
+#[allow(clippy::too_many_arguments)]
+fn capture_live_timeout(
+    supervisor: &mut QemuSupervisor,
+    artifacts: &QemuBootArtifacts,
+    progress_writer: Option<&mut QemuProgressWriter>,
+    timeline: Option<&QemuTimeline>,
+    qmp_endpoint: Option<&QmpEndpoint>,
+    hang_context: Option<&crate::PlatformQemuTelemetryContext>,
+    hang_policy: QemuHangTelemetryPolicy,
+    failure_kind: &'static str,
+    elapsed: Duration,
+    control_pipe_open: bool,
+    guest_ready_bytes_received: u64,
+) {
+    let process = supervisor
+        .process_snapshot()
+        .unwrap_or_else(|_| QemuProcessSnapshot {
+            pid: supervisor.pid().unwrap_or_default(),
+            ..QemuProcessSnapshot::default()
+        });
+    let progress = progress_snapshot(artifacts, control_pipe_open, guest_ready_bytes_received);
+    if let Some(writer) = progress_writer {
+        let _ = writer.record_final(&process, &progress);
+    }
+    let qmp = if let (Some(timeline), Some(endpoint)) = (timeline, qmp_endpoint) {
+        let _ = timeline.record(QemuTimelinePhase::QmpSnapshotStarted);
+        let snapshot = endpoint.capture(timeline.elapsed());
+        let _ = timeline.record_result(
+            QemuTimelinePhase::QmpSnapshotCompleted,
+            None,
+            Some(if snapshot.responsive {
+                "success"
+            } else {
+                "failure"
+            }),
+            snapshot.error.as_deref().map(|_| "qmp"),
+        );
+        snapshot
+    } else {
+        super::hang::QemuQmpSnapshot {
+            error: Some("QMP endpoint was unavailable".to_string()),
+            ..super::hang::QemuQmpSnapshot::default()
+        }
+    };
+    if let Some(timeline) = timeline {
+        let _ = timeline.record(QemuTimelinePhase::HypervSnapshotStarted);
+        let incident = crate::PlatformQemuLiveIncident {
+            incident_id: timeline.incident_id().to_string(),
+            artifact_directory: artifacts.directory.clone(),
+            qemu_creation_time_100ns: process.creation_time,
+            snapshot_elapsed_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+        };
+        let hyperv = supervisor.capture_live_evidence(&incident);
+        let _ = timeline.record_result(
+            QemuTimelinePhase::HypervSnapshotCompleted,
+            None,
+            Some(if hyperv.is_ok() { "success" } else { "failure" }),
+            hyperv.as_ref().err().map(|_| "hyperv"),
+        );
+    }
+    let dump = capture_dump(
+        supervisor.raw_process_handle(),
+        &process,
+        hang_context,
+        timeline
+            .map(QemuTimeline::incident_id)
+            .unwrap_or("unavailable"),
+        &artifacts.directory,
+        hang_policy,
+        timeline,
+    );
+    if let Some(timeline) = timeline {
+        let _ = write_initial_hang_artifact(
+            &artifacts.directory,
+            timeline.incident_id(),
+            failure_kind,
+            elapsed,
+            &process,
+            &progress,
+            &qmp,
+            &dump,
+        );
     }
 }
 

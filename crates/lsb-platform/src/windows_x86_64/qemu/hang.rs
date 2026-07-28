@@ -492,9 +492,17 @@ fn write_dump_with_helper(
     let Some(process_handle) = process_handle else {
         return failure("QEMU process handle was unavailable".to_string());
     };
-    let helper_path = match std::env::current_exe().ok().and_then(|path| {
-        path.parent()
-            .map(|parent| parent.join("localsandbox-qemu-dump-helper.exe"))
+    #[cfg(feature = "qemu-hang-test-hooks")]
+    let test_helper = std::env::var_os("LSB_QEMU_HANG_TEST_HELPER")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute() && path.is_file());
+    #[cfg(not(feature = "qemu-hang-test-hooks"))]
+    let test_helper: Option<PathBuf> = None;
+    let helper_path = match test_helper.or_else(|| {
+        std::env::current_exe().ok().and_then(|path| {
+            path.parent()
+                .map(|parent| parent.join("localsandbox-qemu-dump-helper.exe"))
+        })
     }) {
         Some(path) if path.is_file() => path,
         _ => return failure("packaged QEMU dump helper was unavailable".to_string()),

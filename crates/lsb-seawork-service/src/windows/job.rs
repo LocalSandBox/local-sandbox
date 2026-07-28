@@ -386,6 +386,13 @@ impl lsb_vm::PlatformProcessContainment for SandboxJob {
         self.qemu_telemetry.clone()
     }
 
+    fn capture_qemu_live_evidence(
+        &self,
+        incident: &lsb_platform::PlatformQemuLiveIncident,
+    ) -> Result<()> {
+        crate::telemetry::capture_hyperv_evidence(incident)
+    }
+
     fn assign_process(&self, process: &std::process::Child) -> Result<()> {
         SandboxJob::assign_process(self, process.as_raw_handle())?;
         self.commit_journal(process)

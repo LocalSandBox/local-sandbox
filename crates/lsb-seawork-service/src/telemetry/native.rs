@@ -200,6 +200,10 @@ impl Adapter for NativeAdapter {
                 let path = wide(&attachment.path);
                 let native = sentry_attach_filew(path.as_ptr());
                 if native.is_null() {
+                    eprintln!(
+                        "Sentry attachment add failed for reviewed incident file '{}'",
+                        attachment.filename
+                    );
                     continue;
                 }
                 let filename = wide(Path::new(&attachment.filename));
@@ -213,7 +217,11 @@ impl Adapter for NativeAdapter {
             for attachment in native_attachments {
                 sentry_remove_attachment(attachment);
             }
-            Ok(uuid_string(&uuid))
+            let event_id = uuid_string(&uuid);
+            if event_id.is_none() {
+                eprintln!("Sentry event capture returned a nil UUID");
+            }
+            Ok(event_id)
         }
     }
 
@@ -290,6 +298,7 @@ impl Adapter for NativeAdapter {
         if unsafe { sentry_flush(timeout) } == 0 {
             Ok(())
         } else {
+            eprintln!("Sentry flush did not complete within its bounded deadline");
             Err(())
         }
     }

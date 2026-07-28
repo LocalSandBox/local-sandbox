@@ -321,6 +321,15 @@ pub struct PlatformQemuTelemetryContext {
     pub resource_id: String,
 }
 
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlatformQemuLiveIncident {
+    pub incident_id: String,
+    pub artifact_directory: PathBuf,
+    pub qemu_creation_time_100ns: u64,
+    pub snapshot_elapsed_ms: u64,
+}
+
 /// Opaque service-owned process containment boundary. The Windows QEMU backend
 /// assigns the suspended child through this interface and never creates a second
 /// Job when one is supplied.
@@ -333,6 +342,10 @@ pub trait PlatformProcessContainment: std::fmt::Debug + Send + Sync {
 
     fn qemu_telemetry_context(&self) -> Option<PlatformQemuTelemetryContext> {
         None
+    }
+
+    fn capture_qemu_live_evidence(&self, _incident: &PlatformQemuLiveIncident) -> Result<()> {
+        Ok(())
     }
 
     fn assign_process(&self, process: &Child) -> Result<()>;

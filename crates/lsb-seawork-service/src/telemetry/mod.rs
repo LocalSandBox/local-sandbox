@@ -15,10 +15,14 @@ pub use context::SERVICE_NAME;
 pub use context::{CommonContext, COMPONENT};
 #[cfg(windows)]
 pub(crate) use diagnostics::vm_diagnostics_dir;
+#[cfg(windows)]
+pub(crate) use diagnostics::write_sentry_receipt;
 pub use diagnostics::{
     collect_incident, Attachment, DiagnosticLimits, IncidentMetadata, RetentionPolicy,
 };
 pub use run_marker::{PreviousRun, RunState};
+#[cfg(windows)]
+pub(crate) use windows_events::capture_hyperv_evidence;
 #[cfg(windows)]
 pub(crate) use windows_events::capture_termination_evidence;
 

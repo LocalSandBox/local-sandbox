@@ -105,6 +105,15 @@ pub struct IncidentSnapshot {
     pub total_bytes: u64,
 }
 
+#[derive(Debug, Serialize)]
+struct SentryReceipt<'a> {
+    schema_version: u32,
+    incident_id: &'a str,
+    sentry_event_id: &'a str,
+    dsn_project_identity: Option<&'a str>,
+    submitted_utc: String,
+}
+
 pub(crate) fn vm_diagnostics_dir(instance_dir: &Path) -> PathBuf {
     instance_dir.join("diagnostics")
 }
@@ -121,6 +130,58 @@ impl IncidentSnapshot {
             .context("telemetry incident directory has no parent")?;
         prune_retained_incidents(root, policy)
     }
+}
+
+pub(crate) fn write_sentry_receipt(
+    telemetry_root: &Path,
+    incident_snapshot: &Path,
+    sentry_event_id: &str,
+    dsn_project_identity: Option<&str>,
+) -> Result<()> {
+    validate_event_id(sentry_event_id)?;
+    let copied_manifest = incident_snapshot.join("qemu-hang-dump.json");
+    let bytes = fs::read(&copied_manifest).context("read captured QEMU dump manifest")?;
+    if bytes.len() > 256 * 1024 {
+        bail!("captured QEMU dump manifest exceeds fixed bound");
+    }
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&bytes).context("parse captured QEMU dump manifest")?;
+    let incident_id = manifest
+        .get("incident_id")
+        .and_then(serde_json::Value::as_str)
+        .context("QEMU dump manifest omitted incident ID")?
+        .to_string();
+    validate_event_id(&incident_id)?;
+    let dump_root = telemetry_root.join("qemu-dumps");
+    let dump_directory = dump_root.join(&incident_id);
+    let metadata =
+        fs::symlink_metadata(&dump_directory).context("inspect local QEMU dump directory")?;
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        bail!("local QEMU dump incident path is not a regular directory");
+    }
+    let canonical_root = dump_root
+        .canonicalize()
+        .context("canonicalize QEMU dump root")?;
+    let canonical_incident = dump_directory
+        .canonicalize()
+        .context("canonicalize QEMU dump incident")?;
+    if canonical_incident.parent() != Some(canonical_root.as_path()) {
+        bail!("local QEMU dump incident escaped the validated root");
+    }
+    manifest["sentry_event_id"] = serde_json::Value::String(sentry_event_id.to_string());
+    crate::ledger::atomic::write_value(&canonical_incident.join("qemu-hang-dump.json"), &manifest)
+        .context("update local QEMU dump manifest with Sentry event ID")?;
+    let receipt = SentryReceipt {
+        schema_version: 1,
+        incident_id: &incident_id,
+        sentry_event_id,
+        dsn_project_identity,
+        submitted_utc: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|_| "unknown".to_string()),
+    };
+    crate::ledger::atomic::write_value(&canonical_incident.join("sentry-receipt.json"), &receipt)
+        .context("write local QEMU Sentry receipt")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

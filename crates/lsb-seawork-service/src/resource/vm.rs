@@ -17,6 +17,7 @@ use crate::windows::job::{JobLimits, SandboxJob};
 
 const MAX_QEMU_JOB_PROCESSES: u32 = 8;
 const FORCED_JOB_STOP_GRACE: Duration = Duration::from_secs(5);
+const QEMU_DIAGNOSTIC_STOP_DEADLINE: Duration = Duration::from_secs(45);
 
 #[derive(Debug, Clone)]
 pub struct ManagedVmSpec {
@@ -260,7 +261,10 @@ impl ManagedVm {
 
     pub fn stop(mut self, timeout: Duration) -> Result<()> {
         let (reply, response) = mpsc::sync_channel(1);
-        let graceful_deadline = Instant::now() + timeout;
+        // A live shutdown-timeout snapshot may legitimately spend 30 seconds in
+        // the dump helper. Keep the service watchdog outside that reviewed
+        // deadline plus the 15-second termination margin.
+        let graceful_deadline = Instant::now() + timeout.max(QEMU_DIAGNOSTIC_STOP_DEADLINE);
         let mut forced_deadline = None;
         let mut pending = Command::Stop(reply);
         loop {
@@ -709,12 +713,144 @@ fn capture_vm_failure(
             "total_bytes": snapshot.total_bytes,
         }),
     );
+    apply_qemu_diagnostic_context(&mut event, &snapshot.directory);
     let captured = telemetry.capture_failure(event);
-    if captured.is_some() {
+    if let Some(captured_event_id) = captured {
+        if let Err(error) = crate::telemetry::write_sentry_receipt(
+            engine.telemetry_root(),
+            &snapshot.directory,
+            &captured_event_id,
+            sentry_project_identity().as_deref(),
+        ) {
+            eprintln!("failed to write bounded QEMU Sentry receipt: {error}");
+        }
         let _ = snapshot.remove();
     } else {
         let _ = snapshot.retain_bounded(crate::telemetry::RetentionPolicy::default());
     }
+}
+
+fn apply_qemu_diagnostic_context(
+    event: &mut crate::telemetry::FailureEvent,
+    incident_directory: &Path,
+) {
+    let hang = read_bounded_json(&incident_directory.join("qemu-hang.json"));
+    let dump = read_bounded_json(&incident_directory.join("qemu-hang-dump.json"));
+    let hyperv = read_bounded_json(&incident_directory.join("hyperv-events.json"));
+    if let Some(hang) = &hang {
+        event.contexts.insert("qemu".to_string(), hang.clone());
+        for (tag, pointer) in [
+            ("qemu.hang_signature", "/hang_signature"),
+            ("qemu.qmp_responsive", "/qmp/responsive"),
+        ] {
+            if let Some(value) = hang.pointer(pointer) {
+                event.tags.insert(tag, scalar_tag(value));
+            }
+        }
+        let serial = hang
+            .pointer("/progress/serial_bytes")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|bytes| bytes > 0);
+        let stderr = hang
+            .pointer("/progress/stderr_bytes")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|bytes| bytes > 0);
+        event
+            .tags
+            .insert("qemu.serial_observed", serial.to_string());
+        event
+            .tags
+            .insert("qemu.stderr_observed", stderr.to_string());
+    }
+    event.tags.insert("qemu.accelerator", "whpx".to_string());
+    let dump_captured = dump
+        .as_ref()
+        .and_then(|value| value.get("success"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    event
+        .tags
+        .insert("qemu.dump_captured", dump_captured.to_string());
+    let hyperv_errors = hyperv
+        .as_ref()
+        .and_then(|value| value.get("channels"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|channels| {
+            channels.iter().any(|channel| {
+                channel
+                    .get("query_error")
+                    .is_some_and(|value| !value.is_null())
+            })
+        });
+    event
+        .tags
+        .insert("qemu.hyperv_errors_present", hyperv_errors.to_string());
+    let archive = incident_directory.join("incident.zip");
+    let archive_size = std::fs::metadata(&archive)
+        .ok()
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len());
+    let archive_sha256 = bounded_file_sha256(&archive);
+    event.contexts.insert(
+        "diagnostic".to_string(),
+        serde_json::json!({
+            "local_dump_available": dump_captured,
+            "local_dump_relative_path": dump.as_ref().and_then(|value| value.get("relative_local_path")),
+            "dump_size": dump.as_ref().and_then(|value| value.get("dump_byte_size")),
+            "dump_sha256": dump.as_ref().and_then(|value| value.get("sha256")),
+            "archive_size": archive_size,
+            "archive_sha256": archive_sha256,
+            "attachments_prepared": 2,
+            "attachments_accepted": serde_json::Value::Null,
+            "partial_capture": !dump_captured || hang.is_none() || hyperv.is_none(),
+            "collectors": {
+                "live_process": hang.is_some(),
+                "qmp": hang.as_ref().and_then(|value| value.pointer("/qmp/responsive")).and_then(serde_json::Value::as_bool).unwrap_or(false),
+                "hyperv": hyperv.is_some(),
+                "dump": dump_captured,
+                "archive": archive_size.is_some(),
+            }
+        }),
+    );
+}
+
+fn read_bounded_json(path: &Path) -> Option<serde_json::Value> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() > 256 * 1024 {
+        return None;
+    }
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn bounded_file_sha256(path: &Path) -> Option<String> {
+    use sha2::Digest;
+
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > 10 * 1024 * 1024 {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    Some(format!("{:x}", sha2::Sha256::digest(bytes)))
+}
+
+fn scalar_tag(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(value) => value.chars().take(64).collect(),
+        serde_json::Value::Bool(value) => value.to_string(),
+        serde_json::Value::Number(value) => value.to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
+fn sentry_project_identity() -> Option<String> {
+    let dsn = option_env!("LSB_SENTRY_DSN")?;
+    let uri = dsn.parse::<http::Uri>().ok()?;
+    let host = uri.host()?;
+    let project = uri.path().trim_matches('/').rsplit('/').next()?;
+    if project.is_empty() {
+        return None;
+    }
+    Some(format!("{host}/{project}"))
 }
 
 fn detailed_vm_failure_kind(diagnostics_dir: &Path, phase: &str) -> &'static str {
