@@ -1,0 +1,38 @@
+crates/lsb-platform/src/windows_x86_64/qemu/hang.rs
+  s_31ad4f53b04974::t_e023977b5f220a 1066-1067
+  s_31ad4f53b04974::t_913136455e03a3 1060-1065,1090-1091
+  s_31ad4f53b04974::t_559dc6ebc9bfd9 1113,1224-1231,1236,1253-1254,1256-1257
+  s_31ad4f53b04974::t_86ad81e710f1af 124-125,136-137,146-150,159-168,226-227,253-254,296,309-314,769-770,792-793,802,807,819-828,867-868
+crates/lsb-seawork-service/src/resource/vm.rs
+  s_31ad4f53b04974::t_68bcda391c85f7 1569-1570,1583-1586,1598-1605,1615,1621-1643
+  s_31ad4f53b04974::t_398deb9eaa5586 1587-1588
+  s_31ad4f53b04974::t_e023977b5f220a 1609,1616
+  s_31ad4f53b04974::t_913136455e03a3 1589-1590,1592-1593,1606-1608,1610-1611,1617
+crates/lsb-seawork-service/src/telemetry/windows_events.rs
+  s_31ad4f53b04974::t_86ad81e710f1af 52-53,190-191,500-501,511-512,558-559
+scripts/windows-test-suites/qemu-telemetry-smoke.ps1
+  s_31ad4f53b04974::t_68bcda391c85f7 125,130,132-133,135,138-141,147,150-151,154-157
+  s_31ad4f53b04974::t_913136455e03a3 101-102,105-110,113-124,159
+crates/lsb-platform/src/lib.rs
+  s_31ad4f53b04974::t_86ad81e710f1af 328-329
+crates/lsb-platform/src/windows_x86_64/qemu/boot.rs
+  s_31ad4f53b04974::t_68bcda391c85f7 2541-2562
+  s_31ad4f53b04974::t_247137162d7059 1490-1503
+  s_31ad4f53b04974::t_86ad81e710f1af 704,712-717,1619-1624,1652,2499
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "8a56be0a0d51ff5cf589c1677ed4f177ea14d9d8",
+  "prompts": {},
+  "sessions": {
+    "s_31ad4f53b04974": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa7b0-4d69-7d01-ae26-6595cb9ecc1b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
