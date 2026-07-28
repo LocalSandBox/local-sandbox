@@ -654,6 +654,10 @@ fn capture_vm_failure(
         "runtime" => ("sandbox.runtime", "QEMU_UNEXPECTED_EXIT"),
         _ => ("sandbox.start", "SANDBOX_BOOT_FAILED"),
     };
+    let detailed_failure_kind = detailed_vm_failure_kind(
+        &crate::telemetry::vm_diagnostics_dir(&spec.instance_dir),
+        phase,
+    );
     let metadata = crate::telemetry::IncidentMetadata {
         event_id: event_id.clone(),
         timestamp_utc: time::OffsetDateTime::now_utc()
@@ -685,10 +689,12 @@ fn capture_vm_failure(
         crate::telemetry::Level::Error,
         crate::telemetry::format_error_chain(error),
     )
+    .with_detailed_failure_kind(detailed_failure_kind)
     .with_event_id(event_id)
     .with_correlation_id(&spec.correlation_id)
     .with_resource_id(&spec.resource_id)
     .with_phase(phase)
+    .with_tag("qemu.failure_kind", detailed_failure_kind)
     .with_attachments(snapshot.attachments.clone());
     event.contexts.insert(
         "incident".to_string(),
@@ -702,6 +708,41 @@ fn capture_vm_failure(
         let _ = snapshot.remove();
     } else {
         let _ = snapshot.retain_bounded(crate::telemetry::RetentionPolicy::default());
+    }
+}
+
+fn detailed_vm_failure_kind(diagnostics_dir: &Path, phase: &str) -> &'static str {
+    if let Ok(contents) = std::fs::read_to_string(diagnostics_dir.join("boot.status.json")) {
+        if contents.len() <= 256 * 1024 {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) {
+                if let Some(kind) = value.get("error_kind").and_then(serde_json::Value::as_str) {
+                    return normalize_qemu_failure_kind(kind);
+                }
+            }
+        }
+    }
+    match phase {
+        "stop" => "stop_failed",
+        "runtime" => "guest_process_exited",
+        _ => "preflight",
+    }
+}
+
+fn normalize_qemu_failure_kind(kind: &str) -> &'static str {
+    match kind {
+        "asset_missing" => "asset_missing",
+        "invalid_config" | "artifact_io" | "preflight" | "argv" => "preflight",
+        "process_start" | "process_status" => "process_start",
+        "control_open" => "control_open",
+        "guest_boot_exited" | "guest_ready_process_exited" => "guest_process_exited",
+        "guest_ready_timeout" => "guest_ready_timeout",
+        "guest_ready_protocol" => "guest_ready_protocol",
+        "guest_ready_transport" => "guest_ready_transport",
+        "unsupported_windows_runtime_capability" => "unsupported_capability",
+        "serial_output_missing" => "serial_output_missing",
+        "qemu_shutdown_timeout" => "qemu_shutdown_timeout",
+        "stop_failed" => "stop_failed",
+        _ => "preflight",
     }
 }
 

@@ -20,6 +20,7 @@ use super::config::{
     QemuNetworkConfig,
 };
 use super::discovery::{QemuDiscovery, StdQemuDiscoveryHost};
+use super::hang::{QemuTimeline, QemuTimelinePhase};
 use super::preflight::{QemuPreflight, QemuPreflightReport};
 use super::process::{
     QemuExitStatus, QemuProcessArtifacts, QemuProcessError, QemuProcessState, QemuSupervisor,
@@ -33,6 +34,7 @@ const BOOT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SERIAL_LOG_FILE: &str = "serial.log";
 const PREFLIGHT_FILE: &str = "preflight.json";
 const BOOT_STATUS_FILE: &str = "boot.status.json";
+const TIMELINE_FILE: &str = "qemu-timeline.jsonl";
 const SERIAL_OBSERVED_SUCCESS_DEFINITION: &str =
     "qemu_process_alive_after_boot_observation_window_with_serial_output";
 const GUEST_READY_SUCCESS_DEFINITION: &str =
@@ -98,6 +100,7 @@ pub(crate) struct QemuBootArtifacts {
     pub serial: PathBuf,
     pub preflight: PathBuf,
     pub boot_status: PathBuf,
+    pub timeline: PathBuf,
     pub process: QemuProcessArtifacts,
 }
 
@@ -108,6 +111,7 @@ impl QemuBootArtifacts {
             serial: directory.join(SERIAL_LOG_FILE),
             preflight: directory.join(PREFLIGHT_FILE),
             boot_status: directory.join(BOOT_STATUS_FILE),
+            timeline: directory.join(TIMELINE_FILE),
             process: QemuProcessArtifacts::new(directory.clone()),
             directory,
         }
@@ -134,6 +138,7 @@ pub(crate) struct WindowsQemuBoot {
     control_mux: Option<MuxManager>,
     forward_stream: Option<crate::PlatformControlStream>,
     guest_ready: Option<GuestReady>,
+    timeline: Option<QemuTimeline>,
     #[cfg(test)]
     guest_ready_elapsed: Option<Duration>,
 }
@@ -197,12 +202,22 @@ impl WindowsQemuBoot {
     }
 
     pub(crate) fn stop(&mut self) -> Result<Option<QemuExitStatus>, QemuBootError> {
-        self.supervisor
+        let result = self
+            .supervisor
             .terminate()
             .map_err(|source| QemuBootError::StopFailed {
                 source,
                 artifacts: self.artifacts.clone(),
-            })
+            });
+        if let Some(timeline) = &self.timeline {
+            let _ = timeline.record_result(
+                QemuTimelinePhase::InstanceCleanupCompleted,
+                None,
+                Some(if result.is_ok() { "success" } else { "failure" }),
+                result.as_ref().err().map(|_| "stop"),
+            );
+        }
+        result
     }
 }
 
@@ -581,6 +596,10 @@ pub(crate) fn launch_windows_qemu_boot(
     let artifacts = resolve_artifacts(&config)?;
     let observation_goal = BootObservationGoal::for_config(&config);
     prepare_artifacts(&artifacts)?;
+    let timeline = QemuTimeline::create(&artifacts.directory).ok();
+    if let Some(timeline) = &timeline {
+        let _ = timeline.record(QemuTimelinePhase::PreflightStarted);
+    }
 
     let kernel_image = require_existing_file("kernel Image", &config.kernel_image, &artifacts)
         .map_err(|error| {
@@ -655,6 +674,9 @@ pub(crate) fn launch_windows_qemu_boot(
         );
         error
     })?;
+    if let Some(timeline) = &timeline {
+        let _ = timeline.record(QemuTimelinePhase::PreflightCompleted);
+    }
     write_preflight_report(&artifacts, &preflight).map_err(|error| {
         record_error(
             &artifacts,
@@ -712,6 +734,7 @@ pub(crate) fn launch_windows_qemu_boot(
 
     let mut supervisor_config = QemuSupervisorConfig::new(command, artifacts.directory.clone());
     supervisor_config.process_containment = config.process_containment.clone();
+    supervisor_config.timeline = timeline.clone();
     supervisor_config.working_directory = artifacts.directory.clone();
     let mut supervisor = QemuSupervisor::new(supervisor_config);
     supervisor.start().map_err(|source| {
@@ -730,8 +753,21 @@ pub(crate) fn launch_windows_qemu_boot(
 
     let mut control_stream = if let Some(endpoint) = &config.control_endpoint {
         let control_open_started_at = Instant::now();
+        if let Some(timeline) = &timeline {
+            let _ = timeline.record(QemuTimelinePhase::ControlPipeOpenStarted);
+        }
         match endpoint.open() {
-            Ok(stream) => Some(stream),
+            Ok(stream) => {
+                if let Some(timeline) = &timeline {
+                    let _ = timeline.record_result(
+                        QemuTimelinePhase::ControlPipeOpened,
+                        Some(control_open_started_at.elapsed()),
+                        Some("success"),
+                        None,
+                    );
+                }
+                Some(stream)
+            }
             Err(source) => {
                 let error = map_control_open_error(
                     source,
@@ -755,8 +791,21 @@ pub(crate) fn launch_windows_qemu_boot(
 
     let forward_stream = if let Some(endpoint) = &config.forward_endpoint {
         let forward_open_started_at = Instant::now();
+        if let Some(timeline) = &timeline {
+            let _ = timeline.record(QemuTimelinePhase::ForwardPipeOpenStarted);
+        }
         match endpoint.open() {
-            Ok(stream) => Some(stream),
+            Ok(stream) => {
+                if let Some(timeline) = &timeline {
+                    let _ = timeline.record_result(
+                        QemuTimelinePhase::ForwardPipeOpened,
+                        Some(forward_open_started_at.elapsed()),
+                        Some("success"),
+                        None,
+                    );
+                }
+                Some(stream)
+            }
             Err(source) => {
                 let error = map_forward_open_error(
                     source,
@@ -783,6 +832,9 @@ pub(crate) fn launch_windows_qemu_boot(
     #[cfg(test)]
     let mut guest_ready_elapsed = None;
     if let Some(stream) = control_stream.as_ref() {
+        if let Some(timeline) = &timeline {
+            let _ = timeline.record(QemuTimelinePhase::GuestReadyWaitStarted);
+        }
         let ready_reader = match stream.try_clone() {
             Ok(reader) => reader,
             Err(error) => {
@@ -904,6 +956,7 @@ pub(crate) fn launch_windows_qemu_boot(
         control_mux,
         forward_stream,
         guest_ready,
+        timeline,
         #[cfg(test)]
         guest_ready_elapsed,
     })
@@ -1263,6 +1316,11 @@ where
         }
 
         if Instant::now() >= deadline {
+            supervisor.record_timeline_result(
+                QemuTimelinePhase::GuestReadyTimeout,
+                Some("timeout"),
+                Some("guest_ready"),
+            );
             return Err(QemuBootError::GuestReadyTimeout {
                 timeout,
                 elapsed: started_at.elapsed(),
@@ -1477,6 +1535,7 @@ fn write_boot_status_file(
             process_status: file_name(&artifacts.process.status),
             preflight: file_name(&artifacts.preflight),
             boot_status: file_name(&artifacts.boot_status),
+            timeline: file_name(&artifacts.timeline),
         },
         guest_ready: guest_ready.map(QemuGuestReadyStatus::from_ready),
         error_kind: error_kind.map(QemuBootErrorKind::as_str),
@@ -1522,6 +1581,7 @@ struct QemuBootStatusFiles {
     process_status: String,
     preflight: String,
     boot_status: String,
+    timeline: String,
 }
 
 #[derive(Debug, Serialize)]

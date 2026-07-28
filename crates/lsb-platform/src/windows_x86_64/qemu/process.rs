@@ -12,6 +12,7 @@ use serde::Serialize;
 use crate::windows_x86_64::apply_qemu_contained_creation_flags;
 
 use super::argv::QemuCommand;
+use super::hang::{QemuTimeline, QemuTimelinePhase};
 use super::lossy_excerpt;
 
 pub(crate) const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_millis(250);
@@ -87,6 +88,7 @@ pub(crate) struct QemuSupervisorConfig {
     pub startup_timeout: Duration,
     pub terminate_timeout: Duration,
     pub process_containment: Option<Arc<dyn crate::PlatformProcessContainment>>,
+    pub timeline: Option<QemuTimeline>,
 }
 
 impl QemuSupervisorConfig {
@@ -100,6 +102,7 @@ impl QemuSupervisorConfig {
             startup_timeout: DEFAULT_STARTUP_TIMEOUT,
             terminate_timeout: DEFAULT_TERMINATE_TIMEOUT,
             process_containment: None,
+            timeline: None,
         }
     }
 }
@@ -511,6 +514,7 @@ impl QemuSupervisor {
             }
         }
 
+        self.record_timeline(QemuTimelinePhase::QemuSpawnRequested);
         let (mut child, suspended_primary_thread) = match spawn_suspended(&mut command) {
             Ok(child) => child,
             Err(err) => {
@@ -520,6 +524,7 @@ impl QemuSupervisor {
                 return Err(error);
             }
         };
+        self.record_timeline(QemuTimelinePhase::QemuSpawnedSuspended);
         let pid = child.id();
         self.pid = Some(pid);
 
@@ -536,6 +541,7 @@ impl QemuSupervisor {
                 return Err(err);
             }
         };
+        self.record_timeline(QemuTimelinePhase::QemuJobAssigned);
 
         if let Err(err) = suspended_primary_thread.resume() {
             let _ = self.containment.terminate();
@@ -548,12 +554,14 @@ impl QemuSupervisor {
                 detail: err.to_string(),
             });
         }
+        self.record_timeline(QemuTimelinePhase::QemuPrimaryThreadResumed);
         self.child = Some(child);
 
         if let Err(err) = self.finish_startup_after_spawn() {
             self.cleanup_after_failed_start();
             return Err(err);
         }
+        self.record_timeline(QemuTimelinePhase::QemuStartupObservationCompleted);
 
         Ok(())
     }
@@ -606,8 +614,21 @@ impl QemuSupervisor {
 
         // There is no QMP shutdown channel, so termination falls back to Job
         // Object/process cleanup.
+        self.record_timeline(QemuTimelinePhase::TerminationRequested);
         let terminate_result = self.request_child_termination("terminate");
+        self.record_timeline_result(
+            QemuTimelinePhase::TerminateJobReturned,
+            if terminate_result.is_ok() {
+                Some("success")
+            } else {
+                Some("failure")
+            },
+            terminate_result.as_ref().err().map(process_error_category),
+        );
         let wait_result = self.wait_for_exit_without_status(self.config.terminate_timeout);
+        if wait_result.is_ok() {
+            self.record_timeline(QemuTimelinePhase::QemuProcessExited);
+        }
 
         match (terminate_result, wait_result) {
             (Ok(()), Ok(status)) => {
@@ -831,6 +852,32 @@ impl QemuSupervisor {
             detail: err.to_string(),
         })
     }
+
+    pub(crate) fn record_timeline(&self, phase: QemuTimelinePhase) {
+        if let Some(timeline) = &self.config.timeline {
+            let _ = timeline.record(phase);
+        }
+    }
+
+    pub(crate) fn record_timeline_result(
+        &self,
+        phase: QemuTimelinePhase,
+        outcome: Option<&str>,
+        error_category: Option<&str>,
+    ) {
+        if let Some(timeline) = &self.config.timeline {
+            let _ = timeline.record_result(phase, None, outcome, error_category);
+        }
+    }
+}
+
+fn process_error_category(error: &QemuProcessError) -> &'static str {
+    match error {
+        QemuProcessError::JobObjectTerminateFailed { .. } => "job_termination",
+        QemuProcessError::WaitTimeout { .. } => "timeout",
+        QemuProcessError::CleanupFailed { .. } => "cleanup",
+        _ => "process",
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1010,19 +1057,40 @@ impl ProcessContainment {
 
 #[cfg(not(target_os = "windows"))]
 #[derive(Debug, Default)]
-struct ProcessContainment;
+enum ProcessContainment {
+    #[default]
+    None,
+    External(Arc<dyn crate::PlatformProcessContainment>),
+}
 
 #[cfg(not(target_os = "windows"))]
 impl ProcessContainment {
     fn create_for_child(
-        _child: &Child,
-        _external: Option<Arc<dyn crate::PlatformProcessContainment>>,
+        child: &Child,
+        external: Option<Arc<dyn crate::PlatformProcessContainment>>,
     ) -> Result<Self, QemuProcessError> {
-        Ok(Self)
+        if let Some(external) = external {
+            external.assign_process(child).map_err(|error| {
+                QemuProcessError::JobObjectAssignFailed {
+                    pid: child.id(),
+                    detail: format!("external service containment rejected child: {error}"),
+                }
+            })?;
+            Ok(Self::External(external))
+        } else {
+            Ok(Self::None)
+        }
     }
 
     fn terminate(&self) -> Result<bool, QemuProcessError> {
-        Ok(false)
+        match self {
+            Self::None => Ok(false),
+            Self::External(external) => external.terminate().map(|()| true).map_err(|error| {
+                QemuProcessError::JobObjectTerminateFailed {
+                    detail: format!("external service containment termination failed: {error}"),
+                }
+            }),
+        }
     }
 }
 

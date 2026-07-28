@@ -73,6 +73,7 @@ pub struct FailureEvent {
     pub event_id: Option<String>,
     pub operation: &'static str,
     pub stable_error_code: &'static str,
+    pub detailed_failure_kind: &'static str,
     pub level: Level,
     pub summary: String,
     pub retryable: bool,
@@ -95,6 +96,7 @@ impl FailureEvent {
             event_id: None,
             operation,
             stable_error_code,
+            detailed_failure_kind: "unknown",
             level,
             summary: bounded(summary.into(), 2_048),
             retryable: false,
@@ -107,12 +109,18 @@ impl FailureEvent {
         }
     }
 
-    pub fn fingerprint(&self) -> [String; 3] {
+    pub fn fingerprint(&self) -> [String; 4] {
         [
             COMPONENT.to_string(),
             self.operation.to_string(),
             self.stable_error_code.to_string(),
+            self.detailed_failure_kind.to_string(),
         ]
+    }
+
+    pub fn with_detailed_failure_kind(mut self, kind: &'static str) -> Self {
+        self.detailed_failure_kind = kind;
+        self
     }
 
     pub fn with_event_id(mut self, event_id: impl Into<String>) -> Self {
@@ -596,6 +604,27 @@ mod tests {
         assert!(!fingerprint.iter().any(|part| part.contains("correlation-")));
         assert!(!fingerprint.iter().any(|part| part.contains("sandbox-1")));
         assert!(!fingerprint.iter().any(|part| part.contains("free-form")));
+    }
+
+    #[test]
+    fn detailed_failure_kind_is_the_fourth_stable_fingerprint_part() {
+        let event = FailureEvent::new(
+            "sandbox.start",
+            "SANDBOX_BOOT_FAILED",
+            Level::Error,
+            "timeout",
+        )
+        .with_detailed_failure_kind("guest_ready_timeout");
+
+        assert_eq!(
+            event.fingerprint(),
+            [
+                "local-sandbox-service".to_string(),
+                "sandbox.start".to_string(),
+                "SANDBOX_BOOT_FAILED".to_string(),
+                "guest_ready_timeout".to_string(),
+            ]
+        );
     }
 
     #[test]

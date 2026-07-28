@@ -11,6 +11,7 @@ pub(crate) mod argv;
 pub(crate) mod boot;
 pub(crate) mod config;
 pub(crate) mod discovery;
+pub(crate) mod hang;
 pub(crate) mod preflight;
 pub(crate) mod process;
 pub(crate) mod version;

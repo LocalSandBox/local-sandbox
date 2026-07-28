@@ -173,6 +173,11 @@ impl Adapter for NativeAdapter {
             }
             let operation = sentry_value_new_object();
             set_string(&operation, "stable_error_code", event.stable_error_code)?;
+            set_string(
+                &operation,
+                "detailed_failure_kind",
+                event.detailed_failure_kind,
+            )?;
             set_value(
                 &operation,
                 "retryable",
