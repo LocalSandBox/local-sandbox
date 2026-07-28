@@ -970,6 +970,21 @@ fn sentry_project_identity() -> Option<String> {
 }
 
 fn detailed_vm_failure_kind(diagnostics_dir: &Path, phase: &str) -> &'static str {
+    if let Some(kind) =
+        read_bounded_json(&diagnostics_dir.join("qemu-hang.json")).and_then(|value| {
+            value
+                .get("failure_kind")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+    {
+        if matches!(
+            kind.as_str(),
+            "guest_ready_timeout" | "qemu_shutdown_timeout"
+        ) {
+            return normalize_qemu_failure_kind(&kind);
+        }
+    }
     if let Ok(contents) = std::fs::read_to_string(diagnostics_dir.join("boot.status.json")) {
         if contents.len() <= 256 * 1024 {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) {
@@ -1607,6 +1622,33 @@ mod tests {
         assert_eq!(diagnostic["collectors"]["hyperv"], false);
         assert_eq!(event.tags["qemu.qmp_responsive"], "false");
         assert_eq!(event.tags["qemu.hyperv_errors_present"], "true");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shutdown_hang_artifact_drives_stop_failure_kind() {
+        let root = std::env::temp_dir().join(format!(
+            "lsbsw-shutdown-kind-{}-{}",
+            std::process::id(),
+            time::OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            root.join("boot.status.json"),
+            br#"{"state":"ready","error_kind":null}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("qemu-hang.json"),
+            br#"{"schema_version":1,"failure_kind":"qemu_shutdown_timeout"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            detailed_vm_failure_kind(&root, "stop"),
+            "qemu_shutdown_timeout"
+        );
 
         std::fs::remove_dir_all(root).unwrap();
     }
