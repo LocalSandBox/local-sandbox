@@ -122,6 +122,7 @@ $childWindbgResult = Invoke-CdbHangAnalysis -DumpPath $childDump.FullName `
     -OutputStem 'windbg-diagnostic-child' -ExpectedModule 'lsb_platform'
 
 $env:LSB_QEMU_HANG_TEST_FORCE_GUEST_READY_TIMEOUT = '0'
+$env:LSB_QEMU_HANG_TEST_FORCE_SHUTDOWN_TIMEOUT = '0'
 $normalArtifacts = Join-Path $RunRoot 'normal-boot'
 $env:LSB_WINDOWS_BOOT_ARTIFACT_DIR = $normalArtifacts
 Invoke-Cargo @(
@@ -255,6 +256,75 @@ if ($retained.Count -ne 3) {
 $windbgResult = Invoke-CdbHangAnalysis -DumpPath $lastDumpPath `
     -OutputStem 'windbg-qemu-hang' -ExpectedModule 'qemu'
 
+$env:LSB_QEMU_HANG_TEST_FORCE_GUEST_READY_TIMEOUT = '0'
+$env:LSB_QEMU_HANG_TEST_FORCE_SHUTDOWN_TIMEOUT = '1'
+$env:LSB_QEMU_HANG_TEST_SHUTDOWN_TIMEOUT_MS = '1500'
+$shutdownArtifacts = Join-Path $RunRoot 'shutdown-hang'
+$env:LSB_WINDOWS_BOOT_ARTIFACT_DIR = $shutdownArtifacts
+Invoke-Cargo @(
+    'test', '-p', 'lsb-platform', '--features', 'qemu-hang-test-hooks', '--locked',
+    'windows_x86_64::qemu::boot::tests::windows_qemu_shutdown_hang_telemetry_smoke',
+    '--', '--ignored', '--exact', '--nocapture'
+)
+$shutdownHang = Get-Content -LiteralPath (Join-Path $shutdownArtifacts 'qemu-hang.json') -Raw |
+    ConvertFrom-Json
+$shutdownDump = Get-Content `
+    -LiteralPath (Join-Path $shutdownArtifacts 'qemu-hang-dump.json') -Raw |
+    ConvertFrom-Json
+$shutdownStatus = Get-Content `
+    -LiteralPath (Join-Path $shutdownArtifacts 'qemu.status.json') -Raw |
+    ConvertFrom-Json
+$shutdownDumpPath = Join-Path $telemetryRoot ([string]$shutdownDump.relative_local_path)
+$shutdownDumpItem = Assert-RegularFile $shutdownDumpPath
+$shutdownDumpHash = (
+    Get-FileHash -LiteralPath $shutdownDumpItem.FullName -Algorithm SHA256
+).Hash.ToLowerInvariant()
+if ([string]$shutdownHang.failure_kind -cne 'qemu_shutdown_timeout' -or
+    -not $shutdownHang.qmp.connected -or -not $shutdownHang.qmp.responsive -or
+    -not $shutdownDump.success -or
+    $shutdownDumpHash -cne [string]$shutdownDump.sha256 -or
+    $shutdownDumpItem.Length -ne [long]$shutdownDump.dump_byte_size -or
+    [string]$shutdownStatus.state -cne 'terminated') {
+    throw 'The QEMU shutdown-timeout path did not retain complete live diagnostics.'
+}
+$shutdownTimelinePhases = @(
+    Get-Content -LiteralPath (Join-Path $shutdownArtifacts 'qemu-timeline.jsonl') |
+        ForEach-Object { ($_ | ConvertFrom-Json).phase }
+)
+$lastShutdownPhaseIndex = -1
+foreach ($requiredPhase in @(
+    'instance_cleanup_started',
+    'wait_exit_started',
+    'wait_exit_timed_out',
+    'qemu_shutdown_timeout',
+    'hang_snapshot_started',
+    'dump_completed',
+    'hang_snapshot_completed',
+    'termination_requested',
+    'qemu_process_exited'
+)) {
+    $phaseIndex = [Array]::IndexOf($shutdownTimelinePhases, $requiredPhase)
+    if ($phaseIndex -le $lastShutdownPhaseIndex) {
+        throw "QEMU shutdown-timeout timeline omitted or misordered $requiredPhase."
+    }
+    $lastShutdownPhaseIndex = $phaseIndex
+}
+$shutdownRawPipeMarker = "lsb-$([string]$shutdownHang.incident_id)-qmp"
+foreach ($textArtifact in Get-ChildItem -LiteralPath $shutdownArtifacts -File -Force |
+    Where-Object { $_.Extension -in @('.json', '.jsonl', '.txt', '.log') }) {
+    $text = [string](Get-Content -LiteralPath $textArtifact.FullName -Raw)
+    if ($text.Contains($shutdownRawPipeMarker, [StringComparison]::Ordinal) -or
+        $text.Contains($secretCanary, [StringComparison]::Ordinal)) {
+        throw 'The QEMU shutdown-timeout diagnostics leaked private parent state.'
+    }
+}
+$shutdownWindbgResult = Invoke-CdbHangAnalysis -DumpPath $shutdownDumpItem.FullName `
+    -OutputStem 'windbg-qemu-shutdown-hang' -ExpectedModule 'qemu'
+if (Get-Process -Name 'qemu-system-x86_64' -ErrorAction SilentlyContinue) {
+    throw 'The QEMU shutdown-timeout path left QEMU alive.'
+}
+$env:LSB_QEMU_HANG_TEST_FORCE_SHUTDOWN_TIMEOUT = '0'
+
 $blockedHelper = Join-Path $RunRoot 'blocked-dump-helper.exe'
 $source = @'
 using System;
@@ -266,6 +336,7 @@ public static class BlockedDumpHelper {
 Add-Type -TypeDefinition $source -OutputAssembly $blockedHelper -OutputType ConsoleApplication
 Assert-RegularFile $blockedHelper 8MB | Out-Null
 $env:LSB_QEMU_HANG_TEST_HELPER = $blockedHelper
+$env:LSB_QEMU_HANG_TEST_FORCE_GUEST_READY_TIMEOUT = '1'
 $env:LSB_QEMU_HANG_TEST_DUMP_DEADLINE_MS = '250'
 $env:LSB_QEMU_HANG_TEST_EXPECT_DUMP_TIMEOUT = '1'
 $env:LSB_WINDOWS_BOOT_ARTIFACT_DIR = Join-Path $RunRoot 'helper-timeout'
@@ -283,6 +354,8 @@ $env:LSB_QEMU_HANG_TEST_HELPER = $helper
 $env:LSB_QEMU_HANG_TEST_DUMP_DEADLINE_MS = '5000'
 $priorRustFlags = $env:RUSTFLAGS
 $env:RUSTFLAGS = '-C target-feature=+crt-static'
+$env:LSB_QEMU_HANG_TEST_FORCE_GUEST_READY_TIMEOUT = '1'
+$env:LSB_QEMU_HANG_TEST_FORCE_SHUTDOWN_TIMEOUT = '0'
 $env:LSB_QEMU_HANG_TEST_SERVICE_ROOT = Join-Path $RunRoot 'service-programdata'
 Invoke-Cargo @(
     'test', '-p', 'lsb-seawork-service', '--features',
@@ -324,6 +397,51 @@ if (@($hyperv.channels).Count -ne 3 -or @($hyperv.events).Count -gt 64) {
     throw 'Hyper-V evidence did not preserve the three-channel bounded query contract.'
 }
 
+$env:LSB_QEMU_HANG_TEST_FORCE_GUEST_READY_TIMEOUT = '0'
+$env:LSB_QEMU_HANG_TEST_FORCE_SHUTDOWN_TIMEOUT = '1'
+$env:LSB_QEMU_HANG_TEST_SERVICE_STOP_ROOT = Join-Path $RunRoot 'service-stop-programdata'
+Invoke-Cargo @(
+    'test', '-p', 'lsb-seawork-service', '--features',
+    'sentry-telemetry,qemu-hang-test-hooks', '--locked',
+    'resource::vm::tests::windows_service_owned_qemu_shutdown_hang_smoke',
+    '--', '--ignored', '--exact', '--nocapture'
+)
+if (Get-Process -Name 'qemu-system-x86_64' -ErrorAction SilentlyContinue) {
+    throw 'The service-owned QEMU shutdown-timeout path left QEMU alive.'
+}
+$serviceStopArchives = @(Get-ChildItem `
+    -LiteralPath $env:LSB_QEMU_HANG_TEST_SERVICE_STOP_ROOT `
+    -Filter 'incident.zip' -File -Recurse -Force)
+if ($serviceStopArchives.Count -ne 1) {
+    throw "Service stop retained $($serviceStopArchives.Count) incident archives."
+}
+$serviceStopPackaged = $serviceStopArchives[0].DirectoryName
+$serviceStopHang = Get-Content `
+    -LiteralPath (Join-Path $serviceStopPackaged 'qemu-hang.json') -Raw |
+    ConvertFrom-Json
+$serviceStopManifest = Get-Content `
+    -LiteralPath (Join-Path $serviceStopPackaged 'incident.json') -Raw |
+    ConvertFrom-Json
+if ([string]$serviceStopHang.failure_kind -cne 'qemu_shutdown_timeout' -or
+    -not $serviceStopHang.job.active_process_zero_observed -or
+    -not $serviceStopHang.job.termination_succeeded -or
+    [string]$serviceStopManifest.stable_error_code -cne 'SANDBOX_STOP_FAILED' -or
+    [string]$serviceStopManifest.failure_phase -cne 'stop') {
+    throw 'Service stop did not preserve its shutdown-timeout incident contract.'
+}
+$serviceStopArchiveInspection = Join-Path $RunRoot 'service-stop-archive-inspection'
+Expand-Archive -LiteralPath $serviceStopArchives[0].FullName `
+    -DestinationPath $serviceStopArchiveInspection
+foreach ($textArtifact in Get-ChildItem -LiteralPath $serviceStopArchiveInspection `
+    -File -Recurse -Force) {
+    $text = [string](Get-Content -LiteralPath $textArtifact.FullName -Raw)
+    if ($text.Contains($secretCanary, [StringComparison]::Ordinal) -or
+        $text -match 'lsb-[0-9a-f]{32}-qmp') {
+        throw 'Service stop incident archive leaked a private pipe name or parent secret.'
+    }
+}
+$env:LSB_QEMU_HANG_TEST_FORCE_SHUTDOWN_TIMEOUT = '0'
+
 $env:CARGO_TARGET_DIR = $productionTarget
 $productionFeatureTreePath = Join-Path $RunRoot 'production-feature-tree.txt'
 $productionFeatureTree = & cargo tree -p lsb-seawork-service -e features `
@@ -340,6 +458,8 @@ Invoke-Cargo @('build', '-p', 'lsb-seawork-service', '--features', 'sentry-telem
 $productionService = Join-Path $productionTarget 'debug\localsandbox-seawork-service.exe'
 $binaryText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($productionService))
 if ($binaryText.Contains('LSB_QEMU_HANG_TEST_FORCE_GUEST_READY_TIMEOUT') -or
+    $binaryText.Contains('LSB_QEMU_HANG_TEST_FORCE_SHUTDOWN_TIMEOUT') -or
+    $binaryText.Contains('LSB_QEMU_HANG_TEST_SHUTDOWN_TIMEOUT_MS') -or
     $binaryText.Contains('LSB_QEMU_HANG_TEST_HELPER')) {
     throw 'Production service unexpectedly contains qemu-hang-test-hooks strings.'
 }
@@ -370,6 +490,15 @@ $evidencePath = Join-Path $RunRoot 'evidence-qemu-telemetry-smoke.json'
     }
     incidents = $incidents
     retained_incident_count = $retained.Count
+    shutdown_timeout = [ordered]@{
+        dump_path = [string]$shutdownDump.relative_local_path
+        dump_size = $shutdownDumpItem.Length
+        dump_sha256 = $shutdownDumpHash
+        qmp_responsive = [bool]$shutdownHang.qmp.responsive
+        windbg_output_sha256 = (
+            Get-FileHash -LiteralPath $shutdownWindbgResult.FullName -Algorithm SHA256
+        ).Hash.ToLowerInvariant()
+    }
     helper_timeout_bounded = $true
     qemu_processes_remaining = 0
     hyperv_channels = @($hyperv.channels)
@@ -381,6 +510,8 @@ $evidencePath = Join-Path $RunRoot 'evidence-qemu-telemetry-smoke.json'
         Get-FileHash -LiteralPath $incidentArchive.FullName -Algorithm SHA256
     ).Hash.ToLowerInvariant()
     service_job_active_process_zero = $true
+    service_stop_deadline_safe = $true
+    service_stop_failure_kind = [string]$serviceStopHang.failure_kind
     windbg_opened = $true
     windbg_output_sha256 = (
         Get-FileHash -LiteralPath $windbgResult.FullName -Algorithm SHA256

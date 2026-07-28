@@ -1777,4 +1777,110 @@ mod tests {
         assert!(archive.by_name("hyperv-events.json").is_ok());
         assert!(archive.by_name("qemu-hang.dmp").is_err());
     }
+
+    #[cfg(feature = "qemu-hang-test-hooks")]
+    #[test]
+    #[ignore = "requires Windows 11 x86_64 with WHPX and provisioned QEMU/runtime assets"]
+    fn windows_service_owned_qemu_shutdown_hang_smoke() {
+        let assets = PathBuf::from(
+            std::env::var_os("LSB_WINDOWS_TEST_ASSETS_ROOT").expect("LSB_WINDOWS_TEST_ASSETS_ROOT"),
+        );
+        let service_root = PathBuf::from(
+            std::env::var_os("LSB_QEMU_HANG_TEST_SERVICE_STOP_ROOT")
+                .expect("LSB_QEMU_HANG_TEST_SERVICE_STOP_ROOT"),
+        );
+        let paths = ServicePaths::for_test(service_root);
+        paths.prepare().unwrap();
+        let engine = ServiceEngineConfig::from_verified_bundle(
+            assets.clone(),
+            assets.join("qemu/qemu-system-x86_64.exe"),
+            assets.join("runtime/Image"),
+            assets.join("runtime/initramfs.cpio.gz"),
+            assets.join("runtime/rootfs.ext4"),
+            &paths,
+        )
+        .unwrap();
+        let identity = crate::session::ClientIdentityKey::for_test(
+            "S-1-5-21-qemu-stop-smoke",
+            "S-1-5-5-1-2",
+            1,
+        );
+        let resource = ResourceHandle::random().unwrap();
+        let instance_dir = engine.resources_root().join(resource.to_string());
+        std::fs::create_dir(&instance_dir).unwrap();
+        let rootfs_image = instance_dir.join("rootfs.ext4");
+        std::fs::copy(engine.base_rootfs(), &rootfs_image).unwrap();
+        let transaction = crate::resource::transaction::ResourceTransaction::reserve(
+            engine.ledger_root(),
+            &resource.to_string(),
+            &identity,
+        )
+        .unwrap();
+        let telemetry = crate::telemetry::Telemetry::disabled();
+        let start_span = telemetry.start_span(crate::telemetry::SpanDescription::transaction(
+            "sandbox.start",
+        ));
+        let vm = ManagedVm::start(
+            &engine,
+            transaction,
+            ManagedVmSpec {
+                correlation_id: "windows-service-qemu-stop-smoke".to_string(),
+                resource_id: resource.to_string(),
+                instance_dir,
+                rootfs_image,
+                cpus: 2,
+                memory_mib: 2048,
+                mounts: Vec::new(),
+                proxy_config: None,
+            },
+            CancellationToken::default(),
+            CancellationToken::default(),
+            telemetry.clone(),
+            start_span.parent(),
+        )
+        .expect("service-owned QEMU must reach guest ready before shutdown injection");
+        start_span.finish(crate::telemetry::SpanStatus::Ok);
+        let stop_span = telemetry.start_span(crate::telemetry::SpanDescription::transaction(
+            "sandbox.stop",
+        ));
+        let error = vm
+            .stop(Duration::from_secs(1), Some(stop_span.parent()))
+            .expect_err("test hook must force a service-owned QEMU shutdown timeout");
+        stop_span.finish(crate::telemetry::SpanStatus::InternalError);
+        let error_chain = format!("{error:#}");
+        assert!(error_chain.contains("did not exit"), "{error_chain}");
+        assert!(
+            error_chain.contains("correlation_id=windows-service-qemu-stop-smoke"),
+            "{error_chain}"
+        );
+        assert!(
+            error_chain.contains(&format!("resource_id={resource}")),
+            "{error_chain}"
+        );
+
+        let incidents = std::fs::read_dir(engine.telemetry_root().join("incidents"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.is_dir())
+            .collect::<Vec<_>>();
+        assert_eq!(incidents.len(), 1);
+        let incident = &incidents[0];
+        let hang: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(incident.join("qemu-hang.json")).unwrap())
+                .unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(incident.join("incident.json")).unwrap())
+                .unwrap();
+        assert_eq!(hang["failure_kind"], "qemu_shutdown_timeout");
+        assert_eq!(hang["job"]["active_pids"], serde_json::json!([]));
+        assert_eq!(hang["job"]["active_process_zero_observed"], true);
+        assert_eq!(hang["job"]["termination_succeeded"], true);
+        assert_eq!(manifest["stable_error_code"], "SANDBOX_STOP_FAILED");
+        assert_eq!(manifest["failure_phase"], "stop");
+        assert_eq!(
+            manifest["correlation_id"],
+            "windows-service-qemu-stop-smoke"
+        );
+        assert_eq!(manifest["resource_id"], resource.to_string());
+    }
 }

@@ -235,7 +235,7 @@ impl WindowsQemuBoot {
     }
 
     pub(crate) fn stop(&mut self) -> Result<Option<QemuExitStatus>, QemuBootError> {
-        self.stop_with_timeout(DEFAULT_QEMU_SHUTDOWN_TIMEOUT)
+        self.stop_with_timeout(qemu_shutdown_timeout())
     }
 
     fn stop_with_timeout(
@@ -245,11 +245,13 @@ impl WindowsQemuBoot {
         if let Some(timeline) = &self.timeline {
             let _ = timeline.record(QemuTimelinePhase::InstanceCleanupStarted);
         }
-        let _quit_result = self
-            .qmp_endpoint
-            .as_ref()
-            .map(QmpEndpoint::request_quit)
-            .transpose();
+        if !force_shutdown_timeout_hook() {
+            let _ = self
+                .qmp_endpoint
+                .as_ref()
+                .map(QmpEndpoint::request_quit)
+                .transpose();
+        }
         if let Some(timeline) = &self.timeline {
             let _ = timeline.record(QemuTimelinePhase::WaitExitStarted);
         }
@@ -1581,6 +1583,20 @@ fn qemu_hang_telemetry_policy() -> QemuHangTelemetryPolicy {
     policy
 }
 
+fn qemu_shutdown_timeout() -> Duration {
+    #[cfg(feature = "qemu-hang-test-hooks")]
+    {
+        if force_shutdown_timeout_hook() {
+            if let Ok(value) = env::var("LSB_QEMU_HANG_TEST_SHUTDOWN_TIMEOUT_MS") {
+                if let Ok(milliseconds @ 100..=10_000) = value.parse::<u64>() {
+                    return Duration::from_millis(milliseconds);
+                }
+            }
+        }
+    }
+    DEFAULT_QEMU_SHUTDOWN_TIMEOUT
+}
+
 #[cfg(feature = "qemu-hang-test-hooks")]
 fn apply_qemu_hang_test_hooks(mut config: WindowsQemuBootConfig) -> WindowsQemuBootConfig {
     if force_guest_ready_timeout_hook() {
@@ -1596,6 +1612,16 @@ fn apply_qemu_hang_test_hooks(mut config: WindowsQemuBootConfig) -> WindowsQemuB
 #[cfg(feature = "qemu-hang-test-hooks")]
 fn force_guest_ready_timeout_hook() -> bool {
     env::var("LSB_QEMU_HANG_TEST_FORCE_GUEST_READY_TIMEOUT").as_deref() == Ok("1")
+}
+
+#[cfg(feature = "qemu-hang-test-hooks")]
+fn force_shutdown_timeout_hook() -> bool {
+    env::var("LSB_QEMU_HANG_TEST_FORCE_SHUTDOWN_TIMEOUT").as_deref() == Ok("1")
+}
+
+#[cfg(not(feature = "qemu-hang-test-hooks"))]
+fn force_shutdown_timeout_hook() -> bool {
+    false
 }
 
 #[cfg(not(feature = "qemu-hang-test-hooks"))]
@@ -3164,6 +3190,65 @@ mod tests {
                     manifest["sha256"].as_str().unwrap()
                 );
             }
+        }
+    }
+
+    #[cfg(feature = "qemu-hang-test-hooks")]
+    #[test]
+    #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU, and disposable LocalSandbox assets"]
+    fn windows_qemu_shutdown_hang_telemetry_smoke() {
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        {
+            eprintln!("skipping Windows QEMU shutdown hang smoke on non-Windows host");
+        }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            let kernel = required_env_path("LSB_WINDOWS_BOOT_KERNEL");
+            let initrd = required_env_path("LSB_WINDOWS_BOOT_INITRD");
+            let rootfs = required_env_path("LSB_WINDOWS_BOOT_ROOTFS");
+            let qemu = required_env_path("LSB_WINDOWS_BOOT_QEMU");
+            let artifact_dir = required_env_path("LSB_WINDOWS_BOOT_ARTIFACT_DIR");
+            let telemetry_root = required_env_path("LSB_QEMU_HANG_TEST_TELEMETRY_ROOT");
+            let mut config =
+                WindowsQemuBootConfig::new(kernel, initrd, rootfs, 2 * 1024 * 1024 * 1024, 2);
+            config.qemu_executable = Some(qemu);
+            config.artifact_directory = Some(artifact_dir.clone());
+            config.diagnostic_label = Some("windows-qemu-shutdown-hang-smoke".to_string());
+            config.control_endpoint = Some(
+                VirtioSerialControlEndpoint::for_instance(&artifact_dir)
+                    .expect("shutdown hang smoke control endpoint should be valid"),
+            );
+            config.hang_context = Some(crate::PlatformQemuTelemetryContext {
+                telemetry_root: telemetry_root.clone(),
+                run_id: Some("windows-qemu-shutdown-hang-smoke".to_string()),
+                correlation_id: "windows-qemu-shutdown-hang-smoke".to_string(),
+                resource_id: "windows-qemu-shutdown-hang-smoke".to_string(),
+            });
+
+            let mut boot =
+                launch_windows_qemu_boot(config).expect("shutdown hang smoke must boot normally");
+            let error = boot
+                .stop()
+                .expect_err("test hook must force a live QEMU shutdown timeout");
+            assert_eq!(error.kind(), QemuBootErrorKind::QemuShutdownTimeout);
+            let hang: serde_json::Value =
+                serde_json::from_slice(&fs::read(artifact_dir.join("qemu-hang.json")).unwrap())
+                    .unwrap();
+            assert_eq!(hang["failure_kind"], "qemu_shutdown_timeout");
+            assert_eq!(hang["qmp"]["connected"], true);
+            assert_eq!(hang["qmp"]["responsive"], true);
+            let manifest: serde_json::Value = serde_json::from_slice(
+                &fs::read(artifact_dir.join("qemu-hang-dump.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(manifest["success"], true);
+            let dump = telemetry_root.join(manifest["relative_local_path"].as_str().unwrap());
+            assert!(dump.is_file());
+            let status: serde_json::Value =
+                serde_json::from_slice(&fs::read(artifact_dir.join("qemu.status.json")).unwrap())
+                    .unwrap();
+            assert_eq!(status["state"], "terminated");
         }
     }
 
