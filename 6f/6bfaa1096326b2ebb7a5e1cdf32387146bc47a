@@ -1,0 +1,24 @@
+docs/seawork-test-release-handoff.md
+  s_31ad4f53b04974::t_b3c9e2e8cf683e 1221-1226,1228-1266
+  s_31ad4f53b04974::t_98bea04f0bacb9 1227
+scripts/windows-test-suites/qemu-telemetry-smoke.ps1
+  s_31ad4f53b04974::t_b3c9e2e8cf683e 518,520
+docs/service-diagnostics.md
+  s_31ad4f53b04974::t_b3c9e2e8cf683e 115-118
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "6f6bfaa1096326b2ebb7a5e1cdf32387146bc47a",
+  "prompts": {},
+  "sessions": {
+    "s_31ad4f53b04974": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa7b0-4d69-7d01-ae26-6595cb9ecc1b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
