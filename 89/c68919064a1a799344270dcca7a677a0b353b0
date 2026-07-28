@@ -1,0 +1,53 @@
+crates/lsb-platform/Cargo.toml
+  s_31ad4f53b04974::t_b3566c4c1f4e5d 11-12
+  s_31ad4f53b04974::t_ec9d0c3f788fd4 18
+crates/lsb-platform/src/windows_x86_64/qemu/hang.rs
+  s_31ad4f53b04974::t_7f5d652899933a 111-115,251-252,256-262
+  s_31ad4f53b04974::t_8e58f0cf43447f 178-179
+  s_31ad4f53b04974::t_ab5bf2c12e7ee9 227-229,254
+  s_31ad4f53b04974::t_ec9d0c3f788fd4 1-110,116-177,180-226,230-250,253,255,263-265
+crates/lsb-platform/src/windows_x86_64/qemu/mod.rs
+  s_31ad4f53b04974::t_ec9d0c3f788fd4 14
+crates/lsb-platform/src/windows_x86_64/qemu/boot.rs
+  s_31ad4f53b04974::t_ab5bf2c12e7ee9 205-206
+  s_31ad4f53b04974::t_7f5d652899933a 23,37,103,114,141,211-220,599-602,677-679,737,756-758,760-770,794-796,798-808,835-837,959,1538,1584
+  s_31ad4f53b04974::t_8e58f0cf43447f 1319-1323
+crates/lsb-seawork-service/src/telemetry/native.rs
+  s_31ad4f53b04974::t_af0041b19de1e0 176-180
+crates/lsb-seawork-service/src/telemetry/mod.rs
+  s_31ad4f53b04974::t_af0041b19de1e0 76,99,112,117,121-125,609-628
+  s_57ac78d3f1c92c::t_865a5e5eca6ba2 629
+crates/lsb-platform/src/windows_x86_64/qemu/process.rs
+  s_31ad4f53b04974::t_7f5d652899933a 15,91,105,517,527,544,557,564,617,619-627,629-631,855,857-861,863-880
+  s_31ad4f53b04974::t_b27d599537033b 1060-1064,1069-1070,1072-1082,1086-1093
+  s_31ad4f53b04974::t_8e58f0cf43447f 856,862
+crates/lsb-seawork-service/src/resource/vm.rs
+  s_31ad4f53b04974::t_af0041b19de1e0 657-660,692,697,714-747
+  s_31ad4f53b04974::t_8a564891d44702 748
+Cargo.lock
+  s_31ad4f53b04974::t_47e8ed23304315 991
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "89c68919064a1a799344270dcca7a677a0b353b0",
+  "prompts": {},
+  "sessions": {
+    "s_31ad4f53b04974": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa7b0-4d69-7d01-ae26-6595cb9ecc1b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    },
+    "s_57ac78d3f1c92c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa7ab-4dd6-74e2-9db1-938d76acb17b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
