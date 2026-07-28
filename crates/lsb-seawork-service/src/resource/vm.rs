@@ -1060,6 +1060,7 @@ fn stop_and_cleanup(
             crate::telemetry::SpanStatus::InternalError
         });
     }
+    let _ = sandbox.record_resource_ledger_finished(ledger_result.is_ok());
     ledger_result
 }
 

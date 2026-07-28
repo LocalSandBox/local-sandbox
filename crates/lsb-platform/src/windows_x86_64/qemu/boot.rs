@@ -181,6 +181,10 @@ impl WindowsQemuBoot {
         &self.artifacts
     }
 
+    pub(crate) fn timeline(&self) -> Option<QemuTimeline> {
+        self.timeline.clone()
+    }
+
     pub(crate) fn guest_ready(&self) -> Option<&GuestReady> {
         self.guest_ready.as_ref()
     }

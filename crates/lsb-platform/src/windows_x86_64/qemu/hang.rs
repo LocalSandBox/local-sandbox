@@ -934,6 +934,15 @@ impl QemuTimeline {
         self.record_result(phase, None, None, None)
     }
 
+    pub(crate) fn record_ledger_transaction_finished(&self, succeeded: bool) -> io::Result<()> {
+        self.record_result(
+            QemuTimelinePhase::LedgerTransactionFinished,
+            None,
+            Some(if succeeded { "success" } else { "failure" }),
+            (!succeeded).then_some("ledger"),
+        )
+    }
+
     pub(crate) fn record_result(
         &self,
         phase: QemuTimelinePhase,

@@ -545,6 +545,10 @@ impl Write for PlatformControlStream {
 pub trait PlatformVm: Send + Sync {
     fn start(&self) -> Result<()>;
     fn stop(&self) -> Result<()>;
+    #[doc(hidden)]
+    fn record_resource_ledger_finished(&self, _succeeded: bool) -> Result<()> {
+        Ok(())
+    }
     fn state_channel(&self) -> crossbeam_channel::Receiver<VmState>;
     fn guest_capabilities(&self) -> Vec<String> {
         Vec::new()

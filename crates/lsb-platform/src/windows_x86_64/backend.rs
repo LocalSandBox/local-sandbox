@@ -16,12 +16,14 @@ use super::errors::unsupported;
 use super::network::qemu_network_config;
 use super::qemu::boot::{launch_windows_qemu_boot, WindowsQemuBoot, WindowsQemuBootConfig};
 use super::qemu::config::{QemuDataDiskConfig, QemuDiskImageFormat};
+use super::qemu::hang::QemuTimeline;
 
 struct WindowsVm {
     config: WindowsVmConfig,
     state_tx: Sender<VmState>,
     state_rx: Receiver<VmState>,
     boot: Mutex<Option<WindowsQemuBoot>>,
+    completed_timeline: Mutex<Option<QemuTimeline>>,
     data_disks: Mutex<Vec<PlatformDataDisk>>,
 }
 
@@ -34,6 +36,7 @@ impl WindowsVm {
             state_tx,
             state_rx,
             boot: Mutex::new(None),
+            completed_timeline: Mutex::new(None),
             data_disks: Mutex::new(Vec::new()),
         }
     }
@@ -119,6 +122,9 @@ impl PlatformVm for WindowsVm {
                 "Windows QEMU direct boot is already running; stop the VM before starting it again"
             ));
         }
+        if let Ok(mut completed_timeline) = self.completed_timeline.lock() {
+            *completed_timeline = None;
+        }
 
         self.send_state(VmState::Starting);
         let data_disks = self
@@ -160,6 +166,9 @@ impl PlatformVm for WindowsVm {
         self.send_state(VmState::Stopping);
         match running_boot.stop() {
             Ok(_) => {
+                if let Ok(mut completed_timeline) = self.completed_timeline.lock() {
+                    *completed_timeline = running_boot.timeline();
+                }
                 *boot = None;
                 self.send_state(VmState::Stopped);
                 Ok(())
@@ -169,6 +178,18 @@ impl PlatformVm for WindowsVm {
                 Err(anyhow!("Windows QEMU direct boot stop failed: {err}"))
             }
         }
+    }
+
+    fn record_resource_ledger_finished(&self, succeeded: bool) -> Result<()> {
+        let timeline = self
+            .completed_timeline
+            .lock()
+            .map_err(|_| anyhow!("Windows QEMU completed timeline lock poisoned"))?
+            .take();
+        if let Some(timeline) = timeline {
+            timeline.record_ledger_transaction_finished(succeeded)?;
+        }
+        Ok(())
     }
 
     fn state_channel(&self) -> Receiver<VmState> {
@@ -384,6 +405,35 @@ mod tests {
     fn windows_vm_exposes_initial_stopped_state() {
         let vm = create_vm(test_config()).expect("vm should be constructible");
         assert_eq!(vm.state_channel().try_recv().ok(), Some(VmState::Stopped));
+    }
+
+    #[test]
+    fn completed_timeline_records_ledger_finish_exactly_once() {
+        let directory = std::env::temp_dir().join(format!(
+            "lsb-windows-backend-ledger-timeline-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let timeline = QemuTimeline::create(&directory).unwrap();
+        let timeline_path = timeline.path().to_path_buf();
+        let vm = WindowsVm::new(test_config());
+        *vm.completed_timeline.lock().unwrap() = Some(timeline);
+
+        vm.record_resource_ledger_finished(true).unwrap();
+        vm.record_resource_ledger_finished(false).unwrap();
+
+        let records = std::fs::read_to_string(timeline_path).unwrap();
+        let lines = records.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 1);
+        let record: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(record["phase"], "ledger_transaction_finished");
+        assert_eq!(record["outcome"], "success");
+        assert!(record.get("error_category").is_none());
+
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]

@@ -1146,6 +1146,11 @@ impl Sandbox {
         }
     }
 
+    #[doc(hidden)]
+    pub fn record_resource_ledger_finished(&self, succeeded: bool) -> Result<()> {
+        self.vm.record_resource_ledger_finished(succeeded)
+    }
+
     pub fn state_channel(&self) -> Receiver<VmState> {
         self.vm.state_channel()
     }
