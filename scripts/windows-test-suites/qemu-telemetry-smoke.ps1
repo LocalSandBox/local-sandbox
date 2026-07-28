@@ -98,34 +98,65 @@ foreach ($index in 1..4) {
         ConvertFrom-Json
     $status = Get-Content -LiteralPath (Join-Path $artifact 'qemu.status.json') -Raw |
         ConvertFrom-Json
+    $expectedCorrelationId = 'windows-qemu-hang-smoke'
+    $expectedResourceId = 'windows-qemu-hang-smoke'
     if (-not $hang.qmp.connected -or -not $hang.qmp.responsive -or
         @($hang.qmp.queries).Count -ne 4 -or -not $dump.success -or
-        [string]$status.state -cne 'terminated') {
+        [string]$status.state -cne 'terminated' -or
+        [string]$hang.correlation_id -cne $expectedCorrelationId -or
+        [string]$hang.resource_id -cne $expectedResourceId -or
+        [string]$dump.incident_id -cne [string]$hang.incident_id -or
+        [string]$dump.correlation_id -cne $expectedCorrelationId -or
+        [string]$dump.resource_id -cne $expectedResourceId) {
         throw "Incident $index did not capture responsive QMP and a diagnostic dump."
     }
-    $timelinePhases = @(Get-Content -LiteralPath (Join-Path $artifact 'qemu-timeline.jsonl') |
-        ForEach-Object { ($_ | ConvertFrom-Json).phase })
+    $timelineRecords = @(Get-Content -LiteralPath (Join-Path $artifact 'qemu-timeline.jsonl') |
+        ForEach-Object { $_ | ConvertFrom-Json })
+    $timelinePhases = @($timelineRecords | ForEach-Object phase)
+    $progressRecords = @(Get-Content -LiteralPath (Join-Path $artifact 'qemu-progress.jsonl') |
+        ForEach-Object { $_ | ConvertFrom-Json })
+    foreach ($record in @($timelineRecords) + @($progressRecords)) {
+        if ([string]$record.incident_id -cne [string]$hang.incident_id -or
+            [string]$record.correlation_id -cne $expectedCorrelationId -or
+            [string]$record.resource_id -cne $expectedResourceId) {
+            throw "Incident $index progress/timeline identity fields diverged."
+        }
+    }
+    $lastPhaseIndex = -1
     foreach ($requiredPhase in @(
         'preflight_started',
         'preflight_completed',
         'qemu_spawn_requested',
+        'qemu_spawned_suspended',
         'qemu_job_assigned',
+        'qemu_primary_thread_resumed',
+        'control_pipe_open_started',
         'control_pipe_opened',
+        'guest_ready_wait_started',
         'guest_ready_timeout',
         'hang_snapshot_started',
+        'qmp_snapshot_started',
+        'qmp_snapshot_completed',
+        'hyperv_snapshot_started',
+        'hyperv_snapshot_completed',
         'dump_started',
         'dump_completed',
         'hang_snapshot_completed',
         'termination_requested',
         'terminate_job_returned',
+        'wait_exit_started',
         'qemu_process_exited'
     )) {
-        if ($timelinePhases -cnotcontains $requiredPhase) {
+        $phaseIndex = [Array]::IndexOf($timelinePhases, $requiredPhase)
+        if ($phaseIndex -lt 0) {
             throw "Incident $index timeline omitted $requiredPhase."
         }
+        if ($phaseIndex -le $lastPhaseIndex) {
+            throw "Incident $index timeline recorded $requiredPhase out of causal order."
+        }
+        $lastPhaseIndex = $phaseIndex
     }
-    $progress = @(Get-Content -LiteralPath (Join-Path $artifact 'qemu-progress.jsonl'))
-    if ($progress.Count -lt 2) {
+    if ($progressRecords.Count -lt 2) {
         throw "Incident $index did not retain scheduled and final progress samples."
     }
     $dumpPath = Join-Path $telemetryRoot ([string]$dump.relative_local_path)

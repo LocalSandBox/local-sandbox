@@ -121,6 +121,8 @@ pub(crate) struct QemuProgressSnapshot {
 struct QemuProgressRecord<'a> {
     schema_version: u32,
     incident_id: &'a str,
+    correlation_id: &'a str,
+    resource_id: &'a str,
     sequence: u64,
     monotonic_elapsed_ms: u128,
     timestamp_utc: String,
@@ -131,6 +133,8 @@ struct QemuProgressRecord<'a> {
 #[derive(Debug)]
 pub(crate) struct QemuProgressWriter {
     incident_id: Arc<str>,
+    correlation_id: Arc<str>,
+    resource_id: Arc<str>,
     path: PathBuf,
     file: File,
     started_at: Instant,
@@ -139,7 +143,11 @@ pub(crate) struct QemuProgressWriter {
 }
 
 impl QemuProgressWriter {
-    pub(crate) fn create(directory: &Path, incident_id: &str) -> io::Result<Self> {
+    pub(crate) fn create(
+        directory: &Path,
+        incident_id: &str,
+        context: Option<&crate::PlatformQemuTelemetryContext>,
+    ) -> io::Result<Self> {
         let path = directory.join(PROGRESS_FILE);
         let file = OpenOptions::new()
             .create(true)
@@ -148,6 +156,16 @@ impl QemuProgressWriter {
             .open(&path)?;
         Ok(Self {
             incident_id: Arc::from(incident_id),
+            correlation_id: Arc::from(
+                context
+                    .map(|value| value.correlation_id.as_str())
+                    .unwrap_or("unavailable"),
+            ),
+            resource_id: Arc::from(
+                context
+                    .map(|value| value.resource_id.as_str())
+                    .unwrap_or("unavailable"),
+            ),
             path,
             file,
             started_at: Instant::now(),
@@ -205,6 +223,8 @@ impl QemuProgressWriter {
         let record = QemuProgressRecord {
             schema_version: 1,
             incident_id: &self.incident_id,
+            correlation_id: &self.correlation_id,
+            resource_id: &self.resource_id,
             sequence: self.sequence,
             monotonic_elapsed_ms: elapsed.as_millis(),
             timestamp_utc: utc_timestamp()?,
@@ -230,6 +250,8 @@ impl QemuProgressWriter {
 struct QemuHangArtifact<'a> {
     schema_version: u32,
     incident_id: &'a str,
+    correlation_id: &'a str,
+    resource_id: &'a str,
     failure_kind: &'a str,
     hang_signature: &'a str,
     elapsed_ms: u128,
@@ -271,6 +293,7 @@ pub(crate) struct QemuDumpCaptureSummary {
 pub(crate) fn write_initial_hang_artifact(
     directory: &Path,
     incident_id: &str,
+    context: Option<&crate::PlatformQemuTelemetryContext>,
     failure_kind: &str,
     elapsed: Duration,
     process: &QemuProcessSnapshot,
@@ -283,6 +306,12 @@ pub(crate) fn write_initial_hang_artifact(
     let artifact = QemuHangArtifact {
         schema_version: 1,
         incident_id,
+        correlation_id: context
+            .map(|value| value.correlation_id.as_str())
+            .unwrap_or("unavailable"),
+        resource_id: context
+            .map(|value| value.resource_id.as_str())
+            .unwrap_or("unavailable"),
         failure_kind,
         hang_signature,
         elapsed_ms: elapsed.as_millis(),
@@ -737,6 +766,8 @@ pub(crate) fn classify_hang_signature(
 struct TimelineRecord<'a> {
     schema_version: u32,
     incident_id: &'a str,
+    correlation_id: &'a str,
+    resource_id: &'a str,
     sequence: u64,
     phase: QemuTimelinePhase,
     monotonic_elapsed_ms: u128,
@@ -758,6 +789,8 @@ struct TimelineState {
 #[derive(Debug, Clone)]
 pub(crate) struct QemuTimeline {
     incident_id: Arc<str>,
+    correlation_id: Arc<str>,
+    resource_id: Arc<str>,
     path: Arc<PathBuf>,
     started_at: Instant,
     state: Arc<Mutex<TimelineState>>,
@@ -766,11 +799,12 @@ pub(crate) struct QemuTimeline {
 
 impl QemuTimeline {
     pub(crate) fn create(directory: &Path) -> io::Result<Self> {
-        Self::create_with_observer(directory, None)
+        Self::create_with_observer(directory, None, None)
     }
 
     pub(crate) fn create_with_observer(
         directory: &Path,
+        context: Option<&crate::PlatformQemuTelemetryContext>,
         lifecycle_observer: Option<Arc<dyn crate::PlatformProcessContainment>>,
     ) -> io::Result<Self> {
         fs::create_dir_all(directory)?;
@@ -782,6 +816,16 @@ impl QemuTimeline {
             .open(&path)?;
         Ok(Self {
             incident_id: Arc::from(generate_incident_id()?),
+            correlation_id: Arc::from(
+                context
+                    .map(|value| value.correlation_id.as_str())
+                    .unwrap_or("unavailable"),
+            ),
+            resource_id: Arc::from(
+                context
+                    .map(|value| value.resource_id.as_str())
+                    .unwrap_or("unavailable"),
+            ),
             path: Arc::new(path),
             started_at: Instant::now(),
             state: Arc::new(Mutex::new(TimelineState { file, sequence: 0 })),
@@ -820,6 +864,8 @@ impl QemuTimeline {
         let record = TimelineRecord {
             schema_version: 1,
             incident_id: self.incident_id(),
+            correlation_id: &self.correlation_id,
+            resource_id: &self.resource_id,
             sequence,
             phase,
             monotonic_elapsed_ms: self.started_at.elapsed().as_millis(),
@@ -1011,7 +1057,14 @@ mod tests {
     #[test]
     fn timeline_records_stable_bounded_monotonic_jsonl() {
         let directory = temp_dir("schema");
-        let timeline = QemuTimeline::create(&directory).unwrap();
+        let context = crate::PlatformQemuTelemetryContext {
+            telemetry_root: directory.clone(),
+            run_id: Some("run-1".to_string()),
+            correlation_id: "correlation-1".to_string(),
+            resource_id: "sandbox-1".to_string(),
+        };
+        let timeline =
+            QemuTimeline::create_with_observer(&directory, Some(&context), None).unwrap();
         timeline
             .record(QemuTimelinePhase::PreflightStarted)
             .unwrap();
@@ -1034,6 +1087,8 @@ mod tests {
         let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(first["schema_version"], 1);
         assert_eq!(first["incident_id"], timeline.incident_id());
+        assert_eq!(first["correlation_id"], "correlation-1");
+        assert_eq!(first["resource_id"], "sandbox-1");
         assert_eq!(first["sequence"], 0);
         assert_eq!(second["sequence"], 1);
         assert_eq!(first["phase"], "preflight_started");
@@ -1055,7 +1110,7 @@ mod tests {
         let directory = temp_dir("lifecycle");
         let recorder = Arc::new(LifecycleRecorder::default());
         let timeline =
-            QemuTimeline::create_with_observer(&directory, Some(recorder.clone())).unwrap();
+            QemuTimeline::create_with_observer(&directory, None, Some(recorder.clone())).unwrap();
         timeline
             .record(QemuTimelinePhase::QemuSpawnRequested)
             .unwrap();
@@ -1166,11 +1221,19 @@ mod tests {
             control_pipe_open: true,
             ..QemuProgressSnapshot::default()
         };
-        let mut writer = QemuProgressWriter::create(&directory, "incident-1").unwrap();
+        let context = crate::PlatformQemuTelemetryContext {
+            telemetry_root: directory.clone(),
+            run_id: Some("run-1".to_string()),
+            correlation_id: "correlation-1".to_string(),
+            resource_id: "sandbox-1".to_string(),
+        };
+        let mut writer =
+            QemuProgressWriter::create(&directory, "incident-1", Some(&context)).unwrap();
         writer.record_final(&process, &progress).unwrap();
         write_initial_hang_artifact(
             &directory,
             "incident-1",
+            Some(&context),
             "guest_ready_timeout",
             Duration::from_millis(90_000),
             &process,
@@ -1187,7 +1250,11 @@ mod tests {
         let hang_json: serde_json::Value =
             serde_json::from_slice(&fs::read(directory.join(HANG_FILE)).unwrap()).unwrap();
         assert_eq!(progress_json["incident_id"], "incident-1");
+        assert_eq!(progress_json["correlation_id"], "correlation-1");
+        assert_eq!(progress_json["resource_id"], "sandbox-1");
         assert_eq!(hang_json["incident_id"], "incident-1");
+        assert_eq!(hang_json["correlation_id"], "correlation-1");
+        assert_eq!(hang_json["resource_id"], "sandbox-1");
         assert_eq!(hang_json["failure_kind"], "guest_ready_timeout");
         assert_eq!(
             hang_json["hang_signature"],

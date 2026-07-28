@@ -1566,7 +1566,8 @@ mod tests {
         );
         transaction_span.finish(crate::telemetry::SpanStatus::InternalError);
         let error = result.expect_err("test hook must force a service-owned QEMU timeout");
-        assert!(error.to_string().contains("guest-ready"));
+        let error_chain = format!("{error:#}");
+        assert!(error_chain.contains("guest-ready"), "{error_chain}");
 
         let incident_root = engine.telemetry_root().join("incidents");
         let incidents = std::fs::read_dir(&incident_root)
@@ -1579,18 +1580,67 @@ mod tests {
         let hang: serde_json::Value =
             serde_json::from_slice(&std::fs::read(incident.join("qemu-hang.json")).unwrap())
                 .unwrap();
+        let dump: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(incident.join("qemu-hang-dump.json")).unwrap())
+                .unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(incident.join("incident.json")).unwrap())
+                .unwrap();
+        let progress = std::fs::read_to_string(incident.join("qemu-progress.jsonl")).unwrap();
+        let timeline = std::fs::read_to_string(incident.join("qemu-timeline.jsonl")).unwrap();
         assert_eq!(hang["failure_kind"], "guest_ready_timeout");
+        assert_eq!(hang["correlation_id"], "windows-service-qemu-hang-smoke");
+        assert_eq!(hang["resource_id"], resource.to_string());
         assert_eq!(hang["job"]["active_pids"], serde_json::json!([]));
         assert_eq!(hang["job"]["active_process_zero_observed"], true);
         assert_eq!(hang["job"]["termination_requested"], true);
         assert_eq!(hang["job"]["termination_succeeded"], true);
+        assert_eq!(dump["incident_id"], hang["incident_id"]);
+        assert_eq!(dump["correlation_id"], "windows-service-qemu-hang-smoke");
+        assert_eq!(dump["resource_id"], resource.to_string());
+        assert_eq!(
+            manifest["correlation_id"],
+            "windows-service-qemu-hang-smoke"
+        );
+        assert_eq!(manifest["resource_id"], resource.to_string());
+        for line in progress.lines().chain(timeline.lines()) {
+            let record: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(record["incident_id"], hang["incident_id"]);
+            assert_eq!(record["correlation_id"], "windows-service-qemu-hang-smoke");
+            assert_eq!(record["resource_id"], resource.to_string());
+        }
         let hyperv: serde_json::Value =
             serde_json::from_slice(&std::fs::read(incident.join("hyperv-events.json")).unwrap())
                 .unwrap();
+        assert_eq!(hyperv["incident_id"], hang["incident_id"]);
+        assert_eq!(hyperv["correlation_id"], "windows-service-qemu-hang-smoke");
+        assert_eq!(hyperv["resource_id"], resource.to_string());
         assert_eq!(hyperv["channels"].as_array().map(Vec::len), Some(3));
-        assert!(incident.join("incident.json").is_file());
         let mut archive =
             zip::ZipArchive::new(File::open(incident.join("incident.zip")).unwrap()).unwrap();
+        let archive_names = (0..archive.len())
+            .map(|index| archive.by_index(index).unwrap().name().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            archive_names,
+            [
+                "incident.json",
+                "machine.json",
+                "qemu-hang.json",
+                "qemu-progress.jsonl",
+                "qemu-timeline.jsonl",
+                "qemu-hang-dump.json",
+                "hyperv-events.json",
+                "boot.status.json",
+                "preflight.json",
+                "qemu.argv.redacted.txt",
+                "qemu.status.json",
+                "qemu.stderr.log",
+                "qemu.stdout.log",
+                "serial.log",
+                "service.tail.jsonl",
+            ]
+        );
         assert!(archive.by_name("qemu-hang.json").is_ok());
         assert!(archive.by_name("hyperv-events.json").is_ok());
         assert!(archive.by_name("qemu-hang.dmp").is_err());

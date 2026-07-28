@@ -325,6 +325,8 @@ pub struct PlatformQemuTelemetryContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlatformQemuLiveIncident {
     pub incident_id: String,
+    pub correlation_id: String,
+    pub resource_id: String,
     pub artifact_directory: PathBuf,
     pub qemu_creation_time_100ns: u64,
     pub snapshot_elapsed_ms: u64,

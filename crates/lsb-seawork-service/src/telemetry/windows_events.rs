@@ -49,6 +49,8 @@ struct Event {
 struct HypervEvidence<'a> {
     schema_version: u32,
     incident_id: &'a str,
+    correlation_id: &'a str,
+    resource_id: &'a str,
     qemu_creation_time_100ns: u64,
     captured_utc: String,
     truncated: bool,
@@ -185,6 +187,8 @@ pub(crate) fn capture_hyperv_evidence(
     let mut evidence = HypervEvidence {
         schema_version: 1,
         incident_id: &incident.incident_id,
+        correlation_id: &incident.correlation_id,
+        resource_id: &incident.resource_id,
         qemu_creation_time_100ns: incident.qemu_creation_time_100ns,
         captured_utc: time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
@@ -493,6 +497,8 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let incident = lsb_platform::PlatformQemuLiveIncident {
             incident_id: "0123456789abcdef0123456789abcdef".to_string(),
+            correlation_id: "correlation-1".to_string(),
+            resource_id: "sandbox-1".to_string(),
             artifact_directory: root.clone(),
             qemu_creation_time_100ns: 42,
             snapshot_elapsed_ms: 1_000,
@@ -502,6 +508,8 @@ mod tests {
         assert!(bytes.len() <= MAX_TOTAL_BYTES);
         let evidence: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(evidence["incident_id"], incident.incident_id);
+        assert_eq!(evidence["correlation_id"], incident.correlation_id);
+        assert_eq!(evidence["resource_id"], incident.resource_id);
         assert_eq!(
             evidence["channels"]
                 .as_array()
@@ -547,6 +555,8 @@ mod tests {
             serde_json::from_slice(&std::fs::read(source.join("qemu-hang.json")).unwrap()).unwrap();
         let incident = lsb_platform::PlatformQemuLiveIncident {
             incident_id: hang["incident_id"].as_str().unwrap().to_string(),
+            correlation_id: hang["correlation_id"].as_str().unwrap().to_string(),
+            resource_id: hang["resource_id"].as_str().unwrap().to_string(),
             artifact_directory: output.clone(),
             qemu_creation_time_100ns: hang["process"]["creation_time"].as_u64().unwrap(),
             snapshot_elapsed_ms: hang["elapsed_ms"].as_u64().unwrap(),

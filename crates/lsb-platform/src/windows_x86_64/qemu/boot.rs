@@ -701,6 +701,7 @@ pub(crate) fn launch_windows_qemu_boot(
     prepare_artifacts(&artifacts)?;
     let timeline = QemuTimeline::create_with_observer(
         &artifacts.directory,
+        config.hang_context.as_ref(),
         config.process_containment.clone(),
     )
     .ok();
@@ -708,7 +709,12 @@ pub(crate) fn launch_windows_qemu_boot(
         .as_ref()
         .and_then(|timeline| QmpEndpoint::for_incident(timeline.incident_id()).ok());
     let mut progress = timeline.as_ref().and_then(|timeline| {
-        QemuProgressWriter::create(&artifacts.directory, timeline.incident_id()).ok()
+        QemuProgressWriter::create(
+            &artifacts.directory,
+            timeline.incident_id(),
+            config.hang_context.as_ref(),
+        )
+        .ok()
     });
     if let Some(timeline) = &timeline {
         let _ = timeline.record(QemuTimelinePhase::PreflightStarted);
@@ -1481,6 +1487,20 @@ where
         }
 
         if Instant::now() >= deadline {
+            if let Some(timeline) = timeline {
+                let _ = timeline.record_result(
+                    QemuTimelinePhase::GuestReadyTimeout,
+                    Some(started_at.elapsed()),
+                    Some("timeout"),
+                    Some("guest_ready"),
+                );
+            } else {
+                supervisor.record_timeline_result(
+                    QemuTimelinePhase::GuestReadyTimeout,
+                    Some("timeout"),
+                    Some("guest_ready"),
+                );
+            }
             capture_live_timeout(
                 supervisor,
                 artifacts,
@@ -1493,11 +1513,6 @@ where
                 started_at.elapsed(),
                 true,
                 guest_ready_bytes_received.load(Ordering::Relaxed),
-            );
-            supervisor.record_timeline_result(
-                QemuTimelinePhase::GuestReadyTimeout,
-                Some("timeout"),
-                Some("guest_ready"),
             );
             return Err(QemuBootError::GuestReadyTimeout {
                 timeout,
@@ -1601,6 +1616,12 @@ fn capture_live_timeout(
         let _ = timeline.record(QemuTimelinePhase::HypervSnapshotStarted);
         let incident = crate::PlatformQemuLiveIncident {
             incident_id: timeline.incident_id().to_string(),
+            correlation_id: hang_context
+                .map(|context| context.correlation_id.clone())
+                .unwrap_or_else(|| "unavailable".to_string()),
+            resource_id: hang_context
+                .map(|context| context.resource_id.clone())
+                .unwrap_or_else(|| "unavailable".to_string()),
             artifact_directory: artifacts.directory.clone(),
             qemu_creation_time_100ns: process.creation_time,
             snapshot_elapsed_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
@@ -1628,6 +1649,7 @@ fn capture_live_timeout(
         let hang_result = write_initial_hang_artifact(
             &artifacts.directory,
             timeline.incident_id(),
+            hang_context,
             failure_kind,
             elapsed,
             &process,
@@ -2474,7 +2496,7 @@ mod tests {
         prepare_artifacts(&artifacts).expect("artifacts should prepare");
         let timeline = QemuTimeline::create(&artifact_dir).expect("timeline should prepare");
         let mut progress =
-            QemuProgressWriter::create(&artifact_dir, timeline.incident_id()).unwrap();
+            QemuProgressWriter::create(&artifact_dir, timeline.incident_id(), None).unwrap();
         let (sender, receiver) = mpsc::channel();
         let mut supervisor = fake_supervisor("sleep", artifact_dir.clone());
         supervisor.start().expect("fake supervisor should start");
@@ -2516,6 +2538,28 @@ mod tests {
             serde_json::from_slice(&fs::read(&artifacts.hang).unwrap()).unwrap();
         assert_eq!(hang["incident_id"], timeline.incident_id());
         assert_eq!(hang["failure_kind"], "guest_ready_timeout");
+        let phases = fs::read_to_string(timeline.path())
+            .unwrap()
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["phase"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        let timeout = phases
+            .iter()
+            .position(|phase| phase == "guest_ready_timeout")
+            .unwrap();
+        let capture = phases
+            .iter()
+            .position(|phase| phase == "hang_snapshot_started")
+            .unwrap();
+        assert!(
+            timeout < capture,
+            "the causal timeout must precede its diagnostic capture"
+        );
 
         supervisor
             .terminate()
