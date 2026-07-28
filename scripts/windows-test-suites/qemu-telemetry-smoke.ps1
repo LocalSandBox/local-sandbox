@@ -31,6 +31,36 @@ function Assert-RegularFile {
     return $item
 }
 
+function Invoke-CdbHangAnalysis {
+    param(
+        [Parameter(Mandatory = $true)][string] $DumpPath,
+        [Parameter(Mandatory = $true)][string] $OutputStem,
+        [Parameter(Mandatory = $true)][string] $ExpectedModule
+    )
+    $debugger = Get-Command cdb.exe -ErrorAction Stop
+    $output = Join-Path $RunRoot "$OutputStem.txt"
+    $errorOutput = Join-Path $RunRoot "$OutputStem.stderr.txt"
+    $process = Start-Process -FilePath $debugger.Source -ArgumentList @(
+        '-z', "`"$DumpPath`"",
+        '-c', '".symfix;.reload;!analyze -hang;~* k;!runaway;lm;q"'
+    ) -PassThru -RedirectStandardOutput $output -RedirectStandardError $errorOutput
+    if (-not $process.WaitForExit(120000)) {
+        $process.Kill($true)
+        throw "WinDbg did not finish bounded analysis for $DumpPath."
+    }
+    if ($process.ExitCode -ne 0) {
+        throw "WinDbg rejected $DumpPath with exit code $($process.ExitCode)."
+    }
+    $result = Assert-RegularFile $output 16MB
+    $text = [string](Get-Content -LiteralPath $result.FullName -Raw)
+    foreach ($expected in @('Child-SP', 'module name', 'User Mode Time', $ExpectedModule)) {
+        if (-not $text.Contains($expected, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "WinDbg output omitted requested evidence '$expected' for $DumpPath."
+        }
+    }
+    return $result
+}
+
 $assets = [IO.Path]::GetFullPath($env:LSB_WINDOWS_TEST_ASSETS_ROOT)
 $runtime = Join-Path $assets 'runtime'
 $qemu = Join-Path $assets 'qemu\qemu-system-x86_64.exe'
@@ -70,6 +100,27 @@ $env:LSB_WINDOWS_BOOT_QEMU = $qemu
 $env:LSB_QEMU_HANG_TEST_HELPER = $helper
 $secretCanary = "qemu-telemetry-secret-$([Guid]::NewGuid().ToString('N'))"
 $env:LSB_QEMU_HANG_TEST_SECRET_CANARY = $secretCanary
+$childArtifacts = Join-Path $RunRoot 'diagnostic-child'
+$childTelemetry = Join-Path $RunRoot 'diagnostic-child-telemetry'
+$env:LSB_QEMU_HANG_TEST_CHILD_ARTIFACT_DIR = $childArtifacts
+$env:LSB_QEMU_HANG_TEST_CHILD_TELEMETRY_ROOT = $childTelemetry
+Invoke-Cargo @(
+    'test', '-p', 'lsb-platform', '--features', 'qemu-hang-test-hooks', '--locked',
+    'windows_x86_64::qemu::boot::tests::windows_dump_helper_diagnostic_child_smoke',
+    '--', '--ignored', '--exact', '--nocapture'
+)
+$childManifest = Get-Content -LiteralPath (Join-Path $childArtifacts 'qemu-hang-dump.json') -Raw |
+    ConvertFrom-Json
+$childDumpPath = Join-Path $childTelemetry ([string]$childManifest.relative_local_path)
+$childDump = Assert-RegularFile $childDumpPath
+$childHash = (Get-FileHash -LiteralPath $childDump.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+if (-not $childManifest.success -or $childHash -cne [string]$childManifest.sha256 -or
+    $childDump.Length -ne [long]$childManifest.dump_byte_size) {
+    throw 'The no-WHPX diagnostic child dump did not match its manifest.'
+}
+$childWindbgResult = Invoke-CdbHangAnalysis -DumpPath $childDump.FullName `
+    -OutputStem 'windbg-diagnostic-child' -ExpectedModule 'lsb_platform'
+
 $env:LSB_QEMU_HANG_TEST_FORCE_GUEST_READY_TIMEOUT = '0'
 $normalArtifacts = Join-Path $RunRoot 'normal-boot'
 $env:LSB_WINDOWS_BOOT_ARTIFACT_DIR = $normalArtifacts
@@ -201,27 +252,8 @@ if ($retained.Count -ne 3) {
     throw "Dump retention kept $($retained.Count) directories instead of exactly three."
 }
 
-$debugger = Get-Command cdb.exe -ErrorAction Stop
-$windbgOutput = Join-Path $RunRoot 'windbg-qemu-hang.txt'
-$windbgError = Join-Path $RunRoot 'windbg-qemu-hang.stderr.txt'
-$debuggerProcess = Start-Process -FilePath $debugger.Source -ArgumentList @(
-    '-z', "`"$lastDumpPath`"",
-    '-c', '".symfix;.reload;!analyze -hang;~* k;!runaway;lm;q"'
-) -PassThru -RedirectStandardOutput $windbgOutput -RedirectStandardError $windbgError
-if (-not $debuggerProcess.WaitForExit(120000)) {
-    $debuggerProcess.Kill($true)
-    throw 'WinDbg did not finish the bounded QEMU dump analysis.'
-}
-if ($debuggerProcess.ExitCode -ne 0) {
-    throw "WinDbg rejected the QEMU dump with exit code $($debuggerProcess.ExitCode)."
-}
-$windbgResult = Assert-RegularFile $windbgOutput 16MB
-$windbgText = Get-Content -LiteralPath $windbgResult.FullName -Raw
-foreach ($expected in @('Child-SP', 'module name', 'User Mode Time')) {
-    if (-not $windbgText.Contains($expected, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "WinDbg output omitted evidence for the requested analysis commands: $expected"
-    }
-}
+$windbgResult = Invoke-CdbHangAnalysis -DumpPath $lastDumpPath `
+    -OutputStem 'windbg-qemu-hang' -ExpectedModule 'qemu'
 
 $blockedHelper = Join-Path $RunRoot 'blocked-dump-helper.exe'
 $source = @'
@@ -328,6 +360,14 @@ $evidencePath = Join-Path $RunRoot 'evidence-qemu-telemetry-smoke.json'
         Get-FileHash -LiteralPath $productionFeatureEvidence.FullName -Algorithm SHA256
     ).Hash.ToLowerInvariant()
     normal_guest_ready = $true
+    diagnostic_child = [ordered]@{
+        dump_path = [string]$childManifest.relative_local_path
+        dump_size = $childDump.Length
+        dump_sha256 = $childHash
+        windbg_output_sha256 = (
+            Get-FileHash -LiteralPath $childWindbgResult.FullName -Algorithm SHA256
+        ).Hash.ToLowerInvariant()
+    }
     incidents = $incidents
     retained_incident_count = $retained.Count
     helper_timeout_bounded = $true

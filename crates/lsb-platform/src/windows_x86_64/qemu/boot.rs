@@ -2283,6 +2283,29 @@ mod tests {
             eprintln!("fake boot child exiting after startup");
             let _ = std::io::stderr().flush();
             std::thread::sleep(Duration::from_millis(250));
+        } else if mode == "diagnostic-workload" {
+            let memory = vec![0x5a_u8; 8 * 1024 * 1024];
+            let workers = (0..3)
+                .map(|_| {
+                    std::thread::spawn(|| loop {
+                        std::thread::sleep(Duration::from_secs(60));
+                    })
+                })
+                .collect::<Vec<_>>();
+            let started = Instant::now();
+            let mut accumulator = 0_u64;
+            while started.elapsed() < Duration::from_millis(500) {
+                for byte in &memory {
+                    accumulator = accumulator.wrapping_add(u64::from(*byte));
+                }
+                std::hint::black_box(accumulator);
+            }
+            println!("diagnostic workload stdout {accumulator}");
+            eprintln!("diagnostic workload stderr");
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+            std::hint::black_box((&memory, &workers));
+            std::thread::sleep(Duration::from_secs(60));
         }
     }
 
@@ -2713,6 +2736,101 @@ mod tests {
         }
 
         fs::remove_dir_all(artifact_dir).unwrap();
+    }
+
+    #[cfg(all(windows, feature = "qemu-hang-test-hooks"))]
+    #[test]
+    #[ignore = "requires Windows and the packaged QEMU dump helper, but not WHPX"]
+    fn windows_dump_helper_diagnostic_child_smoke() {
+        let artifact_dir = required_env_path("LSB_QEMU_HANG_TEST_CHILD_ARTIFACT_DIR");
+        let telemetry_root = required_env_path("LSB_QEMU_HANG_TEST_CHILD_TELEMETRY_ROOT");
+        fs::create_dir_all(&artifact_dir).unwrap();
+        fs::create_dir_all(&telemetry_root).unwrap();
+        let context = crate::PlatformQemuTelemetryContext {
+            telemetry_root: telemetry_root.clone(),
+            run_id: Some("windows-diagnostic-child".to_string()),
+            correlation_id: "windows-diagnostic-child".to_string(),
+            resource_id: "windows-diagnostic-child".to_string(),
+        };
+        let timeline =
+            QemuTimeline::create_with_observer(&artifact_dir, Some(&context), None).unwrap();
+        let mut artifacts = QemuBootArtifacts::new(&artifact_dir);
+        artifacts.attach_identity(Some(&timeline));
+        prepare_artifacts(&artifacts).unwrap();
+        let mut progress =
+            QemuProgressWriter::create(&artifact_dir, timeline.incident_id(), Some(&context))
+                .unwrap();
+        let mut config = QemuSupervisorConfig::new(fake_command(), &artifact_dir);
+        config.startup_timeout = Duration::from_millis(250);
+        config.terminate_timeout = Duration::from_secs(2);
+        config.timeline = Some(timeline.clone());
+        config.environment.variables.push((
+            OsString::from(FAKE_BOOT_CHILD_ENV),
+            OsString::from("diagnostic-workload"),
+        ));
+        let mut supervisor = QemuSupervisor::new(config);
+        supervisor.start().unwrap();
+        std::thread::sleep(Duration::from_millis(1200));
+        progress
+            .record_if_due(|| live_progress_snapshots(&supervisor, &artifacts, true, 0))
+            .unwrap();
+
+        capture_live_timeout(
+            &mut supervisor,
+            &artifacts,
+            Some(&mut progress),
+            Some(&timeline),
+            None,
+            Some(&context),
+            QemuHangTelemetryPolicy {
+                dump_deadline: Duration::from_secs(5),
+                ..QemuHangTelemetryPolicy::default()
+            },
+            "guest_ready_timeout",
+            Duration::from_millis(1200),
+            true,
+            0,
+        );
+
+        assert_eq!(
+            supervisor.try_status().unwrap(),
+            QemuProcessState::Running,
+            "the diagnostic child must remain alive until capture finishes"
+        );
+        let hang: serde_json::Value =
+            serde_json::from_slice(&fs::read(&artifacts.hang).unwrap()).unwrap();
+        assert_eq!(hang["failure_kind"], "guest_ready_timeout");
+        assert_eq!(hang["process_snapshot_succeeded"], true);
+        assert!(hang["process"]["working_set_bytes"].as_u64().unwrap() >= 8 * 1024 * 1024);
+        assert!(hang["process"]["thread_count"].as_u64().unwrap() >= 4);
+        assert!(
+            hang["process"]["cpu_user_100ns"].as_u64().unwrap()
+                + hang["process"]["cpu_kernel_100ns"].as_u64().unwrap()
+                > 0
+        );
+        assert!(hang["process"]["io_write_bytes"].as_u64().unwrap() > 0);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(artifact_dir.join("qemu-hang-dump.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["success"], true);
+        assert_eq!(manifest["incident_id"], timeline.incident_id());
+        let dump = telemetry_root.join(manifest["relative_local_path"].as_str().unwrap());
+        assert!(dump.is_file());
+        assert_eq!(
+            fs::read_dir(telemetry_root.join("qemu-dumps"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.path().join("qemu-hang.dmp").is_file())
+                .count(),
+            1,
+            "one timeout must produce exactly one completed dump"
+        );
+
+        supervisor.terminate().unwrap();
+        assert_eq!(
+            supervisor.try_status().unwrap(),
+            QemuProcessState::Terminated
+        );
     }
 
     #[test]
