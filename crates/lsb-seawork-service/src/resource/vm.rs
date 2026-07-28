@@ -898,6 +898,13 @@ fn apply_qemu_diagnostic_context(
         .filter(|metadata| metadata.is_file())
         .map(|metadata| metadata.len());
     let archive_sha256 = bounded_file_sha256(&archive);
+    let archive_captured = archive_size.is_some() && archive_sha256.is_some();
+    let hyperv_captured = hyperv.is_some() && !hyperv_errors;
+    let complete = dump_captured
+        && live_process_captured
+        && qmp_responsive
+        && hyperv_captured
+        && archive_captured;
     event.contexts.insert(
         "diagnostic".to_string(),
         serde_json::json!({
@@ -909,23 +916,18 @@ fn apply_qemu_diagnostic_context(
             "archive_sha256": archive_sha256,
             "attachments_prepared": 2,
             "attachments_accepted": serde_json::Value::Null,
-            "partial_capture": !dump_captured || !live_process_captured || hyperv.is_none(),
+            "partial_capture": !complete,
             "collectors": {
                 "live_process": live_process_captured,
                 "qmp": qmp_responsive,
-                "hyperv": hyperv.is_some(),
+                "hyperv": hyperv_captured,
                 "dump": dump_captured,
-                "archive": archive_size.is_some(),
+                "archive": archive_captured,
             },
             "telemetry_failure_counters": crate::telemetry::failure_counter_context(),
         }),
     );
-    dump_captured
-        && live_process_captured
-        && hyperv.is_some()
-        && archive_size.is_some()
-        && qmp_responsive
-        && !hyperv_errors
+    complete
 }
 
 fn read_bounded_json(path: &Path) -> Option<serde_json::Value> {
@@ -1555,6 +1557,56 @@ mod tests {
         assert_eq!(manifest["stable_error_code"], "SANDBOX_BOOT_FAILED");
         assert_eq!(manifest["correlation_id"], "correlation-1");
         assert_eq!(manifest["resource_id"], resource_id);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn diagnostic_context_marks_collector_failures_as_partial_capture() {
+        let root = std::env::temp_dir().join(format!(
+            "lsbsw-partial-qemu-context-{}-{}",
+            std::process::id(),
+            time::OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            root.join("qemu-hang.json"),
+            br#"{
+                "process_snapshot_succeeded": true,
+                "hang_signature": "alive_no_serial_no_stderr_no_ready",
+                "progress": {"serial_bytes": 0, "stderr_bytes": 0},
+                "qmp": {"responsive": false}
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("qemu-hang-dump.json"),
+            br#"{"success":true,"relative_local_path":"qemu-dumps/id/qemu-hang.dmp","dump_byte_size":1,"sha256":"00"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("hyperv-events.json"),
+            br#"{"channels":[{"query_error":"access_denied"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("incident.zip"), b"bounded archive").unwrap();
+        let mut event = crate::telemetry::FailureEvent::new(
+            "sandbox.start",
+            "SANDBOX_BOOT_FAILED",
+            crate::telemetry::Level::Error,
+            "test",
+        );
+
+        assert!(!apply_qemu_diagnostic_context(&mut event, &root, true));
+        let diagnostic = event.contexts.get("diagnostic").unwrap();
+        assert_eq!(diagnostic["partial_capture"], true);
+        assert_eq!(diagnostic["collectors"]["live_process"], true);
+        assert_eq!(diagnostic["collectors"]["dump"], true);
+        assert_eq!(diagnostic["collectors"]["archive"], true);
+        assert_eq!(diagnostic["collectors"]["qmp"], false);
+        assert_eq!(diagnostic["collectors"]["hyperv"], false);
+        assert_eq!(event.tags["qemu.qmp_responsive"], "false");
+        assert_eq!(event.tags["qemu.hyperv_errors_present"], "true");
 
         std::fs::remove_dir_all(root).unwrap();
     }
