@@ -244,11 +244,11 @@ fn read_response(stream: &mut impl Read, expected_id: &str) -> io::Result<Value>
     for _ in 0..MAX_QMP_MESSAGES_PER_REQUEST {
         let value = read_json_line(stream)?;
         if value.get("id").and_then(Value::as_str) == Some(expected_id) {
-            if let Some(error) = value.get("error") {
-                return Err(io::Error::other(format!(
-                    "QMP returned {}",
-                    bounded_error(&error.to_string())
-                )));
+            if value.get("error").is_some() {
+                // QMP error objects may echo image paths or backend details. The four
+                // reviewed queries need only a stable failure category; raw error
+                // payloads must never enter the diagnostic archive.
+                return Err(io::Error::other("QMP returned an error"));
             }
             return value.get("return").cloned().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "QMP response omitted return")
@@ -435,5 +435,21 @@ mod tests {
             read_json_line(&mut oversized).unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
+    }
+
+    #[test]
+    fn qmp_error_objects_do_not_expose_arbitrary_details() {
+        let mut stream = ScriptedStream::new(&[json!({
+            "error": {
+                "class": "GenericError",
+                "desc": r"Could not open C:\secret\root.qcow2"
+            },
+            "id": "query"
+        })]);
+
+        let error = read_response(&mut stream, "query").unwrap_err();
+
+        assert_eq!(error.to_string(), "QMP returned an error");
+        assert!(!error.to_string().contains("secret"));
     }
 }
