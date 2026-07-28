@@ -1,0 +1,24 @@
+crates/lsb-platform/src/windows_x86_64/qemu/boot.rs
+  s_31ad4f53b04974::t_211a56df9f9034 2286-2308,2741-2744,2747-2812,2815-2816,2818-2833
+  s_31ad4f53b04974::t_423c92e6ce0745 2745-2746,2813-2814,2817
+  s_31ad4f53b04974::t_9e64b567ae9ab5 2834-2835
+scripts/windows-test-suites/qemu-telemetry-smoke.ps1
+  s_31ad4f53b04974::t_d2a0224ba75337 363-370
+  s_31ad4f53b04974::t_ab79b19d4de865 34-63,103-123,255-256
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "9470ee63d1372a9b8b83e368d268be9e0551c221",
+  "prompts": {},
+  "sessions": {
+    "s_31ad4f53b04974": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa7b0-4d69-7d01-ae26-6595cb9ecc1b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
