@@ -112,4 +112,7 @@ shutdown timeout. It verifies QMP responses, scheduled/final process samples,
 three-entry dump retention, helper timeout, the authoritative service Job
 reaching active-process-zero, bounded Hyper-V queries, the two-file incident
 package, production hook exclusion, secret/private-pipe redaction, and WinDbg
-execution of `!analyze -hang`, `~* k`, `!runaway`, and `lm`.
+execution of `!analyze -hang`, `~* k`, `!runaway`, and `lm`. The suite records
+the 45-second service RPC deadline but does not claim to exercise SeaWork's
+downstream app watchdog or quarantine-event policy; that acceptance remains in
+the SeaWork handoff.

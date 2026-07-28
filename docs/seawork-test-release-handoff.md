@@ -1218,3 +1218,49 @@ service archive, and the smoke intentionally records `scm_installation_exercised
 false`. SeaWork must consume a same-version immutable service/updater pair, install and
 self-check this helper shape under the generated protected policy, and then run the
 reduced controlled-activation acceptance profile.
+
+## 2026-07-28 — QEMU diagnostic stop/watchdog contract
+
+Status: **LocalSandbox contract implemented; SeaWork app watchdog and quarantine
+acceptance remain downstream**
+
+LocalSandbox commit `922316969e6ac0034931af3de0383b6c877fbafe` changes the
+service-backed Node error reason contract while preserving its stable leading error
+code:
+
+```text
+[<STABLE_CODE>] <safe message> (correlation_id=<32 lowercase hex>)
+```
+
+For `SeaWorkSandbox.stop()` protocol errors, the reason additionally ends with:
+
+```text
+(resource_id=<32 lowercase hex>)
+```
+
+SeaWork must treat these identifiers as opaque support-correlation fields. It must
+preserve them in `LOCAL_SANDBOX_STOP_TIMEOUT` and any runtime-quarantine event without
+using them as paths, adoption keys, or authorization input.
+
+The LocalSandbox service and Rust/Node clients now allow 45 seconds for
+`StopSandbox`: the fixed 30-second diagnostic dump deadline plus a 15-second
+termination margin. SeaWork must set its outer stop watchdog to at least 45 seconds.
+While that deadline is still open, an in-progress diagnostic capture is not evidence
+that the service runtime is unresponsive and must not by itself produce
+`LOCAL_SANDBOX_RUNTIME_QUARANTINED`.
+
+Required downstream acceptance:
+
+- force a QEMU shutdown timeout through an app-owned service sandbox;
+- prove the app waits at least 45 seconds for the service response;
+- prove the resulting timeout/quarantine telemetry preserves both opaque IDs;
+- prove diagnostic capture inside the service deadline does not cause runtime
+  quarantine; and
+- prove a genuinely unresponsive service beyond the outer deadline still follows the
+  existing quarantine policy.
+
+LocalSandbox's `qemu-telemetry-smoke` exercises the platform and service-owned
+shutdown-timeout paths and records `service_stop_rpc_deadline_ms: 45000`. It
+deliberately records `downstream_app_stop_quarantine_exercised: false`; that field may
+be superseded only by an append-only entry containing the exact SeaWork commit and
+Windows evidence run.

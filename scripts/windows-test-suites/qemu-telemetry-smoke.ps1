@@ -515,8 +515,9 @@ $evidencePath = Join-Path $RunRoot 'evidence-qemu-telemetry-smoke.json'
         Get-FileHash -LiteralPath $incidentArchive.FullName -Algorithm SHA256
     ).Hash.ToLowerInvariant()
     service_job_active_process_zero = $true
-    service_stop_deadline_safe = $true
+    service_stop_rpc_deadline_ms = 45000
     service_stop_failure_kind = [string]$serviceStopHang.failure_kind
+    downstream_app_stop_quarantine_exercised = $false
     windbg_opened = $true
     windbg_output_sha256 = (
         Get-FileHash -LiteralPath $windbgResult.FullName -Algorithm SHA256
