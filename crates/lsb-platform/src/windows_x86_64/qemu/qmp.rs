@@ -64,12 +64,27 @@ impl Write for QmpPipeStream {
     }
 }
 
+#[cfg(windows)]
+#[derive(Debug)]
+struct QmpNegotiation {
+    receiver: std::sync::mpsc::Receiver<io::Result<()>>,
+    worker: std::thread::JoinHandle<()>,
+}
+
+#[cfg(windows)]
+#[derive(Debug)]
+struct QmpSession {
+    stream: QmpPipeStream,
+    negotiation: Option<QmpNegotiation>,
+    failure: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct QmpEndpoint {
     pipe_name: String,
     pipe_path: PathBuf,
     #[cfg(windows)]
-    stream: Arc<Mutex<Option<QmpPipeStream>>>,
+    session: Arc<Mutex<Option<QmpSession>>>,
 }
 
 impl PartialEq for QmpEndpoint {
@@ -97,7 +112,7 @@ impl QmpEndpoint {
             pipe_path: PathBuf::from(format!(r"\\.\pipe\{pipe_name}")),
             pipe_name,
             #[cfg(windows)]
-            stream: Arc::new(Mutex::new(None)),
+            session: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -111,25 +126,47 @@ impl QmpEndpoint {
     }
 
     pub(crate) fn capture(&self, timeline_elapsed: Duration) -> QemuQmpSnapshot {
-        capture_endpoint(self.connected_stream(), timeline_elapsed)
+        let started_at = Instant::now();
+        let stream = self.connected_stream(QMP_CAPTURE_DEADLINE);
+        capture_endpoint(
+            stream,
+            timeline_elapsed,
+            QMP_CAPTURE_DEADLINE.saturating_sub(started_at.elapsed()),
+        )
     }
 
     pub(crate) fn request_quit(&self) -> io::Result<()> {
-        request_quit_endpoint(self.connected_stream()?)
+        let started_at = Instant::now();
+        let stream = self.connected_stream(QMP_QUIT_DEADLINE)?;
+        request_quit_endpoint(
+            stream,
+            QMP_QUIT_DEADLINE.saturating_sub(started_at.elapsed()),
+        )
     }
 
     #[cfg(windows)]
     pub(crate) fn connect(&self) -> io::Result<()> {
         // QEMU creates pipe chardevs in argv order, so the parent must establish
-        // this connection before waiting for guest-ready. Do not wait for the QMP
-        // greeting here: an unresponsive monitor is itself timeout evidence and
-        // must be reported by the bounded capture instead of masking the guest
-        // timeout as a boot-time QMP failure.
+        // this connection before waiting for guest-ready. Start negotiation
+        // immediately so QEMU's greeting is consumed promptly, but do not block
+        // boot on it: an unresponsive monitor is itself timeout evidence and must
+        // be reported by the bounded capture instead of masking the guest timeout.
         let stream = open_with_deadline(&self.pipe_path, QMP_STARTUP_CONNECT_DEADLINE)?;
+        let worker_stream = stream.try_clone()?;
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            let result = negotiate_protocol(worker_stream);
+            let _ = sender.send(result);
+        });
         *self
-            .stream
+            .session
             .lock()
-            .map_err(|_| io::Error::other("QMP connection lock was poisoned"))? = Some(stream);
+            .map_err(|_| io::Error::other("QMP connection lock was poisoned"))? =
+            Some(QmpSession {
+                stream,
+                negotiation: Some(QmpNegotiation { receiver, worker }),
+                failure: None,
+            });
         Ok(())
     }
 
@@ -142,18 +179,45 @@ impl QmpEndpoint {
     }
 
     #[cfg(windows)]
-    fn connected_stream(&self) -> io::Result<QmpPipeStream> {
-        self.stream
+    fn connected_stream(&self, timeout: Duration) -> io::Result<QmpPipeStream> {
+        let mut session = self
+            .session
             .lock()
-            .map_err(|_| io::Error::other("QMP connection lock was poisoned"))?
-            .as_ref()
-            .map(QmpPipeStream::try_clone)
-            .transpose()?
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "QMP is not connected"))
+            .map_err(|_| io::Error::other("QMP connection lock was poisoned"))?;
+        let session = session
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "QMP is not connected"))?;
+        if let Some(failure) = &session.failure {
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, failure.clone()));
+        }
+        if let Some(negotiation) = session.negotiation.take() {
+            match negotiation.receiver.recv_timeout(timeout) {
+                Ok(Ok(())) => {
+                    let _ = negotiation.worker.join();
+                }
+                Ok(Err(error)) => {
+                    let message = bounded_error(&error.to_string());
+                    session.failure = Some(message.clone());
+                    return Err(io::Error::new(io::ErrorKind::BrokenPipe, message));
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    cancel_synchronous_worker(&negotiation.worker);
+                    let message = "QMP negotiation exceeded its fixed deadline".to_string();
+                    session.failure = Some(message.clone());
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, message));
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    let message = "QMP negotiation worker ended without a result".to_string();
+                    session.failure = Some(message.clone());
+                    return Err(io::Error::new(io::ErrorKind::BrokenPipe, message));
+                }
+            }
+        }
+        session.stream.try_clone()
     }
 
     #[cfg(not(windows))]
-    fn connected_stream(&self) -> io::Result<()> {
+    fn connected_stream(&self, _timeout: Duration) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "QMP named pipes are available only on Windows",
@@ -162,7 +226,7 @@ impl QmpEndpoint {
 }
 
 #[cfg(windows)]
-fn request_quit_endpoint(stream: QmpPipeStream) -> io::Result<()> {
+fn request_quit_endpoint(stream: QmpPipeStream, timeout: Duration) -> io::Result<()> {
     use std::sync::mpsc;
 
     let (sender, receiver) = mpsc::sync_channel(1);
@@ -170,7 +234,7 @@ fn request_quit_endpoint(stream: QmpPipeStream) -> io::Result<()> {
         let result = run_quit_protocol(stream);
         let _ = sender.send(result);
     });
-    match receiver.recv_timeout(QMP_QUIT_DEADLINE) {
+    match receiver.recv_timeout(timeout) {
         Ok(result) => result,
         Err(_) => {
             cancel_synchronous_worker(&worker);
@@ -183,7 +247,7 @@ fn request_quit_endpoint(stream: QmpPipeStream) -> io::Result<()> {
 }
 
 #[cfg(not(windows))]
-fn request_quit_endpoint(_stream: ()) -> io::Result<()> {
+fn request_quit_endpoint(_stream: (), _timeout: Duration) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "QMP named pipes are available only on Windows",
@@ -194,6 +258,7 @@ fn request_quit_endpoint(_stream: ()) -> io::Result<()> {
 fn capture_endpoint(
     stream: io::Result<QmpPipeStream>,
     timeline_elapsed: Duration,
+    timeout: Duration,
 ) -> QemuQmpSnapshot {
     use std::sync::mpsc;
 
@@ -208,10 +273,10 @@ fn capture_endpoint(
     };
     let (sender, receiver) = mpsc::sync_channel(1);
     let worker = std::thread::spawn(move || {
-        let result = run_protocol(stream, timeline_elapsed);
+        let result = run_queries(stream, timeline_elapsed);
         let _ = sender.send(result);
     });
-    match receiver.recv_timeout(QMP_CAPTURE_DEADLINE) {
+    match receiver.recv_timeout(timeout) {
         Ok(Ok(snapshot)) => snapshot,
         Ok(Err(error)) => QemuQmpSnapshot {
             connected: true,
@@ -260,13 +325,18 @@ fn cancel_synchronous_worker(worker: &std::thread::JoinHandle<()>) {
 }
 
 #[cfg(not(windows))]
-fn capture_endpoint(_stream: io::Result<()>, _timeline_elapsed: Duration) -> QemuQmpSnapshot {
+fn capture_endpoint(
+    _stream: io::Result<()>,
+    _timeline_elapsed: Duration,
+    _timeout: Duration,
+) -> QemuQmpSnapshot {
     QemuQmpSnapshot {
         error: Some("QMP named pipes are available only on Windows".to_string()),
         ..QemuQmpSnapshot::default()
     }
 }
 
+#[cfg(test)]
 fn run_protocol<S>(mut stream: S, timeline_elapsed: Duration) -> io::Result<QemuQmpSnapshot>
 where
     S: Read + Write,
@@ -346,7 +416,6 @@ fn run_quit_protocol<S>(mut stream: S) -> io::Result<()>
 where
     S: Read + Write,
 {
-    negotiate_protocol(&mut stream)?;
     // QEMU may close the pipe as soon as quit is accepted, so successful delivery
     // of the bounded command is the acknowledgement used by the shutdown waiter.
     send_request(&mut stream, "quit", "quit")
@@ -542,15 +611,29 @@ mod tests {
     }
 
     #[test]
-    fn quit_protocol_negotiates_capabilities_before_requesting_shutdown() {
-        let stream = ScriptedStream::new(&[
-            json!({"QMP": {"version": {"qemu": {"major": 11}}}}),
-            json!({"return": {}, "id": "capabilities"}),
-        ]);
+    fn connected_queries_reuse_the_negotiated_session() {
+        let lines = QMP_QUERIES
+            .iter()
+            .map(|name| {
+                json!({
+                    "return": {"status": "running"},
+                    "id": format!("lsb-{name}")
+                })
+            })
+            .collect::<Vec<_>>();
+        let snapshot = run_queries(ScriptedStream::new(&lines), Duration::ZERO).unwrap();
+        assert!(snapshot.connected);
+        assert!(snapshot.responsive);
+        assert_eq!(snapshot.queries.len(), QMP_QUERIES.len());
+    }
+
+    #[test]
+    fn connected_quit_protocol_requests_shutdown_without_renegotiating() {
+        let stream = ScriptedStream::new(&[]);
         let mut inspect = stream;
         run_quit_protocol(&mut inspect).unwrap();
         let writes = String::from_utf8(inspect.writes).unwrap();
-        assert!(writes.contains(r#""execute":"qmp_capabilities""#));
+        assert!(!writes.contains(r#""execute":"qmp_capabilities""#));
         assert!(writes.contains(r#""execute":"quit""#));
     }
 
