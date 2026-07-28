@@ -690,8 +690,15 @@ fn capture_vm_failure(
         &metadata,
         crate::telemetry::DiagnosticLimits::default(),
     );
-    let Ok(snapshot) = snapshot else {
-        return;
+    let snapshot = match snapshot {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            crate::telemetry::record_failure(crate::telemetry::TelemetryFailure::IncidentSnapshot);
+            crate::telemetry::record_failure(crate::telemetry::TelemetryFailure::Archive);
+            eprintln!("bounded QEMU incident snapshot/archive failed: {error}");
+            engine.record_diagnostic_capture_failure();
+            return;
+        }
     };
     let mut event = crate::telemetry::FailureEvent::new(
         operation,
@@ -713,16 +720,27 @@ fn capture_vm_failure(
             "total_bytes": snapshot.total_bytes,
         }),
     );
-    apply_qemu_diagnostic_context(&mut event, &snapshot.directory);
+    let expects_live_diagnostics = matches!(
+        detailed_failure_kind,
+        "guest_ready_timeout" | "qemu_shutdown_timeout"
+    );
+    if !apply_qemu_diagnostic_context(&mut event, &snapshot.directory, expects_live_diagnostics)
+        && expects_live_diagnostics
+    {
+        engine.record_diagnostic_capture_failure();
+    }
     let captured = telemetry.capture_failure(event);
     if let Some(captured_event_id) = captured {
-        if let Err(error) = crate::telemetry::write_sentry_receipt(
-            engine.telemetry_root(),
-            &snapshot.directory,
-            &captured_event_id,
-            sentry_project_identity().as_deref(),
-        ) {
-            eprintln!("failed to write bounded QEMU Sentry receipt: {error}");
+        if expects_live_diagnostics {
+            if let Err(error) = crate::telemetry::write_sentry_receipt(
+                engine.telemetry_root(),
+                &snapshot.directory,
+                &captured_event_id,
+                sentry_project_identity().as_deref(),
+            ) {
+                eprintln!("failed to write bounded QEMU Sentry receipt: {error}");
+                engine.record_diagnostic_capture_failure();
+            }
         }
         let _ = snapshot.remove();
     } else {
@@ -733,7 +751,8 @@ fn capture_vm_failure(
 fn apply_qemu_diagnostic_context(
     event: &mut crate::telemetry::FailureEvent,
     incident_directory: &Path,
-) {
+    expects_live_diagnostics: bool,
+) -> bool {
     let hang = read_bounded_json(&incident_directory.join("qemu-hang.json"));
     let dump = read_bounded_json(&incident_directory.join("qemu-hang-dump.json"));
     let hyperv = read_bounded_json(&incident_directory.join("hyperv-events.json"));
@@ -762,12 +781,18 @@ fn apply_qemu_diagnostic_context(
             .tags
             .insert("qemu.stderr_observed", stderr.to_string());
     }
+    if expects_live_diagnostics && hang.is_none() {
+        crate::telemetry::record_failure(crate::telemetry::TelemetryFailure::LiveProcessSnapshot);
+    }
     event.tags.insert("qemu.accelerator", "whpx".to_string());
     let dump_captured = dump
         .as_ref()
         .and_then(|value| value.get("success"))
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
+    if expects_live_diagnostics && !dump_captured {
+        crate::telemetry::record_failure(crate::telemetry::TelemetryFailure::Dump);
+    }
     event
         .tags
         .insert("qemu.dump_captured", dump_captured.to_string());
@@ -782,6 +807,17 @@ fn apply_qemu_diagnostic_context(
                     .is_some_and(|value| !value.is_null())
             })
         });
+    if expects_live_diagnostics && (hyperv.is_none() || hyperv_errors) {
+        crate::telemetry::record_failure(crate::telemetry::TelemetryFailure::Hyperv);
+    }
+    let qmp_responsive = hang
+        .as_ref()
+        .and_then(|value| value.pointer("/qmp/responsive"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if expects_live_diagnostics && !qmp_responsive {
+        crate::telemetry::record_failure(crate::telemetry::TelemetryFailure::Qmp);
+    }
     event
         .tags
         .insert("qemu.hyperv_errors_present", hyperv_errors.to_string());
@@ -805,13 +841,20 @@ fn apply_qemu_diagnostic_context(
             "partial_capture": !dump_captured || hang.is_none() || hyperv.is_none(),
             "collectors": {
                 "live_process": hang.is_some(),
-                "qmp": hang.as_ref().and_then(|value| value.pointer("/qmp/responsive")).and_then(serde_json::Value::as_bool).unwrap_or(false),
+                "qmp": qmp_responsive,
                 "hyperv": hyperv.is_some(),
                 "dump": dump_captured,
                 "archive": archive_size.is_some(),
-            }
+            },
+            "telemetry_failure_counters": crate::telemetry::failure_counter_context(),
         }),
     );
+    dump_captured
+        && hang.is_some()
+        && hyperv.is_some()
+        && archive_size.is_some()
+        && qmp_responsive
+        && !hyperv_errors
 }
 
 fn read_bounded_json(path: &Path) -> Option<serde_json::Value> {

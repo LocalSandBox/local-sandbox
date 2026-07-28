@@ -14,6 +14,7 @@ const PROGRESS_FILE: &str = "qemu-progress.jsonl";
 const HANG_FILE: &str = "qemu-hang.json";
 const MAX_TIMELINE_RECORD_BYTES: usize = 4 * 1024;
 const MAX_PROGRESS_RECORD_BYTES: usize = 8 * 1024;
+const MAX_HANG_ARTIFACT_BYTES: usize = 256 * 1024;
 const SAMPLE_SCHEDULE: &[Duration] = &[
     Duration::from_secs(1),
     Duration::from_secs(5),
@@ -227,6 +228,7 @@ struct QemuHangArtifact<'a> {
     hang_signature: &'a str,
     elapsed_ms: u128,
     process: &'a QemuProcessSnapshot,
+    job: Option<&'a crate::PlatformQemuJobSnapshot>,
     progress: &'a QemuProgressSnapshot,
     qmp: &'a QemuQmpSnapshot,
     dump: &'a QemuDumpCaptureSummary,
@@ -266,6 +268,7 @@ pub(crate) fn write_initial_hang_artifact(
     failure_kind: &str,
     elapsed: Duration,
     process: &QemuProcessSnapshot,
+    job: Option<&crate::PlatformQemuJobSnapshot>,
     progress: &QemuProgressSnapshot,
     qmp: &QemuQmpSnapshot,
     dump: &QemuDumpCaptureSummary,
@@ -278,12 +281,45 @@ pub(crate) fn write_initial_hang_artifact(
         hang_signature,
         elapsed_ms: elapsed.as_millis(),
         process,
+        job,
         progress,
         qmp,
         dump,
     };
     let mut encoded = serde_json::to_vec_pretty(&artifact).map_err(io::Error::other)?;
     encoded.push(b'\n');
+    if encoded.len() > MAX_HANG_ARTIFACT_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "QEMU hang artifact exceeds its fixed bound",
+        ));
+    }
+    write_atomic(directory, HANG_FILE, &encoded)
+}
+
+pub(crate) fn update_hang_job_snapshot(
+    directory: &Path,
+    job: &crate::PlatformQemuJobSnapshot,
+) -> io::Result<()> {
+    let path = directory.join(HANG_FILE);
+    let bytes = fs::read(&path)?;
+    if bytes.len() > MAX_HANG_ARTIFACT_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "QEMU hang artifact exceeds its fixed update bound",
+        ));
+    }
+    let mut artifact: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+    artifact["job"] = serde_json::to_value(job).map_err(io::Error::other)?;
+    let mut encoded = serde_json::to_vec_pretty(&artifact).map_err(io::Error::other)?;
+    encoded.push(b'\n');
+    if encoded.len() > MAX_HANG_ARTIFACT_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "updated QEMU hang artifact exceeds its fixed bound",
+        ));
+    }
     write_atomic(directory, HANG_FILE, &encoded)
 }
 
@@ -948,6 +984,7 @@ mod tests {
             "guest_ready_timeout",
             Duration::from_millis(90_000),
             &process,
+            None,
             &progress,
             &QemuQmpSnapshot::default(),
             &QemuDumpCaptureSummary::default(),
@@ -968,6 +1005,19 @@ mod tests {
         );
         assert_eq!(hang_json["process"]["cpu_user_100ns"], 12);
         assert_eq!(hang_json["dump"]["attempted"], false);
+        let job = crate::PlatformQemuJobSnapshot {
+            active_pids: vec![42],
+            active_process_limit: 8,
+            memory_limit_bytes: 1024,
+            termination_requested: true,
+            termination_succeeded: Some(true),
+            ..crate::PlatformQemuJobSnapshot::default()
+        };
+        update_hang_job_snapshot(&directory, &job).unwrap();
+        let updated: serde_json::Value =
+            serde_json::from_slice(&fs::read(directory.join(HANG_FILE)).unwrap()).unwrap();
+        assert_eq!(updated["job"]["active_pids"][0], 42);
+        assert_eq!(updated["job"]["termination_succeeded"], true);
 
         fs::remove_dir_all(directory).unwrap();
     }

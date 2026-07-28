@@ -7,6 +7,8 @@ Use the existing SeaWork Sentry project and start with:
 - issues: `component:local-sandbox-service`
 - native crashes: `component:local-sandbox-service level:fatal`
 - sandbox failures: filter the component by `stable_error_code` and `release`
+- QEMU hangs: filter `qemu.failure_kind:guest_ready_timeout` or
+  `qemu.failure_kind:qemu_shutdown_timeout`
 - traces: filter `service.name:localsandbox-seawork-service` and transaction
   `service.startup`, `sandbox.start`, or `sandbox.stop`
 - regressions: group by `release:local-sandbox-service@<version>`
@@ -29,6 +31,54 @@ If Sentry transport was unavailable, inspect the protected ProgramData
 `logs/service.jsonl`, its bounded rotations, and the `LocalSandboxSeaWork`
 Windows Event Log source. Rejected incident snapshots are retained below
 `runtime/telemetry/incidents` under the compiled age/count policy.
+
+## Investigate a QEMU hang
+
+The issue fingerprint has four stable parts: component, operation, broad
+service code, and detailed failure kind. The observed guest-ready signature
+therefore groups independently from shutdown timeouts. Start with the `qemu`
+and `diagnostic` contexts, then download `incident.json` and `incident.zip`.
+The ZIP contains only bounded metadata and logs; it never contains the process
+dump.
+
+On the affected Windows host, correlate the Sentry event ID with:
+
+```text
+<runtime>\telemetry\qemu-dumps\<incident-id>\
+  qemu-hang.dmp
+  qemu-hang-dump.json
+  sentry-receipt.json
+```
+
+Verify the dump size and SHA-256 against `qemu-hang-dump.json` before opening
+it. Do not copy dump bytes into tickets, chat, terminals, or Sentry. Open it
+locally in WinDbg and run:
+
+```text
+.symfix
+.reload
+!analyze -hang
+~* k
+!runaway
+lm
+```
+
+Use `qemu-timeline.jsonl` to confirm the ordering of QMP, Hyper-V, dump, Job
+termination, process exit, and cleanup. `qemu-hang.json` distinguishes an
+unresponsive QMP endpoint, a failed/partial dump, Hyper-V channel errors, and
+whether serial or stderr output was observed. Disabled or empty Hyper-V
+channels are evidence, not a capture failure.
+
+Only the newest three completed local QEMU dump incidents are retained. A
+missing `sentry-receipt.json` means local evidence was captured but no Sentry
+acceptance receipt was committed. A retained incident under
+`runtime/telemetry/incidents` usually means event submission or attachment
+preparation failed; inspect the protected service log for the bounded failure
+message.
+
+The `qemu-hang-test-hooks` feature is exclusively for deterministic Windows
+acceptance. Official production builds retain all hang telemetry but must not
+contain that feature or its runtime hook names.
 
 ## Upload release symbols
 

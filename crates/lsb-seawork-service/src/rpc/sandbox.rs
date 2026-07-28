@@ -58,6 +58,12 @@ pub async fn start(
         SpanDescription::transaction(TRANSACTION_SANDBOX_START)
             .with_data("correlation_id", correlation_id.clone()),
     );
+    let prepare_span = span.start_child(
+        SpanDescription::child("sandbox.prepare_instance", "prepare and boot sandbox")
+            .with_data("requested_cpu", cpus.to_string())
+            .with_data("requested_memory_mib", memory_mib.to_string())
+            .with_data("requested_disk_mib", disk_mib.to_string()),
+    );
     let result = start_inner(
         telemetry.clone(),
         correlation_id.clone(),
@@ -79,6 +85,11 @@ pub async fn start(
         cancellation,
     )
     .await;
+    prepare_span.finish(if result.is_ok() {
+        SpanStatus::Ok
+    } else {
+        SpanStatus::InternalError
+    });
     telemetry.breadcrumb(
         Breadcrumb::lifecycle("request", "completed")
             .with_data("operation", TRANSACTION_SANDBOX_START)
@@ -444,7 +455,16 @@ pub async fn stop(
             .with_data("correlation_id", correlation_id.clone())
             .with_data("resource_id", sandbox_id.clone()),
     );
+    let cleanup_span = span.start_child(SpanDescription::child(
+        "sandbox.cleanup",
+        "stop QEMU and clean sandbox resources",
+    ));
     let result = stop_inner(sessions, session_id, identity, &sandbox_id, deadline_ms).await;
+    cleanup_span.finish(if result.is_ok() {
+        SpanStatus::Ok
+    } else {
+        SpanStatus::InternalError
+    });
     telemetry.breadcrumb(
         Breadcrumb::lifecycle("request", "completed")
             .with_data("operation", TRANSACTION_SANDBOX_STOP)

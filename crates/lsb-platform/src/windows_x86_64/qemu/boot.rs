@@ -22,8 +22,8 @@ use super::config::{
 };
 use super::discovery::{QemuDiscovery, StdQemuDiscoveryHost};
 use super::hang::{
-    capture_dump, write_initial_hang_artifact, QemuHangTelemetryPolicy, QemuProcessSnapshot,
-    QemuProgressSnapshot, QemuProgressWriter, QemuTimeline, QemuTimelinePhase,
+    capture_dump, update_hang_job_snapshot, write_initial_hang_artifact, QemuHangTelemetryPolicy,
+    QemuProcessSnapshot, QemuProgressSnapshot, QemuProgressWriter, QemuTimeline, QemuTimelinePhase,
 };
 use super::preflight::{QemuPreflight, QemuPreflightReport};
 use super::process::{
@@ -220,6 +220,9 @@ impl WindowsQemuBoot {
     }
 
     pub(crate) fn stop(&mut self) -> Result<Option<QemuExitStatus>, QemuBootError> {
+        if let Some(timeline) = &self.timeline {
+            let _ = timeline.record(QemuTimelinePhase::InstanceCleanupStarted);
+        }
         let _quit_result = self
             .qmp_endpoint
             .as_ref()
@@ -245,6 +248,7 @@ impl WindowsQemuBoot {
                     0,
                 );
                 let terminate_result = self.supervisor.terminate();
+                self.update_final_job_snapshot();
                 if let Err(source) = terminate_result {
                     Err(QemuBootError::StopFailed {
                         source,
@@ -271,6 +275,10 @@ impl WindowsQemuBoot {
             );
         }
         result
+    }
+
+    fn update_final_job_snapshot(&self) {
+        update_final_job_snapshot(&self.supervisor, &self.artifacts);
     }
 }
 
@@ -859,6 +867,7 @@ pub(crate) fn launch_windows_qemu_boot(
                     &error,
                 );
                 let _ = supervisor.terminate();
+                update_final_job_snapshot(&supervisor, &artifacts);
                 return Err(error);
             }
         }
@@ -1003,6 +1012,7 @@ pub(crate) fn launch_windows_qemu_boot(
                     &error,
                 );
                 let _ = supervisor.terminate();
+                update_final_job_snapshot(&supervisor, &artifacts);
                 return Err(error);
             }
         }
@@ -1581,10 +1591,20 @@ fn capture_live_timeout(
             failure_kind,
             elapsed,
             &process,
+            supervisor.job_snapshot().as_ref(),
             &progress,
             &qmp,
             &dump,
         );
+    }
+}
+
+fn update_final_job_snapshot(supervisor: &QemuSupervisor, artifacts: &QemuBootArtifacts) {
+    if let Some(snapshot) = supervisor.job_snapshot() {
+        if snapshot.active_process_zero_observed {
+            supervisor.record_timeline(QemuTimelinePhase::JobActiveProcessZero);
+        }
+        let _ = update_hang_job_snapshot(&artifacts.directory, &snapshot);
     }
 }
 
@@ -2064,6 +2084,8 @@ mod tests {
     use std::ffi::OsString;
     use std::io::{Cursor, Write};
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    use sha2::Digest;
 
     use crate::windows_x86_64::qemu::argv::QemuArgvBuilder;
     use crate::windows_x86_64::qemu::config::QemuBootConfig;
@@ -2650,6 +2672,7 @@ mod tests {
 
             let mut config =
                 WindowsQemuBootConfig::new(kernel, initrd, rootfs, 2 * 1024 * 1024 * 1024, 2);
+            config.qemu_executable = env::var_os("LSB_WINDOWS_BOOT_QEMU").map(PathBuf::from);
             let control_endpoint = VirtioSerialControlEndpoint::for_instance(&artifact_dir)
                 .expect("smoke control endpoint name should be valid");
             config.artifact_directory = Some(artifact_dir);
@@ -2707,6 +2730,80 @@ mod tests {
                 boot.artifacts().summary()
             );
             boot.stop().expect("smoke QEMU should stop cleanly");
+        }
+    }
+
+    #[cfg(feature = "qemu-hang-test-hooks")]
+    #[test]
+    #[ignore = "requires Windows 11 x86_64 with WHPX, QEMU, and disposable LocalSandbox assets"]
+    fn windows_qemu_hang_telemetry_smoke() {
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        {
+            eprintln!("skipping Windows QEMU hang smoke on non-Windows host");
+        }
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            let kernel = required_env_path("LSB_WINDOWS_BOOT_KERNEL");
+            let initrd = required_env_path("LSB_WINDOWS_BOOT_INITRD");
+            let rootfs = required_env_path("LSB_WINDOWS_BOOT_ROOTFS");
+            let qemu = required_env_path("LSB_WINDOWS_BOOT_QEMU");
+            let artifact_dir = required_env_path("LSB_WINDOWS_BOOT_ARTIFACT_DIR");
+            let telemetry_root = required_env_path("LSB_QEMU_HANG_TEST_TELEMETRY_ROOT");
+            let mut config =
+                WindowsQemuBootConfig::new(kernel, initrd, rootfs, 2 * 1024 * 1024 * 1024, 2);
+            config.qemu_executable = Some(qemu);
+            config.artifact_directory = Some(artifact_dir.clone());
+            config.diagnostic_label = Some("windows-qemu-hang-smoke".to_string());
+            config.control_endpoint = Some(
+                VirtioSerialControlEndpoint::for_instance(&artifact_dir)
+                    .expect("hang smoke control endpoint should be valid"),
+            );
+            config.hang_context = Some(crate::PlatformQemuTelemetryContext {
+                telemetry_root: telemetry_root.clone(),
+                run_id: Some("windows-qemu-hang-smoke".to_string()),
+                correlation_id: "windows-qemu-hang-smoke".to_string(),
+                resource_id: "windows-qemu-hang-smoke".to_string(),
+            });
+
+            let error = launch_windows_qemu_boot(config)
+                .expect_err("test hook must force a live guest-ready timeout");
+            assert_eq!(error.kind(), QemuBootErrorKind::GuestReadyTimeout);
+            for name in [
+                "qemu-hang.json",
+                "qemu-progress.jsonl",
+                "qemu-timeline.jsonl",
+                "qemu-hang-dump.json",
+                "qemu.status.json",
+            ] {
+                assert!(artifact_dir.join(name).is_file(), "missing {name}");
+            }
+            let hang: serde_json::Value =
+                serde_json::from_slice(&fs::read(artifact_dir.join("qemu-hang.json")).unwrap())
+                    .unwrap();
+            assert_eq!(hang["failure_kind"], "guest_ready_timeout");
+            assert_eq!(hang["qmp"]["connected"], true);
+            assert_eq!(hang["qmp"]["responsive"], true);
+            let manifest: serde_json::Value = serde_json::from_slice(
+                &fs::read(artifact_dir.join("qemu-hang-dump.json")).unwrap(),
+            )
+            .unwrap();
+            let incident_id = manifest["incident_id"].as_str().unwrap();
+            let dump = telemetry_root
+                .join("qemu-dumps")
+                .join(incident_id)
+                .join("qemu-hang.dmp");
+            if env::var("LSB_QEMU_HANG_TEST_EXPECT_DUMP_TIMEOUT").as_deref() == Ok("1") {
+                assert_eq!(manifest["success"], false);
+                assert!(!dump.exists());
+            } else {
+                assert_eq!(manifest["success"], true);
+                assert!(dump.is_file());
+                assert_eq!(
+                    format!("{:x}", sha2::Sha256::digest(fs::read(&dump).unwrap())),
+                    manifest["sha256"].as_str().unwrap()
+                );
+            }
         }
     }
 

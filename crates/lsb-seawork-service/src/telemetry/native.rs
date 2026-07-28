@@ -200,6 +200,7 @@ impl Adapter for NativeAdapter {
                 let path = wide(&attachment.path);
                 let native = sentry_attach_filew(path.as_ptr());
                 if native.is_null() {
+                    super::record_failure(super::TelemetryFailure::Attachment);
                     eprintln!(
                         "Sentry attachment add failed for reviewed incident file '{}'",
                         attachment.filename
@@ -219,6 +220,7 @@ impl Adapter for NativeAdapter {
             }
             let event_id = uuid_string(&uuid);
             if event_id.is_none() {
+                super::record_failure(super::TelemetryFailure::NilEventUuid);
                 eprintln!("Sentry event capture returned a nil UUID");
             }
             Ok(event_id)

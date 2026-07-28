@@ -32,10 +32,11 @@ pub enum EventId {
     BundleVerified = 15,
     SessionsDrained = 16,
     ConnectionFailed = 17,
+    DiagnosticCaptureFailed = 18,
 }
 
 impl EventId {
-    const ALL: [Self; 17] = [
+    const ALL: [Self; 18] = [
         Self::ServiceStarted,
         Self::ServiceStopped,
         Self::LedgerQuarantined,
@@ -53,6 +54,7 @@ impl EventId {
         Self::BundleVerified,
         Self::SessionsDrained,
         Self::ConnectionFailed,
+        Self::DiagnosticCaptureFailed,
     ];
 
     fn severity(self) -> Severity {
@@ -61,6 +63,7 @@ impl EventId {
             | Self::BundleVerificationFailed
             | Self::ClientTrustFailed
             | Self::ConnectionFailed
+            | Self::DiagnosticCaptureFailed
             | Self::ResourceCleanupFailed => Severity::Error,
             Self::LedgerQuarantined | Self::QuotaRejected | Self::RuntimeCapabilityUnavailable => {
                 Severity::Warning
@@ -149,6 +152,15 @@ pub struct JsonLogger {
 pub struct ServiceLogger {
     json: JsonLogger,
     event_log: WindowsEventLog,
+}
+
+#[cfg(windows)]
+impl std::fmt::Debug for ServiceLogger {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ServiceLogger")
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(windows)]

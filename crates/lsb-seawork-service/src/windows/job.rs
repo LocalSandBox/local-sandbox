@@ -47,10 +47,22 @@ enum JobNotification {
 struct JobMonitor {
     active_processes: HashSet<u32>,
     saw_active_zero: bool,
+    decoded_notification_count: u64,
+    last_notification_type: Option<String>,
+    last_notification_utc: Option<String>,
+    termination_requested: bool,
+    termination_succeeded: Option<bool>,
 }
 
 impl JobMonitor {
     fn apply(&mut self, notification: JobNotification) -> Result<()> {
+        self.decoded_notification_count = self.decoded_notification_count.saturating_add(1);
+        self.last_notification_type = Some(notification_type(notification).to_string());
+        self.last_notification_utc = Some(
+            time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|_| "unknown".to_string()),
+        );
         match notification {
             JobNotification::NewProcess(pid) => {
                 if !self.active_processes.insert(pid) {
@@ -75,6 +87,31 @@ impl JobMonitor {
         }
         Ok(())
     }
+
+    fn snapshot(&self, limits: JobLimits) -> lsb_platform::PlatformQemuJobSnapshot {
+        let mut active_pids = self.active_processes.iter().copied().collect::<Vec<_>>();
+        active_pids.sort_unstable();
+        lsb_platform::PlatformQemuJobSnapshot {
+            active_pids,
+            active_process_zero_observed: self.saw_active_zero,
+            decoded_notification_count: self.decoded_notification_count,
+            last_notification_type: self.last_notification_type.clone(),
+            last_notification_utc: self.last_notification_utc.clone(),
+            active_process_limit: limits.active_processes,
+            memory_limit_bytes: u64::try_from(limits.memory_bytes).unwrap_or(u64::MAX),
+            termination_requested: self.termination_requested,
+            termination_succeeded: self.termination_succeeded,
+        }
+    }
+}
+
+fn notification_type(notification: JobNotification) -> &'static str {
+    match notification {
+        JobNotification::NewProcess(_) => "new_process",
+        JobNotification::ExitProcess(_) => "exit_process",
+        JobNotification::ActiveProcessZero => "active_process_zero",
+        JobNotification::LimitViolation(_) => "limit_violation",
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -87,6 +124,7 @@ pub struct SandboxJob {
     handle: OwnedHandle,
     completion_port: OwnedHandle,
     monitor: Mutex<JobMonitor>,
+    limits: JobLimits,
     journal: Option<Mutex<QemuJournal>>,
     qemu_telemetry: Option<lsb_platform::PlatformQemuTelemetryContext>,
 }
@@ -121,6 +159,7 @@ impl SandboxJob {
             handle: unsafe { OwnedHandle::from_raw_handle(raw as _) },
             completion_port: unsafe { OwnedHandle::from_raw_handle(completion_raw as _) },
             monitor: Mutex::new(JobMonitor::default()),
+            limits,
             journal: None,
             qemu_telemetry: None,
         };
@@ -174,11 +213,16 @@ impl SandboxJob {
             .monitor
             .lock()
             .map_err(|_| anyhow::anyhow!("QEMU Job monitor lock poisoned"))?;
+        self.refresh_monitor(&mut monitor)?;
+        if monitor.saw_active_zero {
+            bail!("QEMU Job has no active processes while the VM is running");
+        }
+        Ok(())
+    }
+
+    fn refresh_monitor(&self, monitor: &mut JobMonitor) -> Result<()> {
         for _ in 0..MAX_NOTIFICATIONS_PER_POLL {
             let Some(notification) = self.poll_notification()? else {
-                if monitor.saw_active_zero {
-                    bail!("QEMU Job has no active processes while the VM is running");
-                }
                 return Ok(());
             };
             monitor.apply(notification)?;
@@ -331,13 +375,19 @@ impl SandboxJob {
     }
 
     pub fn terminate(&self, exit_code: u32) -> Result<()> {
-        if unsafe { TerminateJobObject(self.raw(), exit_code) } == 0 {
-            bail!(
+        let result = if unsafe { TerminateJobObject(self.raw(), exit_code) } == 0 {
+            Err(anyhow::anyhow!(
                 "TerminateJobObject failed: {}",
                 std::io::Error::last_os_error()
-            );
+            ))
+        } else {
+            Ok(())
+        };
+        if let Ok(mut monitor) = self.monitor.lock() {
+            monitor.termination_requested = true;
+            monitor.termination_succeeded = Some(result.is_ok());
         }
-        Ok(())
+        result
     }
 
     fn raw(&self) -> HANDLE {
@@ -391,6 +441,15 @@ impl lsb_vm::PlatformProcessContainment for SandboxJob {
         incident: &lsb_platform::PlatformQemuLiveIncident,
     ) -> Result<()> {
         crate::telemetry::capture_hyperv_evidence(incident)
+    }
+
+    fn qemu_job_snapshot(&self) -> Result<Option<lsb_platform::PlatformQemuJobSnapshot>> {
+        let mut monitor = self
+            .monitor
+            .lock()
+            .map_err(|_| anyhow::anyhow!("QEMU Job monitor lock poisoned"))?;
+        self.refresh_monitor(&mut monitor)?;
+        Ok(Some(monitor.snapshot(self.limits)))
     }
 
     fn assign_process(&self, process: &std::process::Child) -> Result<()> {
@@ -450,6 +509,18 @@ mod tests {
         monitor.apply(JobNotification::ExitProcess(10)).unwrap();
         monitor.apply(JobNotification::ActiveProcessZero).unwrap();
         assert!(monitor.saw_active_zero);
+        let snapshot = monitor.snapshot(JobLimits {
+            active_processes: 8,
+            memory_bytes: 1024,
+        });
+        assert!(snapshot.active_pids.is_empty());
+        assert!(snapshot.active_process_zero_observed);
+        assert_eq!(snapshot.active_process_limit, 8);
+        assert_eq!(snapshot.memory_limit_bytes, 1024);
+        assert_eq!(
+            snapshot.last_notification_type.as_deref(),
+            Some("active_process_zero")
+        );
         assert!(monitor
             .apply(JobNotification::LimitViolation(
                 JOB_OBJECT_MSG_JOB_MEMORY_LIMIT

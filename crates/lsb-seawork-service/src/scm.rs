@@ -148,6 +148,7 @@ fn run_registered(
             None
         }
     };
+    let engine = engine.map(|engine| engine.with_diagnostic_logger(logger.clone()));
     advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
     let ledger_span = startup_span.start_child(SpanDescription::child(
         "ledger.reconcile",
@@ -578,6 +579,7 @@ fn initialize_telemetry(
             .map(|parent| parent.join("crashpad_handler.exe"))
     });
     let Some(handler) = handler else {
+        crate::telemetry::record_failure(crate::telemetry::TelemetryFailure::CrashpadUnavailable);
         eprintln!("telemetry disabled: service executable path is unavailable");
         return Telemetry::disabled();
     };
@@ -594,6 +596,7 @@ fn initialize_telemetry(
     ) {
         Ok(telemetry) => telemetry,
         Err(error) => {
+            crate::telemetry::record_failure(crate::telemetry::TelemetryFailure::Initialization);
             eprintln!("telemetry disabled: {error}");
             Telemetry::disabled()
         }

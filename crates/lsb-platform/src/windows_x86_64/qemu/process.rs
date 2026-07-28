@@ -489,6 +489,10 @@ impl QemuSupervisor {
         self.containment.capture_live_evidence(incident)
     }
 
+    pub(crate) fn job_snapshot(&self) -> Option<crate::PlatformQemuJobSnapshot> {
+        self.containment.job_snapshot().ok().flatten()
+    }
+
     #[cfg(test)]
     pub(crate) fn diagnostics(&self) -> QemuProcessDiagnostics {
         QemuProcessDiagnostics {
@@ -1214,6 +1218,13 @@ impl ProcessContainment {
             Self::None | Self::Platform(_) => Ok(()),
         }
     }
+
+    fn job_snapshot(&self) -> anyhow::Result<Option<crate::PlatformQemuJobSnapshot>> {
+        match self {
+            Self::External(external) => external.qemu_job_snapshot(),
+            Self::None | Self::Platform(_) => Ok(None),
+        }
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1261,6 +1272,13 @@ impl ProcessContainment {
         match self {
             Self::External(external) => external.capture_qemu_live_evidence(incident),
             Self::None => Ok(()),
+        }
+    }
+
+    fn job_snapshot(&self) -> anyhow::Result<Option<crate::PlatformQemuJobSnapshot>> {
+        match self {
+            Self::External(external) => external.qemu_job_snapshot(),
+            Self::None => Ok(None),
         }
     }
 }

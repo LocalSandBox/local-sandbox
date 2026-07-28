@@ -10,7 +10,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:Utf8NoBom = [Text.UTF8Encoding]::new($false)
-$script:ExpectedMessageIds = 1..17
+$script:ExpectedMessageIds = 1..18
 
 if (-not $IsWindows) {
     throw 'event message verification requires Windows'

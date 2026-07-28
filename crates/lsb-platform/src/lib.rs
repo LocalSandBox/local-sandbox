@@ -330,6 +330,20 @@ pub struct PlatformQemuLiveIncident {
     pub snapshot_elapsed_ms: u64,
 }
 
+#[doc(hidden)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct PlatformQemuJobSnapshot {
+    pub active_pids: Vec<u32>,
+    pub active_process_zero_observed: bool,
+    pub decoded_notification_count: u64,
+    pub last_notification_type: Option<String>,
+    pub last_notification_utc: Option<String>,
+    pub active_process_limit: u32,
+    pub memory_limit_bytes: u64,
+    pub termination_requested: bool,
+    pub termination_succeeded: Option<bool>,
+}
+
 /// Opaque service-owned process containment boundary. The Windows QEMU backend
 /// assigns the suspended child through this interface and never creates a second
 /// Job when one is supplied.
@@ -346,6 +360,10 @@ pub trait PlatformProcessContainment: std::fmt::Debug + Send + Sync {
 
     fn capture_qemu_live_evidence(&self, _incident: &PlatformQemuLiveIncident) -> Result<()> {
         Ok(())
+    }
+
+    fn qemu_job_snapshot(&self) -> Result<Option<PlatformQemuJobSnapshot>> {
+        Ok(None)
     }
 
     fn assign_process(&self, process: &Child) -> Result<()>;

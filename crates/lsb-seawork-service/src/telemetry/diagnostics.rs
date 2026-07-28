@@ -818,4 +818,44 @@ mod tests {
         assert_eq!(fs::read_dir(&incidents).unwrap().count(), 2);
         fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn sentry_receipt_updates_only_the_matching_local_dump_incident() {
+        let root = temporary_root("receipt");
+        let incident_id = "abcdef0123456789abcdef0123456789";
+        let event_id = "0123456789abcdef0123456789abcdef";
+        let dump_directory = root.join("qemu-dumps").join(incident_id);
+        let snapshot = root.join("snapshot");
+        fs::create_dir_all(&dump_directory).unwrap();
+        fs::create_dir_all(&snapshot).unwrap();
+        let manifest = serde_json::json!({
+            "schema_version": 1,
+            "incident_id": incident_id,
+            "sentry_event_id": null,
+        });
+        fs::write(
+            dump_directory.join("qemu-hang-dump.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            snapshot.join("qemu-hang-dump.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        write_sentry_receipt(&root, &snapshot, event_id, Some("sentry.example/42")).unwrap();
+
+        let updated: serde_json::Value =
+            serde_json::from_slice(&fs::read(dump_directory.join("qemu-hang-dump.json")).unwrap())
+                .unwrap();
+        assert_eq!(updated["sentry_event_id"], event_id);
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(dump_directory.join("sentry-receipt.json")).unwrap())
+                .unwrap();
+        assert_eq!(receipt["incident_id"], incident_id);
+        assert_eq!(receipt["sentry_event_id"], event_id);
+        assert_eq!(receipt["dsn_project_identity"], "sentry.example/42");
+        fs::remove_dir_all(root).unwrap();
+    }
 }

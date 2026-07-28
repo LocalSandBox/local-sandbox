@@ -103,3 +103,9 @@ SymbolicName=LSBSW_CONNECTION_FAILED
 Language=English
 LocalSandbox for SeaWork rejected or lost a pipe connection.
 .
+
+MessageId=0x12
+SymbolicName=LSBSW_DIAGNOSTIC_CAPTURE_FAILED
+Language=English
+LocalSandbox for SeaWork could not complete a bounded diagnostic capture.
+.

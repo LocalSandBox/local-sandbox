@@ -43,12 +43,60 @@ them as a successful diagnostic write.
 | 14 | `LSBSW_RUNTIME_CAPABILITY_UNAVAILABLE` | Required runtime capability is unavailable |
 | 15 | `LSBSW_BUNDLE_VERIFIED` | Installed bundle was verified |
 | 16 | `LSBSW_SESSIONS_DRAINED` | Active sessions were drained |
+| 17 | `LSBSW_CONNECTION_FAILED` | Pipe connection was rejected or lost |
+| 18 | `LSBSW_DIAGNOSTIC_CAPTURE_FAILED` | Bounded diagnostic capture was incomplete |
 
 The release workflow resolves explicit `mc.exe` and `rc.exe` paths from the installed
 Windows SDK. The service build fails if either path is absent, compilation fails, or the
 `.res` output is missing, then passes that resource directly to the MSVC linker. It does
 not search `PATH`. Before and after signing, the release runner loads the exact PE as a
-data/image resource, formats IDs 1 through 16 in `0x0409`, and rejects an unexpected ID
-17. The signed-binary SHA-256 and verified IDs are published as machine-readable release
+data/image resource, formats IDs 1 through 18 in `0x0409`, and rejects any unexpected
+message ID. The signed-binary SHA-256 and verified IDs are published as machine-readable release
 evidence. Installed Event source registration and Application Event Log inspection still
 require the Windows installer/runtime gate; macOS cannot supply that evidence.
+
+## Live QEMU timeout diagnostics
+
+Official Windows builds always capture a bounded live snapshot when QEMU is
+still running at a guest-ready or QEMU-shutdown timeout. This is production
+behavior, not a runtime option. Before the authoritative Job is terminated, the
+platform records:
+
+- native process CPU, memory, handle, thread, and I/O samples in
+  `qemu-progress.jsonl`;
+- the stable phase sequence in `qemu-timeline.jsonl`;
+- four bounded, redacted queries over a private per-instance QMP pipe;
+- bounded evidence from the Hyper-V Hypervisor Operational/Admin and VID Admin
+  channels;
+- the read-only authoritative Job snapshot; and
+- one diagnostic minidump through the signed
+  `localsandbox-qemu-dump-helper.exe`.
+
+The dump helper has a parent-enforced 30-second deadline. Its reviewed flags
+capture stacks, handles, unloaded modules, process/thread data, full memory-map
+metadata, and indirectly referenced memory; they do not capture full process
+memory. Diagnostic failure is fail-open for telemetry but never for lifecycle:
+QEMU is eventually terminated even when QMP, Event Log, or dump collection
+fails.
+
+The local dump is retained below
+`runtime/telemetry/qemu-dumps/<incident-id>/qemu-hang.dmp`. Only the newest
+three completed incident directories remain. The sibling
+`qemu-hang-dump.json` records the exact flags, size, SHA-256, timestamps,
+Win32 outcome, correlation fields, and retention result. After Sentry accepts
+the event, `sentry-receipt.json` records the event ID and redacted project
+identity. Neither file weakens the inherited protected ACL.
+
+Sentry receives exactly two manual incident attachments:
+`incident.json` first and `incident.zip` second. The ZIP is built from a closed
+15-name allowlist and deliberately excludes every `.dmp`. Missing files remain
+represented in the manifest. Attachment, snapshot, archive, QMP, Hyper-V,
+process-snapshot, dump, event-submit, and flush failures increment bounded
+in-process telemetry counters and emit a reviewed local error without exposing
+protected paths or command lines.
+
+The service-side stop watchdog allows 45 seconds so a dump still inside its
+30-second deadline plus the termination margin is treated as progress.
+Downstream callers must use a deadline of at least 45 seconds and preserve the
+service correlation/resource IDs in `LOCAL_SANDBOX_STOP_TIMEOUT` and quarantine
+events.

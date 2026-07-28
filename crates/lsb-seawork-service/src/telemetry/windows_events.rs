@@ -482,4 +482,51 @@ mod tests {
 
         std::fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn captures_all_bounded_hyperv_channels_for_live_incident_window() {
+        let root = std::env::temp_dir().join(format!(
+            "localsandbox-hyperv-events-{}-{}",
+            std::process::id(),
+            time::OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let incident = lsb_platform::PlatformQemuLiveIncident {
+            incident_id: "0123456789abcdef0123456789abcdef".to_string(),
+            artifact_directory: root.clone(),
+            qemu_creation_time_100ns: 42,
+            snapshot_elapsed_ms: 1_000,
+        };
+        capture_hyperv_evidence(&incident).unwrap();
+        let bytes = std::fs::read(root.join("hyperv-events.json")).unwrap();
+        assert!(bytes.len() <= MAX_TOTAL_BYTES);
+        let evidence: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(evidence["incident_id"], incident.incident_id);
+        assert_eq!(
+            evidence["channels"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or_default(),
+            HYPERV_CHANNELS.len()
+        );
+        assert!(evidence["events"]
+            .as_array()
+            .is_some_and(|events| events.len() <= MAX_EVENTS));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reviewed_hyperv_xml_fields_are_bounded() {
+        let xml = r#"<Event><System><Provider Name="Microsoft-Windows-Hyper-V-Hypervisor"/><EventID>1</EventID><Level>2</Level><TimeCreated SystemTime="2026-07-28T00:00:00.000Z"/><EventRecordID>42</EventRecordID></System></Event>"#;
+        assert_eq!(
+            xml_attribute(xml, "Provider Name").as_deref(),
+            Some("Microsoft-Windows-Hyper-V-Hypervisor")
+        );
+        assert_eq!(xml_element(xml, "Level").as_deref(), Some("2"));
+        assert_eq!(
+            xml_attribute(xml, "TimeCreated SystemTime").as_deref(),
+            Some("2026-07-28T00:00:00.000Z")
+        );
+        assert_eq!(xml_element(xml, "EventRecordID").as_deref(), Some("42"));
+    }
 }

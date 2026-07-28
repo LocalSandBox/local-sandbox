@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -25,6 +26,7 @@ pub struct ServiceEngineConfig {
     service_log: PathBuf,
     operation_timeout: Duration,
     bundle_version: String,
+    diagnostic_logger: Option<Arc<crate::logging::ServiceLogger>>,
 }
 
 impl ServiceEngineConfig {
@@ -135,7 +137,23 @@ impl ServiceEngineConfig {
             service_log: service_paths.logs.join("service.jsonl"),
             operation_timeout: Duration::from_secs(60),
             bundle_version,
+            diagnostic_logger: None,
         })
+    }
+
+    pub fn with_diagnostic_logger(mut self, logger: Arc<crate::logging::ServiceLogger>) -> Self {
+        self.diagnostic_logger = Some(logger);
+        self
+    }
+
+    pub fn record_diagnostic_capture_failure(&self) {
+        if let Some(logger) = &self.diagnostic_logger {
+            let _ = logger.write(
+                crate::logging::EventId::DiagnosticCaptureFailed,
+                "qemu.diagnostic",
+                "QEMU_DIAGNOSTIC_CAPTURE_FAILED",
+            );
+        }
     }
 
     pub fn bundle_root(&self) -> &Path {

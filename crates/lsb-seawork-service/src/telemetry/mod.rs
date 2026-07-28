@@ -7,6 +7,7 @@ mod run_marker;
 mod windows_events;
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,6 +30,46 @@ pub(crate) use windows_events::capture_termination_evidence;
 pub const TRANSACTION_SERVICE_STARTUP: &str = "service.startup";
 pub const TRANSACTION_SANDBOX_START: &str = "sandbox.start";
 pub const TRANSACTION_SANDBOX_STOP: &str = "sandbox.stop";
+
+#[derive(Debug, Clone, Copy)]
+#[repr(usize)]
+pub(crate) enum TelemetryFailure {
+    Initialization,
+    CrashpadUnavailable,
+    NilEventUuid,
+    Attachment,
+    Flush,
+    IncidentSnapshot,
+    Archive,
+    LiveProcessSnapshot,
+    Qmp,
+    Hyperv,
+    Dump,
+}
+
+static TELEMETRY_FAILURES: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
+
+pub(crate) fn record_failure(failure: TelemetryFailure) {
+    TELEMETRY_FAILURES[failure as usize].fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn failure_counter_context() -> serde_json::Value {
+    let values: [u64; 11] =
+        std::array::from_fn(|index| TELEMETRY_FAILURES[index].load(Ordering::Relaxed));
+    serde_json::json!({
+        "initialization_failure": values[TelemetryFailure::Initialization as usize],
+        "crashpad_unavailable": values[TelemetryFailure::CrashpadUnavailable as usize],
+        "nil_event_uuid": values[TelemetryFailure::NilEventUuid as usize],
+        "attachment_failure": values[TelemetryFailure::Attachment as usize],
+        "flush_failure": values[TelemetryFailure::Flush as usize],
+        "incident_snapshot_failure": values[TelemetryFailure::IncidentSnapshot as usize],
+        "archive_failure": values[TelemetryFailure::Archive as usize],
+        "live_process_snapshot_failure": values[TelemetryFailure::LiveProcessSnapshot as usize],
+        "qmp_failure": values[TelemetryFailure::Qmp as usize],
+        "hyperv_failure": values[TelemetryFailure::Hyperv as usize],
+        "dump_failure": values[TelemetryFailure::Dump as usize],
+    })
+}
 
 pub(crate) fn format_error_chain(error: &anyhow::Error) -> String {
     format!("{error:#}")
@@ -276,7 +317,9 @@ impl Telemetry {
     }
 
     pub fn flush(&self, timeout: Duration) {
-        let _ = self.adapter.flush(timeout);
+        if self.adapter.flush(timeout).is_err() {
+            record_failure(TelemetryFailure::Flush);
+        }
     }
 
     pub fn new_event_id(&self) -> Option<String> {
