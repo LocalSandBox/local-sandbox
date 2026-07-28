@@ -78,6 +78,12 @@ impl QemuArgvBuilder {
             format!("{}M", self.config.machine.memory_mib),
         );
         push_arg(&mut command, "-no-reboot");
+        if self.config.qmp.is_some() {
+            // Keep vCPUs stopped until the private QMP monitor is negotiated.
+            // The Windows boot path sends an acknowledged `cont` before it starts
+            // guest-ready observation.
+            push_arg(&mut command, "-S");
+        }
         push_pair(&mut command, "-display", "none");
         push_pair(&mut command, "-monitor", "none");
         push_path_pair(
@@ -745,6 +751,7 @@ mod tests {
                 "-m",
                 "2048M",
                 "-no-reboot",
+                "-S",
                 "-display",
                 "none",
                 "-monitor",
@@ -952,8 +959,18 @@ mod tests {
 
         assert_eq!(qmp_chardev, "pipe,id=lsbqmp,path=lsb-abc-qmp");
         assert_eq!(qmp_monitor, "chardev=lsbqmp,mode=control");
+        assert!(argv.iter().any(|argument| argument == "-S"));
         assert!(!qmp_chardev.contains("tcp:"));
         assert!(!qmp_chardev.contains("0.0.0.0"));
+    }
+
+    #[test]
+    fn qemu_without_qmp_does_not_start_paused() {
+        let command = build(base_config());
+
+        assert!(!argv_as_strings(&command)
+            .iter()
+            .any(|argument| argument == "-S"));
     }
 
     #[test]
