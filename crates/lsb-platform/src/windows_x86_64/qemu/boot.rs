@@ -287,7 +287,7 @@ impl WindowsQemuBoot {
                     self.control_stream.is_some() || self.control_mux.is_some(),
                     0,
                 );
-                request_qmp_quit_after_capture(self.qmp_endpoint.as_ref());
+                request_qmp_quit_after_capture(self.qmp_endpoint.as_ref(), &mut self.supervisor);
                 let terminate_result = self.supervisor.terminate();
                 self.update_final_job_snapshot();
                 if let Err(source) = terminate_result {
@@ -946,7 +946,7 @@ pub(crate) fn launch_windows_qemu_boot(
                     &error,
                 );
                 if matches!(&error, QemuBootError::GuestReadyTimeout { .. }) {
-                    request_qmp_quit_after_capture(qmp_endpoint.as_ref());
+                    request_qmp_quit_after_capture(qmp_endpoint.as_ref(), &mut supervisor);
                 }
                 let _ = supervisor.terminate();
                 update_final_job_snapshot(&supervisor, &artifacts);
@@ -1119,6 +1119,9 @@ pub(crate) fn launch_windows_qemu_boot(
                     observation_goal,
                     &error,
                 );
+                if matches!(&error, QemuBootError::GuestReadyTimeout { .. }) {
+                    request_qmp_quit_after_capture(qmp_endpoint.as_ref(), &mut supervisor);
+                }
                 let _ = supervisor.terminate();
                 update_final_job_snapshot(&supervisor, &artifacts);
                 return Err(error);
@@ -1780,12 +1783,17 @@ fn capture_live_timeout(
     }
 }
 
-fn request_qmp_quit_after_capture(endpoint: Option<&QmpEndpoint>) {
-    if endpoint.is_some_and(|endpoint| endpoint.request_quit().is_ok()) {
-        // Give responsive QEMU a short opportunity to release WHPX cleanly.
-        // The supervisor still performs bounded Job termination immediately
-        // afterward, so diagnostics cannot extend cleanup indefinitely.
-        std::thread::sleep(POST_CAPTURE_QMP_QUIT_GRACE);
+fn request_qmp_quit_after_capture(endpoint: Option<&QmpEndpoint>, supervisor: &mut QemuSupervisor) {
+    let Some(endpoint) = endpoint else {
+        return;
+    };
+    // A failed write can mean QEMU accepted `quit` and closed the pipe before
+    // WriteFile completed. Always perform the bounded process wait after the
+    // request, then leave Job termination as the containment fallback.
+    let _ = endpoint.request_quit();
+    if supervisor.wait(POST_CAPTURE_QMP_QUIT_GRACE).is_ok() {
+        supervisor.record_timeline(QemuTimelinePhase::QemuProcessExited);
+        supervisor.record_timeline(QemuTimelinePhase::JobDrainStarted);
     }
 }
 
