@@ -393,7 +393,8 @@ if (-not $serviceHang.job.active_process_zero_observed -or
 }
 $hyperv = Get-Content -LiteralPath (Join-Path $packaged 'hyperv-events.json') -Raw |
     ConvertFrom-Json
-if (@($hyperv.channels).Count -ne 3 -or @($hyperv.events).Count -gt 64) {
+if (@($hyperv.channels).Count -ne 3 -or @($hyperv.events).Count -gt 64 -or
+    [long]$hyperv.lookback_ms -lt ([long]$serviceHang.elapsed_ms + 30000)) {
     throw 'Hyper-V evidence did not preserve the three-channel bounded query contract.'
 }
 
@@ -422,9 +423,13 @@ $serviceStopHang = Get-Content `
 $serviceStopManifest = Get-Content `
     -LiteralPath (Join-Path $serviceStopPackaged 'incident.json') -Raw |
     ConvertFrom-Json
+$serviceStopHyperv = Get-Content `
+    -LiteralPath (Join-Path $serviceStopPackaged 'hyperv-events.json') -Raw |
+    ConvertFrom-Json
 if ([string]$serviceStopHang.failure_kind -cne 'qemu_shutdown_timeout' -or
     -not $serviceStopHang.job.active_process_zero_observed -or
     -not $serviceStopHang.job.termination_succeeded -or
+    [long]$serviceStopHyperv.lookback_ms -lt ([long]$serviceStopHang.elapsed_ms + 30000) -or
     [string]$serviceStopManifest.stable_error_code -cne 'SANDBOX_STOP_FAILED' -or
     [string]$serviceStopManifest.failure_phase -cne 'stop') {
     throw 'Service stop did not preserve its shutdown-timeout incident contract.'

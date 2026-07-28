@@ -15,6 +15,8 @@ const MAX_SCANNED_EVENTS: usize = 256;
 const MAX_EVENT_BYTES: usize = 32 * 1024;
 const MAX_TOTAL_BYTES: usize = 256 * 1024;
 const MAX_LOOKBACK_MS: i128 = 24 * 60 * 60 * 1_000;
+const WINDOWS_EPOCH_OFFSET_100NS: i128 = 116_444_736_000_000_000;
+const HYPERV_PRE_CREATION_LOOKBACK_MS: u64 = 30_000;
 const HYPERV_CHANNELS: &[&str] = &[
     "Microsoft-Windows-Hyper-V-Hypervisor-Operational",
     "Microsoft-Windows-Hyper-V-Hypervisor-Admin",
@@ -53,6 +55,7 @@ struct HypervEvidence<'a> {
     resource_id: &'a str,
     qemu_creation_time_100ns: u64,
     captured_utc: String,
+    lookback_ms: u64,
     truncated: bool,
     channels: Vec<HypervChannel>,
     events: Vec<HypervEvent>,
@@ -169,7 +172,15 @@ pub(crate) fn capture_termination_evidence(previous: &PreviousRun) -> Result<Att
 pub(crate) fn capture_hyperv_evidence(
     incident: &lsb_platform::PlatformQemuLiveIncident,
 ) -> Result<()> {
-    let lookback_ms = incident.snapshot_elapsed_ms.saturating_add(30_000);
+    let now_100ns = time::OffsetDateTime::now_utc()
+        .unix_timestamp_nanos()
+        .div_euclid(100)
+        .saturating_add(WINDOWS_EPOCH_OFFSET_100NS);
+    let lookback_ms = hyperv_lookback_ms_at(
+        incident.qemu_creation_time_100ns,
+        incident.snapshot_elapsed_ms,
+        now_100ns,
+    );
     let query = format!("*[System[TimeCreated[timediff(@SystemTime) <= {lookback_ms}]]]");
     let mut events = Vec::new();
     let mut channels = Vec::new();
@@ -193,6 +204,7 @@ pub(crate) fn capture_hyperv_evidence(
         captured_utc: time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| "unknown".to_string()),
+        lookback_ms,
         truncated,
         channels,
         events,
@@ -208,6 +220,20 @@ pub(crate) fn capture_hyperv_evidence(
         &evidence,
     )
     .context("write bounded Hyper-V evidence")
+}
+
+fn hyperv_lookback_ms_at(
+    qemu_creation_time_100ns: u64,
+    fallback_elapsed_ms: u64,
+    now_100ns: i128,
+) -> u64 {
+    let creation_100ns = i128::from(qemu_creation_time_100ns);
+    let elapsed_ms = if qemu_creation_time_100ns != 0 && creation_100ns <= now_100ns {
+        u64::try_from((now_100ns - creation_100ns).div_euclid(10_000)).unwrap_or(u64::MAX)
+    } else {
+        fallback_elapsed_ms
+    };
+    elapsed_ms.saturating_add(HYPERV_PRE_CREATION_LOOKBACK_MS)
 }
 
 fn collect_hyperv_channel(
@@ -510,6 +536,9 @@ mod tests {
         assert_eq!(evidence["incident_id"], incident.incident_id);
         assert_eq!(evidence["correlation_id"], incident.correlation_id);
         assert_eq!(evidence["resource_id"], incident.resource_id);
+        assert!(evidence["lookback_ms"]
+            .as_u64()
+            .is_some_and(|value| value >= 30_000));
         assert_eq!(
             evidence["channels"]
                 .as_array()
@@ -536,6 +565,19 @@ mod tests {
             Some("2026-07-28T00:00:00.000Z")
         );
         assert_eq!(xml_element(xml, "EventRecordID").as_deref(), Some("42"));
+    }
+
+    #[test]
+    fn hyperv_lookback_starts_thirty_seconds_before_qemu_creation() {
+        let creation = 133_000_000_000_000_000u64;
+        let now = i128::from(creation) + 90 * 10_000_000;
+
+        assert_eq!(hyperv_lookback_ms_at(creation, 1_000, now), 120_000);
+        assert_eq!(hyperv_lookback_ms_at(0, 1_000, now), 31_000);
+        assert_eq!(
+            hyperv_lookback_ms_at(creation, 1_000, i128::from(creation) - 1),
+            31_000
+        );
     }
 
     #[cfg(feature = "qemu-hang-test-hooks")]
