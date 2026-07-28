@@ -37,10 +37,16 @@ function Invoke-CdbHangAnalysis {
         [Parameter(Mandatory = $true)][string] $OutputStem,
         [Parameter(Mandatory = $true)][string] $ExpectedModule
     )
-    $debugger = Get-Command cdb.exe -ErrorAction Stop
+    $debugger = Get-Command cdb.exe -ErrorAction SilentlyContinue
+    if ($null -ne $debugger) {
+        $debuggerPath = $debugger.Source
+    } else {
+        $debuggerPath = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
+        Assert-RegularFile $debuggerPath 64MB | Out-Null
+    }
     $output = Join-Path $RunRoot "$OutputStem.txt"
     $errorOutput = Join-Path $RunRoot "$OutputStem.stderr.txt"
-    $process = Start-Process -FilePath $debugger.Source -ArgumentList @(
+    $process = Start-Process -FilePath $debuggerPath -ArgumentList @(
         '-z', "`"$DumpPath`"",
         '-c', '".symfix;.reload;!analyze -hang;~* k;!runaway;lm;q"'
     ) -PassThru -RedirectStandardOutput $output -RedirectStandardError $errorOutput
