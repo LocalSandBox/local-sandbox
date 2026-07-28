@@ -1,0 +1,23 @@
+bindings/nodejs/src/service.rs
+  s_31ad4f53b04974::t_36d0322542b7c1 1087,1255-1263,1265,1269-1270,1405,1411,1418,1424
+  s_31ad4f53b04974::t_b77c9e489e03b6 1266-1268,1271-1280,1425-1432,1434-1437
+  s_31ad4f53b04974::t_3ac7ddf0014ebc 1264,1433
+docs/service-diagnostics.md
+  s_31ad4f53b04974::t_36d0322542b7c1 98-100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "922316969e6ac0034931af3de0383b6c877fbafe",
+  "prompts": {},
+  "sessions": {
+    "s_31ad4f53b04974": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa7b0-4d69-7d01-ae26-6595cb9ecc1b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
