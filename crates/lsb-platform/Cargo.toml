@@ -6,6 +6,9 @@ description = "Platform abstraction and metadata for lsb"
 license = "Apache-2.0"
 repository = "https://github.com/LocalSandBox/local-sandbox.git"
 
+[features]
+qemu-hang-test-hooks = []
+
 [dependencies]
 anyhow = "1"
 # Keep Windows cross-checks buildable from non-Windows release hosts without MASM.

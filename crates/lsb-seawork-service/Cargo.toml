@@ -8,6 +8,7 @@ build = "build.rs"
 [features]
 development-service = ["lsb-service-proto/development-service"]
 sentry-telemetry = []
+qemu-hang-test-hooks = ["lsb-platform/qemu-hang-test-hooks"]
 
 [dependencies]
 anyhow = "1"
@@ -24,6 +25,7 @@ sha2 = "0.10"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 ureq = { version = "3", default-features = true }
 zeroize = "1"
+zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
 lsb-proxy.workspace = true
 
 [target.'cfg(windows)'.dependencies]

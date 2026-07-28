@@ -6,17 +6,42 @@ use std::time::{Duration, SystemTime};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, ZipWriter};
 
 use super::CommonContext;
 
 const SMALL_FILES: &[&str] = &[
+    "qemu-hang.json",
+    "qemu-progress.jsonl",
+    "qemu-timeline.jsonl",
+    "qemu-hang-dump.json",
+    "hyperv-events.json",
     "boot.status.json",
     "preflight.json",
     "qemu.argv.redacted.txt",
     "qemu.status.json",
 ];
 const ROLLING_FILES: &[&str] = &["qemu.stderr.log", "qemu.stdout.log", "serial.log"];
+const ARCHIVE_FILES: &[&str] = &[
+    "incident.json",
+    "machine.json",
+    "qemu-hang.json",
+    "qemu-progress.jsonl",
+    "qemu-timeline.jsonl",
+    "qemu-hang-dump.json",
+    "hyperv-events.json",
+    "boot.status.json",
+    "preflight.json",
+    "qemu.argv.redacted.txt",
+    "qemu.status.json",
+    "qemu.stderr.log",
+    "qemu.stdout.log",
+    "serial.log",
+    "service.tail.jsonl",
+];
 const GENERATED_METADATA_RESERVE: u64 = 64 * 1024;
+const INCIDENT_ARCHIVE_LIMIT: u64 = 10 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiagnosticLimits {
@@ -136,6 +161,7 @@ struct FileRecord {
     sha256: Option<String>,
     truncated: bool,
     changed_during_capture: bool,
+    inclusion_in_archive: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -177,7 +203,6 @@ fn collect_into(
     limits: DiagnosticLimits,
 ) -> Result<IncidentSnapshot> {
     let mut records = Vec::new();
-    let mut attachments = Vec::new();
     let mut total_bytes = 0u64;
     let source_total_limit = limits.total_bytes - GENERATED_METADATA_RESERVE;
 
@@ -191,7 +216,6 @@ fn collect_into(
             directory,
             &mut total_bytes,
             &mut records,
-            &mut attachments,
         );
     }
     for name in ROLLING_FILES {
@@ -204,7 +228,6 @@ fn collect_into(
             directory,
             &mut total_bytes,
             &mut records,
-            &mut attachments,
         );
     }
     if let Some(service_log) = service_log {
@@ -217,7 +240,6 @@ fn collect_into(
             directory,
             &mut total_bytes,
             &mut records,
-            &mut attachments,
         );
     }
 
@@ -229,11 +251,10 @@ fn collect_into(
         &machine,
         limits.total_bytes,
         &mut total_bytes,
-        &mut attachments,
     )?;
 
     let manifest = IncidentManifest {
-        schema_version: 1,
+        schema_version: 2,
         event_id: &metadata.event_id,
         timestamp_utc: &metadata.timestamp_utc,
         stable_error_code: &metadata.stable_error_code,
@@ -252,11 +273,20 @@ fn collect_into(
         limits.total_bytes,
         &mut total_bytes,
     )?;
-    attachments.push(Attachment {
-        path: directory.join("incident.json"),
-        filename: "incident.json".to_string(),
-        content_type: "application/json",
-    });
+    let archive_bytes = build_incident_archive(directory, INCIDENT_ARCHIVE_LIMIT)?;
+    total_bytes = total_bytes.saturating_add(archive_bytes);
+    let attachments = vec![
+        Attachment {
+            path: directory.join("incident.json"),
+            filename: "incident.json".to_string(),
+            content_type: "application/json",
+        },
+        Attachment {
+            path: directory.join("incident.zip"),
+            filename: "incident.zip".to_string(),
+            content_type: "application/zip",
+        },
+    ];
 
     Ok(IncidentSnapshot {
         event_id: metadata.event_id.clone(),
@@ -276,7 +306,6 @@ fn capture_file(
     directory: &Path,
     total_bytes: &mut u64,
     records: &mut Vec<FileRecord>,
-    attachments: &mut Vec<Attachment>,
 ) {
     let source_path = source.display().to_string();
     let before = match fs::metadata(source) {
@@ -295,6 +324,7 @@ fn capture_file(
                 sha256: None,
                 truncated: false,
                 changed_during_capture: false,
+                inclusion_in_archive: false,
             });
             return;
         }
@@ -314,6 +344,7 @@ fn capture_file(
             sha256: None,
             truncated: before.len() > 0,
             changed_during_capture: false,
+            inclusion_in_archive: false,
         });
         return;
     }
@@ -342,11 +373,7 @@ fn capture_file(
         sha256: Some(hash),
         truncated: before.len() > captured_bytes,
         changed_during_capture: changed,
-    });
-    attachments.push(Attachment {
-        path: destination,
-        filename: destination_name.to_string(),
-        content_type: content_type(destination_name),
+        inclusion_in_archive: true,
     });
 }
 
@@ -400,15 +427,49 @@ fn write_bounded_generated(
     bytes: &[u8],
     total_limit: u64,
     total_bytes: &mut u64,
-    attachments: &mut Vec<Attachment>,
 ) -> Result<()> {
     write_atomic_bounded(directory, name, bytes, total_limit, total_bytes)?;
-    attachments.push(Attachment {
-        path: directory.join(name),
-        filename: name.to_string(),
-        content_type: content_type(name),
-    });
     Ok(())
+}
+
+fn build_incident_archive(directory: &Path, limit: u64) -> Result<u64> {
+    let pending = directory.join(".incident.zip.pending");
+    let destination = directory.join("incident.zip");
+    let output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&pending)
+        .context("create pending incident archive")?;
+    let mut archive = ZipWriter::new(output);
+    let options = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .unix_permissions(0o600);
+    for name in ARCHIVE_FILES {
+        let path = directory.join(name);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error).context("inspect incident archive input"),
+        };
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            bail!("incident archive input is not a regular file");
+        }
+        archive
+            .start_file(*name, options)
+            .context("start incident archive entry")?;
+        let mut input = File::open(&path).context("open incident archive input")?;
+        std::io::copy(&mut input, &mut archive).context("write incident archive entry")?;
+    }
+    let output = archive.finish().context("finish incident archive")?;
+    output.sync_all().context("flush incident archive")?;
+    let length = output.metadata().context("inspect incident archive")?.len();
+    drop(output);
+    if length > limit {
+        let _ = fs::remove_file(&pending);
+        bail!("incident archive exceeds bounded attachment limit");
+    }
+    fs::rename(&pending, &destination).context("commit incident archive")?;
+    Ok(length)
 }
 
 fn write_atomic_bounded(
@@ -448,14 +509,7 @@ fn unavailable_record(name: &str, source_path: String) -> FileRecord {
         sha256: None,
         truncated: false,
         changed_during_capture: false,
-    }
-}
-
-fn content_type(name: &str) -> &'static str {
-    if name.ends_with(".json") {
-        "application/json"
-    } else {
-        "text/plain"
+        inclusion_in_archive: false,
     }
 }
 
@@ -510,6 +564,7 @@ fn prune_retained_incidents(root: &Path, policy: RetentionPolicy) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use zip::ZipArchive;
 
     use super::*;
 
@@ -540,6 +595,7 @@ mod tests {
         let instance = root.join("instance");
         fs::create_dir(&instance).unwrap();
         fs::write(instance.join("boot.status.json"), br#"{"ready":false}"#).unwrap();
+        fs::write(instance.join("qemu-hang.dmp"), b"must stay local").unwrap();
         fs::write(instance.join("secret.txt"), b"must not be captured").unwrap();
 
         let snapshot = collect_incident(
@@ -554,7 +610,24 @@ mod tests {
         assert!(manifest.contains("\"status\": \"missing\""));
         assert!(snapshot.directory.join("boot.status.json").is_file());
         assert!(!snapshot.directory.join("secret.txt").exists());
+        assert!(!snapshot.directory.join("qemu-hang.dmp").exists());
         assert!(snapshot.directory.join("machine.json").is_file());
+        assert_eq!(
+            snapshot
+                .attachments
+                .iter()
+                .map(|attachment| attachment.filename.as_str())
+                .collect::<Vec<_>>(),
+            ["incident.json", "incident.zip"]
+        );
+        let mut archive =
+            ZipArchive::new(File::open(snapshot.directory.join("incident.zip")).unwrap()).unwrap();
+        assert!(archive.by_name("incident.json").is_ok());
+        assert!(archive.by_name("boot.status.json").is_ok());
+        assert!(archive.by_name("qemu-hang.dmp").is_err());
+        assert!(archive.by_name("secret.txt").is_err());
+        assert!(manifest.contains("\"inclusion_in_archive\": true"));
+        assert!(manifest.contains("\"inclusion_in_archive\": false"));
         snapshot.remove().unwrap();
         fs::remove_dir_all(root).unwrap();
     }
