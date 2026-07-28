@@ -39,12 +39,6 @@ impl QmpPipeStream {
                 .open(path)?,
         })
     }
-
-    fn try_clone(&self) -> io::Result<Self> {
-        Ok(Self {
-            file: self.file.try_clone()?,
-        })
-    }
 }
 
 #[cfg(windows)]
@@ -122,7 +116,12 @@ impl QmpEndpoint {
     }
 
     pub(crate) fn request_quit(&self) -> io::Result<()> {
-        request_quit_endpoint(self.connected_stream()?)
+        let (result, _retained_stream) = request_quit_endpoint(self.take_connected_stream()?);
+        #[cfg(windows)]
+        if let Some(stream) = _retained_stream {
+            self.restore_connected_stream(stream);
+        }
+        result
     }
 
     #[cfg(windows)]
@@ -189,29 +188,8 @@ impl QmpEndpoint {
         }
     }
 
-    #[cfg(windows)]
-    fn connected_stream(&self) -> io::Result<QmpPipeStream> {
-        let stream = self
-            .stream
-            .lock()
-            .map_err(|_| io::Error::other("QMP connection lock was poisoned"))?
-            .as_ref()
-            .map(QmpPipeStream::try_clone)
-            .transpose()?
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "QMP is not connected"))?;
-        Ok(stream)
-    }
-
     #[cfg(not(windows))]
     fn take_connected_stream(&self) -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "QMP named pipes are available only on Windows",
-        ))
-    }
-
-    #[cfg(not(windows))]
-    fn connected_stream(&self) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "QMP named pipes are available only on Windows",
@@ -220,35 +198,42 @@ impl QmpEndpoint {
 }
 
 #[cfg(windows)]
-fn request_quit_endpoint(stream: QmpPipeStream) -> io::Result<()> {
+fn request_quit_endpoint(stream: QmpPipeStream) -> (io::Result<()>, Option<QmpPipeStream>) {
     use std::sync::mpsc;
 
     let (sender, receiver) = mpsc::sync_channel(1);
     let worker = std::thread::spawn(move || {
-        let result = run_connected_quit_protocol(stream);
-        let _ = sender.send(result);
+        let mut stream = stream;
+        let result = run_connected_quit_protocol(&mut stream);
+        let _ = sender.send((result, stream));
     });
     match receiver.recv_timeout(QMP_QUIT_DEADLINE) {
-        Ok(result) => {
+        Ok((result, stream)) => {
             let _ = worker.join();
-            result
+            (result, Some(stream))
         }
         Err(_) => {
             cancel_synchronous_worker(&worker);
-            Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "QMP quit exceeded its fixed deadline",
-            ))
+            (
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "QMP quit exceeded its fixed deadline",
+                )),
+                None,
+            )
         }
     }
 }
 
 #[cfg(not(windows))]
-fn request_quit_endpoint(_stream: ()) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "QMP named pipes are available only on Windows",
-    ))
+fn request_quit_endpoint(_stream: ()) -> (io::Result<()>, Option<()>) {
+    (
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "QMP named pipes are available only on Windows",
+        )),
+        None,
+    )
 }
 
 #[cfg(windows)]

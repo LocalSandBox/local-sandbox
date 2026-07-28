@@ -36,7 +36,7 @@ use super::{lossy_excerpt, QemuPreflightError, StdQemuCommandRunner};
 pub(crate) const DEFAULT_BOOT_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const DEFAULT_GUEST_READY_TIMEOUT: Duration = Duration::from_secs(90);
 const DEFAULT_QEMU_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-const POST_CAPTURE_QMP_QUIT_GRACE: Duration = Duration::from_millis(250);
+const POST_CAPTURE_QMP_QUIT_GRACE: Duration = Duration::from_secs(2);
 const BOOT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SERIAL_LOG_FILE: &str = "serial.log";
 const PREFLIGHT_FILE: &str = "preflight.json";
