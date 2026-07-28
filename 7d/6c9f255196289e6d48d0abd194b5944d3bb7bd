@@ -1,0 +1,41 @@
+crates/lsb-platform/src/windows_x86_64/qemu/boot.rs
+  s_31ad4f53b04974::t_1ce5ebb81ecfce 989-1005
+  s_31ad4f53b04974::t_8d71214c3c84ba 3134-3135
+  s_31ad4f53b04974::t_e9ec2779879430 343,366,413-416,487,510,580-582
+  s_31ad4f53b04974::t_e17438c3edfa8f 583-584
+  s_31ad4f53b04974::t_1a1b333006c177 1006
+crates/lsb-platform/src/windows_x86_64/qemu/argv.rs
+  s_31ad4f53b04974::t_00f91be8d77d92 10,439-446,770-773,942-947,949,951,953-956,986
+crates/lsb-platform/src/windows_x86_64/qemu/config.rs
+  s_31ad4f53b04974::t_00f91be8d77d92 10
+crates/lsb-platform/src/windows_x86_64/qemu/qmp.rs
+  s_31ad4f53b04974::t_26e248001588ca 25-66,72,145,150-151,153,169,176,195,210,222,236,248-255,258-261
+  s_31ad4f53b04974::t_8b79dba50971f8 154-160
+  s_31ad4f53b04974::t_e9ec2779879430 3-4,67,71,75-82,99-100,114,118-122,134-144,146-149,152,186,194,196-197,200,263,274-278,288-289,291-295
+  s_31ad4f53b04974::t_c093b0103b6db1 128
+  s_31ad4f53b04974::t_de4a57a711e96c 165,233,257
+  s_31ad4f53b04974::t_c963c6ccce53b1 256
+  s_31ad4f53b04974::t_1e9d10be5daf91 21
+  s_31ad4f53b04974::t_e5e4b211783dad 129-133,349
+  s_31ad4f53b04974::t_a45872bf9c1d70 123-127
+crates/lsb-seawork-service/src/resource/vm.rs
+  s_31ad4f53b04974::t_e9ec2779879430 1008
+  s_31ad4f53b04974::t_54d7ea2d82d641 1657-1660
+  s_31ad4f53b04974::t_1626c423a7313e 1656
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "7d6c9f255196289e6d48d0abd194b5944d3bb7bd",
+  "prompts": {},
+  "sessions": {
+    "s_31ad4f53b04974": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa7b0-4d69-7d01-ae26-6595cb9ecc1b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
