@@ -72,10 +72,13 @@ $runtime = Join-Path $assets 'runtime'
 $qemu = Join-Path $assets 'qemu\qemu-system-x86_64.exe'
 $kernel = Join-Path $runtime 'Image'
 $initrd = Join-Path $runtime 'initramfs.cpio.gz'
-$rootfs = Join-Path $runtime 'rootfs.ext4'
-foreach ($path in @($qemu, $kernel, $initrd, $rootfs)) {
+$rootfsSource = Join-Path $runtime 'rootfs.ext4'
+foreach ($path in @($qemu, $kernel, $initrd, $rootfsSource)) {
     Assert-RegularFile $path | Out-Null
 }
+$rootfs = Join-Path $RunRoot 'runtime-rootfs.ext4'
+Copy-Item -LiteralPath $rootfsSource -Destination $rootfs
+Assert-RegularFile $rootfs | Out-Null
 
 $testTarget = Join-Path $RunRoot 'cargo-test-target'
 $productionTarget = Join-Path $RunRoot 'cargo-production-target'
