@@ -19,7 +19,7 @@ const MAX_QMP_LINE_BYTES: usize = 32 * 1024;
 const MAX_QMP_MESSAGES_PER_REQUEST: usize = 32;
 const MAX_QMP_RESPONSE_BYTES: usize = 16 * 1024;
 const QMP_STARTUP_CONNECT_DEADLINE: Duration = Duration::from_secs(30);
-const QMP_STARTUP_PROTOCOL_DEADLINE: Duration = Duration::from_secs(5);
+const QMP_STARTUP_PROTOCOL_DEADLINE: Duration = Duration::from_secs(15);
 const QMP_CAPTURE_DEADLINE: Duration = Duration::from_secs(5);
 const QMP_QUIT_DEADLINE: Duration = Duration::from_secs(2);
 
