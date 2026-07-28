@@ -112,7 +112,13 @@ impl QmpEndpoint {
     }
 
     pub(crate) fn capture(&self, timeline_elapsed: Duration) -> QemuQmpSnapshot {
-        capture_endpoint(self.take_connected_stream(), timeline_elapsed)
+        let (snapshot, _retained_stream) =
+            capture_endpoint(self.take_connected_stream(), timeline_elapsed);
+        #[cfg(windows)]
+        if let Some(stream) = _retained_stream {
+            self.restore_connected_stream(stream);
+        }
+        snapshot
     }
 
     pub(crate) fn request_quit(&self) -> io::Result<()> {
@@ -172,6 +178,15 @@ impl QmpEndpoint {
             .map_err(|_| io::Error::other("QMP connection lock was poisoned"))?
             .take()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "QMP is not connected"))
+    }
+
+    #[cfg(windows)]
+    fn restore_connected_stream(&self, stream: QmpPipeStream) {
+        if let Ok(mut current) = self.stream.lock() {
+            if current.is_none() {
+                *current = Some(stream);
+            }
+        }
     }
 
     #[cfg(windows)]
@@ -240,43 +255,53 @@ fn request_quit_endpoint(_stream: ()) -> io::Result<()> {
 fn capture_endpoint(
     stream: io::Result<QmpPipeStream>,
     timeline_elapsed: Duration,
-) -> QemuQmpSnapshot {
+) -> (QemuQmpSnapshot, Option<QmpPipeStream>) {
     use std::sync::mpsc;
 
     let stream = match stream {
         Ok(stream) => stream,
         Err(error) => {
-            return QemuQmpSnapshot {
-                error: Some(bounded_error(&error.to_string())),
-                ..QemuQmpSnapshot::default()
-            };
+            return (
+                QemuQmpSnapshot {
+                    error: Some(bounded_error(&error.to_string())),
+                    ..QemuQmpSnapshot::default()
+                },
+                None,
+            );
         }
     };
     let (sender, receiver) = mpsc::sync_channel(1);
     let worker = std::thread::spawn(move || {
-        let result = run_connected_protocol(stream, timeline_elapsed);
-        let _ = sender.send(result);
+        let mut stream = stream;
+        let result = run_connected_protocol(&mut stream, timeline_elapsed);
+        let _ = sender.send((result, stream));
     });
     match receiver.recv_timeout(QMP_CAPTURE_DEADLINE) {
-        Ok(Ok(snapshot)) => {
+        Ok((Ok(snapshot), stream)) => {
             let _ = worker.join();
-            snapshot
+            (snapshot, Some(stream))
         }
-        Ok(Err(error)) => {
+        Ok((Err(error), stream)) => {
             let _ = worker.join();
-            QemuQmpSnapshot {
-                connected: true,
-                error: Some(bounded_error(&error.to_string())),
-                ..QemuQmpSnapshot::default()
-            }
+            (
+                QemuQmpSnapshot {
+                    connected: true,
+                    error: Some(bounded_error(&error.to_string())),
+                    ..QemuQmpSnapshot::default()
+                },
+                Some(stream),
+            )
         }
         Err(_) => {
             cancel_synchronous_worker(&worker);
-            QemuQmpSnapshot {
-                connected: true,
-                error: Some("QMP capture exceeded its fixed deadline".to_string()),
-                ..QemuQmpSnapshot::default()
-            }
+            (
+                QemuQmpSnapshot {
+                    connected: true,
+                    error: Some("QMP capture exceeded its fixed deadline".to_string()),
+                    ..QemuQmpSnapshot::default()
+                },
+                None,
+            )
         }
     }
 }
@@ -312,11 +337,17 @@ fn cancel_synchronous_worker(worker: &std::thread::JoinHandle<()>) {
 }
 
 #[cfg(not(windows))]
-fn capture_endpoint(_stream: io::Result<()>, _timeline_elapsed: Duration) -> QemuQmpSnapshot {
-    QemuQmpSnapshot {
-        error: Some("QMP named pipes are available only on Windows".to_string()),
-        ..QemuQmpSnapshot::default()
-    }
+fn capture_endpoint(
+    _stream: io::Result<()>,
+    _timeline_elapsed: Duration,
+) -> (QemuQmpSnapshot, Option<()>) {
+    (
+        QemuQmpSnapshot {
+            error: Some("QMP named pipes are available only on Windows".to_string()),
+            ..QemuQmpSnapshot::default()
+        },
+        None,
+    )
 }
 
 #[cfg(test)]

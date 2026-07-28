@@ -36,6 +36,7 @@ use super::{lossy_excerpt, QemuPreflightError, StdQemuCommandRunner};
 pub(crate) const DEFAULT_BOOT_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const DEFAULT_GUEST_READY_TIMEOUT: Duration = Duration::from_secs(90);
 const DEFAULT_QEMU_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+const POST_CAPTURE_QMP_QUIT_GRACE: Duration = Duration::from_millis(250);
 const BOOT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SERIAL_LOG_FILE: &str = "serial.log";
 const PREFLIGHT_FILE: &str = "preflight.json";
@@ -286,6 +287,7 @@ impl WindowsQemuBoot {
                     self.control_stream.is_some() || self.control_mux.is_some(),
                     0,
                 );
+                request_qmp_quit_after_capture(self.qmp_endpoint.as_ref());
                 let terminate_result = self.supervisor.terminate();
                 self.update_final_job_snapshot();
                 if let Err(source) = terminate_result {
@@ -943,6 +945,9 @@ pub(crate) fn launch_windows_qemu_boot(
                     observation_goal,
                     &error,
                 );
+                if matches!(&error, QemuBootError::GuestReadyTimeout { .. }) {
+                    request_qmp_quit_after_capture(qmp_endpoint.as_ref());
+                }
                 let _ = supervisor.terminate();
                 update_final_job_snapshot(&supervisor, &artifacts);
                 return Err(error);
@@ -1772,6 +1777,15 @@ fn capture_live_timeout(
             }),
             hang_result.as_ref().err().map(|_| "artifact"),
         );
+    }
+}
+
+fn request_qmp_quit_after_capture(endpoint: Option<&QmpEndpoint>) {
+    if endpoint.is_some_and(|endpoint| endpoint.request_quit().is_ok()) {
+        // Give responsive QEMU a short opportunity to release WHPX cleanly.
+        // The supervisor still performs bounded Job termination immediately
+        // afterward, so diagnostics cannot extend cleanup indefinitely.
+        std::thread::sleep(POST_CAPTURE_QMP_QUIT_GRACE);
     }
 }
 

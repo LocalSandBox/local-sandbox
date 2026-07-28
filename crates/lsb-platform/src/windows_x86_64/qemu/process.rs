@@ -643,8 +643,8 @@ impl QemuSupervisor {
             return Ok(self.exit_status.clone());
         }
 
-        // There is no QMP shutdown channel, so termination falls back to Job
-        // Object/process cleanup.
+        // The caller may already have requested a graceful QMP quit. Job
+        // termination remains the bounded final containment operation.
         self.record_timeline(QemuTimelinePhase::TerminationRequested);
         let terminate_result = self.request_child_termination("terminate");
         self.record_timeline_result(
