@@ -1,0 +1,62 @@
+crates/lsb-platform/src/windows_x86_64/qemu/qmp.rs
+  s_31ad4f53b04974::t_ae8de68907e9dd 408-419
+  s_31ad4f53b04974::t_74f8622b356edd 21,60-94,217-233
+  s_31ad4f53b04974::t_8d76ee448157ce 234
+  s_31ad4f53b04974::t_c7398f809e0874 407
+crates/lsb-seawork-service/src/resource/vm.rs
+  s_31ad4f53b04974::t_1f666f2c834fea 789-792,801,811
+  s_31ad4f53b04974::t_9a21d49479b473 716,718-726,733-784,788,793-800,802-810,812-854
+  s_31ad4f53b04974::t_6d64494482d41c 785-787
+  s_31ad4f53b04974::t_3b9b2bc8b18ada 20,264-267
+  s_31ad4f53b04974::t_8615c370997701 855
+crates/lsb-platform/src/lib.rs
+  s_31ad4f53b04974::t_c609854d4433a1 324-332,347-348
+  s_31ad4f53b04974::t_e697a0f283f1f0 349-350
+crates/lsb-platform/src/windows_x86_64/qemu/hang.rs
+  s_31ad4f53b04974::t_1702ef2bad046a 495-500
+  s_31ad4f53b04974::t_6d64494482d41c 501-505
+crates/lsb-platform/src/windows_x86_64/qemu/process.rs
+  s_31ad4f53b04974::t_c609854d4433a1 485-491,1207-1216,1256-1263,1265
+  s_31ad4f53b04974::t_74286835b2b569 1264
+crates/lsb-seawork-service/src/telemetry/mod.rs
+  s_31ad4f53b04974::t_c9eb68894f12ec 25
+  s_31ad4f53b04974::t_a1bb6e223348c4 26
+  s_31ad4f53b04974::t_6d64494482d41c 18-19
+crates/lsb-platform/src/windows_x86_64/qemu/boot.rs
+  s_31ad4f53b04974::t_2cb7f742236b10 1550-1565,1588
+  s_31ad4f53b04974::t_6d64494482d41c 1371-1386
+  s_31ad4f53b04974::t_921cce9c95fd5c 38,157-159,223-260,263-264,295,317,405-408,435,455,631-634
+  s_31ad4f53b04974::t_4518a588a88e18 663-665,940,1045,1369-1370,1468-1491,1493-1503
+  s_31ad4f53b04974::t_3b4d6b41f7433f 1043-1044
+  s_31ad4f53b04974::t_edb2ec91e17f02 1437-1438,1440-1442,1445-1448,1492,1504-1525,1527-1549,1566-1587,1589
+  s_31ad4f53b04974::t_68de966e7169a9 1526
+  s_31ad4f53b04974::t_7fdf44674ec9ba 635-636,1590
+crates/lsb-seawork-service/src/telemetry/windows_events.rs
+  s_31ad4f53b04974::t_3281c126c44bf4 18-22,48-77,167-303
+  s_31ad4f53b04974::t_3038ef7202cca4 304
+crates/lsb-seawork-service/src/telemetry/diagnostics.rs
+  s_31ad4f53b04974::t_a1bb6e223348c4 108-116,135-151,155,157-171,174-175,177-185
+  s_31ad4f53b04974::t_15b3e3a3e9b7a3 152-154,156,176
+  s_31ad4f53b04974::t_6d64494482d41c 172-173
+  s_31ad4f53b04974::t_f0bc42078e869f 186
+crates/lsb-seawork-service/src/telemetry/native.rs
+  s_31ad4f53b04974::t_6e5e67ab062af3 203-206,220-224,301
+crates/lsb-seawork-service/src/windows/job.rs
+  s_31ad4f53b04974::t_c9eb68894f12ec 389-395
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "c9ba45ea3f0d0eaebcf4dfca7adb0c2c38ea0a3c",
+  "prompts": {},
+  "sessions": {
+    "s_31ad4f53b04974": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa7b0-4d69-7d01-ae26-6595cb9ecc1b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
