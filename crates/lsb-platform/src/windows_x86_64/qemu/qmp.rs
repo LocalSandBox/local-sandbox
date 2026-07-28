@@ -44,6 +44,35 @@ impl QmpPipeStream {
             file: self.file.try_clone()?,
         })
     }
+
+    fn synchronize_read(&self) -> io::Result<()> {
+        use std::os::windows::io::AsRawHandle;
+
+        let mut available = 0;
+        // The bundled QEMU Windows pipe backend uses overlapped server I/O while
+        // this client performs bounded synchronous reads on a duplicated duplex
+        // handle. A non-consuming peek synchronizes queued server output before
+        // ReadFile; without it, already-written QMP greeting bytes can remain
+        // invisible to the synchronous read until its deadline.
+        //
+        // SAFETY: the file owns a live duplex named-pipe handle and the optional
+        // output pointers not requested by this synchronization are null.
+        let succeeded = unsafe {
+            windows_sys::Win32::System::Pipes::PeekNamedPipe(
+                self.file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut available,
+                std::ptr::null_mut(),
+            )
+        };
+        if succeeded == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -121,10 +150,13 @@ impl QmpEndpoint {
     #[cfg(windows)]
     pub(crate) fn connect(&self) -> io::Result<()> {
         // QEMU creates pipe chardevs in argv order, so the parent must establish
-        // this connection before waiting for guest-ready. Do not perform blocking
-        // QMP I/O here: the bundled Windows pipe backend does not emit its greeting
-        // while a read is already pending during machine initialization.
-        let stream = open_with_deadline(&self.pipe_path, QMP_STARTUP_CONNECT_DEADLINE)?;
+        // this connection before waiting for guest-ready. Queue the small
+        // capabilities request immediately, but do not post a read during machine
+        // initialization: this bundled Windows pipe backend can stall QEMU when a
+        // greeting read is already pending, while a late first write can leave the
+        // monitor unresponsive.
+        let mut stream = open_with_deadline(&self.pipe_path, QMP_STARTUP_CONNECT_DEADLINE)?;
+        send_capabilities_request(&mut stream)?;
         *self
             .stream
             .lock()
@@ -166,9 +198,10 @@ impl QmpEndpoint {
 fn request_quit_endpoint(stream: QmpPipeStream) -> io::Result<()> {
     use std::sync::mpsc;
 
+    stream.synchronize_read()?;
     let (sender, receiver) = mpsc::sync_channel(1);
     let worker = std::thread::spawn(move || {
-        let result = run_quit_protocol(stream);
+        let result = run_connected_quit_protocol(stream);
         let _ = sender.send(result);
     });
     match receiver.recv_timeout(QMP_QUIT_DEADLINE) {
@@ -207,9 +240,16 @@ fn capture_endpoint(
             };
         }
     };
+    if let Err(error) = stream.synchronize_read() {
+        return QemuQmpSnapshot {
+            connected: true,
+            error: Some(bounded_error(&error.to_string())),
+            ..QemuQmpSnapshot::default()
+        };
+    }
     let (sender, receiver) = mpsc::sync_channel(1);
     let worker = std::thread::spawn(move || {
-        let result = run_protocol(stream, timeline_elapsed);
+        let result = run_connected_protocol(stream, timeline_elapsed);
         let _ = sender.send(result);
     });
     match receiver.recv_timeout(QMP_CAPTURE_DEADLINE) {
@@ -268,16 +308,32 @@ fn capture_endpoint(_stream: io::Result<()>, _timeline_elapsed: Duration) -> Qem
     }
 }
 
+#[cfg(test)]
 fn run_protocol<S>(mut stream: S, timeline_elapsed: Duration) -> io::Result<QemuQmpSnapshot>
 where
     S: Read + Write,
 {
-    negotiate_protocol(&mut stream)?;
+    send_capabilities_request(&mut stream)?;
+    run_connected_protocol(stream, timeline_elapsed)
+}
+
+fn run_connected_protocol<S>(
+    mut stream: S,
+    timeline_elapsed: Duration,
+) -> io::Result<QemuQmpSnapshot>
+where
+    S: Read + Write,
+{
+    complete_negotiation(&mut stream)?;
     run_queries(stream, timeline_elapsed)
 }
 
-fn negotiate_protocol(mut stream: impl Read + Write) -> io::Result<()> {
-    send_request(&mut stream, "qmp_capabilities", "capabilities")?;
+fn send_capabilities_request(stream: &mut impl Write) -> io::Result<()> {
+    send_request(stream, "qmp_capabilities", "capabilities")?;
+    Ok(())
+}
+
+fn complete_negotiation(mut stream: impl Read) -> io::Result<()> {
     let mut greeting_seen = false;
     let mut capabilities_seen = false;
     for _ in 0..MAX_QMP_MESSAGES_PER_REQUEST {
@@ -361,11 +417,20 @@ where
     Ok(snapshot)
 }
 
+#[cfg(test)]
 fn run_quit_protocol<S>(mut stream: S) -> io::Result<()>
 where
     S: Read + Write,
 {
-    negotiate_protocol(&mut stream)?;
+    send_capabilities_request(&mut stream)?;
+    run_connected_quit_protocol(stream)
+}
+
+fn run_connected_quit_protocol<S>(mut stream: S) -> io::Result<()>
+where
+    S: Read + Write,
+{
+    complete_negotiation(&mut stream)?;
     // QEMU may close the pipe as soon as quit is accepted, so successful delivery
     // of the bounded command is the acknowledgement used by the shutdown waiter.
     send_request(&mut stream, "quit", "quit")
@@ -554,20 +619,30 @@ mod tests {
     }
 
     #[test]
-    fn connected_queries_reuse_the_negotiated_session() {
-        let lines = QMP_QUERIES
-            .iter()
-            .map(|name| {
-                json!({
-                    "return": {"status": "running"},
-                    "id": format!("lsb-{name}")
+    fn connected_protocol_completes_the_queued_negotiation_without_resending_it() {
+        let mut lines = vec![
+            json!({"QMP": {"version": {"qemu": {"major": 11}}}}),
+            json!({"return": {}, "id": "capabilities"}),
+        ];
+        lines.extend(
+            QMP_QUERIES
+                .iter()
+                .map(|name| {
+                    json!({
+                        "return": {"status": "running"},
+                        "id": format!("lsb-{name}")
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
-        let snapshot = run_queries(ScriptedStream::new(&lines), Duration::ZERO).unwrap();
+                .collect::<Vec<_>>(),
+        );
+        let mut stream = ScriptedStream::new(&lines);
+        let snapshot = run_connected_protocol(&mut stream, Duration::ZERO).unwrap();
         assert!(snapshot.connected);
         assert!(snapshot.responsive);
         assert_eq!(snapshot.queries.len(), QMP_QUERIES.len());
+        let writes = String::from_utf8(stream.writes).unwrap();
+        assert!(!writes.contains(r#""execute":"qmp_capabilities""#));
+        assert!(writes.contains(r#""execute":"query-status""#));
     }
 
     #[test]
