@@ -91,9 +91,12 @@ Sentry receives exactly two manual incident attachments:
 `incident.json` first and `incident.zip` second. The ZIP is built from a closed
 15-name allowlist and deliberately excludes every `.dmp`. Missing files remain
 represented in the manifest. Attachment, snapshot, archive, QMP, Hyper-V,
-process-snapshot, dump, event-submit, and flush failures increment bounded
+process-snapshot, dump, nil-event-UUID, and flush failures increment bounded
 in-process telemetry counters and emit a reviewed local error without exposing
-protected paths or command lines.
+protected paths or command lines. The incident manifest, live artifacts, dump
+manifest, boot status, preflight report, progress records, and timeline records
+carry the same incident, correlation, and resource IDs. Service start/stop
+errors surface the correlation and resource IDs for downstream support lookup.
 
 The service-side stop watchdog allows 45 seconds so a dump still inside its
 30-second deadline plus the termination margin is treated as progress.
@@ -102,8 +105,10 @@ service correlation/resource IDs in `LOCAL_SANDBOX_STOP_TIMEOUT` and quarantine
 events.
 
 The focused `qemu-telemetry-smoke` Windows suite preserves digest-bound
-evidence for normal WHPX boot, four forced live timeouts, QMP responses,
-scheduled/final process samples, three-entry dump retention, helper timeout,
-the authoritative service Job reaching active-process-zero, bounded Hyper-V
-queries, the two-file incident package, production hook exclusion, and WinDbg
+evidence for a no-WHPX diagnostic child dump, normal WHPX boot, four forced
+guest-ready timeouts, a forced platform shutdown timeout, and a service-owned
+shutdown timeout. It verifies QMP responses, scheduled/final process samples,
+three-entry dump retention, helper timeout, the authoritative service Job
+reaching active-process-zero, bounded Hyper-V queries, the two-file incident
+package, production hook exclusion, secret/private-pipe redaction, and WinDbg
 execution of `!analyze -hang`, `~* k`, `!runaway`, and `lm`.
