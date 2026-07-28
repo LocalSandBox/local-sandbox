@@ -175,9 +175,7 @@ foreach ($index in 1..4) {
     $rawPipeMarker = "lsb-$([string]$hang.incident_id)-qmp"
     foreach ($textArtifact in Get-ChildItem -LiteralPath $artifact -File -Force |
         Where-Object { $_.Extension -in @('.json', '.jsonl', '.txt', '.log') }) {
-        $text = [string]::Concat(
-            (Get-Content -LiteralPath $textArtifact.FullName -Raw)
-        )
+        $text = [string](Get-Content -LiteralPath $textArtifact.FullName -Raw)
         if ($text.Contains($rawPipeMarker, [StringComparison]::Ordinal) -or
             $text.Contains($secretCanary, [StringComparison]::Ordinal)) {
             throw "Incident $index leaked a private pipe name or parent secret into diagnostics."
@@ -296,9 +294,7 @@ foreach ($requiredPhase in @(
 $shutdownRawPipeMarker = "lsb-$([string]$shutdownHang.incident_id)-qmp"
 foreach ($textArtifact in Get-ChildItem -LiteralPath $shutdownArtifacts -File -Force |
     Where-Object { $_.Extension -in @('.json', '.jsonl', '.txt', '.log') }) {
-    $text = [string]::Concat(
-        (Get-Content -LiteralPath $textArtifact.FullName -Raw)
-    )
+    $text = [string](Get-Content -LiteralPath $textArtifact.FullName -Raw)
     if ($text.Contains($shutdownRawPipeMarker, [StringComparison]::Ordinal) -or
         $text.Contains($secretCanary, [StringComparison]::Ordinal)) {
         throw 'The QEMU shutdown-timeout diagnostics leaked private parent state.'
@@ -361,9 +357,7 @@ $incidentArchive = Assert-RegularFile (Join-Path $packaged 'incident.zip') 10MB
 $archiveInspection = Join-Path $RunRoot 'service-archive-inspection'
 Expand-Archive -LiteralPath $incidentArchive.FullName -DestinationPath $archiveInspection
 foreach ($textArtifact in Get-ChildItem -LiteralPath $archiveInspection -File -Recurse -Force) {
-    $text = [string]::Concat(
-        (Get-Content -LiteralPath $textArtifact.FullName -Raw)
-    )
+    $text = [string](Get-Content -LiteralPath $textArtifact.FullName -Raw)
     if ($text.Contains($secretCanary, [StringComparison]::Ordinal) -or
         $text -match 'lsb-[0-9a-f]{32}-qmp') {
         throw 'Service incident archive leaked a private pipe name or parent secret.'
@@ -425,9 +419,7 @@ Expand-Archive -LiteralPath $serviceStopArchives[0].FullName `
     -DestinationPath $serviceStopArchiveInspection
 foreach ($textArtifact in Get-ChildItem -LiteralPath $serviceStopArchiveInspection `
     -File -Recurse -Force) {
-    $text = [string]::Concat(
-        (Get-Content -LiteralPath $textArtifact.FullName -Raw)
-    )
+    $text = [string](Get-Content -LiteralPath $textArtifact.FullName -Raw)
     if ($text.Contains($secretCanary, [StringComparison]::Ordinal) -or
         $text -match 'lsb-[0-9a-f]{32}-qmp') {
         throw 'Service stop incident archive leaked a private pipe name or parent secret.'
