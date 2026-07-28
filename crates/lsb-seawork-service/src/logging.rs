@@ -552,6 +552,15 @@ mod tests {
             .map(|value| u32::from_str_radix(value, 16).unwrap())
             .collect::<Vec<_>>();
         assert_eq!(message_ids, ids);
+
+        let verifier = include_str!("../../../scripts/verify-seawork-event-messages.ps1");
+        let first_unassigned = EventId::ALL.len() + 1;
+        assert!(verifier.contains(&format!(
+            "$script:ExpectedMessageIds = 1..{}",
+            EventId::ALL.len()
+        )));
+        assert!(verifier.contains(&format!("first_unassigned_message_id = {first_unassigned}")));
+        assert!(verifier.contains(&format!("unreviewed message ID {first_unassigned}")));
     }
 
     #[test]

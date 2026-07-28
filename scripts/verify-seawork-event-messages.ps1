@@ -98,14 +98,14 @@ try {
     $unexpectedLength = [LocalSandbox.EventMessageNative]::FormatMessageW(
         $formatMessageFromHmodule -bor $formatMessageIgnoreInserts -bor $formatMessageMaxWidthMask,
         $module,
-        18,
+        19,
         0x0409,
         $unexpected,
         [uint32]$unexpected.Capacity,
         [IntPtr]::Zero
     )
     if ($unexpectedLength -ne 0) {
-        throw 'the embedded event catalog contains an unreviewed message ID 18'
+        throw 'the embedded event catalog contains an unreviewed message ID 19'
     }
 } finally {
     if (-not [LocalSandbox.EventMessageNative]::FreeLibrary($module)) {
@@ -118,7 +118,7 @@ $evidence = [ordered]@{
     service_sha256 = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
     language_id = '0x0409'
     message_ids = @($verified)
-    first_unassigned_message_id = 18
+    first_unassigned_message_id = 19
 }
 [IO.File]::WriteAllText(
     $output,
