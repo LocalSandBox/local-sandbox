@@ -1,0 +1,64 @@
+crates/lsb-platform/src/lib.rs
+  s_31ad4f53b04974::t_c5ec9ddd7d5422 315-323,334-335
+  s_31ad4f53b04974::t_3f4bcaa5c79a37 336-337
+crates/lsb-platform/src/windows_x86_64/qemu/process.rs
+  s_31ad4f53b04974::t_b247319a62cc4d 467-480
+crates/lsb-platform/src/windows_x86_64/qemu/boot.rs
+  s_31ad4f53b04974::t_c5ec9ddd7d5422 72,101
+  s_31ad4f53b04974::t_7b9add84002939 25-26,883-884,1284-1285,1409-1412,1416-1419,1429,1467-1468
+  s_31ad4f53b04974::t_35edeb581e6240 2275-2276
+  s_31ad4f53b04974::t_9ab7fb3d6c2459 1413-1415
+crates/lsb-qemu-dump-helper/src/main.rs
+  s_31ad4f53b04974::t_10a75ba3e2f102 37,64,66,77,101,125
+  s_31ad4f53b04974::t_0d84e4353e226a 1-36,38-63,65,67-76,78-100,102-124,126-136
+scripts/windows-test-suites/release-candidate.ps1
+  s_31ad4f53b04974::t_2ef3cd774b847e 174,184,197,210,228-236,287
+xtask/src/seawork_release.rs
+  s_31ad4f53b04974::t_2ef3cd774b847e 365-371,422-425,652,1450-1454,1473-1477,1511-1513
+crates/lsb-platform/Cargo.toml
+  s_31ad4f53b04974::t_f078852802341f 18
+crates/lsb-platform/src/windows_x86_64/qemu/hang.rs
+  s_31ad4f53b04974::t_f078852802341f 2,8,232,257-260,271,283,290-429,435-481,484-494,499-632,636-667
+  s_31ad4f53b04974::t_9c2961ad5a56c1 1007
+  s_31ad4f53b04974::t_9ab7fb3d6c2459 430-434,495-498,633-635
+  s_31ad4f53b04974::t_35edeb581e6240 945
+  s_31ad4f53b04974::t_fa90d5098243ab 256
+  s_31ad4f53b04974::t_a9ac7154ef20e7 966-1006,1008-1017
+  s_31ad4f53b04974::t_e22edc6c97416d 482-483
+  s_31ad4f53b04974::t_5ce6a907afc119 668
+Cargo.toml
+  s_31ad4f53b04974::t_0d84e4353e226a 6
+crates/lsb-seawork-service/src/resource/vm.rs
+  s_31ad4f53b04974::t_c5ec9ddd7d5422 213-218
+crates/lsb-qemu-dump-helper/Cargo.toml
+  s_31ad4f53b04974::t_67a987f7418ca3 16-17
+  s_31ad4f53b04974::t_0d84e4353e226a 1-15,18-23
+scripts/sign-seawork-service.ps1
+  s_31ad4f53b04974::t_2ef3cd774b847e 4,8,391,396,417,450-455
+  s_31ad4f53b04974::t_4bb2c4bd12811e 456-457
+crates/lsb-seawork-service/src/windows/job.rs
+  s_31ad4f53b04974::t_b72c2739343ab1 169-171,387
+  s_31ad4f53b04974::t_c5ec9ddd7d5422 91,125,385-386
+  s_31ad4f53b04974::t_9ab7fb3d6c2459 168
+  s_31ad4f53b04974::t_e2dc22a6951f38 388
+crates/lsb-platform/src/windows_x86_64/backend.rs
+  s_31ad4f53b04974::t_c5ec9ddd7d5422 59-63
+Cargo.lock
+  s_31ad4f53b04974::t_c710fa3013b45f 991,1028-1036
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "af921395ae18999d1b69403bd2823a39d9c97f24",
+  "prompts": {},
+  "sessions": {
+    "s_31ad4f53b04974": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa7b0-4d69-7d01-ae26-6595cb9ecc1b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
