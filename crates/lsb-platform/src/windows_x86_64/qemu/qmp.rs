@@ -112,7 +112,7 @@ impl QmpEndpoint {
     }
 
     pub(crate) fn capture(&self, timeline_elapsed: Duration) -> QemuQmpSnapshot {
-        capture_endpoint(self.connected_stream(), timeline_elapsed)
+        capture_endpoint(self.take_connected_stream(), timeline_elapsed)
     }
 
     pub(crate) fn request_quit(&self) -> io::Result<()> {
@@ -166,6 +166,15 @@ impl QmpEndpoint {
     }
 
     #[cfg(windows)]
+    fn take_connected_stream(&self) -> io::Result<QmpPipeStream> {
+        self.stream
+            .lock()
+            .map_err(|_| io::Error::other("QMP connection lock was poisoned"))?
+            .take()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "QMP is not connected"))
+    }
+
+    #[cfg(windows)]
     fn connected_stream(&self) -> io::Result<QmpPipeStream> {
         let stream = self
             .stream
@@ -176,6 +185,14 @@ impl QmpEndpoint {
             .transpose()?
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "QMP is not connected"))?;
         Ok(stream)
+    }
+
+    #[cfg(not(windows))]
+    fn take_connected_stream(&self) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "QMP named pipes are available only on Windows",
+        ))
     }
 
     #[cfg(not(windows))]
