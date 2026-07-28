@@ -1791,6 +1791,7 @@ fn request_qmp_quit_after_capture(endpoint: Option<&QmpEndpoint>, supervisor: &m
     // WriteFile completed. Always perform the bounded process wait after the
     // request, then leave Job termination as the containment fallback.
     let _ = endpoint.request_quit();
+    supervisor.record_timeline(QemuTimelinePhase::WaitExitStarted);
     if supervisor.wait(POST_CAPTURE_QMP_QUIT_GRACE).is_ok() {
         supervisor.record_timeline(QemuTimelinePhase::QemuProcessExited);
         supervisor.record_timeline(QemuTimelinePhase::JobDrainStarted);
@@ -3306,7 +3307,8 @@ mod tests {
             let status: serde_json::Value =
                 serde_json::from_slice(&fs::read(artifact_dir.join("qemu.status.json")).unwrap())
                     .unwrap();
-            assert_eq!(status["state"], "terminated");
+            assert_eq!(status["state"], "exited");
+            assert_eq!(status["exit_status"]["success"], true);
         }
     }
 

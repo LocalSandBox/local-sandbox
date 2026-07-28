@@ -151,7 +151,8 @@ foreach ($index in 1..4) {
     $expectedResourceId = 'windows-qemu-hang-smoke'
     if (-not $hang.qmp.connected -or -not $hang.qmp.responsive -or
         @($hang.qmp.queries).Count -ne 4 -or -not $dump.success -or
-        [string]$status.state -cne 'terminated' -or
+        [string]$status.state -cne 'exited' -or
+        -not [bool]$status.exit_status.success -or
         [string]$hang.correlation_id -cne $expectedCorrelationId -or
         [string]$hang.resource_id -cne $expectedResourceId -or
         [string]$dump.incident_id -cne [string]$hang.incident_id -or
@@ -208,8 +209,6 @@ foreach ($index in 1..4) {
         'dump_started',
         'dump_completed',
         'hang_snapshot_completed',
-        'termination_requested',
-        'terminate_job_returned',
         'wait_exit_started',
         'qemu_process_exited'
     )) {
@@ -274,7 +273,8 @@ if ([string]$shutdownHang.failure_kind -cne 'qemu_shutdown_timeout' -or
     -not $shutdownDump.success -or
     $shutdownDumpHash -cne [string]$shutdownDump.sha256 -or
     $shutdownDumpItem.Length -ne [long]$shutdownDump.dump_byte_size -or
-    [string]$shutdownStatus.state -cne 'terminated') {
+    [string]$shutdownStatus.state -cne 'exited' -or
+    -not [bool]$shutdownStatus.exit_status.success) {
     throw 'The QEMU shutdown-timeout path did not retain complete live diagnostics.'
 }
 $shutdownTimelinePhases = @(
@@ -290,7 +290,6 @@ foreach ($requiredPhase in @(
     'hang_snapshot_started',
     'dump_completed',
     'hang_snapshot_completed',
-    'termination_requested',
     'qemu_process_exited'
 )) {
     $phaseIndex = [Array]::IndexOf($shutdownTimelinePhases, $requiredPhase)
@@ -378,8 +377,8 @@ foreach ($textArtifact in Get-ChildItem -LiteralPath $archiveInspection -File -R
 $serviceHang = Get-Content -LiteralPath (Join-Path $packaged 'qemu-hang.json') -Raw |
     ConvertFrom-Json
 if (-not $serviceHang.job.active_process_zero_observed -or
-    -not $serviceHang.job.termination_requested -or
-    -not $serviceHang.job.termination_succeeded -or
+    $serviceHang.job.termination_requested -or
+    $serviceHang.job.termination_succeeded -or
     @($serviceHang.job.active_pids).Count -ne 0) {
     throw 'Service-owned QEMU Job did not retain authoritative active-process-zero evidence.'
 }
@@ -420,7 +419,8 @@ $serviceStopHyperv = Get-Content `
     ConvertFrom-Json
 if ([string]$serviceStopHang.failure_kind -cne 'qemu_shutdown_timeout' -or
     -not $serviceStopHang.job.active_process_zero_observed -or
-    -not $serviceStopHang.job.termination_succeeded -or
+    $serviceStopHang.job.termination_requested -or
+    $serviceStopHang.job.termination_succeeded -or
     [long]$serviceStopHyperv.lookback_ms -lt ([long]$serviceStopHang.elapsed_ms + 30000) -or
     [string]$serviceStopManifest.stable_error_code -cne 'SANDBOX_STOP_FAILED' -or
     [string]$serviceStopManifest.failure_phase -cne 'stop') {
