@@ -265,7 +265,6 @@ pub(crate) enum QemuQmpEndpoint {
 }
 
 impl QemuQmpEndpoint {
-    #[cfg(test)]
     pub(crate) fn named_pipe(pipe_name: impl Into<String>) -> Self {
         Self::NamedPipe {
             pipe_name: pipe_name.into(),

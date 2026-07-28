@@ -14,6 +14,7 @@ pub(crate) mod discovery;
 pub(crate) mod hang;
 pub(crate) mod preflight;
 pub(crate) mod process;
+pub(crate) mod qmp;
 pub(crate) mod version;
 
 const OUTPUT_EXCERPT_LIMIT: usize = 4096;

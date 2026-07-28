@@ -3,6 +3,7 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
@@ -20,12 +21,16 @@ use super::config::{
     QemuNetworkConfig,
 };
 use super::discovery::{QemuDiscovery, StdQemuDiscoveryHost};
-use super::hang::{QemuTimeline, QemuTimelinePhase};
+use super::hang::{
+    write_initial_hang_artifact, QemuProcessSnapshot, QemuProgressSnapshot, QemuProgressWriter,
+    QemuTimeline, QemuTimelinePhase,
+};
 use super::preflight::{QemuPreflight, QemuPreflightReport};
 use super::process::{
     QemuExitStatus, QemuProcessArtifacts, QemuProcessError, QemuProcessState, QemuSupervisor,
     QemuSupervisorConfig,
 };
+use super::qmp::QmpEndpoint;
 use super::{lossy_excerpt, QemuPreflightError, StdQemuCommandRunner};
 
 pub(crate) const DEFAULT_BOOT_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(10);
@@ -35,6 +40,8 @@ const SERIAL_LOG_FILE: &str = "serial.log";
 const PREFLIGHT_FILE: &str = "preflight.json";
 const BOOT_STATUS_FILE: &str = "boot.status.json";
 const TIMELINE_FILE: &str = "qemu-timeline.jsonl";
+const PROGRESS_FILE: &str = "qemu-progress.jsonl";
+const HANG_FILE: &str = "qemu-hang.json";
 const SERIAL_OBSERVED_SUCCESS_DEFINITION: &str =
     "qemu_process_alive_after_boot_observation_window_with_serial_output";
 const GUEST_READY_SUCCESS_DEFINITION: &str =
@@ -101,6 +108,8 @@ pub(crate) struct QemuBootArtifacts {
     pub preflight: PathBuf,
     pub boot_status: PathBuf,
     pub timeline: PathBuf,
+    pub progress: PathBuf,
+    pub hang: PathBuf,
     pub process: QemuProcessArtifacts,
 }
 
@@ -112,6 +121,8 @@ impl QemuBootArtifacts {
             preflight: directory.join(PREFLIGHT_FILE),
             boot_status: directory.join(BOOT_STATUS_FILE),
             timeline: directory.join(TIMELINE_FILE),
+            progress: directory.join(PROGRESS_FILE),
+            hang: directory.join(HANG_FILE),
             process: QemuProcessArtifacts::new(directory.clone()),
             directory,
         }
@@ -139,6 +150,7 @@ pub(crate) struct WindowsQemuBoot {
     forward_stream: Option<crate::PlatformControlStream>,
     guest_ready: Option<GuestReady>,
     timeline: Option<QemuTimeline>,
+    qmp_endpoint: Option<QmpEndpoint>,
     #[cfg(test)]
     guest_ready_elapsed: Option<Duration>,
 }
@@ -597,6 +609,12 @@ pub(crate) fn launch_windows_qemu_boot(
     let observation_goal = BootObservationGoal::for_config(&config);
     prepare_artifacts(&artifacts)?;
     let timeline = QemuTimeline::create(&artifacts.directory).ok();
+    let qmp_endpoint = timeline
+        .as_ref()
+        .and_then(|timeline| QmpEndpoint::for_incident(timeline.incident_id()).ok());
+    let mut progress = timeline.as_ref().and_then(|timeline| {
+        QemuProgressWriter::create(&artifacts.directory, timeline.incident_id()).ok()
+    });
     if let Some(timeline) = &timeline {
         let _ = timeline.record(QemuTimelinePhase::PreflightStarted);
     }
@@ -714,6 +732,7 @@ pub(crate) fn launch_windows_qemu_boot(
         argv_config.forward_channel = Some(endpoint.qemu_config());
     }
     argv_config.network = config.network.clone();
+    argv_config.qmp = qmp_endpoint.as_ref().map(QmpEndpoint::qemu_config);
     argv_config.diagnostic_label = config.diagnostic_label.clone();
 
     let command = QemuArgvBuilder::new(argv_config)
@@ -853,9 +872,12 @@ pub(crate) fn launch_windows_qemu_boot(
                 return Err(error);
             }
         };
-        match wait_for_guest_ready(
+        match wait_for_guest_ready_with_telemetry(
             &mut supervisor,
             &artifacts,
+            progress.as_mut(),
+            timeline.as_ref(),
+            qmp_endpoint.as_ref(),
             config.guest_ready_timeout,
             ready_reader,
             GuestTransport::VirtioSerial,
@@ -957,6 +979,7 @@ pub(crate) fn launch_windows_qemu_boot(
         forward_stream,
         guest_ready,
         timeline,
+        qmp_endpoint,
         #[cfg(test)]
         guest_ready_elapsed,
     })
@@ -1248,11 +1271,14 @@ enum GuestReadyFrameError {
     UnsupportedCapabilities(Vec<String>),
 }
 
-fn wait_for_guest_ready<R>(
+fn wait_for_guest_ready_with_telemetry<R>(
     supervisor: &mut QemuSupervisor,
     artifacts: &QemuBootArtifacts,
+    mut progress_writer: Option<&mut QemuProgressWriter>,
+    timeline: Option<&QemuTimeline>,
+    qmp_endpoint: Option<&QmpEndpoint>,
     timeout: Duration,
-    mut reader: R,
+    reader: R,
     expected_transport: GuestTransport,
 ) -> Result<GuestReadyResult, QemuBootError>
 where
@@ -1261,6 +1287,13 @@ where
     let started_at = Instant::now();
     let deadline = started_at + timeout;
     let (sender, receiver) = mpsc::channel();
+    let guest_ready_bytes_received = Arc::new(AtomicU64::new(0));
+    let mut observed_output = ObservedOutput::default();
+    let mut reader = CountingReader {
+        inner: reader,
+        bytes_read: guest_ready_bytes_received.clone(),
+        timeline: timeline.cloned(),
+    };
 
     std::thread::spawn(move || {
         let result = read_guest_ready_frame(&mut reader, expected_transport);
@@ -1315,7 +1348,69 @@ where
             }
         }
 
+        if let Some(writer) = progress_writer.as_deref_mut() {
+            let _ = writer.record_if_due(|| {
+                live_progress_snapshots(
+                    supervisor,
+                    artifacts,
+                    true,
+                    guest_ready_bytes_received.load(Ordering::Relaxed),
+                )
+            });
+            record_first_output_phases(
+                supervisor,
+                artifacts,
+                guest_ready_bytes_received.load(Ordering::Relaxed),
+                &mut observed_output,
+            );
+        }
+
         if Instant::now() >= deadline {
+            let process = supervisor
+                .process_snapshot()
+                .unwrap_or_else(|_| QemuProcessSnapshot {
+                    pid: supervisor.pid().unwrap_or_default(),
+                    ..QemuProcessSnapshot::default()
+                });
+            let progress = progress_snapshot(
+                artifacts,
+                true,
+                guest_ready_bytes_received.load(Ordering::Relaxed),
+            );
+            if let Some(writer) = progress_writer.as_deref_mut() {
+                let _ = writer.record_final(&process, &progress);
+            }
+            let qmp = if let (Some(timeline), Some(endpoint)) = (timeline, qmp_endpoint) {
+                let _ = timeline.record(QemuTimelinePhase::QmpSnapshotStarted);
+                let snapshot = endpoint.capture(timeline.elapsed());
+                let _ = timeline.record_result(
+                    QemuTimelinePhase::QmpSnapshotCompleted,
+                    None,
+                    Some(if snapshot.responsive {
+                        "success"
+                    } else {
+                        "failure"
+                    }),
+                    snapshot.error.as_deref().map(|_| "qmp"),
+                );
+                snapshot
+            } else {
+                super::hang::QemuQmpSnapshot {
+                    error: Some("QMP endpoint was unavailable".to_string()),
+                    ..super::hang::QemuQmpSnapshot::default()
+                }
+            };
+            if let Some(timeline) = timeline {
+                let _ = write_initial_hang_artifact(
+                    &artifacts.directory,
+                    timeline.incident_id(),
+                    "guest_ready_timeout",
+                    started_at.elapsed(),
+                    &process,
+                    &progress,
+                    &qmp,
+                );
+            }
             supervisor.record_timeline_result(
                 QemuTimelinePhase::GuestReadyTimeout,
                 Some("timeout"),
@@ -1331,6 +1426,111 @@ where
         }
 
         std::thread::sleep(BOOT_POLL_INTERVAL);
+    }
+}
+
+#[cfg(test)]
+fn wait_for_guest_ready<R>(
+    supervisor: &mut QemuSupervisor,
+    artifacts: &QemuBootArtifacts,
+    timeout: Duration,
+    reader: R,
+    expected_transport: GuestTransport,
+) -> Result<GuestReadyResult, QemuBootError>
+where
+    R: Read + Send + 'static,
+{
+    wait_for_guest_ready_with_telemetry(
+        supervisor,
+        artifacts,
+        None,
+        None,
+        None,
+        timeout,
+        reader,
+        expected_transport,
+    )
+}
+
+struct CountingReader<R> {
+    inner: R,
+    bytes_read: Arc<AtomicU64>,
+    timeline: Option<QemuTimeline>,
+}
+
+impl<R: Read> Read for CountingReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let count = self.inner.read(buffer)?;
+        if count > 0 {
+            let previous = self.bytes_read.fetch_add(count as u64, Ordering::Relaxed);
+            if previous == 0 {
+                if let Some(timeline) = &self.timeline {
+                    let _ = timeline.record(QemuTimelinePhase::FirstControlByte);
+                }
+            }
+        }
+        Ok(count)
+    }
+}
+
+#[derive(Default)]
+struct ObservedOutput {
+    serial: bool,
+    stdout: bool,
+    stderr: bool,
+}
+
+fn record_first_output_phases(
+    supervisor: &QemuSupervisor,
+    artifacts: &QemuBootArtifacts,
+    control_bytes: u64,
+    observed: &mut ObservedOutput,
+) {
+    let progress = progress_snapshot(artifacts, true, control_bytes);
+    if !observed.serial && progress.serial_bytes > 0 {
+        observed.serial = true;
+        supervisor.record_timeline(QemuTimelinePhase::FirstSerialByte);
+    }
+    if !observed.stdout && progress.stdout_bytes > 0 {
+        observed.stdout = true;
+        supervisor.record_timeline(QemuTimelinePhase::FirstStdoutByte);
+    }
+    if !observed.stderr && progress.stderr_bytes > 0 {
+        observed.stderr = true;
+        supervisor.record_timeline(QemuTimelinePhase::FirstStderrByte);
+    }
+}
+
+fn live_progress_snapshots(
+    supervisor: &QemuSupervisor,
+    artifacts: &QemuBootArtifacts,
+    control_pipe_open: bool,
+    guest_ready_bytes_received: u64,
+) -> io::Result<(QemuProcessSnapshot, QemuProgressSnapshot)> {
+    Ok((
+        supervisor.process_snapshot()?,
+        progress_snapshot(artifacts, control_pipe_open, guest_ready_bytes_received),
+    ))
+}
+
+fn progress_snapshot(
+    artifacts: &QemuBootArtifacts,
+    control_pipe_open: bool,
+    guest_ready_bytes_received: u64,
+) -> QemuProgressSnapshot {
+    QemuProgressSnapshot {
+        serial_bytes: file_size(&artifacts.serial),
+        stdout_bytes: file_size(&artifacts.process.stdout),
+        stderr_bytes: file_size(&artifacts.process.stderr),
+        control_pipe_open,
+        guest_ready_bytes_received,
+    }
+}
+
+fn file_size(path: &Path) -> u64 {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => metadata.len(),
+        _ => 0,
     }
 }
 
@@ -1536,6 +1736,8 @@ fn write_boot_status_file(
             preflight: file_name(&artifacts.preflight),
             boot_status: file_name(&artifacts.boot_status),
             timeline: file_name(&artifacts.timeline),
+            progress: file_name(&artifacts.progress),
+            hang: file_name(&artifacts.hang),
         },
         guest_ready: guest_ready.map(QemuGuestReadyStatus::from_ready),
         error_kind: error_kind.map(QemuBootErrorKind::as_str),
@@ -1582,6 +1784,8 @@ struct QemuBootStatusFiles {
     preflight: String,
     boot_status: String,
     timeline: String,
+    progress: String,
+    hang: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -2035,13 +2239,19 @@ mod tests {
         let artifact_dir = temp_dir("ready-timeout");
         let artifacts = QemuBootArtifacts::new(&artifact_dir);
         prepare_artifacts(&artifacts).expect("artifacts should prepare");
+        let timeline = QemuTimeline::create(&artifact_dir).expect("timeline should prepare");
+        let mut progress =
+            QemuProgressWriter::create(&artifact_dir, timeline.incident_id()).unwrap();
         let (sender, receiver) = mpsc::channel();
         let mut supervisor = fake_supervisor("sleep", artifact_dir.clone());
         supervisor.start().expect("fake supervisor should start");
 
-        let err = wait_for_guest_ready(
+        let err = wait_for_guest_ready_with_telemetry(
             &mut supervisor,
             &artifacts,
+            Some(&mut progress),
+            Some(&timeline),
+            None,
             Duration::from_millis(100),
             BlockingReader { receiver },
             GuestTransport::VirtioSerial,
@@ -2052,6 +2262,25 @@ mod tests {
         assert_eq!(err.kind(), QemuBootErrorKind::GuestReadyTimeout);
         assert!(err.to_string().contains("guest-ready handshake"));
         assert!(err.to_string().contains(CONTROL_STATE_WAITING_FOR_READY));
+        assert_eq!(
+            supervisor.try_status().unwrap(),
+            QemuProcessState::Running,
+            "live evidence must be written before termination"
+        );
+        let progress_contents = fs::read_to_string(&artifacts.progress).unwrap();
+        let samples = progress_contents.lines().collect::<Vec<_>>();
+        assert_eq!(
+            samples.len(),
+            1,
+            "short timeout still gets one final sample"
+        );
+        let sample: serde_json::Value = serde_json::from_str(samples[0]).unwrap();
+        assert_eq!(sample["incident_id"], timeline.incident_id());
+        assert_ne!(sample["process"]["pid"], 0);
+        let hang: serde_json::Value =
+            serde_json::from_slice(&fs::read(&artifacts.hang).unwrap()).unwrap();
+        assert_eq!(hang["incident_id"], timeline.incident_id());
+        assert_eq!(hang["failure_kind"], "guest_ready_timeout");
 
         supervisor
             .terminate()

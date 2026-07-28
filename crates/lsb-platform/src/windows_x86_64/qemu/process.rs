@@ -12,7 +12,7 @@ use serde::Serialize;
 use crate::windows_x86_64::apply_qemu_contained_creation_flags;
 
 use super::argv::QemuCommand;
-use super::hang::{QemuTimeline, QemuTimelinePhase};
+use super::hang::{QemuProcessSnapshot, QemuTimeline, QemuTimelinePhase};
 use super::lossy_excerpt;
 
 pub(crate) const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_millis(250);
@@ -452,9 +452,16 @@ impl QemuSupervisor {
         &self.config.artifacts
     }
 
-    #[cfg(test)]
     pub(crate) fn pid(&self) -> Option<u32> {
         self.pid
+    }
+
+    pub(crate) fn process_snapshot(&self) -> io::Result<QemuProcessSnapshot> {
+        let child = self
+            .child
+            .as_ref()
+            .ok_or_else(|| io::Error::other("QEMU process is not alive"))?;
+        process_snapshot(child)
     }
 
     pub(crate) fn exit_status(&self) -> Option<&QemuExitStatus> {
@@ -878,6 +885,130 @@ fn process_error_category(error: &QemuProcessError) -> &'static str {
         QemuProcessError::CleanupFailed { .. } => "cleanup",
         _ => "process",
     }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn process_snapshot(child: &Child) -> io::Result<QemuProcessSnapshot> {
+    Ok(QemuProcessSnapshot {
+        pid: child.id(),
+        ..QemuProcessSnapshot::default()
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn process_snapshot(child: &Child) -> io::Result<QemuProcessSnapshot> {
+    use std::mem::size_of;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+
+    use windows_sys::Win32::Foundation::{FILETIME, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows_sys::Win32::System::Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION};
+    use windows_sys::Win32::System::ProcessStatus::{
+        K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetProcessHandleCount, GetProcessIoCounters, GetProcessTimes, IO_COUNTERS,
+    };
+
+    let handle = child.as_raw_handle() as HANDLE;
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    if unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut memory = PROCESS_MEMORY_COUNTERS_EX {
+        cb: size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+        ..PROCESS_MEMORY_COUNTERS_EX::default()
+    };
+    if unsafe {
+        K32GetProcessMemoryInfo(
+            handle,
+            (&mut memory as *mut PROCESS_MEMORY_COUNTERS_EX).cast::<PROCESS_MEMORY_COUNTERS>(),
+            size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut handle_count = 0u32;
+    if unsafe { GetProcessHandleCount(handle, &mut handle_count) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut io_counters = IO_COUNTERS::default();
+    if unsafe { GetProcessIoCounters(handle, &mut io_counters) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let snapshot = unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(snapshot as _) };
+    let mut thread_entry = THREADENTRY32 {
+        dwSize: size_of::<THREADENTRY32>() as u32,
+        ..THREADENTRY32::default()
+    };
+    let mut thread_count = 0u32;
+    if unsafe { Thread32First(snapshot.as_raw_handle() as _, &mut thread_entry) } != 0 {
+        loop {
+            if thread_entry.th32OwnerProcessID == child.id() {
+                thread_count = thread_count.saturating_add(1);
+            }
+            if unsafe { Thread32Next(snapshot.as_raw_handle() as _, &mut thread_entry) } == 0 {
+                break;
+            }
+        }
+    }
+
+    let mut virtual_bytes = 0u64;
+    let mut address = 0usize;
+    loop {
+        let mut region = MEMORY_BASIC_INFORMATION::default();
+        let queried = unsafe {
+            VirtualQueryEx(
+                handle,
+                address as *const core::ffi::c_void,
+                &mut region,
+                size_of::<MEMORY_BASIC_INFORMATION>(),
+            )
+        };
+        if queried == 0 {
+            break;
+        }
+        virtual_bytes = virtual_bytes.saturating_add(region.RegionSize as u64);
+        let next = (region.BaseAddress as usize).saturating_add(region.RegionSize);
+        if next <= address {
+            break;
+        }
+        address = next;
+    }
+
+    Ok(QemuProcessSnapshot {
+        pid: child.id(),
+        creation_time: filetime_value(creation),
+        cpu_user_100ns: filetime_value(user),
+        cpu_kernel_100ns: filetime_value(kernel),
+        working_set_bytes: memory.WorkingSetSize as u64,
+        private_bytes: memory.PrivateUsage as u64,
+        virtual_bytes,
+        handle_count,
+        thread_count,
+        io_read_bytes: io_counters.ReadTransferCount,
+        io_write_bytes: io_counters.WriteTransferCount,
+        io_other_bytes: io_counters.OtherTransferCount,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn filetime_value(value: windows_sys::Win32::Foundation::FILETIME) -> u64 {
+    ((value.dwHighDateTime as u64) << 32) | value.dwLowDateTime as u64
 }
 
 #[derive(Debug, Serialize)]
