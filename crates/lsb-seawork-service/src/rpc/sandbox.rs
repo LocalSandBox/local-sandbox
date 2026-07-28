@@ -509,8 +509,11 @@ async fn stop_inner(
     trace_parent: crate::telemetry::SpanParent,
 ) -> Result<ResponseValue, ErrorCode> {
     let handle = ResourceHandle::parse(sandbox_id).map_err(|_| ErrorCode::InvalidRequest)?;
-    let timeout =
-        Duration::from_millis(u64::from(deadline_ms.unwrap_or(30_000).clamp(100, 60_000)));
+    let default_stop_ms =
+        u32::try_from(crate::ipc::connection::DEFAULT_STOP_DEADLINE.as_millis()).unwrap_or(45_000);
+    let timeout = Duration::from_millis(u64::from(
+        deadline_ms.unwrap_or(default_stop_ms).clamp(100, 60_000),
+    ));
     tokio::task::spawn_blocking(move || {
         sessions
             .stop_managed_vm(session_id, &identity, handle, timeout, Some(trace_parent))

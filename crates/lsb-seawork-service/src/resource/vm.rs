@@ -17,7 +17,6 @@ use crate::windows::job::{JobLimits, SandboxJob};
 
 const MAX_QEMU_JOB_PROCESSES: u32 = 8;
 const FORCED_JOB_STOP_GRACE: Duration = Duration::from_secs(5);
-const QEMU_DIAGNOSTIC_STOP_DEADLINE: Duration = Duration::from_secs(45);
 
 #[derive(Debug, Clone)]
 pub struct ManagedVmSpec {
@@ -303,7 +302,8 @@ impl ManagedVm {
         // A live shutdown-timeout snapshot may legitimately spend 30 seconds in
         // the dump helper. Keep the service watchdog outside that reviewed
         // deadline plus the 15-second termination margin.
-        let graceful_deadline = Instant::now() + timeout.max(QEMU_DIAGNOSTIC_STOP_DEADLINE);
+        let graceful_deadline =
+            Instant::now() + timeout.max(crate::ipc::connection::DEFAULT_STOP_DEADLINE);
         let mut forced_deadline = None;
         let mut pending = Command::Stop(reply);
         loop {

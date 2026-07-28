@@ -11,6 +11,7 @@ const NANOS_PER_SECOND: u128 = 1_000_000_000;
 
 pub const DEFAULT_UNARY_DEADLINE: Duration = Duration::from_secs(30);
 pub const DEFAULT_BOOT_DEADLINE: Duration = Duration::from_secs(120);
+pub const DEFAULT_STOP_DEADLINE: Duration = Duration::from_secs(45);
 pub const DEFAULT_TRANSFER_DEADLINE: Duration = Duration::from_secs(5 * 60);
 pub const MAX_REQUEST_DEADLINE: Duration = Duration::from_secs(10 * 60);
 
@@ -238,6 +239,13 @@ mod tests {
             RequestDeadline::from_client(now, Some(u32::MAX), DEFAULT_UNARY_DEADLINE)
                 .expired(now + DEFAULT_UNARY_DEADLINE)
         );
+    }
+
+    #[test]
+    fn stop_deadline_covers_dump_and_termination_margin() {
+        assert_eq!(DEFAULT_STOP_DEADLINE, Duration::from_secs(30 + 15));
+        assert!(DEFAULT_STOP_DEADLINE > DEFAULT_UNARY_DEADLINE);
+        assert!(DEFAULT_STOP_DEADLINE <= MAX_REQUEST_DEADLINE);
     }
 
     #[test]

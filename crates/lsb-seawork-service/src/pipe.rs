@@ -29,7 +29,7 @@ use zeroize::Zeroize;
 
 use crate::admission::AdmissionController;
 use crate::ipc::connection::{
-    ConnectionState, RateLimiter, RequestDeadline, DEFAULT_BOOT_DEADLINE,
+    ConnectionState, RateLimiter, RequestDeadline, DEFAULT_BOOT_DEADLINE, DEFAULT_STOP_DEADLINE,
     DEFAULT_TRANSFER_DEADLINE, DEFAULT_UNARY_DEADLINE, MAX_REQUEST_DEADLINE,
 };
 use crate::logging::{EventId, ServiceLogger};
@@ -1527,6 +1527,7 @@ fn cancellation_error_code(cancellation: &CancellationToken) -> Option<ErrorCode
 fn request_maximum(op: &RequestOp) -> Duration {
     match op {
         RequestOp::StartSandbox { .. } => DEFAULT_BOOT_DEADLINE,
+        RequestOp::StopSandbox { .. } => DEFAULT_STOP_DEADLINE,
         RequestOp::ReadFile { .. } | RequestOp::WriteFile { .. } | RequestOp::Copy { .. } => {
             DEFAULT_TRANSFER_DEADLINE
         }
@@ -2547,6 +2548,16 @@ mod tests {
             ports: Vec::new(),
             network: None,
         }));
+    }
+
+    #[test]
+    fn sandbox_stop_uses_the_diagnostic_capture_deadline() {
+        assert_eq!(
+            request_maximum(&RequestOp::StopSandbox {
+                sandbox_id: "0123456789abcdef0123456789abcdef".to_string(),
+            }),
+            DEFAULT_STOP_DEADLINE
+        );
     }
 
     #[test]
