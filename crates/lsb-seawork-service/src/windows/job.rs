@@ -47,6 +47,7 @@ enum JobNotification {
 #[derive(Default)]
 struct JobMonitor {
     active_processes: HashSet<u32>,
+    pending_exit_notifications: HashSet<u32>,
     saw_active_zero: bool,
     decoded_notification_count: u64,
     last_notification_type: Option<String>,
@@ -146,20 +147,26 @@ impl JobMonitor {
         );
         match notification {
             JobNotification::NewProcess(pid) => {
-                if !self.active_processes.insert(pid) {
+                if self.pending_exit_notifications.contains(&pid)
+                    || !self.active_processes.insert(pid)
+                {
                     bail!("QEMU Job reported a duplicate process admission");
                 }
                 self.saw_active_zero = false;
             }
             JobNotification::ExitProcess(pid) => {
-                if !self.active_processes.remove(&pid) {
+                if !self.active_processes.remove(&pid)
+                    && !self.pending_exit_notifications.remove(&pid)
+                {
                     bail!("QEMU Job reported an exit for an untracked process");
                 }
             }
             JobNotification::ActiveProcessZero => {
-                if !self.active_processes.is_empty() {
-                    bail!("QEMU Job reported zero active processes with tracked children");
-                }
+                // Windows may dequeue ACTIVE_PROCESS_ZERO before the corresponding
+                // EXIT_PROCESS packets. The zero notification is authoritative;
+                // retain the known PIDs only to validate those late exit packets.
+                self.pending_exit_notifications
+                    .extend(self.active_processes.drain());
                 self.saw_active_zero = true;
             }
             JobNotification::LimitViolation(message) => {
@@ -622,10 +629,11 @@ mod tests {
         assert!(monitor.apply(JobNotification::NewProcess(10)).is_err());
         assert!(monitor.apply(JobNotification::ExitProcess(12)).is_err());
         monitor.apply(JobNotification::ExitProcess(11)).unwrap();
-        assert!(monitor.apply(JobNotification::ActiveProcessZero).is_err());
-        monitor.apply(JobNotification::ExitProcess(10)).unwrap();
         monitor.apply(JobNotification::ActiveProcessZero).unwrap();
+        assert!(monitor.active_processes.is_empty());
         assert!(monitor.saw_active_zero);
+        monitor.apply(JobNotification::ExitProcess(10)).unwrap();
+        assert!(monitor.pending_exit_notifications.is_empty());
         let snapshot = monitor.snapshot(JobLimits {
             active_processes: 8,
             memory_bytes: 1024,
@@ -636,7 +644,7 @@ mod tests {
         assert_eq!(snapshot.memory_limit_bytes, 1024);
         assert_eq!(
             snapshot.last_notification_type.as_deref(),
-            Some("active_process_zero")
+            Some("exit_process")
         );
         assert!(monitor
             .apply(JobNotification::LimitViolation(

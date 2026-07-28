@@ -218,7 +218,7 @@ impl ManagedVm {
             let image_relative_path = engine.qemu_image_relative_path()?;
             let mut containment = SandboxJob::create(job_limits(&spec)?)?;
             containment.attach_qemu_telemetry(lsb_platform::PlatformQemuTelemetryContext {
-                telemetry_root: engine.telemetry_root(),
+                telemetry_root: engine.telemetry_root().to_path_buf(),
                 run_id: telemetry.run_id(),
                 correlation_id: spec.correlation_id.clone(),
                 resource_id: spec.resource_id.clone(),
@@ -829,7 +829,7 @@ fn apply_qemu_diagnostic_context(
             ("qemu.qmp_responsive", "/qmp/responsive"),
         ] {
             if let Some(value) = hang.pointer(pointer) {
-                event.tags.insert(tag, scalar_tag(value));
+                event.tags.insert(tag.to_string(), scalar_tag(value));
             }
         }
         let serial = hang
@@ -842,10 +842,10 @@ fn apply_qemu_diagnostic_context(
             .is_some_and(|bytes| bytes > 0);
         event
             .tags
-            .insert("qemu.serial_observed", serial.to_string());
+            .insert("qemu.serial_observed".to_string(), serial.to_string());
         event
             .tags
-            .insert("qemu.stderr_observed", stderr.to_string());
+            .insert("qemu.stderr_observed".to_string(), stderr.to_string());
     }
     let live_process_captured = hang
         .as_ref()
@@ -855,7 +855,9 @@ fn apply_qemu_diagnostic_context(
     if expects_live_diagnostics && !live_process_captured {
         crate::telemetry::record_failure(crate::telemetry::TelemetryFailure::LiveProcessSnapshot);
     }
-    event.tags.insert("qemu.accelerator", "whpx".to_string());
+    event
+        .tags
+        .insert("qemu.accelerator".to_string(), "whpx".to_string());
     let dump_captured = dump
         .as_ref()
         .and_then(|value| value.get("success"))
@@ -866,7 +868,7 @@ fn apply_qemu_diagnostic_context(
     }
     event
         .tags
-        .insert("qemu.dump_captured", dump_captured.to_string());
+        .insert("qemu.dump_captured".to_string(), dump_captured.to_string());
     let hyperv_errors = hyperv
         .as_ref()
         .and_then(|value| value.get("channels"))
@@ -889,9 +891,10 @@ fn apply_qemu_diagnostic_context(
     if expects_live_diagnostics && !qmp_responsive {
         crate::telemetry::record_failure(crate::telemetry::TelemetryFailure::Qmp);
     }
-    event
-        .tags
-        .insert("qemu.hyperv_errors_present", hyperv_errors.to_string());
+    event.tags.insert(
+        "qemu.hyperv_errors_present".to_string(),
+        hyperv_errors.to_string(),
+    );
     let archive = incident_directory.join("incident.zip");
     let archive_size = std::fs::metadata(&archive)
         .ok()
@@ -1316,7 +1319,10 @@ fn build_and_start(
         "sandbox.proxy_start",
         "create protected sandbox proxy",
     ));
-    let proxy_result = (|| {
+    let proxy_result: Result<(
+        Option<lsb_vm::PlatformNetworkAttachment>,
+        Option<lsb_proxy::ProxyHandle>,
+    )> = (|| {
         Ok(match spec.proxy_config.take() {
             Some(config) => {
                 let link = lsb_proxy::create_proxy_link()?;
@@ -1444,6 +1450,7 @@ fn path_text(path: &Path) -> Result<String> {
 mod tests {
     use super::*;
     use crate::paths::ServicePaths;
+    use std::fs::File;
 
     #[test]
     fn managed_vm_rejects_caller_paths_and_excess_resources_before_boot() {
