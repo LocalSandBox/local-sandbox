@@ -106,6 +106,9 @@ impl WindowsQemuBootConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QemuBootArtifacts {
+    pub incident_id: Option<String>,
+    pub correlation_id: Option<String>,
+    pub resource_id: Option<String>,
     pub directory: PathBuf,
     pub serial: PathBuf,
     pub preflight: PathBuf,
@@ -120,6 +123,9 @@ impl QemuBootArtifacts {
     pub(crate) fn new(directory: impl Into<PathBuf>) -> Self {
         let directory = directory.into();
         Self {
+            incident_id: None,
+            correlation_id: None,
+            resource_id: None,
             serial: directory.join(SERIAL_LOG_FILE),
             preflight: directory.join(PREFLIGHT_FILE),
             boot_status: directory.join(BOOT_STATUS_FILE),
@@ -129,6 +135,15 @@ impl QemuBootArtifacts {
             process: QemuProcessArtifacts::new(directory.clone()),
             directory,
         }
+    }
+
+    fn attach_identity(&mut self, timeline: Option<&QemuTimeline>) {
+        let Some(timeline) = timeline else {
+            return;
+        };
+        self.incident_id = Some(timeline.incident_id().to_string());
+        self.correlation_id = Some(timeline.correlation_id().to_string());
+        self.resource_id = Some(timeline.resource_id().to_string());
     }
 
     pub(crate) fn summary(&self) -> String {
@@ -220,6 +235,13 @@ impl WindowsQemuBoot {
     }
 
     pub(crate) fn stop(&mut self) -> Result<Option<QemuExitStatus>, QemuBootError> {
+        self.stop_with_timeout(DEFAULT_QEMU_SHUTDOWN_TIMEOUT)
+    }
+
+    fn stop_with_timeout(
+        &mut self,
+        shutdown_timeout: Duration,
+    ) -> Result<Option<QemuExitStatus>, QemuBootError> {
         if let Some(timeline) = &self.timeline {
             let _ = timeline.record(QemuTimelinePhase::InstanceCleanupStarted);
         }
@@ -231,7 +253,7 @@ impl WindowsQemuBoot {
         if let Some(timeline) = &self.timeline {
             let _ = timeline.record(QemuTimelinePhase::WaitExitStarted);
         }
-        let result = match self.supervisor.wait(DEFAULT_QEMU_SHUTDOWN_TIMEOUT) {
+        let result = match self.supervisor.wait(shutdown_timeout) {
             Ok(status) => {
                 if let Some(timeline) = &self.timeline {
                     let _ = timeline.record(QemuTimelinePhase::QemuProcessExited);
@@ -254,7 +276,7 @@ impl WindowsQemuBoot {
                     self.hang_context.as_ref(),
                     self.hang_policy,
                     "qemu_shutdown_timeout",
-                    DEFAULT_QEMU_SHUTDOWN_TIMEOUT,
+                    shutdown_timeout,
                     self.control_stream.is_some() || self.control_mux.is_some(),
                     0,
                 );
@@ -267,7 +289,7 @@ impl WindowsQemuBoot {
                     })
                 } else {
                     Err(QemuBootError::QemuShutdownTimeout {
-                        timeout: DEFAULT_QEMU_SHUTDOWN_TIMEOUT,
+                        timeout: shutdown_timeout,
                         artifacts: self.artifacts.clone(),
                     })
                 }
@@ -696,7 +718,7 @@ pub(crate) fn launch_windows_qemu_boot(
     #[cfg(feature = "qemu-hang-test-hooks")]
     let config = apply_qemu_hang_test_hooks(config);
     let hang_policy = qemu_hang_telemetry_policy();
-    let artifacts = resolve_artifacts(&config)?;
+    let mut artifacts = resolve_artifacts(&config)?;
     let observation_goal = BootObservationGoal::for_config(&config);
     prepare_artifacts(&artifacts)?;
     let timeline = QemuTimeline::create_with_observer(
@@ -705,6 +727,7 @@ pub(crate) fn launch_windows_qemu_boot(
         config.process_containment.clone(),
     )
     .ok();
+    artifacts.attach_identity(timeline.as_ref());
     let qmp_endpoint = timeline
         .as_ref()
         .and_then(|timeline| QmpEndpoint::for_incident(timeline.incident_id()).ok());
@@ -1323,8 +1346,14 @@ fn write_preflight_report(
     artifacts: &QemuBootArtifacts,
     report: &QemuPreflightReport,
 ) -> Result<(), QemuBootError> {
+    let artifact = QemuPreflightArtifact {
+        incident_id: artifacts.incident_id.as_deref(),
+        correlation_id: artifacts.correlation_id.as_deref(),
+        resource_id: artifacts.resource_id.as_deref(),
+        report,
+    };
     let contents =
-        serde_json::to_string_pretty(report).map_err(|err| QemuBootError::ArtifactIo {
+        serde_json::to_string_pretty(&artifact).map_err(|err| QemuBootError::ArtifactIo {
             path: artifacts.preflight.clone(),
             operation: "serialize QEMU preflight report",
             detail: err.to_string(),
@@ -1338,6 +1367,15 @@ fn write_preflight_report(
             artifacts: Some(artifacts.clone()),
         }
     })
+}
+
+#[derive(Debug, Serialize)]
+struct QemuPreflightArtifact<'a> {
+    incident_id: Option<&'a str>,
+    correlation_id: Option<&'a str>,
+    resource_id: Option<&'a str>,
+    #[serde(flatten)]
+    report: &'a QemuPreflightReport,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1582,12 +1620,16 @@ fn capture_live_timeout(
     if let Some(timeline) = timeline {
         let _ = timeline.record(QemuTimelinePhase::HangSnapshotStarted);
     }
-    let process = supervisor
-        .process_snapshot()
-        .unwrap_or_else(|_| QemuProcessSnapshot {
-            pid: supervisor.pid().unwrap_or_default(),
-            ..QemuProcessSnapshot::default()
-        });
+    let (process, process_snapshot_succeeded) = match supervisor.process_snapshot() {
+        Ok(process) => (process, true),
+        Err(_) => (
+            QemuProcessSnapshot {
+                pid: supervisor.pid().unwrap_or_default(),
+                ..QemuProcessSnapshot::default()
+            },
+            false,
+        ),
+    };
     let progress = progress_snapshot(artifacts, control_pipe_open, guest_ready_bytes_received);
     if let Some(writer) = progress_writer {
         let _ = writer.record_final(&process, &progress);
@@ -1652,6 +1694,7 @@ fn capture_live_timeout(
             hang_context,
             failure_kind,
             elapsed,
+            process_snapshot_succeeded,
             &process,
             supervisor.job_snapshot().as_ref(),
             &progress,
@@ -1976,6 +2019,9 @@ fn write_boot_status_file(
     error_message: Option<String>,
 ) -> Result<(), QemuBootError> {
     let artifact = QemuBootStatusArtifact {
+        incident_id: artifacts.incident_id.as_deref(),
+        correlation_id: artifacts.correlation_id.as_deref(),
+        resource_id: artifacts.resource_id.as_deref(),
         state,
         success_definition,
         observation_timeout_ms: observation_timeout.as_millis(),
@@ -2014,7 +2060,10 @@ fn write_boot_status_file(
 }
 
 #[derive(Debug, Serialize)]
-struct QemuBootStatusArtifact {
+struct QemuBootStatusArtifact<'a> {
+    incident_id: Option<&'a str>,
+    correlation_id: Option<&'a str>,
+    resource_id: Option<&'a str>,
     state: &'static str,
     success_definition: &'static str,
     observation_timeout_ms: u128,
@@ -2264,6 +2313,12 @@ mod tests {
         let rootfs = root.join("instance").join("rootfs.ext4");
         let mut config = boot_config(rootfs);
         config.boot_observation_timeout = Duration::ZERO;
+        config.hang_context = Some(crate::PlatformQemuTelemetryContext {
+            telemetry_root: root.join("telemetry"),
+            run_id: Some("run-1".to_string()),
+            correlation_id: "correlation-1".to_string(),
+            resource_id: "sandbox-1".to_string(),
+        });
 
         let err = launch_windows_qemu_boot(config).expect_err("missing kernel should fail first");
 
@@ -2280,6 +2335,19 @@ mod tests {
         let status = fs::read_to_string(&artifacts.boot_status).expect("boot status artifact");
         assert!(status.contains("\"state\": \"failed\""));
         assert!(status.contains("\"error_kind\": \"asset_missing\""));
+        assert!(status.contains("\"correlation_id\": \"correlation-1\""));
+        assert!(status.contains("\"resource_id\": \"sandbox-1\""));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                fs::read_to_string(&artifacts.timeline)
+                    .unwrap()
+                    .lines()
+                    .next()
+                    .unwrap()
+            )
+            .unwrap()["incident_id"],
+            serde_json::from_str::<serde_json::Value>(&status).unwrap()["incident_id"]
+        );
 
         let _ = fs::remove_dir_all(root);
     }
@@ -2565,6 +2633,86 @@ mod tests {
             .terminate()
             .expect("fake supervisor should terminate");
         let _ = fs::remove_dir_all(artifact_dir);
+    }
+
+    #[test]
+    fn shutdown_timeout_captures_live_state_before_forced_termination() {
+        let artifact_dir = temp_dir("shutdown-timeout");
+        let context = crate::PlatformQemuTelemetryContext {
+            telemetry_root: artifact_dir.join("telemetry"),
+            run_id: Some("run-1".to_string()),
+            correlation_id: "correlation-1".to_string(),
+            resource_id: "sandbox-1".to_string(),
+        };
+        let timeline =
+            QemuTimeline::create_with_observer(&artifact_dir, Some(&context), None).unwrap();
+        let mut artifacts = QemuBootArtifacts::new(&artifact_dir);
+        artifacts.attach_identity(Some(&timeline));
+        prepare_artifacts(&artifacts).unwrap();
+        let progress =
+            QemuProgressWriter::create(&artifact_dir, timeline.incident_id(), Some(&context))
+                .unwrap();
+        let mut config = QemuSupervisorConfig::new(fake_command(), &artifact_dir);
+        config.startup_timeout = Duration::from_millis(100);
+        config.terminate_timeout = Duration::from_secs(2);
+        config.timeline = Some(timeline.clone());
+        config
+            .environment
+            .variables
+            .push((OsString::from(FAKE_BOOT_CHILD_ENV), OsString::from("sleep")));
+        let mut supervisor = QemuSupervisor::new(config);
+        supervisor.start().unwrap();
+        let mut boot = WindowsQemuBoot {
+            supervisor,
+            artifacts: artifacts.clone(),
+            control_stream: None,
+            control_mux: None,
+            forward_stream: None,
+            guest_ready: None,
+            timeline: Some(timeline.clone()),
+            qmp_endpoint: None,
+            progress: Some(progress),
+            hang_context: Some(context),
+            hang_policy: QemuHangTelemetryPolicy::default(),
+            guest_ready_elapsed: None,
+        };
+
+        let error = boot
+            .stop_with_timeout(Duration::from_millis(100))
+            .expect_err("blocked fake QEMU must reach the shutdown timeout");
+
+        assert_eq!(error.kind(), QemuBootErrorKind::QemuShutdownTimeout);
+        assert_eq!(
+            boot.supervisor.try_status().unwrap(),
+            QemuProcessState::Terminated
+        );
+        let hang: serde_json::Value =
+            serde_json::from_slice(&fs::read(&artifacts.hang).unwrap()).unwrap();
+        assert_eq!(hang["failure_kind"], "qemu_shutdown_timeout");
+        assert_eq!(hang["incident_id"], timeline.incident_id());
+        let phases = fs::read_to_string(timeline.path())
+            .unwrap()
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["phase"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        for (earlier, later) in [
+            ("qemu_shutdown_timeout", "hang_snapshot_started"),
+            ("hang_snapshot_completed", "termination_requested"),
+            ("termination_requested", "qemu_process_exited"),
+        ] {
+            assert!(
+                phases.iter().position(|phase| phase == earlier).unwrap()
+                    < phases.iter().position(|phase| phase == later).unwrap(),
+                "{earlier} must precede {later}"
+            );
+        }
+
+        fs::remove_dir_all(artifact_dir).unwrap();
     }
 
     #[test]

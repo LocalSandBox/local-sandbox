@@ -192,6 +192,8 @@ pub struct ManagedVm {
     thread: Option<std::thread::JoinHandle<()>>,
     containment: Arc<SandboxJob>,
     telemetry: crate::telemetry::Telemetry,
+    correlation_id: String,
+    resource_id: String,
 }
 
 impl std::fmt::Debug for ManagedVm {
@@ -210,62 +212,85 @@ impl ManagedVm {
         telemetry: crate::telemetry::Telemetry,
         trace_parent: crate::telemetry::SpanParent,
     ) -> Result<Self> {
-        validate_spec(engine, &spec)?;
-        let image_relative_path = engine.qemu_image_relative_path()?;
-        let mut containment = SandboxJob::create(job_limits(&spec)?)?;
-        containment.attach_qemu_telemetry(lsb_platform::PlatformQemuTelemetryContext {
-            telemetry_root: engine.telemetry_root(),
-            run_id: telemetry.run_id(),
-            correlation_id: spec.correlation_id.clone(),
-            resource_id: spec.resource_id.clone(),
-        });
-        containment.attach_qemu_lifecycle(telemetry.clone(), trace_parent.clone());
-        transaction.set_state(LifecycleState::Preparing)?;
-        containment.attach_journal(
-            transaction,
-            image_relative_path,
-            ResourceHandle::random()?.to_string(),
-        )?;
-        let containment = Arc::new(containment);
-        let thread_containment = containment.clone();
-        let engine = engine.clone();
-        let managed_telemetry = telemetry.clone();
-        let (commands, receiver) = mpsc::sync_channel(8);
-        let (ready, started) = mpsc::sync_channel(1);
-        let thread = std::thread::Builder::new()
-            .name("lsbsw-managed-vm".to_string())
-            .spawn(move || {
-                run(
-                    engine,
-                    spec,
-                    session_cancellation,
-                    startup_cancellation,
-                    thread_containment,
-                    receiver,
-                    ready,
-                    telemetry,
-                    trace_parent,
-                )
-            })
-            .context("spawn managed VM thread")?;
-        match started
-            .recv()
-            .context("managed VM thread lost startup reply")?
-        {
-            Ok(()) => Ok(Self {
-                commands,
-                thread: Some(thread),
-                containment,
-                telemetry: managed_telemetry,
-            }),
-            Err(error) => {
-                let _ = thread.join();
-                Err(error)
+        let correlation_id = spec.correlation_id.clone();
+        let resource_id = spec.resource_id.clone();
+        let result = (|| {
+            validate_spec(engine, &spec)?;
+            let image_relative_path = engine.qemu_image_relative_path()?;
+            let mut containment = SandboxJob::create(job_limits(&spec)?)?;
+            containment.attach_qemu_telemetry(lsb_platform::PlatformQemuTelemetryContext {
+                telemetry_root: engine.telemetry_root(),
+                run_id: telemetry.run_id(),
+                correlation_id: spec.correlation_id.clone(),
+                resource_id: spec.resource_id.clone(),
+            });
+            containment.attach_qemu_lifecycle(telemetry.clone(), trace_parent.clone());
+            transaction.set_state(LifecycleState::Preparing)?;
+            containment.attach_journal(
+                transaction,
+                image_relative_path,
+                ResourceHandle::random()?.to_string(),
+            )?;
+            let containment = Arc::new(containment);
+            let thread_containment = containment.clone();
+            let engine = engine.clone();
+            let managed_telemetry = telemetry.clone();
+            let (commands, receiver) = mpsc::sync_channel(8);
+            let (ready, started) = mpsc::sync_channel(1);
+            let thread = std::thread::Builder::new()
+                .name("lsbsw-managed-vm".to_string())
+                .spawn(move || {
+                    run(
+                        engine,
+                        spec,
+                        session_cancellation,
+                        startup_cancellation,
+                        thread_containment,
+                        receiver,
+                        ready,
+                        telemetry,
+                        trace_parent,
+                    )
+                })
+                .context("spawn managed VM thread")?;
+            match started
+                .recv()
+                .context("managed VM thread lost startup reply")?
+            {
+                Ok(()) => Ok(Self {
+                    commands,
+                    thread: Some(thread),
+                    containment,
+                    telemetry: managed_telemetry,
+                    correlation_id: correlation_id.clone(),
+                    resource_id: resource_id.clone(),
+                }),
+                Err(error) => {
+                    let _ = thread.join();
+                    Err(error)
+                }
             }
-        }
+        })();
+        result.with_context(|| {
+            format!(
+                "managed VM start failed (correlation_id={correlation_id}, resource_id={resource_id})"
+            )
+        })
     }
 
     pub fn stop(
+        self,
+        timeout: Duration,
+        trace_parent: Option<crate::telemetry::SpanParent>,
+    ) -> Result<()> {
+        let context = format!(
+            "managed VM stop failed (correlation_id={}, resource_id={})",
+            self.correlation_id, self.resource_id
+        );
+        self.stop_inner(timeout, trace_parent).context(context)
+    }
+
+    fn stop_inner(
         mut self,
         timeout: Duration,
         trace_parent: Option<crate::telemetry::SpanParent>,
@@ -752,20 +777,40 @@ fn capture_vm_failure(
     }
     let captured = telemetry.capture_failure(event);
     if let Some(captured_event_id) = captured {
-        if expects_live_diagnostics {
-            if let Err(error) = crate::telemetry::write_sentry_receipt(
+        let receipt_written = if expects_live_diagnostics {
+            match crate::telemetry::write_sentry_receipt(
                 engine.telemetry_root(),
                 &snapshot.directory,
                 &captured_event_id,
                 sentry_project_identity().as_deref(),
             ) {
-                eprintln!("failed to write bounded QEMU Sentry receipt: {error}");
+                Ok(()) => true,
+                Err(error) => {
+                    eprintln!("failed to write bounded QEMU Sentry receipt: {error}");
+                    engine.record_diagnostic_capture_failure();
+                    false
+                }
+            }
+        } else {
+            true
+        };
+        if receipt_written {
+            if let Err(error) = snapshot.remove() {
+                eprintln!("failed to remove accepted QEMU incident snapshot: {error}");
                 engine.record_diagnostic_capture_failure();
             }
+        } else if let Err(error) =
+            snapshot.retain_bounded(crate::telemetry::RetentionPolicy::default())
+        {
+            eprintln!("failed to retain QEMU incident after receipt failure: {error}");
+            engine.record_diagnostic_capture_failure();
         }
-        let _ = snapshot.remove();
-    } else {
-        let _ = snapshot.retain_bounded(crate::telemetry::RetentionPolicy::default());
+    } else if let Err(error) = snapshot.retain_bounded(crate::telemetry::RetentionPolicy::default())
+    {
+        eprintln!("failed to retain unaccepted QEMU incident snapshot: {error}");
+        engine.record_diagnostic_capture_failure();
+    } else if expects_live_diagnostics {
+        engine.record_diagnostic_capture_failure();
     }
 }
 
@@ -802,7 +847,12 @@ fn apply_qemu_diagnostic_context(
             .tags
             .insert("qemu.stderr_observed", stderr.to_string());
     }
-    if expects_live_diagnostics && hang.is_none() {
+    let live_process_captured = hang
+        .as_ref()
+        .and_then(|value| value.get("process_snapshot_succeeded"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if expects_live_diagnostics && !live_process_captured {
         crate::telemetry::record_failure(crate::telemetry::TelemetryFailure::LiveProcessSnapshot);
     }
     event.tags.insert("qemu.accelerator", "whpx".to_string());
@@ -859,9 +909,9 @@ fn apply_qemu_diagnostic_context(
             "archive_sha256": archive_sha256,
             "attachments_prepared": 2,
             "attachments_accepted": serde_json::Value::Null,
-            "partial_capture": !dump_captured || hang.is_none() || hyperv.is_none(),
+            "partial_capture": !dump_captured || !live_process_captured || hyperv.is_none(),
             "collectors": {
-                "live_process": hang.is_some(),
+                "live_process": live_process_captured,
                 "qmp": qmp_responsive,
                 "hyperv": hyperv.is_some(),
                 "dump": dump_captured,
@@ -871,7 +921,7 @@ fn apply_qemu_diagnostic_context(
         }),
     );
     dump_captured
-        && hang.is_some()
+        && live_process_captured
         && hyperv.is_some()
         && archive_size.is_some()
         && qmp_responsive
@@ -1447,6 +1497,69 @@ mod tests {
     }
 
     #[test]
+    fn unaccepted_vm_incident_is_retained_with_its_archive() {
+        let root = std::env::temp_dir().join(format!(
+            "lsbsw-rejected-vm-incident-{}-{}",
+            std::process::id(),
+            time::OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let paths = ServicePaths::for_test(root.clone());
+        let bundle = root.join("bundle");
+        let engine = ServiceEngineConfig::from_verified_bundle(
+            bundle.clone(),
+            bundle.join("qemu-system-x86_64.exe"),
+            bundle.join("Image"),
+            bundle.join("initramfs.cpio.gz"),
+            bundle.join("rootfs.ext4"),
+            &paths,
+        )
+        .unwrap();
+        let resource_id = "0123456789abcdef0123456789abcdef";
+        let instance_dir = engine.resources_root().join(resource_id);
+        let diagnostics = crate::telemetry::vm_diagnostics_dir(&instance_dir);
+        std::fs::create_dir_all(&diagnostics).unwrap();
+        std::fs::write(
+            diagnostics.join("qemu-hang.json"),
+            br#"{"schema_version":1,"failure_kind":"guest_ready_timeout"}"#,
+        )
+        .unwrap();
+        let spec = ManagedVmSpec {
+            correlation_id: "correlation-1".to_string(),
+            resource_id: resource_id.to_string(),
+            rootfs_image: instance_dir.join("rootfs.ext4"),
+            instance_dir,
+            cpus: 2,
+            memory_mib: 2048,
+            mounts: Vec::new(),
+            proxy_config: None,
+        };
+
+        capture_vm_failure(
+            &crate::telemetry::Telemetry::disabled(),
+            &engine,
+            &spec,
+            &anyhow::anyhow!("guest-ready handshake timed out"),
+            "start",
+        );
+
+        let incidents = std::fs::read_dir(engine.telemetry_root().join("incidents"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(incidents.len(), 1);
+        assert!(incidents[0].join("incident.json").is_file());
+        assert!(incidents[0].join("incident.zip").is_file());
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(incidents[0].join("incident.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["stable_error_code"], "SANDBOX_BOOT_FAILED");
+        assert_eq!(manifest["correlation_id"], "correlation-1");
+        assert_eq!(manifest["resource_id"], resource_id);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn exec_capture_enforces_one_combined_output_limit() {
         let capture = Arc::new(Mutex::new(ExecCapture {
             total: MAX_EXEC_OUTPUT,
@@ -1568,6 +1681,14 @@ mod tests {
         let error = result.expect_err("test hook must force a service-owned QEMU timeout");
         let error_chain = format!("{error:#}");
         assert!(error_chain.contains("guest-ready"), "{error_chain}");
+        assert!(
+            error_chain.contains("correlation_id=windows-service-qemu-hang-smoke"),
+            "{error_chain}"
+        );
+        assert!(
+            error_chain.contains(&format!("resource_id={resource}")),
+            "{error_chain}"
+        );
 
         let incident_root = engine.telemetry_root().join("incidents");
         let incidents = std::fs::read_dir(&incident_root)
@@ -1589,6 +1710,7 @@ mod tests {
         let progress = std::fs::read_to_string(incident.join("qemu-progress.jsonl")).unwrap();
         let timeline = std::fs::read_to_string(incident.join("qemu-timeline.jsonl")).unwrap();
         assert_eq!(hang["failure_kind"], "guest_ready_timeout");
+        assert_eq!(hang["process_snapshot_succeeded"], true);
         assert_eq!(hang["correlation_id"], "windows-service-qemu-hang-smoke");
         assert_eq!(hang["resource_id"], resource.to_string());
         assert_eq!(hang["job"]["active_pids"], serde_json::json!([]));
@@ -1608,6 +1730,16 @@ mod tests {
             assert_eq!(record["incident_id"], hang["incident_id"]);
             assert_eq!(record["correlation_id"], "windows-service-qemu-hang-smoke");
             assert_eq!(record["resource_id"], resource.to_string());
+        }
+        for name in ["boot.status.json", "preflight.json", "qemu.status.json"] {
+            let evidence: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(incident.join(name)).unwrap()).unwrap();
+            assert_eq!(evidence["incident_id"], hang["incident_id"], "{name}");
+            assert_eq!(
+                evidence["correlation_id"], "windows-service-qemu-hang-smoke",
+                "{name}"
+            );
+            assert_eq!(evidence["resource_id"], resource.to_string(), "{name}");
         }
         let hyperv: serde_json::Value =
             serde_json::from_slice(&std::fs::read(incident.join("hyperv-events.json")).unwrap())

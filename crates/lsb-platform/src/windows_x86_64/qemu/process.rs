@@ -757,7 +757,11 @@ impl QemuSupervisor {
     }
 
     fn write_status_artifact(&self) -> Result<(), QemuProcessError> {
+        let timeline = self.config.timeline.as_ref();
         let artifact = QemuStatusArtifact {
+            incident_id: timeline.map(QemuTimeline::incident_id),
+            correlation_id: timeline.map(QemuTimeline::correlation_id),
+            resource_id: timeline.map(QemuTimeline::resource_id),
             state: self.state.as_str(),
             pid: self.pid,
             exit_status: self.exit_status.as_ref(),
@@ -1039,6 +1043,9 @@ fn filetime_value(value: windows_sys::Win32::Foundation::FILETIME) -> u64 {
 
 #[derive(Debug, Serialize)]
 struct QemuStatusArtifact<'a> {
+    incident_id: Option<&'a str>,
+    correlation_id: Option<&'a str>,
+    resource_id: Option<&'a str>,
     state: &'static str,
     pid: Option<u32>,
     exit_status: Option<&'a QemuExitStatus>,
@@ -1813,6 +1820,33 @@ mod tests {
         let environment = QemuProcessEnvironment::default();
 
         assert!(!environment.inherit_parent);
+    }
+
+    #[test]
+    fn status_artifact_shares_the_timeline_identity() {
+        let artifact_dir = temp_artifact_dir("identity");
+        let context = crate::PlatformQemuTelemetryContext {
+            telemetry_root: artifact_dir.join("telemetry"),
+            run_id: Some("run-1".to_string()),
+            correlation_id: "correlation-1".to_string(),
+            resource_id: "sandbox-1".to_string(),
+        };
+        let timeline =
+            QemuTimeline::create_with_observer(&artifact_dir, Some(&context), None).unwrap();
+        let mut config = QemuSupervisorConfig::new(command(), &artifact_dir);
+        config.timeline = Some(timeline.clone());
+        let supervisor = QemuSupervisor::new(config);
+        supervisor.prepare_artifacts().unwrap();
+        supervisor.write_status_artifact().unwrap();
+
+        let status: serde_json::Value =
+            serde_json::from_slice(&fs::read(supervisor.artifacts().status.clone()).unwrap())
+                .unwrap();
+        assert_eq!(status["incident_id"], timeline.incident_id());
+        assert_eq!(status["correlation_id"], "correlation-1");
+        assert_eq!(status["resource_id"], "sandbox-1");
+
+        fs::remove_dir_all(artifact_dir).unwrap();
     }
 
     #[test]

@@ -68,6 +68,8 @@ $env:LSB_WINDOWS_BOOT_INITRD = $initrd
 $env:LSB_WINDOWS_BOOT_ROOTFS = $rootfs
 $env:LSB_WINDOWS_BOOT_QEMU = $qemu
 $env:LSB_QEMU_HANG_TEST_HELPER = $helper
+$secretCanary = "qemu-telemetry-secret-$([Guid]::NewGuid().ToString('N'))"
+$env:LSB_QEMU_HANG_TEST_SECRET_CANARY = $secretCanary
 $env:LSB_QEMU_HANG_TEST_FORCE_GUEST_READY_TIMEOUT = '0'
 $normalArtifacts = Join-Path $RunRoot 'normal-boot'
 $env:LSB_WINDOWS_BOOT_ARTIFACT_DIR = $normalArtifacts
@@ -98,6 +100,10 @@ foreach ($index in 1..4) {
         ConvertFrom-Json
     $status = Get-Content -LiteralPath (Join-Path $artifact 'qemu.status.json') -Raw |
         ConvertFrom-Json
+    $bootStatus = Get-Content -LiteralPath (Join-Path $artifact 'boot.status.json') -Raw |
+        ConvertFrom-Json
+    $preflight = Get-Content -LiteralPath (Join-Path $artifact 'preflight.json') -Raw |
+        ConvertFrom-Json
     $expectedCorrelationId = 'windows-qemu-hang-smoke'
     $expectedResourceId = 'windows-qemu-hang-smoke'
     if (-not $hang.qmp.connected -or -not $hang.qmp.responsive -or
@@ -110,6 +116,13 @@ foreach ($index in 1..4) {
         [string]$dump.resource_id -cne $expectedResourceId) {
         throw "Incident $index did not capture responsive QMP and a diagnostic dump."
     }
+    foreach ($evidence in @($status, $bootStatus, $preflight)) {
+        if ([string]$evidence.incident_id -cne [string]$hang.incident_id -or
+            [string]$evidence.correlation_id -cne $expectedCorrelationId -or
+            [string]$evidence.resource_id -cne $expectedResourceId) {
+            throw "Incident $index boot/teardown identity fields diverged."
+        }
+    }
     $timelineRecords = @(Get-Content -LiteralPath (Join-Path $artifact 'qemu-timeline.jsonl') |
         ForEach-Object { $_ | ConvertFrom-Json })
     $timelinePhases = @($timelineRecords | ForEach-Object phase)
@@ -120,6 +133,15 @@ foreach ($index in 1..4) {
             [string]$record.correlation_id -cne $expectedCorrelationId -or
             [string]$record.resource_id -cne $expectedResourceId) {
             throw "Incident $index progress/timeline identity fields diverged."
+        }
+    }
+    $rawPipeMarker = "lsb-$([string]$hang.incident_id)-qmp"
+    foreach ($textArtifact in Get-ChildItem -LiteralPath $artifact -File -Force |
+        Where-Object { $_.Extension -in @('.json', '.jsonl', '.txt', '.log') }) {
+        $text = [string](Get-Content -LiteralPath $textArtifact.FullName -Raw)
+        if ($text.Contains($rawPipeMarker, [StringComparison]::Ordinal) -or
+            $text.Contains($secretCanary, [StringComparison]::Ordinal)) {
+            throw "Incident $index leaked a private pipe name or parent secret into diagnostics."
         }
     }
     $lastPhaseIndex = -1
@@ -247,6 +269,15 @@ if ($serviceArchives.Count -ne 1) {
 $packaged = $serviceArchives[0].DirectoryName
 $incidentManifest = Assert-RegularFile (Join-Path $packaged 'incident.json') 1MB
 $incidentArchive = Assert-RegularFile (Join-Path $packaged 'incident.zip') 10MB
+$archiveInspection = Join-Path $RunRoot 'service-archive-inspection'
+Expand-Archive -LiteralPath $incidentArchive.FullName -DestinationPath $archiveInspection
+foreach ($textArtifact in Get-ChildItem -LiteralPath $archiveInspection -File -Recurse -Force) {
+    $text = [string](Get-Content -LiteralPath $textArtifact.FullName -Raw)
+    if ($text.Contains($secretCanary, [StringComparison]::Ordinal) -or
+        $text -match 'lsb-[0-9a-f]{32}-qmp') {
+        throw 'Service incident archive leaked a private pipe name or parent secret.'
+    }
+}
 $serviceHang = Get-Content -LiteralPath (Join-Path $packaged 'qemu-hang.json') -Raw |
     ConvertFrom-Json
 if (-not $serviceHang.job.active_process_zero_observed -or

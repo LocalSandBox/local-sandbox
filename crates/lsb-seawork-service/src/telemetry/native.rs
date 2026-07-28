@@ -195,6 +195,7 @@ impl Adapter for NativeAdapter {
             set_value(&contexts, "operation", operation)?;
             set_value(&value, "contexts", contexts)?;
 
+            let expected_attachment_count = event.attachments.len();
             let mut native_attachments = Vec::new();
             for attachment in &event.attachments {
                 let path = wide(&attachment.path);
@@ -213,6 +214,13 @@ impl Adapter for NativeAdapter {
                     sentry_attachment_set_content_type(native, content_type.as_ptr());
                 }
                 native_attachments.push(native);
+            }
+            if native_attachments.len() != expected_attachment_count {
+                for attachment in native_attachments {
+                    sentry_remove_attachment(attachment);
+                }
+                sentry_value_decref(value);
+                return Err(());
             }
             let uuid = sentry_capture_event(value);
             for attachment in native_attachments {

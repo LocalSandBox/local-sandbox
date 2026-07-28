@@ -2,7 +2,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -15,6 +15,7 @@ const HANG_FILE: &str = "qemu-hang.json";
 const MAX_TIMELINE_RECORD_BYTES: usize = 4 * 1024;
 const MAX_PROGRESS_RECORD_BYTES: usize = 8 * 1024;
 const MAX_HANG_ARTIFACT_BYTES: usize = 256 * 1024;
+const STALE_PENDING_AGE: Duration = Duration::from_secs(5 * 60);
 const SAMPLE_SCHEDULE: &[Duration] = &[
     Duration::from_secs(1),
     Duration::from_secs(5),
@@ -255,6 +256,7 @@ struct QemuHangArtifact<'a> {
     failure_kind: &'a str,
     hang_signature: &'a str,
     elapsed_ms: u128,
+    process_snapshot_succeeded: bool,
     process: &'a QemuProcessSnapshot,
     job: Option<&'a crate::PlatformQemuJobSnapshot>,
     progress: &'a QemuProgressSnapshot,
@@ -296,6 +298,7 @@ pub(crate) fn write_initial_hang_artifact(
     context: Option<&crate::PlatformQemuTelemetryContext>,
     failure_kind: &str,
     elapsed: Duration,
+    process_snapshot_succeeded: bool,
     process: &QemuProcessSnapshot,
     job: Option<&crate::PlatformQemuJobSnapshot>,
     progress: &QemuProgressSnapshot,
@@ -315,6 +318,7 @@ pub(crate) fn write_initial_hang_artifact(
         failure_kind,
         hang_signature,
         elapsed_ms: elapsed.as_millis(),
+        process_snapshot_succeeded,
         process,
         job,
         progress,
@@ -706,6 +710,10 @@ fn hash_file(path: &Path) -> io::Result<(u64, String)> {
 }
 
 fn reconcile_dump_retention(root: &Path, retain: usize) -> io::Result<usize> {
+    reconcile_dump_retention_at(root, retain, SystemTime::now())
+}
+
+fn reconcile_dump_retention_at(root: &Path, retain: usize, now: SystemTime) -> io::Result<usize> {
     fs::create_dir_all(root)?;
     let root_metadata = fs::symlink_metadata(root)?;
     if !root_metadata.is_dir() || root_metadata.file_type().is_symlink() {
@@ -728,11 +736,14 @@ fn reconcile_dump_retention(root: &Path, retain: usize) -> io::Result<usize> {
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
             continue;
         }
-        if !entry.path().join("qemu-hang-dump.json").is_file() {
-            continue;
-        }
         let canonical = fs::canonicalize(entry.path())?;
         if canonical.parent() != Some(canonical_root.as_path()) {
+            continue;
+        }
+        if cleanup_stale_pending_files(&canonical, now)? {
+            continue;
+        }
+        if !canonical.join("qemu-hang-dump.json").is_file() {
             continue;
         }
         completed.push((metadata.modified()?, canonical));
@@ -740,9 +751,75 @@ fn reconcile_dump_retention(root: &Path, retain: usize) -> io::Result<usize> {
     completed.sort_by_key(|(modified, _)| *modified);
     let remove_count = completed.len().saturating_sub(retain);
     for (_, path) in completed.into_iter().take(remove_count) {
-        fs::remove_dir_all(path)?;
+        remove_completed_incident(&path)?;
     }
     Ok(remove_count)
+}
+
+fn remove_completed_incident(directory: &Path) -> io::Result<()> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(directory)?.take(16) {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            return Err(io::Error::other(
+                "QEMU dump incident contains a non-Unicode entry",
+            ));
+        };
+        if !matches!(
+            name,
+            "qemu-hang.dmp" | "qemu-hang-dump.json" | "sentry-receipt.json"
+        ) {
+            return Err(io::Error::other(
+                "QEMU dump incident contains an unexpected entry",
+            ));
+        }
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err(io::Error::other(
+                "QEMU dump incident entry is not a regular file",
+            ));
+        }
+        files.push(entry.path());
+    }
+    if fs::read_dir(directory)?.count() != files.len() {
+        return Err(io::Error::other(
+            "QEMU dump incident exceeds its fixed entry bound",
+        ));
+    }
+    for file in files {
+        fs::remove_file(file)?;
+    }
+    fs::remove_dir(directory)
+}
+
+fn cleanup_stale_pending_files(directory: &Path, now: SystemTime) -> io::Result<bool> {
+    let mut removed_pending = false;
+    for name in ["qemu-hang.dmp.pending", ".qemu-hang-dump.json.pending"] {
+        let path = directory.join(name);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        let stale = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= STALE_PENDING_AGE);
+        if stale {
+            fs::remove_file(path)?;
+            removed_pending = true;
+        }
+    }
+    if removed_pending && fs::read_dir(directory)?.next().is_none() {
+        fs::remove_dir(directory)?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 pub(crate) fn classify_hang_signature(
@@ -835,6 +912,14 @@ impl QemuTimeline {
 
     pub(crate) fn incident_id(&self) -> &str {
         &self.incident_id
+    }
+
+    pub(crate) fn correlation_id(&self) -> &str {
+        &self.correlation_id
+    }
+
+    pub(crate) fn resource_id(&self) -> &str {
+        &self.resource_id
     }
 
     pub(crate) fn path(&self) -> &Path {
@@ -1236,6 +1321,7 @@ mod tests {
             Some(&context),
             "guest_ready_timeout",
             Duration::from_millis(90_000),
+            true,
             &process,
             None,
             &progress,
@@ -1304,6 +1390,40 @@ mod tests {
         assert!(!root.join(ids[0]).exists());
         assert!(ids[1..].iter().all(|id| root.join(id).is_dir()));
         assert!(pending.is_dir(), "active pending incidents must be ignored");
+        assert_eq!(
+            reconcile_dump_retention_at(
+                &root,
+                3,
+                SystemTime::now() + STALE_PENDING_AGE + Duration::from_secs(1)
+            )
+            .unwrap(),
+            0
+        );
+        assert!(
+            !pending.exists(),
+            "stale exact-name pending incidents must be reconciled"
+        );
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn retention_refuses_unexpected_incident_entries() {
+        let directory = temp_dir("retention-unexpected");
+        let root = directory.join("qemu-dumps");
+        fs::create_dir_all(&root).unwrap();
+        let oldest = root.join("00000000000000000000000000000001");
+        fs::create_dir(&oldest).unwrap();
+        fs::write(oldest.join("qemu-hang-dump.json"), b"{}\n").unwrap();
+        fs::write(oldest.join("unexpected.txt"), b"do not delete").unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        let newest = root.join("00000000000000000000000000000002");
+        fs::create_dir(&newest).unwrap();
+        fs::write(newest.join("qemu-hang-dump.json"), b"{}\n").unwrap();
+
+        assert!(reconcile_dump_retention(&root, 1).is_err());
+        assert!(oldest.join("unexpected.txt").is_file());
+        assert!(newest.is_dir());
 
         fs::remove_dir_all(directory).unwrap();
     }
