@@ -1,0 +1,40 @@
+scripts/win-test
+  s_31ad4f53b04974::t_49b91ea6acd747 6,104,143,193
+scripts/windows-test-service-harness.ps1
+  s_31ad4f53b04974::t_ab3dee09760db4 703
+scripts/windows-test-runtime-assets.ps1
+  s_31ad4f53b04974::t_49b91ea6acd747 10,99
+scripts/windows-test-signing-assets.ps1
+  s_31ad4f53b04974::t_49b91ea6acd747 12,24-25
+scripts/windows-test-reuse-candidate.ps1
+  s_31ad4f53b04974::t_49b91ea6acd747 14
+scripts/windows-test-bootstrap.ps1
+  s_31ad4f53b04974::t_49b91ea6acd747 24,182
+  s_31ad4f53b04974::t_1cb47396e9ba2e 120-130
+scripts/windows-test-suites/archive-acceptance.ps1
+  s_31ad4f53b04974::t_ab3dee09760db4 83-89
+docs/windows-agent-testing.md
+  s_31ad4f53b04974::t_1cb47396e9ba2e 19-22
+  s_31ad4f53b04974::t_ab3dee09760db4 13,71,105
+scripts/windows-test-artifacts.ps1
+  s_31ad4f53b04974::t_49b91ea6acd747 7,39-40
+scripts/setup-windows-test-host.ps1
+  s_31ad4f53b04974::t_1cb47396e9ba2e 33-45,311
+  s_31ad4f53b04974::t_49b91ea6acd747 4,309-310
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "5dd60b9259ee73b3d20cf7718fd10007f403c223",
+  "prompts": {},
+  "sessions": {
+    "s_31ad4f53b04974": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa7b0-4d69-7d01-ae26-6595cb9ecc1b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
