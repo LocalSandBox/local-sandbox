@@ -106,27 +106,6 @@ $env:LSB_WINDOWS_BOOT_QEMU = $qemu
 $env:LSB_QEMU_HANG_TEST_HELPER = $helper
 $secretCanary = "qemu-telemetry-secret-$([Guid]::NewGuid().ToString('N'))"
 $env:LSB_QEMU_HANG_TEST_SECRET_CANARY = $secretCanary
-$childArtifacts = Join-Path $RunRoot 'diagnostic-child'
-$childTelemetry = Join-Path $RunRoot 'diagnostic-child-telemetry'
-$env:LSB_QEMU_HANG_TEST_CHILD_ARTIFACT_DIR = $childArtifacts
-$env:LSB_QEMU_HANG_TEST_CHILD_TELEMETRY_ROOT = $childTelemetry
-Invoke-Cargo @(
-    'test', '-p', 'lsb-platform', '--features', 'qemu-hang-test-hooks', '--locked',
-    'windows_x86_64::qemu::boot::tests::windows_dump_helper_diagnostic_child_smoke',
-    '--', '--ignored', '--exact', '--nocapture'
-)
-$childManifest = Get-Content -LiteralPath (Join-Path $childArtifacts 'qemu-hang-dump.json') -Raw |
-    ConvertFrom-Json
-$childDumpPath = Join-Path $childTelemetry ([string]$childManifest.relative_local_path)
-$childDump = Assert-RegularFile $childDumpPath
-$childHash = (Get-FileHash -LiteralPath $childDump.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-if (-not $childManifest.success -or $childHash -cne [string]$childManifest.sha256 -or
-    $childDump.Length -ne [long]$childManifest.dump_byte_size) {
-    throw 'The no-WHPX diagnostic child dump did not match its manifest.'
-}
-$childWindbgResult = Invoke-CdbHangAnalysis -DumpPath $childDump.FullName `
-    -OutputStem 'windbg-diagnostic-child' -ExpectedModule 'lsb_platform'
-
 $env:LSB_QEMU_HANG_TEST_FORCE_GUEST_READY_TIMEOUT = '0'
 $env:LSB_QEMU_HANG_TEST_FORCE_SHUTDOWN_TIMEOUT = '0'
 $normalArtifacts = Join-Path $RunRoot 'normal-boot'
@@ -196,7 +175,9 @@ foreach ($index in 1..4) {
     $rawPipeMarker = "lsb-$([string]$hang.incident_id)-qmp"
     foreach ($textArtifact in Get-ChildItem -LiteralPath $artifact -File -Force |
         Where-Object { $_.Extension -in @('.json', '.jsonl', '.txt', '.log') }) {
-        $text = [string](Get-Content -LiteralPath $textArtifact.FullName -Raw)
+        $text = [string]::Concat(
+            (Get-Content -LiteralPath $textArtifact.FullName -Raw)
+        )
         if ($text.Contains($rawPipeMarker, [StringComparison]::Ordinal) -or
             $text.Contains($secretCanary, [StringComparison]::Ordinal)) {
             throw "Incident $index leaked a private pipe name or parent secret into diagnostics."
@@ -259,9 +240,6 @@ if ($retained.Count -ne 3) {
     throw "Dump retention kept $($retained.Count) directories instead of exactly three."
 }
 
-$windbgResult = Invoke-CdbHangAnalysis -DumpPath $lastDumpPath `
-    -OutputStem 'windbg-qemu-hang' -ExpectedModule 'qemu'
-
 $env:LSB_QEMU_HANG_TEST_FORCE_GUEST_READY_TIMEOUT = '0'
 $env:LSB_QEMU_HANG_TEST_FORCE_SHUTDOWN_TIMEOUT = '1'
 $env:LSB_QEMU_HANG_TEST_SHUTDOWN_TIMEOUT_MS = '1500'
@@ -318,14 +296,14 @@ foreach ($requiredPhase in @(
 $shutdownRawPipeMarker = "lsb-$([string]$shutdownHang.incident_id)-qmp"
 foreach ($textArtifact in Get-ChildItem -LiteralPath $shutdownArtifacts -File -Force |
     Where-Object { $_.Extension -in @('.json', '.jsonl', '.txt', '.log') }) {
-    $text = [string](Get-Content -LiteralPath $textArtifact.FullName -Raw)
+    $text = [string]::Concat(
+        (Get-Content -LiteralPath $textArtifact.FullName -Raw)
+    )
     if ($text.Contains($shutdownRawPipeMarker, [StringComparison]::Ordinal) -or
         $text.Contains($secretCanary, [StringComparison]::Ordinal)) {
         throw 'The QEMU shutdown-timeout diagnostics leaked private parent state.'
     }
 }
-$shutdownWindbgResult = Invoke-CdbHangAnalysis -DumpPath $shutdownDumpItem.FullName `
-    -OutputStem 'windbg-qemu-shutdown-hang' -ExpectedModule 'qemu'
 if (Get-Process -Name 'qemu-system-x86_64' -ErrorAction SilentlyContinue) {
     throw 'The QEMU shutdown-timeout path left QEMU alive.'
 }
@@ -383,7 +361,9 @@ $incidentArchive = Assert-RegularFile (Join-Path $packaged 'incident.zip') 10MB
 $archiveInspection = Join-Path $RunRoot 'service-archive-inspection'
 Expand-Archive -LiteralPath $incidentArchive.FullName -DestinationPath $archiveInspection
 foreach ($textArtifact in Get-ChildItem -LiteralPath $archiveInspection -File -Recurse -Force) {
-    $text = [string](Get-Content -LiteralPath $textArtifact.FullName -Raw)
+    $text = [string]::Concat(
+        (Get-Content -LiteralPath $textArtifact.FullName -Raw)
+    )
     if ($text.Contains($secretCanary, [StringComparison]::Ordinal) -or
         $text -match 'lsb-[0-9a-f]{32}-qmp') {
         throw 'Service incident archive leaked a private pipe name or parent secret.'
@@ -445,7 +425,9 @@ Expand-Archive -LiteralPath $serviceStopArchives[0].FullName `
     -DestinationPath $serviceStopArchiveInspection
 foreach ($textArtifact in Get-ChildItem -LiteralPath $serviceStopArchiveInspection `
     -File -Recurse -Force) {
-    $text = [string](Get-Content -LiteralPath $textArtifact.FullName -Raw)
+    $text = [string]::Concat(
+        (Get-Content -LiteralPath $textArtifact.FullName -Raw)
+    )
     if ($text.Contains($secretCanary, [StringComparison]::Ordinal) -or
         $text -match 'lsb-[0-9a-f]{32}-qmp') {
         throw 'Service stop incident archive leaked a private pipe name or parent secret.'
@@ -475,6 +457,31 @@ if ($binaryText.Contains('LSB_QEMU_HANG_TEST_FORCE_GUEST_READY_TIMEOUT') -or
     throw 'Production service unexpectedly contains qemu-hang-test-hooks strings.'
 }
 $env:RUSTFLAGS = $priorRustFlags
+
+$childArtifacts = Join-Path $RunRoot 'diagnostic-child'
+$childTelemetry = Join-Path $RunRoot 'diagnostic-child-telemetry'
+$env:LSB_QEMU_HANG_TEST_CHILD_ARTIFACT_DIR = $childArtifacts
+$env:LSB_QEMU_HANG_TEST_CHILD_TELEMETRY_ROOT = $childTelemetry
+Invoke-Cargo @(
+    'test', '-p', 'lsb-platform', '--features', 'qemu-hang-test-hooks', '--locked',
+    'windows_x86_64::qemu::boot::tests::windows_dump_helper_diagnostic_child_smoke',
+    '--', '--ignored', '--exact', '--nocapture'
+)
+$childManifest = Get-Content -LiteralPath (Join-Path $childArtifacts 'qemu-hang-dump.json') -Raw |
+    ConvertFrom-Json
+$childDumpPath = Join-Path $childTelemetry ([string]$childManifest.relative_local_path)
+$childDump = Assert-RegularFile $childDumpPath
+$childHash = (Get-FileHash -LiteralPath $childDump.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+if (-not $childManifest.success -or $childHash -cne [string]$childManifest.sha256 -or
+    $childDump.Length -ne [long]$childManifest.dump_byte_size) {
+    throw 'The no-WHPX diagnostic child dump did not match its manifest.'
+}
+$childWindbgResult = Invoke-CdbHangAnalysis -DumpPath $childDump.FullName `
+    -OutputStem 'windbg-diagnostic-child' -ExpectedModule 'lsb_platform'
+$windbgResult = Invoke-CdbHangAnalysis -DumpPath $lastDumpPath `
+    -OutputStem 'windbg-qemu-hang' -ExpectedModule 'qemu'
+$shutdownWindbgResult = Invoke-CdbHangAnalysis -DumpPath $shutdownDumpItem.FullName `
+    -OutputStem 'windbg-qemu-shutdown-hang' -ExpectedModule 'qemu'
 
 $qemuVersion = (& $qemu --version | Select-Object -First 1).Trim()
 $os = Get-CimInstance Win32_OperatingSystem
