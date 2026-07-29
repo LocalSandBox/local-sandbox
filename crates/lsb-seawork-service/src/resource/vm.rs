@@ -1767,7 +1767,31 @@ mod tests {
             &identity,
         )
         .unwrap();
-        let telemetry = crate::telemetry::Telemetry::disabled();
+        let real_sentry = std::env::var_os("LSB_QEMU_HANG_TEST_REAL_SENTRY").is_some();
+        let telemetry = if real_sentry {
+            #[cfg(all(windows, feature = "sentry-telemetry"))]
+            {
+                let handler = PathBuf::from(
+                    std::env::var_os("LSB_QEMU_HANG_TEST_CRASHPAD_HANDLER")
+                        .expect("LSB_QEMU_HANG_TEST_CRASHPAD_HANDLER"),
+                );
+                crate::telemetry::Telemetry::initialize_native(
+                    &engine.telemetry_root().join("sentry-acceptance-db"),
+                    &handler,
+                    &[],
+                    &crate::telemetry::CommonContext::collect(
+                        option_env!("GITHUB_SHA").unwrap_or("qemu-sentry-acceptance"),
+                        None,
+                        Some("qemu-sentry-acceptance".to_string()),
+                    ),
+                )
+                .expect("initialize real Sentry telemetry")
+            }
+            #[cfg(not(all(windows, feature = "sentry-telemetry")))]
+            panic!("real Sentry acceptance requires Windows and sentry-telemetry")
+        } else {
+            crate::telemetry::Telemetry::disabled()
+        };
         let transaction_span = telemetry.start_span(
             crate::telemetry::SpanDescription::transaction("sandbox.start"),
         );
@@ -1801,6 +1825,46 @@ mod tests {
             error_chain.contains(&format!("resource_id={resource}")),
             "{error_chain}"
         );
+
+        if real_sentry {
+            telemetry.flush(Duration::from_secs(30));
+            let diagnostics = crate::telemetry::vm_diagnostics_dir(
+                &engine.resources_root().join(resource.to_string()),
+            );
+            let hang: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(diagnostics.join("qemu-hang.json")).unwrap())
+                    .unwrap();
+            let incident_id = hang["incident_id"].as_str().unwrap();
+            let dump_directory = engine.telemetry_root().join("qemu-dumps").join(incident_id);
+            let dump: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(dump_directory.join("qemu-hang-dump.json")).unwrap(),
+            )
+            .unwrap();
+            let receipt: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(dump_directory.join("sentry-receipt.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(dump["sentry_event_id"], receipt["sentry_event_id"]);
+            assert_eq!(dump["incident_id"], receipt["incident_id"]);
+            assert_eq!(dump["success"], true);
+            let result = serde_json::json!({
+                "schema_version": 1,
+                "incident_id": incident_id,
+                "sentry_event_id": receipt["sentry_event_id"],
+                "dump_relative_path": dump["relative_local_path"],
+                "dump_size": dump["dump_byte_size"],
+                "dump_sha256": dump["sha256"],
+                "correlation_id": "windows-service-qemu-hang-smoke",
+                "resource_id": resource.to_string(),
+            });
+            let result_path = PathBuf::from(
+                std::env::var_os("LSB_QEMU_HANG_TEST_REAL_SENTRY_RESULT")
+                    .expect("LSB_QEMU_HANG_TEST_REAL_SENTRY_RESULT"),
+            );
+            std::fs::write(&result_path, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+            eprintln!("QEMU_SENTRY_ACCEPTANCE_RESULT {}", result_path.display());
+            return;
+        }
 
         let incident_root = engine.telemetry_root().join("incidents");
         let incidents = std::fs::read_dir(&incident_root)
