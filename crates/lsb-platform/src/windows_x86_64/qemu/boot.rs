@@ -918,6 +918,21 @@ pub(crate) fn launch_windows_qemu_boot(
     supervisor_config.timeline = timeline.clone();
     supervisor_config.working_directory = artifacts.directory.clone();
     let mut supervisor = QemuSupervisor::new(supervisor_config);
+    if let Some(endpoint) = &qmp_endpoint {
+        endpoint.release_reservation_for_spawn().map_err(|source| {
+            let error = QemuBootError::QmpOpen {
+                detail: format!("failed to release the reserved loopback port: {source}"),
+                artifacts: artifacts.clone(),
+            };
+            record_failure(
+                &artifacts,
+                config.boot_observation_timeout,
+                observation_goal,
+                &error,
+            );
+            error
+        })?;
+    }
     supervisor.start().map_err(|source| {
         let error = QemuBootError::ProcessStart {
             source,

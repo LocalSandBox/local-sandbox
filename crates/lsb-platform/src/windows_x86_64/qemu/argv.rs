@@ -449,10 +449,10 @@ fn push_qmp(command: &mut QemuCommandParts, qmp: &QemuQmpEndpoint) -> Result<(),
                 command,
                 "-chardev",
                 format!(
-                    "socket,id={QMP_CHARDEV_ID},host=127.0.0.1,port={port},server=off,nodelay=on,reconnect-ms=100"
+                    "socket,id={QMP_CHARDEV_ID},host=127.0.0.1,port={port},server=on,wait=off,nodelay=on"
                 ),
                 format!(
-                    "socket,id={QMP_CHARDEV_ID},host=127.0.0.1,port=<qmp-port>,server=off,nodelay=on,reconnect-ms=100"
+                    "socket,id={QMP_CHARDEV_ID},host=127.0.0.1,port=<qmp-port>,server=on,wait=off,nodelay=on"
                 ),
             );
             push_pair(
@@ -784,7 +784,7 @@ mod tests {
                 "-device",
                 "virtserialport,chardev=lsbctl,name=org.localsandbox.control",
                 "-chardev",
-                "socket,id=lsbqmp,host=127.0.0.1,port=43210,server=off,nodelay=on,reconnect-ms=100",
+                "socket,id=lsbqmp,host=127.0.0.1,port=43210,server=on,wait=off,nodelay=on",
                 "-mon",
                 "chardev=lsbqmp,mode=control",
                 "-nic",
@@ -949,7 +949,7 @@ mod tests {
     }
 
     #[test]
-    fn qmp_endpoint_is_loopback_client_only_in_generated_argv() {
+    fn qmp_endpoint_is_loopback_server_only_in_generated_argv() {
         let mut config = base_config();
         config.qmp = Some(QemuQmpEndpoint::loopback_tcp(43210));
 
@@ -968,12 +968,13 @@ mod tests {
 
         assert_eq!(
             qmp_chardev,
-            "socket,id=lsbqmp,host=127.0.0.1,port=43210,server=off,nodelay=on,reconnect-ms=100"
+            "socket,id=lsbqmp,host=127.0.0.1,port=43210,server=on,wait=off,nodelay=on"
         );
         assert_eq!(qmp_monitor, "chardev=lsbqmp,mode=control");
         assert!(argv.iter().any(|argument| argument == "-S"));
         assert!(!qmp_chardev.contains("0.0.0.0"));
-        assert!(!qmp_chardev.contains("server=on"));
+        assert!(qmp_chardev.contains("server=on"));
+        assert!(qmp_chardev.contains("wait=off"));
         assert!(qmp_chardev.contains("host=127.0.0.1"));
     }
 

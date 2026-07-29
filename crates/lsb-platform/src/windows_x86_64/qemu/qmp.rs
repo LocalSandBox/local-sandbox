@@ -1,7 +1,7 @@
 use std::io::{self, Read, Write};
-#[cfg(windows)]
-use std::net::TcpStream;
 use std::net::{Ipv4Addr, TcpListener};
+#[cfg(windows)]
+use std::net::{SocketAddrV4, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -30,7 +30,7 @@ type QmpStream = TcpStream;
 #[derive(Debug, Clone)]
 pub(crate) struct QmpEndpoint {
     port: u16,
-    listener: Arc<Mutex<Option<TcpListener>>>,
+    reservation: Arc<Mutex<Option<TcpListener>>>,
     #[cfg(windows)]
     stream: Arc<Mutex<Option<QmpStream>>>,
 }
@@ -56,11 +56,10 @@ impl QmpEndpoint {
             ));
         }
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-        listener.set_nonblocking(true)?;
         let port = listener.local_addr()?.port();
         Ok(Self {
             port,
-            listener: Arc::new(Mutex::new(Some(listener))),
+            reservation: Arc::new(Mutex::new(Some(listener))),
             #[cfg(windows)]
             stream: Arc::new(Mutex::new(None)),
         })
@@ -68,6 +67,20 @@ impl QmpEndpoint {
 
     pub(crate) fn qemu_config(&self) -> QemuQmpEndpoint {
         QemuQmpEndpoint::loopback_tcp(self.port)
+    }
+
+    pub(crate) fn release_reservation_for_spawn(&self) -> io::Result<()> {
+        self.reservation
+            .lock()
+            .map_err(|_| io::Error::other("QMP port reservation lock was poisoned"))?
+            .take()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "QMP port reservation was already released",
+                )
+            })?;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -98,17 +111,10 @@ impl QmpEndpoint {
     pub(crate) fn connect(&self) -> io::Result<()> {
         use std::sync::mpsc;
 
-        // The listener is reserved before QEMU starts and accepts exactly one
-        // loopback client. QEMU was launched with `-S`, so its vCPUs remain
-        // stopped while the greeting, capabilities, and acknowledged `cont`
-        // exchange completes.
-        let listener = self
-            .listener
-            .lock()
-            .map_err(|_| io::Error::other("QMP listener lock was poisoned"))?
-            .take()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "QMP listener is closed"))?;
-        let stream = accept_with_deadline(listener, QMP_STARTUP_CONNECT_DEADLINE)?;
+        // QEMU listens on the preselected loopback port. It was launched with
+        // `-S`, so its vCPUs remain stopped while the bounded host connector,
+        // greeting, capabilities, and acknowledged `cont` exchange completes.
+        let stream = connect_with_deadline(self.port, QMP_STARTUP_CONNECT_DEADLINE)?;
         let deadline = Instant::now() + QMP_STARTUP_PROTOCOL_DEADLINE;
         let (sender, receiver) = mpsc::sync_channel(1);
         let worker = std::thread::spawn(move || {
@@ -266,31 +272,32 @@ fn capture_endpoint(
 }
 
 #[cfg(windows)]
-fn accept_with_deadline(listener: TcpListener, timeout: Duration) -> io::Result<QmpStream> {
+fn connect_with_deadline(port: u16, timeout: Duration) -> io::Result<QmpStream> {
+    let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
     let deadline = Instant::now() + timeout;
     loop {
-        match listener.accept() {
-            Ok((stream, peer)) if peer.ip().is_loopback() => {
-                // Windows inherits the listener's nonblocking mode on accepted
-                // sockets. QMP uses bounded synchronous workers, so restore
-                // blocking mode before protocol negotiation.
-                stream.set_nonblocking(false)?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "QMP server did not accept a connection before the fixed startup deadline",
+            ));
+        }
+        match TcpStream::connect_timeout(&address.into(), remaining.min(Duration::from_millis(250)))
+        {
+            Ok(stream) => {
                 stream.set_nodelay(true)?;
                 return Ok(stream);
             }
-            Ok((_stream, _peer)) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "QMP client did not connect from loopback",
-                ));
-            }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                if Instant::now() >= deadline {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "QMP client did not connect before the fixed startup deadline",
-                    ));
-                }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::ConnectionRefused
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::WouldBlock
+                        | io::ErrorKind::Interrupted
+                ) =>
+            {
                 std::thread::sleep(Duration::from_millis(25));
             }
             Err(error) => return Err(error),
@@ -605,11 +612,15 @@ mod tests {
     #[test]
     fn endpoint_reserves_an_ephemeral_loopback_listener_and_validates_identity() {
         let endpoint = QmpEndpoint::for_incident("0123456789abcdef0123456789abcdef").unwrap();
-        assert_ne!(endpoint.port(), 0);
-        assert_eq!(
-            endpoint.qemu_config(),
-            QemuQmpEndpoint::loopback_tcp(endpoint.port())
-        );
+        let port = endpoint.port();
+        assert_ne!(port, 0);
+        assert_eq!(endpoint.qemu_config(), QemuQmpEndpoint::loopback_tcp(port));
+        assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_err());
+        endpoint.release_reservation_for_spawn().unwrap();
+        let rebound = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+            .expect("released QMP port should be available for QEMU");
+        assert!(endpoint.release_reservation_for_spawn().is_err());
+        drop(rebound);
         assert!(QmpEndpoint::for_incident("../caller-selected").is_err());
         assert!(QmpEndpoint::for_incident("ABCDEF0123456789ABCDEF0123456789").is_err());
     }
