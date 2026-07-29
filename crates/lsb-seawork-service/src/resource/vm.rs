@@ -1810,7 +1810,7 @@ mod tests {
             },
             CancellationToken::default(),
             CancellationToken::default(),
-            telemetry,
+            telemetry.clone(),
             transaction_span.parent(),
         );
         transaction_span.finish(crate::telemetry::SpanStatus::InternalError);
