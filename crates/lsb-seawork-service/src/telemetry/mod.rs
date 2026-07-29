@@ -79,7 +79,7 @@ pub(crate) fn format_error_chain(error: &anyhow::Error) -> String {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
-    #[cfg(any(test, all(windows, feature = "sentry-telemetry")))]
+    #[cfg(any(test, windows))]
     Warning,
     Error,
     #[cfg(all(windows, feature = "sentry-telemetry"))]
