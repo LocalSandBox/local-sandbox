@@ -1,0 +1,19 @@
+scripts/windows-test-suites/qemu-telemetry-smoke.ps1
+  s_31ad4f53b04974::t_fc1fe5cf0a9d61 53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "6aa7ff37f20fd56e162c5e61e330ebcb2a15349a",
+  "prompts": {},
+  "sessions": {
+    "s_31ad4f53b04974": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa7b0-4d69-7d01-ae26-6595cb9ecc1b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
