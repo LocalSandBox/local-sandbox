@@ -11,9 +11,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+pub use context::CommonContext;
+#[cfg(any(test, all(windows, feature = "sentry-telemetry")))]
+pub use context::COMPONENT;
 #[cfg(all(windows, feature = "sentry-telemetry"))]
 pub use context::SERVICE_NAME;
-pub use context::{CommonContext, COMPONENT};
 #[cfg(windows)]
 pub(crate) use diagnostics::vm_diagnostics_dir;
 #[cfg(windows)]
