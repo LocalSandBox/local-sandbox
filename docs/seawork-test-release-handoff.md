@@ -1297,3 +1297,64 @@ Therefore the LocalSandbox evidence must continue to report
 authorized SeaWork change, an exact SeaWork commit, and a Windows run proving all four
 downstream acceptance bullets from the 2026-07-28 handoff entry. LocalSandbox must not
 claim that a service-only stop test proves the app watchdog or quarantine policy.
+
+## 2026-07-29 — SeaWork QEMU watchdog acceptance
+
+Status: **passed with the approved internal-tool composite acceptance**
+
+The authorized SeaWork change is on branch `feat/win-lsb-svc` at commit
+`c2caf40b11ec51a50fcbdeb8dacbdb90b5b9798e` (including predecessor
+`1b5036a7ef3061781f9e9395854e3c04c393a64b`). It:
+
+- raises `LOCAL_SANDBOX_STOP_TIMEOUT_MS` from 10,000 to 45,000;
+- retains correlation/resource identifiers in app-visible stop failures;
+- treats a correctly formatted correlated service response as completed cleanup, so
+  the error remains visible without quarantining the runtime; and
+- preserves timeout quarantine for a service that does not respond before the outer
+  deadline.
+
+SeaWork package verification at that commit passed 124 tests and both production and
+test TypeScript builds. Windows acceptance ID
+`20260729t055136z-seawork-c2caf40b` then passed in three layers:
+
+1. A signed interactive SeaWork executable used the installed 0.5.2 Node binding,
+   private named pipe, service, and WHPX QEMU path. The app stopped a deliberately
+   suspended QEMU, remained unquarantined, successfully ran a follow-up sandbox, and
+   ended with zero QEMU processes. A controlled 5-second response tail made the
+   app-observed operation last 17,653 ms, beyond the former 10-second watchdog.
+2. The SeaWork resolver's stop promise ran the current LocalSandbox
+   `windows_service_owned_qemu_shutdown_hang_smoke` on `win-test` at snapshot
+   `51ddcfffcaf932eefad473934ac6de2b53f61709`. The combined watchdog operation
+   completed in 13,351 ms, exceeded the old deadline, remained below 45,000 ms, did
+   not quarantine, and permitted a follow-up call. Incident
+   `270f5e29fa606b2345e936d4f13f504b` recorded
+   `qemu_shutdown_timeout`, responsive QMP, `SANDBOX_STOP_FAILED`, correlation ID
+   `windows-service-qemu-stop-smoke`, resource ID
+   `0223a994f16c5a2dc53d6e7a64d84e22`, and active-process-zero.
+3. Windows negative controls preserved both opaque identifiers in a correlated
+   stop error without quarantine, and held an unresponsive stop for 45,014 ms before
+   producing `LOCAL_SANDBOX_STOP_TIMEOUT` followed by
+   `LOCAL_SANDBOX_RUNTIME_QUARANTINED`.
+
+The compact fetched evidence directory is
+`/tmp/seawork-qemu-watchdog-evidence`. Its SHA-256 values are:
+
+- `watchdog-result.json`:
+  `c6715ceb02f52cd6f3ae9583d46a4e2104a0c77b02093aa86198e6d4fed32069`;
+- `unresponsive-result.json`:
+  `a354e06410038d72b9df6609d2304869925aff7529b7572ffd91eaccb5e7b9d8`;
+- `correlated-stop-result.json`:
+  `c5a71c47f244f7ea404400cf75e5a3a499b6bf2860f879a0c8d1a7c6b5c27b51`;
+- `qemu-hang.json`:
+  `48c51e3f7b22e488d75de772cbc2aef5b1ab300500fe4e3a8b7c2cb56bb7e7fe`;
+- `incident.json`:
+  `deeb0b9b1add93d385be8860e4a68f615f6eaffb190c567534b5a9ef9784d650`;
+  and
+- `signed-app-stop.out`:
+  `a00d838cf8fb21eee114c1132257f808b1f958c92571fb946f1328e423be33c0`.
+
+The temporary scheduled tasks and copied test executables were removed after the
+run. `LocalSandboxSeaWork` remained running and the final QEMU process count was zero.
+This append-only entry supersedes
+`downstream_app_stop_quarantine_exercised: false` for the approved internal-tool
+acceptance and closes the downstream watchdog/quarantine gate.
