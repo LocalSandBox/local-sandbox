@@ -271,6 +271,10 @@ fn accept_with_deadline(listener: TcpListener, timeout: Duration) -> io::Result<
     loop {
         match listener.accept() {
             Ok((stream, peer)) if peer.ip().is_loopback() => {
+                // Windows inherits the listener's nonblocking mode on accepted
+                // sockets. QMP uses bounded synchronous workers, so restore
+                // blocking mode before protocol negotiation.
+                stream.set_nonblocking(false)?;
                 stream.set_nodelay(true)?;
                 return Ok(stream);
             }
