@@ -2,6 +2,7 @@ use std::ffi::OsString;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use lsb_platform::windows_x86_64::fs::smb::fix_windows_smb_policy;
 use windows_service::define_windows_service;
 use windows_service::service::{ServiceControl, ServiceState};
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
@@ -98,6 +99,7 @@ fn run_registered(
     verify_protected_configuration(&paths)?;
     let logger = std::sync::Arc::new(ServiceLogger::new(&paths.logs)?);
     logger.write(EventId::ServiceStartPending, "startup", "START_PENDING")?;
+    apply_startup_host_fixes(&logger, &telemetry);
     advance_startup_checkpoint(status_handle, &mut startup_checkpoint, STARTUP_WAIT_HINT)?;
     let config = ServiceConfig::load_or_default(&paths.config)?;
     let product_ca_bundle_pem = crate::config::load_product_ca_bundle(&paths.product_ca_bundle)?;
@@ -382,6 +384,72 @@ fn run_registered(
     telemetry.flush(Duration::from_secs(2));
     status_handle.set_service_status(status::stopped())?;
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum StartupHostFixOutcome {
+    Repaired,
+    AlreadyReady,
+    Failed(String),
+}
+
+fn attempt_windows_smb_policy_fix<F, E>(fix: F) -> StartupHostFixOutcome
+where
+    F: FnOnce() -> std::result::Result<bool, E>,
+    E: std::fmt::Display,
+{
+    match fix() {
+        Ok(true) => StartupHostFixOutcome::Repaired,
+        Ok(false) => StartupHostFixOutcome::AlreadyReady,
+        Err(error) => StartupHostFixOutcome::Failed(error.to_string()),
+    }
+}
+
+fn apply_startup_host_fixes(logger: &ServiceLogger, telemetry: &Telemetry) {
+    let outcome =
+        attempt_windows_smb_policy_fix(|| fix_windows_smb_policy().map(|report| report.changed));
+
+    match outcome {
+        StartupHostFixOutcome::Repaired => {
+            telemetry.breadcrumb(
+                Breadcrumb::lifecycle("host_fix", "windows_smb_policy")
+                    .with_data("outcome", "repaired"),
+            );
+            let _ = logger.write(
+                EventId::ServiceStartPending,
+                "host_fix",
+                "SMB_POLICY_REPAIRED",
+            );
+        }
+        StartupHostFixOutcome::AlreadyReady => {
+            telemetry.breadcrumb(
+                Breadcrumb::lifecycle("host_fix", "windows_smb_policy")
+                    .with_data("outcome", "already_ready"),
+            );
+            let _ = logger.write(
+                EventId::ServiceStartPending,
+                "host_fix",
+                "SMB_POLICY_ALREADY_READY",
+            );
+        }
+        StartupHostFixOutcome::Failed(error) => {
+            telemetry.capture_failure(
+                FailureEvent::new(
+                    "service.startup",
+                    "SMB_POLICY_REPAIR_FAILED",
+                    Level::Warning,
+                    error,
+                )
+                .with_detailed_failure_kind("host_policy_repair")
+                .retryable(true),
+            );
+            let _ = logger.write(
+                EventId::RuntimeCapabilityUnavailable,
+                "host_fix",
+                "SMB_POLICY_REPAIR_FAILED",
+            );
+        }
+    }
 }
 
 fn capture_unclean_previous_exit(
@@ -801,8 +869,9 @@ fn cap_memory_limit(configured_mib: u32, physical_mib: u64) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cap_memory_limit, run_startup_operation, wait_for_pipe_drain, wait_for_runtime_exit,
-        PipeDrainOutcome, RuntimeExit,
+        attempt_windows_smb_policy_fix, cap_memory_limit, run_startup_operation,
+        wait_for_pipe_drain, wait_for_runtime_exit, PipeDrainOutcome, RuntimeExit,
+        StartupHostFixOutcome,
     };
     use std::time::Duration;
     use windows_service::service::ServiceControl;
@@ -865,6 +934,26 @@ mod tests {
 
         assert!(error.to_string().contains("verification failed"));
         assert_eq!(checkpoint, 1);
+    }
+
+    #[test]
+    fn startup_smb_policy_fix_classifies_repaired_and_ready_outcomes() {
+        assert_eq!(
+            attempt_windows_smb_policy_fix(|| Ok::<_, anyhow::Error>(true)),
+            StartupHostFixOutcome::Repaired
+        );
+        assert_eq!(
+            attempt_windows_smb_policy_fix(|| Ok::<_, anyhow::Error>(false)),
+            StartupHostFixOutcome::AlreadyReady
+        );
+    }
+
+    #[test]
+    fn startup_smb_policy_fix_keeps_failure_as_an_outcome() {
+        assert_eq!(
+            attempt_windows_smb_policy_fix(|| anyhow::bail!("policy refused")),
+            StartupHostFixOutcome::Failed("policy refused".to_string())
+        );
     }
 
     #[tokio::test]
