@@ -77,8 +77,10 @@ pub(crate) fn format_error_chain(error: &anyhow::Error) -> String {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
+    #[cfg(any(test, all(windows, feature = "sentry-telemetry")))]
     Warning,
     Error,
+    #[cfg(all(windows, feature = "sentry-telemetry"))]
     Fatal,
 }
 
@@ -154,6 +156,7 @@ impl FailureEvent {
         }
     }
 
+    #[cfg(any(test, all(windows, feature = "sentry-telemetry")))]
     pub fn fingerprint(&self) -> [String; 4] {
         [
             COMPONENT.to_string(),
