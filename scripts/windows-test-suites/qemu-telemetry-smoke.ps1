@@ -337,6 +337,9 @@ Invoke-Cargo @(
 if (Get-Process -Name 'blocked-dump-helper', 'qemu-system-x86_64' -ErrorAction SilentlyContinue) {
     throw 'The helper-timeout path left a helper or QEMU process alive.'
 }
+# The blocked-helper path can leave WHPX teardown briefly active after both
+# processes exit. Pace the next distinct VM just like the repeated incidents.
+Start-Sleep -Milliseconds 1000
 
 Remove-Item Env:LSB_QEMU_HANG_TEST_EXPECT_DUMP_TIMEOUT -ErrorAction SilentlyContinue
 $env:LSB_QEMU_HANG_TEST_HELPER = $helper
@@ -355,6 +358,7 @@ Invoke-Cargo @(
 if (Get-Process -Name 'qemu-system-x86_64' -ErrorAction SilentlyContinue) {
     throw 'The service-owned QEMU hang path left QEMU alive.'
 }
+Start-Sleep -Milliseconds 1000
 $serviceArchives = @(Get-ChildItem -LiteralPath $env:LSB_QEMU_HANG_TEST_SERVICE_ROOT `
     -Filter 'incident.zip' -File -Recurse -Force)
 if ($serviceArchives.Count -ne 1) {
