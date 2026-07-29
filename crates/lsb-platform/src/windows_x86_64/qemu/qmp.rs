@@ -284,9 +284,13 @@ fn accept_with_deadline(listener: TcpListener, timeout: Duration) -> io::Result<
                     "QMP client did not connect from loopback",
                 ));
             }
-            Err(error)
-                if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
-            {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "QMP client did not connect before the fixed startup deadline",
+                    ));
+                }
                 std::thread::sleep(Duration::from_millis(25));
             }
             Err(error) => return Err(error),

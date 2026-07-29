@@ -449,10 +449,10 @@ fn push_qmp(command: &mut QemuCommandParts, qmp: &QemuQmpEndpoint) -> Result<(),
                 command,
                 "-chardev",
                 format!(
-                    "socket,id={QMP_CHARDEV_ID},host=127.0.0.1,port={port},server=off,nodelay=on"
+                    "socket,id={QMP_CHARDEV_ID},host=127.0.0.1,port={port},server=off,nodelay=on,reconnect-ms=100"
                 ),
                 format!(
-                    "socket,id={QMP_CHARDEV_ID},host=127.0.0.1,port=<qmp-port>,server=off,nodelay=on"
+                    "socket,id={QMP_CHARDEV_ID},host=127.0.0.1,port=<qmp-port>,server=off,nodelay=on,reconnect-ms=100"
                 ),
             );
             push_pair(
@@ -784,7 +784,7 @@ mod tests {
                 "-device",
                 "virtserialport,chardev=lsbctl,name=org.localsandbox.control",
                 "-chardev",
-                "socket,id=lsbqmp,host=127.0.0.1,port=43210,server=off,nodelay=on",
+                "socket,id=lsbqmp,host=127.0.0.1,port=43210,server=off,nodelay=on,reconnect-ms=100",
                 "-mon",
                 "chardev=lsbqmp,mode=control",
                 "-nic",
@@ -968,7 +968,7 @@ mod tests {
 
         assert_eq!(
             qmp_chardev,
-            "socket,id=lsbqmp,host=127.0.0.1,port=43210,server=off,nodelay=on"
+            "socket,id=lsbqmp,host=127.0.0.1,port=43210,server=off,nodelay=on,reconnect-ms=100"
         );
         assert_eq!(qmp_monitor, "chardev=lsbqmp,mode=control");
         assert!(argv.iter().any(|argument| argument == "-S"));
