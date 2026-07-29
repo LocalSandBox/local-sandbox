@@ -298,7 +298,7 @@ impl SandboxJob {
         self.qemu_telemetry = Some(context);
     }
 
-    pub fn attach_qemu_lifecycle(&self, telemetry: Telemetry, parent: SpanParent) {
+    pub(crate) fn attach_qemu_lifecycle(&self, telemetry: Telemetry, parent: SpanParent) {
         if let Ok(mut trace) = self.lifecycle_trace.lock() {
             trace.attach(telemetry, parent);
         }

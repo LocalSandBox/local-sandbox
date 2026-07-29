@@ -606,7 +606,7 @@ impl SessionManager {
 
     #[cfg(windows)]
     #[allow(clippy::too_many_arguments)]
-    pub fn start_reserved_managed_vm(
+    pub(crate) fn start_reserved_managed_vm(
         &self,
         session_id: ResourceHandle,
         identity: &ClientIdentityKey,
@@ -686,7 +686,7 @@ impl SessionManager {
     }
 
     #[cfg(windows)]
-    pub fn stop_managed_vm(
+    pub(crate) fn stop_managed_vm(
         &self,
         session_id: ResourceHandle,
         identity: &ClientIdentityKey,

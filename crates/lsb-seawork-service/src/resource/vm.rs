@@ -202,7 +202,7 @@ impl std::fmt::Debug for ManagedVm {
 }
 
 impl ManagedVm {
-    pub fn start(
+    pub(crate) fn start(
         engine: &ServiceEngineConfig,
         mut transaction: crate::resource::transaction::ResourceTransaction,
         spec: ManagedVmSpec,
@@ -277,7 +277,7 @@ impl ManagedVm {
         })
     }
 
-    pub fn stop(
+    pub(crate) fn stop(
         self,
         timeout: Duration,
         trace_parent: Option<crate::telemetry::SpanParent>,
