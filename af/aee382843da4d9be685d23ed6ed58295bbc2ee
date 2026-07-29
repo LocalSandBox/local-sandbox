@@ -1,0 +1,26 @@
+crates/lsb-platform/src/windows_x86_64/qemu/argv.rs
+  s_31ad4f53b04974::t_004a922deae547 452,455,787,952,971,976-977
+crates/lsb-platform/src/windows_x86_64/qemu/boot.rs
+  s_31ad4f53b04974::t_7e5608b235e1d3 921-935
+crates/lsb-platform/src/windows_x86_64/qemu/qmp.rs
+  s_31ad4f53b04974::t_004a922deae547 4,33,62,72-85,114-117,275-276,279-288,292-300
+  s_31ad4f53b04974::t_5b68e591923c34 615-616,618-623
+  s_31ad4f53b04974::t_b82ee95627bef8 617
+  s_31ad4f53b04974::t_07201cd6eb8f99 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "afaee382843da4d9be685d23ed6ed58295bbc2ee",
+  "prompts": {},
+  "sessions": {
+    "s_31ad4f53b04974": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa7b0-4d69-7d01-ae26-6595cb9ecc1b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
