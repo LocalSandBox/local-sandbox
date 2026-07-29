@@ -262,13 +262,11 @@ impl QemuControlChannelConfig {
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum QemuQmpEndpoint {
-    NamedPipe { pipe_name: String },
+    LoopbackTcp { port: u16 },
 }
 
 impl QemuQmpEndpoint {
-    pub(crate) fn named_pipe(pipe_name: impl Into<String>) -> Self {
-        Self::NamedPipe {
-            pipe_name: pipe_name.into(),
-        }
+    pub(crate) fn loopback_tcp(port: u16) -> Self {
+        Self::LoopbackTcp { port }
     }
 }

@@ -585,7 +585,7 @@ impl fmt::Display for QemuBootError {
             ),
             Self::QmpOpen { detail, .. } => write!(
                 f,
-                "failed to connect the private Windows QMP pipe during QEMU boot: {detail}.{}",
+                "failed to connect the one-shot Windows QMP loopback endpoint during QEMU boot: {detail}.{}",
                 self.artifact_sentence()
             ),
             Self::ControlOpen { source, .. } => write!(
@@ -749,9 +749,26 @@ pub(crate) fn launch_windows_qemu_boot(
     )
     .ok();
     artifacts.attach_identity(timeline.as_ref());
-    let qmp_endpoint = timeline
-        .as_ref()
-        .and_then(|timeline| QmpEndpoint::for_incident(timeline.incident_id()).ok());
+    let qmp_endpoint = if let Some(timeline) = &timeline {
+        match QmpEndpoint::for_incident(timeline.incident_id()) {
+            Ok(endpoint) => Some(endpoint),
+            Err(source) => {
+                let error = QemuBootError::QmpOpen {
+                    detail: format!("failed to reserve loopback listener: {source}"),
+                    artifacts: artifacts.clone(),
+                };
+                record_failure(
+                    &artifacts,
+                    config.boot_observation_timeout,
+                    observation_goal,
+                    &error,
+                );
+                return Err(error);
+            }
+        }
+    } else {
+        None
+    };
     let mut progress = timeline.as_ref().and_then(|timeline| {
         QemuProgressWriter::create(
             &artifacts.directory,

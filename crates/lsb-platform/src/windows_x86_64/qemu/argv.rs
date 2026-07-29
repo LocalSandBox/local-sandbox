@@ -438,13 +438,22 @@ fn push_virtio_serial_port(
 
 fn push_qmp(command: &mut QemuCommandParts, qmp: &QemuQmpEndpoint) -> Result<(), QemuArgvError> {
     match qmp {
-        QemuQmpEndpoint::NamedPipe { pipe_name } => {
-            validate_qemu_suboption("qmp.pipe_name", pipe_name)?;
+        QemuQmpEndpoint::LoopbackTcp { port } => {
+            if *port == 0 {
+                return Err(QemuArgvError::InvalidNumericInput {
+                    field: "qmp.port",
+                    reason: "must be greater than zero",
+                });
+            }
             push_pair_redacted(
                 command,
                 "-chardev",
-                format!("pipe,id={QMP_CHARDEV_ID},path={pipe_name}"),
-                format!("pipe,id={QMP_CHARDEV_ID},path=<qmp-pipe>"),
+                format!(
+                    "socket,id={QMP_CHARDEV_ID},host=127.0.0.1,port={port},server=off,nodelay=on"
+                ),
+                format!(
+                    "socket,id={QMP_CHARDEV_ID},host=127.0.0.1,port=<qmp-port>,server=off,nodelay=on"
+                ),
             );
             push_pair(
                 command,
@@ -734,7 +743,7 @@ mod tests {
     fn virtio_serial_control_and_qmp_argv_matches_golden() {
         let mut config = base_config();
         config.control_channel = Some(QemuControlChannelConfig::named_pipe("lsb-abc-control"));
-        config.qmp = Some(QemuQmpEndpoint::named_pipe("lsb-abc-qmp"));
+        config.qmp = Some(QemuQmpEndpoint::loopback_tcp(43210));
 
         let command = build(config);
 
@@ -775,7 +784,7 @@ mod tests {
                 "-device",
                 "virtserialport,chardev=lsbctl,name=org.localsandbox.control",
                 "-chardev",
-                "pipe,id=lsbqmp,path=lsb-abc-qmp",
+                "socket,id=lsbqmp,host=127.0.0.1,port=43210,server=off,nodelay=on",
                 "-mon",
                 "chardev=lsbqmp,mode=control",
                 "-nic",
@@ -940,9 +949,9 @@ mod tests {
     }
 
     #[test]
-    fn qmp_endpoint_is_private_pipe_only_in_generated_argv() {
+    fn qmp_endpoint_is_loopback_client_only_in_generated_argv() {
         let mut config = base_config();
-        config.qmp = Some(QemuQmpEndpoint::named_pipe("lsb-abc-qmp"));
+        config.qmp = Some(QemuQmpEndpoint::loopback_tcp(43210));
 
         let command = build(config);
         let argv = argv_as_strings(&command);
@@ -957,11 +966,29 @@ mod tests {
             .map(|pair| pair[1].clone())
             .expect("QMP monitor should be present");
 
-        assert_eq!(qmp_chardev, "pipe,id=lsbqmp,path=lsb-abc-qmp");
+        assert_eq!(
+            qmp_chardev,
+            "socket,id=lsbqmp,host=127.0.0.1,port=43210,server=off,nodelay=on"
+        );
         assert_eq!(qmp_monitor, "chardev=lsbqmp,mode=control");
         assert!(argv.iter().any(|argument| argument == "-S"));
-        assert!(!qmp_chardev.contains("tcp:"));
         assert!(!qmp_chardev.contains("0.0.0.0"));
+        assert!(!qmp_chardev.contains("server=on"));
+        assert!(qmp_chardev.contains("host=127.0.0.1"));
+    }
+
+    #[test]
+    fn qmp_endpoint_rejects_zero_port() {
+        let mut config = base_config();
+        config.qmp = Some(QemuQmpEndpoint::loopback_tcp(0));
+
+        assert_eq!(
+            QemuArgvBuilder::new(config).build().unwrap_err(),
+            QemuArgvError::InvalidNumericInput {
+                field: "qmp.port",
+                reason: "must be greater than zero",
+            }
+        );
     }
 
     #[test]
@@ -974,7 +1001,7 @@ mod tests {
     }
 
     #[test]
-    fn sanitized_display_redacts_paths_and_pipe_names() {
+    fn sanitized_display_redacts_paths_pipe_names_and_qmp_endpoint() {
         let mut config = QemuBootConfig::direct_linux_boot(
             r"C:\TOPSECRET\qemu-system-x86_64.exe",
             r"C:\TOPSECRET\Image",
@@ -987,7 +1014,7 @@ mod tests {
         config.control_channel = Some(QemuControlChannelConfig::named_pipe(
             "lsb-TOPSECRET-control",
         ));
-        config.qmp = Some(QemuQmpEndpoint::named_pipe("lsb-TOPSECRET-qmp"));
+        config.qmp = Some(QemuQmpEndpoint::loopback_tcp(43210));
         config.diagnostic_label = Some("sandbox-abc".to_string());
 
         let command = build(config);
@@ -1000,7 +1027,8 @@ mod tests {
         assert!(display.contains("file=<root-disk>"));
         assert!(display.contains("file:<serial-log>"));
         assert!(display.contains("path=<control-pipe>"));
-        assert!(display.contains("pipe,id=lsbqmp,path=<qmp-pipe>"));
+        assert!(display.contains("host=127.0.0.1,port=<qmp-port>"));
+        assert!(!display.contains("43210"));
         assert!(command.sanitized_argv().contains(&"<initrd>".to_string()));
     }
 
@@ -1021,7 +1049,7 @@ mod tests {
     fn argument_order_is_deterministic() {
         let mut config = base_config();
         config.control_channel = Some(QemuControlChannelConfig::named_pipe("lsb-abc-control"));
-        config.qmp = Some(QemuQmpEndpoint::named_pipe("lsb-abc-qmp"));
+        config.qmp = Some(QemuQmpEndpoint::loopback_tcp(43210));
 
         let first = build(config.clone());
         let second = build(config);

@@ -1,6 +1,7 @@
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
 #[cfg(windows)]
+use std::net::TcpStream;
+use std::net::{Ipv4Addr, TcpListener};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -20,57 +21,23 @@ const MAX_QMP_MESSAGES_PER_REQUEST: usize = 32;
 const MAX_QMP_RESPONSE_BYTES: usize = 16 * 1024;
 const QMP_STARTUP_CONNECT_DEADLINE: Duration = Duration::from_secs(30);
 const QMP_STARTUP_PROTOCOL_DEADLINE: Duration = Duration::from_secs(15);
-const QMP_PIPE_SERVER_SETTLE_DELAY: Duration = Duration::from_millis(100);
 const QMP_CAPTURE_DEADLINE: Duration = Duration::from_secs(5);
 const QMP_QUIT_DEADLINE: Duration = Duration::from_secs(2);
 
 #[cfg(windows)]
-#[derive(Debug)]
-struct QmpPipeStream {
-    file: std::fs::File,
-}
-
-#[cfg(windows)]
-impl QmpPipeStream {
-    fn open(path: &Path) -> io::Result<Self> {
-        Ok(Self {
-            file: std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(path)?,
-        })
-    }
-}
-
-#[cfg(windows)]
-impl Read for QmpPipeStream {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.file.read(buffer)
-    }
-}
-
-#[cfg(windows)]
-impl Write for QmpPipeStream {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.file.write(buffer)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
-    }
-}
+type QmpStream = TcpStream;
 
 #[derive(Debug, Clone)]
 pub(crate) struct QmpEndpoint {
-    pipe_name: String,
-    pipe_path: PathBuf,
+    port: u16,
+    listener: Arc<Mutex<Option<TcpListener>>>,
     #[cfg(windows)]
-    stream: Arc<Mutex<Option<QmpPipeStream>>>,
+    stream: Arc<Mutex<Option<QmpStream>>>,
 }
 
 impl PartialEq for QmpEndpoint {
     fn eq(&self, other: &Self) -> bool {
-        self.pipe_name == other.pipe_name && self.pipe_path == other.pipe_path
+        self.port == other.port
     }
 }
 
@@ -88,22 +55,24 @@ impl QmpEndpoint {
                 "QMP incident ID must be 32 lowercase hexadecimal characters",
             ));
         }
-        let pipe_name = format!("lsb-{incident_id}-qmp");
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        listener.set_nonblocking(true)?;
+        let port = listener.local_addr()?.port();
         Ok(Self {
-            pipe_path: PathBuf::from(format!(r"\\.\pipe\{pipe_name}")),
-            pipe_name,
+            port,
+            listener: Arc::new(Mutex::new(Some(listener))),
             #[cfg(windows)]
             stream: Arc::new(Mutex::new(None)),
         })
     }
 
     pub(crate) fn qemu_config(&self) -> QemuQmpEndpoint {
-        QemuQmpEndpoint::named_pipe(self.pipe_name.clone())
+        QemuQmpEndpoint::loopback_tcp(self.port)
     }
 
     #[cfg(test)]
-    pub(crate) fn pipe_name(&self) -> &str {
-        &self.pipe_name
+    pub(crate) fn port(&self) -> u16 {
+        self.port
     }
 
     pub(crate) fn capture(&self, timeline_elapsed: Duration) -> QemuQmpSnapshot {
@@ -129,13 +98,17 @@ impl QmpEndpoint {
     pub(crate) fn connect(&self) -> io::Result<()> {
         use std::sync::mpsc;
 
-        // QEMU creates pipe chardevs in argv order, so the parent must establish
-        // this connection before waiting for guest-ready. QEMU was launched with
-        // `-S`, so its vCPUs remain stopped while the standard greeting,
-        // capabilities, and `cont` exchange completes. This prevents a stalled
-        // WHPX vCPU from starving the Windows monitor pipe before diagnostics can
-        // be negotiated.
-        let stream = open_with_deadline(&self.pipe_path, QMP_STARTUP_CONNECT_DEADLINE)?;
+        // The listener is reserved before QEMU starts and accepts exactly one
+        // loopback client. QEMU was launched with `-S`, so its vCPUs remain
+        // stopped while the greeting, capabilities, and acknowledged `cont`
+        // exchange completes.
+        let listener = self
+            .listener
+            .lock()
+            .map_err(|_| io::Error::other("QMP listener lock was poisoned"))?
+            .take()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "QMP listener is closed"))?;
+        let stream = accept_with_deadline(listener, QMP_STARTUP_CONNECT_DEADLINE)?;
         let deadline = Instant::now() + QMP_STARTUP_PROTOCOL_DEADLINE;
         let (sender, receiver) = mpsc::sync_channel(1);
         let worker = std::thread::spawn(move || {
@@ -167,12 +140,12 @@ impl QmpEndpoint {
     pub(crate) fn connect(&self) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "QMP named pipes are available only on Windows",
+            "QMP loopback transport is available only on Windows",
         ))
     }
 
     #[cfg(windows)]
-    fn take_connected_stream(&self) -> io::Result<QmpPipeStream> {
+    fn take_connected_stream(&self) -> io::Result<QmpStream> {
         self.stream
             .lock()
             .map_err(|_| io::Error::other("QMP connection lock was poisoned"))?
@@ -181,7 +154,7 @@ impl QmpEndpoint {
     }
 
     #[cfg(windows)]
-    fn restore_connected_stream(&self, stream: QmpPipeStream) {
+    fn restore_connected_stream(&self, stream: QmpStream) {
         if let Ok(mut current) = self.stream.lock() {
             if current.is_none() {
                 *current = Some(stream);
@@ -193,13 +166,13 @@ impl QmpEndpoint {
     fn take_connected_stream(&self) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "QMP named pipes are available only on Windows",
+            "QMP loopback transport is available only on Windows",
         ))
     }
 }
 
 #[cfg(windows)]
-fn request_quit_endpoint(stream: QmpPipeStream) -> (io::Result<()>, Option<QmpPipeStream>) {
+fn request_quit_endpoint(stream: QmpStream) -> (io::Result<()>, Option<QmpStream>) {
     use std::sync::mpsc;
 
     let (sender, receiver) = mpsc::sync_channel(1);
@@ -231,7 +204,7 @@ fn request_quit_endpoint(_stream: ()) -> (io::Result<()>, Option<()>) {
     (
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "QMP named pipes are available only on Windows",
+            "QMP loopback transport is available only on Windows",
         )),
         None,
     )
@@ -239,9 +212,9 @@ fn request_quit_endpoint(_stream: ()) -> (io::Result<()>, Option<()>) {
 
 #[cfg(windows)]
 fn capture_endpoint(
-    stream: io::Result<QmpPipeStream>,
+    stream: io::Result<QmpStream>,
     timeline_elapsed: Duration,
-) -> (QemuQmpSnapshot, Option<QmpPipeStream>) {
+) -> (QemuQmpSnapshot, Option<QmpStream>) {
     use std::sync::mpsc;
 
     let stream = match stream {
@@ -293,56 +266,28 @@ fn capture_endpoint(
 }
 
 #[cfg(windows)]
-fn open_with_deadline(path: &Path, timeout: Duration) -> io::Result<QmpPipeStream> {
+fn accept_with_deadline(listener: TcpListener, timeout: Duration) -> io::Result<QmpStream> {
     let deadline = Instant::now() + timeout;
-    wait_for_pipe_server(path, deadline)?;
-    // QEMU's Windows pipe backend calls CreateNamedPipe followed by
-    // ConnectNamedPipe. WaitNamedPipe can observe the instance between those
-    // calls; connecting in that interval makes QEMU mishandle
-    // ERROR_PIPE_CONNECTED and block forever in GetOverlappedResult. Give the
-    // server thread a bounded interval to post its overlapped connect first.
-    std::thread::sleep(
-        QMP_PIPE_SERVER_SETTLE_DELAY.min(deadline.saturating_duration_since(Instant::now())),
-    );
-
     loop {
-        match QmpPipeStream::open(path) {
-            Ok(stream) => return Ok(stream),
+        match listener.accept() {
+            Ok((stream, peer)) if peer.ip().is_loopback() => {
+                stream.set_nodelay(true)?;
+                return Ok(stream);
+            }
+            Ok((_stream, _peer)) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "QMP client did not connect from loopback",
+                ));
+            }
             Err(error)
-                if matches!(error.raw_os_error(), Some(2 | 231)) && Instant::now() < deadline =>
+                if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
             {
                 std::thread::sleep(Duration::from_millis(25));
             }
             Err(error) => return Err(error),
         }
     }
-}
-
-#[cfg(windows)]
-fn wait_for_pipe_server(path: &Path, deadline: Instant) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-
-    let path = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    loop {
-        // SAFETY: `path` is a live, NUL-terminated UTF-16 buffer.
-        if unsafe { windows_sys::Win32::System::Pipes::WaitNamedPipeW(path.as_ptr(), 25) } != 0 {
-            return Ok(());
-        }
-        let error = io::Error::last_os_error();
-        if pipe_wait_error_is_retryable(error.raw_os_error()) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(25));
-            continue;
-        }
-        return Err(error);
-    }
-}
-
-fn pipe_wait_error_is_retryable(raw_os_error: Option<i32>) -> bool {
-    matches!(raw_os_error, Some(2 | 121 | 231))
 }
 
 #[cfg(windows)]
@@ -366,7 +311,7 @@ fn capture_endpoint(
 ) -> (QemuQmpSnapshot, Option<()>) {
     (
         QemuQmpSnapshot {
-            error: Some("QMP named pipes are available only on Windows".to_string()),
+            error: Some("QMP loopback transport is available only on Windows".to_string()),
             ..QemuQmpSnapshot::default()
         },
         None,
@@ -650,24 +595,23 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_is_unpredictable_private_and_validated() {
+    fn endpoint_reserves_an_ephemeral_loopback_listener_and_validates_identity() {
         let endpoint = QmpEndpoint::for_incident("0123456789abcdef0123456789abcdef").unwrap();
+        assert_ne!(endpoint.port(), 0);
         assert_eq!(
-            endpoint.pipe_name(),
-            "lsb-0123456789abcdef0123456789abcdef-qmp"
+            endpoint.qemu_config(),
+            QemuQmpEndpoint::loopback_tcp(endpoint.port())
         );
         assert!(QmpEndpoint::for_incident("../caller-selected").is_err());
         assert!(QmpEndpoint::for_incident("ABCDEF0123456789ABCDEF0123456789").is_err());
     }
 
     #[test]
-    fn pipe_server_wait_retries_only_expected_transient_windows_errors() {
-        assert!(pipe_wait_error_is_retryable(Some(2)));
-        assert!(pipe_wait_error_is_retryable(Some(121)));
-        assert!(pipe_wait_error_is_retryable(Some(231)));
-        assert!(!pipe_wait_error_is_retryable(Some(5)));
-        assert!(!pipe_wait_error_is_retryable(None));
-        assert!(QMP_PIPE_SERVER_SETTLE_DELAY < QMP_STARTUP_CONNECT_DEADLINE);
+    fn distinct_endpoints_reserve_distinct_ports() {
+        let first = QmpEndpoint::for_incident("0123456789abcdef0123456789abcdef").unwrap();
+        let second = QmpEndpoint::for_incident("fedcba9876543210fedcba9876543210").unwrap();
+
+        assert_ne!(first.port(), second.port());
     }
 
     #[test]

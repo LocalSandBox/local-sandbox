@@ -108,6 +108,7 @@ $env:LSB_WINDOWS_BOOT_ROOTFS = $rootfs
 $env:LSB_WINDOWS_BOOT_QEMU = $qemu
 $env:LSB_QEMU_HANG_TEST_HELPER = $helper
 $secretCanary = "qemu-telemetry-secret-$([Guid]::NewGuid().ToString('N'))"
+$rawQmpEndpointPattern = 'socket,id=lsbqmp,host=127\.0\.0\.1,port=\d+'
 $env:LSB_QEMU_HANG_TEST_SECRET_CANARY = $secretCanary
 $env:LSB_QEMU_HANG_TEST_FORCE_GUEST_READY_TIMEOUT = '0'
 $env:LSB_QEMU_HANG_TEST_FORCE_SHUTDOWN_TIMEOUT = '0'
@@ -179,14 +180,13 @@ foreach ($index in 1..4) {
             throw "Incident $index progress/timeline identity fields diverged."
         }
     }
-    $rawPipeMarker = "lsb-$([string]$hang.incident_id)-qmp"
     foreach ($textArtifact in Get-ChildItem -LiteralPath $artifact -File -Force |
         Where-Object { $_.Extension -in @('.json', '.jsonl', '.txt', '.log') }) {
         $text = Get-Content -LiteralPath $textArtifact.FullName -Raw
         if ($null -eq $text) { $text = [string]::Empty }
-        if ($text.Contains($rawPipeMarker, [StringComparison]::Ordinal) -or
+        if ($text -match $rawQmpEndpointPattern -or
             $text.Contains($secretCanary, [StringComparison]::Ordinal)) {
-            throw "Incident $index leaked a private pipe name or parent secret into diagnostics."
+            throw "Incident $index leaked its QMP endpoint or parent secret into diagnostics."
         }
     }
     $lastPhaseIndex = -1
@@ -298,12 +298,11 @@ foreach ($requiredPhase in @(
     }
     $lastShutdownPhaseIndex = $phaseIndex
 }
-$shutdownRawPipeMarker = "lsb-$([string]$shutdownHang.incident_id)-qmp"
 foreach ($textArtifact in Get-ChildItem -LiteralPath $shutdownArtifacts -File -Force |
     Where-Object { $_.Extension -in @('.json', '.jsonl', '.txt', '.log') }) {
     $text = Get-Content -LiteralPath $textArtifact.FullName -Raw
     if ($null -eq $text) { $text = [string]::Empty }
-    if ($text.Contains($shutdownRawPipeMarker, [StringComparison]::Ordinal) -or
+    if ($text -match $rawQmpEndpointPattern -or
         $text.Contains($secretCanary, [StringComparison]::Ordinal)) {
         throw 'The QEMU shutdown-timeout diagnostics leaked private parent state.'
     }
@@ -370,8 +369,8 @@ foreach ($textArtifact in Get-ChildItem -LiteralPath $archiveInspection -File -R
     $text = Get-Content -LiteralPath $textArtifact.FullName -Raw
     if ($null -eq $text) { $text = [string]::Empty }
     if ($text.Contains($secretCanary, [StringComparison]::Ordinal) -or
-        $text -match 'lsb-[0-9a-f]{32}-qmp') {
-        throw 'Service incident archive leaked a private pipe name or parent secret.'
+        $text -match $rawQmpEndpointPattern) {
+        throw 'Service incident archive leaked its QMP endpoint or parent secret.'
     }
 }
 $serviceHang = Get-Content -LiteralPath (Join-Path $packaged 'qemu-hang.json') -Raw |
@@ -434,8 +433,8 @@ foreach ($textArtifact in Get-ChildItem -LiteralPath $serviceStopArchiveInspecti
     $text = Get-Content -LiteralPath $textArtifact.FullName -Raw
     if ($null -eq $text) { $text = [string]::Empty }
     if ($text.Contains($secretCanary, [StringComparison]::Ordinal) -or
-        $text -match 'lsb-[0-9a-f]{32}-qmp') {
-        throw 'Service stop incident archive leaked a private pipe name or parent secret.'
+        $text -match $rawQmpEndpointPattern) {
+        throw 'Service stop incident archive leaked its QMP endpoint or parent secret.'
     }
 }
 $env:LSB_QEMU_HANG_TEST_FORCE_SHUTDOWN_TIMEOUT = '0'

@@ -65,7 +65,7 @@ platform records:
 - native process CPU, memory, handle, thread, and I/O samples in
   `qemu-progress.jsonl`;
 - the stable phase sequence in `qemu-timeline.jsonl`;
-- four bounded, redacted queries over a private per-instance QMP pipe;
+- four bounded, redacted queries over a one-shot per-instance loopback QMP connection;
 - bounded evidence from the Hyper-V Hypervisor Operational/Admin and VID Admin
   channels;
 - the read-only authoritative Job snapshot; and
@@ -111,7 +111,7 @@ guest-ready timeouts, a forced platform shutdown timeout, and a service-owned
 shutdown timeout. It verifies QMP responses, scheduled/final process samples,
 three-entry dump retention, helper timeout, the authoritative service Job
 reaching active-process-zero, bounded Hyper-V queries, the two-file incident
-package, production hook exclusion, secret/private-pipe redaction, and WinDbg
+package, production hook exclusion, secret/QMP-endpoint redaction, and WinDbg
 execution of `!analyze -hang`, `~* k`, `!runaway`, and `lm`. The suite records
 the 45-second service RPC deadline but does not claim to exercise SeaWork's
 downstream app watchdog or quarantine-event policy; that acceptance remains in
