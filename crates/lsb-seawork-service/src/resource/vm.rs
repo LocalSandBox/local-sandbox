@@ -1828,7 +1828,10 @@ mod tests {
         assert_eq!(hang["job"]["active_pids"], serde_json::json!([]));
         assert_eq!(hang["job"]["active_process_zero_observed"], true);
         assert_eq!(hang["job"]["termination_requested"], false);
-        assert_eq!(hang["job"]["termination_succeeded"], false);
+        assert_eq!(
+            hang["job"]["termination_succeeded"],
+            serde_json::Value::Null
+        );
         assert_eq!(dump["incident_id"], hang["incident_id"]);
         assert_eq!(dump["correlation_id"], "windows-service-qemu-hang-smoke");
         assert_eq!(dump["resource_id"], resource.to_string());
@@ -1992,7 +1995,10 @@ mod tests {
         assert_eq!(hang["job"]["active_pids"], serde_json::json!([]));
         assert_eq!(hang["job"]["active_process_zero_observed"], true);
         assert_eq!(hang["job"]["termination_requested"], false);
-        assert_eq!(hang["job"]["termination_succeeded"], false);
+        assert_eq!(
+            hang["job"]["termination_succeeded"],
+            serde_json::Value::Null
+        );
         assert_eq!(manifest["stable_error_code"], "SANDBOX_STOP_FAILED");
         assert_eq!(manifest["failure_phase"], "stop");
         assert_eq!(
