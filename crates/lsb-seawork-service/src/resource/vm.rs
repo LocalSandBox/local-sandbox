@@ -1828,14 +1828,14 @@ mod tests {
 
         if real_sentry {
             telemetry.flush(Duration::from_secs(30));
-            let diagnostics = crate::telemetry::vm_diagnostics_dir(
-                &engine.resources_root().join(resource.to_string()),
-            );
-            let hang: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(diagnostics.join("qemu-hang.json")).unwrap())
-                    .unwrap();
-            let incident_id = hang["incident_id"].as_str().unwrap();
-            let dump_directory = engine.telemetry_root().join("qemu-dumps").join(incident_id);
+            let dump_root = engine.telemetry_root().join("qemu-dumps");
+            let dump_directories = std::fs::read_dir(&dump_root)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.is_dir())
+                .collect::<Vec<_>>();
+            assert_eq!(dump_directories.len(), 1);
+            let dump_directory = &dump_directories[0];
             let dump: serde_json::Value = serde_json::from_slice(
                 &std::fs::read(dump_directory.join("qemu-hang-dump.json")).unwrap(),
             )
@@ -1847,6 +1847,7 @@ mod tests {
             assert_eq!(dump["sentry_event_id"], receipt["sentry_event_id"]);
             assert_eq!(dump["incident_id"], receipt["incident_id"]);
             assert_eq!(dump["success"], true);
+            let incident_id = receipt["incident_id"].as_str().unwrap();
             let result = serde_json::json!({
                 "schema_version": 1,
                 "incident_id": incident_id,
