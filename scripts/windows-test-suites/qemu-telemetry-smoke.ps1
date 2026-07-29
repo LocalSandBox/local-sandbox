@@ -50,7 +50,7 @@ function Invoke-CdbHangAnalysis {
         '-z', "`"$DumpPath`"",
         '-c', '".symfix;.reload;!analyze -hang;~* k;!runaway;lm;q"'
     ) -PassThru -RedirectStandardOutput $output -RedirectStandardError $errorOutput
-    if (-not $process.WaitForExit(120000)) {
+    if (-not $process.WaitForExit(300000)) {
         $process.Kill($true)
         throw "WinDbg did not finish bounded analysis for $DumpPath."
     }
