@@ -1264,3 +1264,36 @@ shutdown-timeout paths and records `service_stop_rpc_deadline_ms: 45000`. It
 deliberately records `downstream_app_stop_quarantine_exercised: false`; that field may
 be superseded only by an append-only entry containing the exact SeaWork commit and
 Windows evidence run.
+
+## 2026-07-29 — QEMU watchdog acceptance audit
+
+Status: **blocked on a downstream SeaWork source change and Windows app acceptance**
+
+The completed LocalSandbox QEMU implementation is at commit
+`50de2dab6def1dbb60fe9cc2b420d5aefe120802`. Its current Windows evidence is:
+
+- full WHPX telemetry smoke run
+  `20260729t043333z-45169-db8bc7f09cec`, snapshot
+  `db8bc7f09cec6192812b44fea0f8a0de8a44a77f`;
+- full helper/platform/service package-test run
+  `20260729t050334z-65258-51ddcfffcaf9`, snapshot
+  `51ddcfffcaf932eefad473934ac6de2b53f61709`; and
+- real Sentry event `83e59f015a66356e0f9591ee0a362415`, correlated to local
+  incident `24169fe8dbf080f74afc373499f5321c` and retained dump SHA-256
+  `1df14222800ee1878a0f3372aa2ca75dac273868e40b693993c2122b8573a319`.
+
+The read-only SeaWork checkout audited for this handoff is branch `test`, commit
+`4b88b27367f185cc5d4fd8ba191af433049f6e8c`, five commits behind its existing
+`origin/test` reference. It still defines
+`LOCAL_SANDBOX_STOP_TIMEOUT_MS = 10_000` in
+`packages/local-sandbox-tools/src/sandbox-execution.ts`. When that deadline expires,
+`packages/local-sandbox-tools/src/runtime-resolver.ts` immediately installs a
+`LOCAL_SANDBOX_STOP_TIMEOUT` quarantine record for the runtime key. No local SeaWork
+branch contains the required 45-second default or an app-owned QEMU
+stop/quarantine acceptance harness.
+
+Therefore the LocalSandbox evidence must continue to report
+`downstream_app_stop_quarantine_exercised: false`. Completing the plan requires an
+authorized SeaWork change, an exact SeaWork commit, and a Windows run proving all four
+downstream acceptance bullets from the 2026-07-28 handoff entry. LocalSandbox must not
+claim that a service-only stop test proves the app watchdog or quarantine policy.
