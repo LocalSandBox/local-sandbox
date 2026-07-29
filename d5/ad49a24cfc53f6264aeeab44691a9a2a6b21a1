@@ -1,0 +1,19 @@
+crates/lsb-seawork-service/src/telemetry/mod.rs
+  s_9a81513983a447::t_ec2b3a3af9e5a4 14-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "d5ad49a24cfc53f6264aeeab44691a9a2a6b21a1",
+  "prompts": {},
+  "sessions": {
+    "s_9a81513983a447": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fac7a-1d5a-7d11-ba75-009a8f73dbbb",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
