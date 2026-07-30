@@ -21,7 +21,7 @@ use zeroize::Zeroize;
 
 use crate::config::{ProxyConfig, RequestHeaderRule, UpstreamProxyConfig, SMB_MOUNT_PORT};
 use crate::dns::{self, SharedDnsCache};
-use crate::policy::is_public_destination;
+use crate::policy::is_allowed_destination;
 use crate::stack::{ConnectionId, StackCommand, StackEvent, TcpConnection};
 use crate::stream::ChannelStream;
 use crate::tls::CertificateAuthority;
@@ -651,8 +651,10 @@ fn enforce_connection_policy(
         anyhow::bail!("{protocol} connection denied by mount-only SMB policy");
     }
 
-    if !is_public_destination(dst.ip()) {
-        anyhow::bail!("{protocol} connection denied: destination is not globally routable");
+    if !is_allowed_destination(dst.ip()) {
+        anyhow::bail!(
+            "{protocol} connection denied: destination is neither public nor in 100.64.0.0/10"
+        );
     }
 
     if let Some(domain) = domain.filter(|domain| !config.is_domain_allowed(domain)) {
@@ -1163,7 +1165,9 @@ mod tests {
         let error = connect_default_tcp(&config, &cache, loopback(80))
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("not globally routable"));
+        assert!(error
+            .to_string()
+            .contains("neither public nor in 100.64.0.0/10"));
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
                 .await
@@ -1332,6 +1336,22 @@ mod tests {
     }
 
     #[test]
+    fn allowlist_policy_allows_dns_bound_cgnat_destination() {
+        let config = allowed_config("internal.example.test");
+        let allowed_ip = Ipv4Addr::new(100, 64, 12, 66);
+        let cache = cache_answer("internal.example.test", allowed_ip);
+
+        enforce_connection_policy(
+            &config,
+            &cache,
+            Some("internal.example.test"),
+            dst(allowed_ip, 443),
+            "TLS",
+        )
+        .expect("DNS-bound CGNAT destination should pass");
+    }
+
+    #[test]
     fn allowlist_policy_supports_public_ipv6_dns_binding() {
         let config = allowed_config("api.example.test");
         let allowed: std::net::Ipv6Addr = "2606:4700:4700::1111".parse().unwrap();
@@ -1366,22 +1386,22 @@ mod tests {
     }
 
     #[test]
-    fn default_network_allows_public_destinations_and_denies_non_global_ranges() {
+    fn default_network_allows_public_and_cgnat_destinations_and_denies_other_non_global_ranges() {
         let config = ProxyConfig::default();
         let cache = dns::new_shared_dns_cache();
-        enforce_connection_policy(
-            &config,
-            &cache,
-            None,
-            dst(Ipv4Addr::new(93, 184, 216, 34), 443),
-            "TLS",
-        )
-        .expect("globally routable direct IP should pass default policy");
+        for allowed in [
+            Ipv4Addr::new(93, 184, 216, 34),
+            Ipv4Addr::new(100, 64, 0, 0),
+            Ipv4Addr::new(100, 64, 12, 66),
+            Ipv4Addr::new(100, 127, 255, 255),
+        ] {
+            enforce_connection_policy(&config, &cache, None, dst(allowed, 443), "TLS")
+                .expect("public and CGNAT destinations should pass default policy");
+        }
 
         for denied in [
             Ipv4Addr::LOCALHOST,
             Ipv4Addr::new(10, 0, 0, 1),
-            Ipv4Addr::new(100, 64, 0, 1),
             Ipv4Addr::new(169, 254, 169, 254),
             Ipv4Addr::new(192, 0, 2, 1),
             Ipv4Addr::new(198, 51, 100, 1),
@@ -1389,7 +1409,9 @@ mod tests {
         ] {
             let error = enforce_connection_policy(&config, &cache, None, dst(denied, 80), "TCP")
                 .expect_err("non-global destination must fail closed");
-            assert!(error.to_string().contains("not globally routable"));
+            assert!(error
+                .to_string()
+                .contains("neither public nor in 100.64.0.0/10"));
         }
     }
 

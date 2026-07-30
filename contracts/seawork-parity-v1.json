@@ -67,7 +67,7 @@
     {"id":"start.data-dir","reachable":true,"status":"service-superset","backlog":null,"service_mapping":"Caller path is intentionally removed; installed bundle and protected service state provide the behavior without caller-selected runtime paths.","evidence":["crates/lsb-seawork-service/src/bundle.rs","crates/lsb-seawork-service/src/paths.rs"]},
     {"id":"start.ports","reachable":true,"status":"blocking","backlog":"NET-02","service_mapping":"Exact requested host/guest TCP ports with logon-scoped WFP isolation.","evidence":["source.ports-and-host-exposure"]},
     {"id":"start.mounts","reachable":true,"status":"blocking","backlog":"MNT-01","service_mapping":"Service-selected admin-live or non-admin staged-sync capabilities, never raw trusted caller paths.","evidence":["source.mount-layout"]},
-    {"id":"start.network","reachable":true,"status":"blocking","backlog":"NET-01,NET-02","service_mapping":"Service-owned public egress proxy, scoped secrets/headers/TLS, and authenticated app-owned host relay.","evidence":["source.default-network","source.ports-and-host-exposure"]}
+    {"id":"start.network","reachable":true,"status":"blocking","backlog":"NET-01,NET-02","service_mapping":"Service-owned public and 100.64.0.0/10 CGNAT egress proxy, scoped secrets/headers/TLS, and authenticated app-owned host relay.","evidence":["source.default-network","source.ports-and-host-exposure"]}
   ],
   "operations": [
     {"id":"op.start","reachable":true,"status":"blocking","backlog":"LIF-01","service_mapping":"At-most-once service start returning an owner-bound opaque sandbox handle.","evidence":["source.operation-reachability","source.start-retry"]},
@@ -88,7 +88,7 @@
     {"id":"mount.explicit-direct","reachable":true,"status":"blocking","backlog":"MNT-01","service_mapping":"Supported explicit direct mounts preserve guest path and read-only/read-write semantics through service capabilities.","evidence":["source.start-fields"]}
   ],
   "network_capabilities": [
-    {"id":"network.default-public","reachable":true,"status":"blocking","backlog":"NET-01","service_mapping":"Public internet is enabled by default while non-global and metadata destinations stay denied.","evidence":["source.default-network"]},
+    {"id":"network.default-public","reachable":true,"status":"blocking","backlog":"NET-01","service_mapping":"Public internet and 100.64.0.0/10 CGNAT destinations are enabled by default while other non-global and metadata destinations stay denied.","evidence":["source.default-network"]},
     {"id":"network.allow","reachable":true,"status":"blocking","backlog":"NET-01","service_mapping":"IDNA-normalized exact and subdomain wildcard scopes intersect protected product policy and are rechecked after DNS and redirects.","evidence":["source.start-fields"]},
     {"id":"network.secrets","reachable":true,"status":"blocking","backlog":"NET-01","service_mapping":"Named secret values are injected only for declared host scopes, redacted, and zeroized.","evidence":["source.start-fields"]},
     {"id":"network.https-interception","reachable":true,"status":"blocking","backlog":"NET-01","service_mapping":"Service proxy performs required TLS interception using LocalMachine roots plus optional protected product CA bundle.","evidence":["backlog.md#NET-01"]},

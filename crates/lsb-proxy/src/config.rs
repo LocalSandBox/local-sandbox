@@ -79,7 +79,7 @@ pub struct ProxyConfig {
     /// Network access rules.
     pub network: NetworkConfig,
     /// Installer-protected product egress rules intersected with caller policy.
-    /// Empty means the product policy permits any otherwise-safe public host.
+    /// Empty means the product policy permits public and CGNAT destination hosts.
     pub protected_network: NetworkConfig,
     /// Optional installer-protected explicit upstream HTTP CONNECT proxy.
     pub upstream_proxy: Option<UpstreamProxyConfig>,

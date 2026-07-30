@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::config::{ProxyConfig, GUEST_GATEWAY_IP, HOST_LSB_INTERNAL};
-use crate::policy::{is_public_destination, is_wpad_name, normalize_domain};
+use crate::policy::{is_allowed_destination, is_wpad_name, normalize_domain};
 use crate::stack::StackCommand;
 
 const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
@@ -49,7 +49,7 @@ impl DnsResolutionCache {
         for address in addresses
             .iter()
             .copied()
-            .filter(|address| family.matches(*address) && is_public_destination(*address))
+            .filter(|address| family.matches(*address) && is_allowed_destination(*address))
         {
             record.addresses.insert(address, expires_at);
         }
@@ -60,7 +60,7 @@ impl DnsResolutionCache {
 
     fn allows_destination(&mut self, domain: &str, addr: IpAddr) -> bool {
         self.purge_expired();
-        if !is_public_destination(addr) {
+        if !is_allowed_destination(addr) {
             return false;
         }
         let Some(domain) = normalize_domain(domain) else {
@@ -210,7 +210,7 @@ async fn resolve_query(query_bytes: &[u8], config: &ProxyConfig) -> anyhow::Resu
         }
     };
 
-    let addresses = public_answers(addresses, family);
+    let addresses = allowed_answers(addresses, family);
     Ok(ResolvedQuery {
         response: build_ip_responses(query_bytes, &addresses)?,
         allowed_answer: Some(AllowedDnsAnswer {
@@ -259,7 +259,7 @@ where
             Vec::new()
         }
     };
-    let addresses = public_answers(addresses, family);
+    let addresses = allowed_answers(addresses, family);
     Ok(ResolvedQuery {
         response: build_ip_responses(query_bytes, &addresses)?,
         allowed_answer: Some(AllowedDnsAnswer {
@@ -348,14 +348,14 @@ fn classify_query(query_bytes: &[u8], config: &ProxyConfig) -> anyhow::Result<Qu
     })
 }
 
-fn public_answers(addresses: Vec<IpAddr>, family: DnsFamily) -> Vec<IpAddr> {
+fn allowed_answers(addresses: Vec<IpAddr>, family: DnsFamily) -> Vec<IpAddr> {
     addresses
         .into_iter()
         .filter(|address| {
             matches!(
                 (family, address),
                 (DnsFamily::Ipv4, IpAddr::V4(_)) | (DnsFamily::Ipv6, IpAddr::V6(_))
-            ) && is_public_destination(*address)
+            ) && is_allowed_destination(*address)
         })
         .collect()
 }
@@ -487,6 +487,35 @@ mod tests {
         let packet = Packet::parse(&response).expect("parse DNS response");
         assert_eq!(packet.rcode(), RCODE::NoError);
         assert!(a_addresses(&response).is_empty());
+    }
+
+    #[test]
+    fn retains_cgnat_host_resolver_addresses_in_response_and_cache() {
+        let query = build_query("internal.example.test", 1);
+        let cgnat = Ipv4Addr::new(100, 64, 12, 66);
+        let resolved =
+            resolve_query_with_resolver_result(&query, &ProxyConfig::default(), |domain| {
+                assert_eq!(domain, "internal.example.test");
+                Ok(vec![
+                    IpAddr::V4(cgnat),
+                    IpAddr::V4(Ipv4Addr::new(10, 134, 2, 6)),
+                ])
+            })
+            .expect("resolve query");
+
+        assert_eq!(a_addresses(&resolved.response), vec![cgnat]);
+        let answer = resolved
+            .allowed_answer
+            .expect("CGNAT answer should be policy-visible");
+        let cache = new_shared_dns_cache();
+        record_allowed_dns_answer(&cache, &answer.domain, &answer.addresses);
+        assert!(destination_matches_dns_answer(&cache, &answer.domain, IpAddr::V4(cgnat)).unwrap());
+        assert!(!destination_matches_dns_answer(
+            &cache,
+            &answer.domain,
+            IpAddr::V4(Ipv4Addr::new(10, 134, 2, 6))
+        )
+        .unwrap());
     }
 
     #[test]

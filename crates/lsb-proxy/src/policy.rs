@@ -37,11 +37,21 @@ pub(crate) fn is_wpad_name(domain: &str) -> bool {
     normalize_domain(domain).is_some_and(|domain| domain == "wpad" || domain.starts_with("wpad."))
 }
 
+pub(crate) fn is_allowed_destination(address: IpAddr) -> bool {
+    is_public_destination(address)
+        || matches!(address, IpAddr::V4(address) if is_cgnat_ipv4(address))
+}
+
 pub(crate) fn is_public_destination(address: IpAddr) -> bool {
     match address {
         IpAddr::V4(address) => is_public_ipv4(address),
         IpAddr::V6(address) => is_public_ipv6(address),
     }
+}
+
+fn is_cgnat_ipv4(address: Ipv4Addr) -> bool {
+    let [a, b, _, _] = address.octets();
+    a == 100 && (64..=127).contains(&b)
 }
 
 pub(crate) fn is_public_ipv4(address: Ipv4Addr) -> bool {
@@ -178,6 +188,44 @@ mod tests {
             "2606:4700:4700::1111",
         ] {
             assert!(is_public_destination(allowed.parse().unwrap()), "{allowed}");
+        }
+    }
+
+    #[test]
+    fn destination_policy_allows_public_and_cgnat_addresses_only() {
+        for allowed in [
+            "1.1.1.1",
+            "100.64.0.0",
+            "100.64.12.66",
+            "100.127.255.255",
+            "2606:4700:4700::1111",
+        ] {
+            assert!(
+                is_allowed_destination(allowed.parse().unwrap()),
+                "{allowed}"
+            );
+        }
+        for denied in [
+            "10.0.0.1",
+            "127.0.0.1",
+            "169.254.169.254",
+            "172.16.0.1",
+            "192.168.0.1",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+        ] {
+            assert!(!is_allowed_destination(denied.parse().unwrap()), "{denied}");
+        }
+    }
+
+    #[test]
+    fn cgnat_range_matches_exact_cidr_boundaries() {
+        for allowed in ["100.64.0.0", "100.64.0.1", "100.127.255.255"] {
+            assert!(is_cgnat_ipv4(allowed.parse().unwrap()), "{allowed}");
+        }
+        for denied in ["100.63.255.255", "100.128.0.0", "10.0.0.1"] {
+            assert!(!is_cgnat_ipv4(denied.parse().unwrap()), "{denied}");
         }
     }
 }

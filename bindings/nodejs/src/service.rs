@@ -45,7 +45,7 @@ pub struct SeaWorkStartOptions {
     ts_type = "Array<{ type: 'overlay'; hostPath: string; guestPath: string } | { type: 'direct'; hostPath: string; guestPath: string; flags: number }>"
   )]
   pub mounts: Option<Vec<MountConfig>>,
-  /// Service-owned public egress, scoped secrets, and HTTPS interception policy.
+  /// Service-owned public and CGNAT egress, scoped secrets, and HTTPS interception policy.
   pub network: Option<NetworkConfig>,
 }
 

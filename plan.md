@@ -139,14 +139,16 @@ fallback before a service sandbox exists; a test build reports the service error
 
 ### Network contract
 
-An empty caller and protected allowlist permits otherwise-safe public destinations.
+An empty caller and protected allowlist permits otherwise-safe public destinations and
+the approved IPv4 CGNAT range `100.64.0.0/10`.
 The candidate must demonstrate:
 
 - DNS plus public HTTP/HTTPS from the guest;
 - one realistic package or metadata download;
 - one scoped secret substituted for an allowed HTTPS host without appearing in logs or
-  result metadata; and
-- denial of a private/link-local target.
+  result metadata;
+- access to a `100.64.0.0/10` CGNAT target; and
+- denial of other private/link-local targets.
 
 Corporate proxy, VPN, custom CA, exhaustive redirects, and every authentication provider
 are follow-ups unless the company test laptop's normal network requires a concrete fix.
