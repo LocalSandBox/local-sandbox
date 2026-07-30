@@ -27,6 +27,13 @@ event contains bounded `previous-run-marker.json`,
 `incident.json`, and any still-present allowlisted sandbox diagnostics.
 Correlation/resource IDs are event data rather than issue fingerprints.
 
+Filter `UNCLEAN_PREVIOUS_EXIT` by `previous_exit.kind`. A value of
+`returned_error`, `panic`, or `explicit_abort` includes bounded
+`previous-exit.json` evidence and a controlled `previous_exit.reason` tag.
+`unrecorded` means the service could not persist last-exit evidence before the
+next start, which is consistent with an external termination, power loss, or
+an otherwise uninstrumented abort. The issue fingerprint remains unchanged.
+
 If Sentry transport was unavailable, inspect the protected ProgramData
 `logs/service.jsonl`, its bounded rotations, and the `LocalSandboxSeaWork`
 Windows Event Log source. Rejected incident snapshots are retained below

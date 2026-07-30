@@ -36,7 +36,9 @@ pub fn dispatch() -> Result<()> {
 }
 
 fn service_main(_arguments: Vec<OsString>) {
-    let _ = run();
+    if let Err(error) = run() {
+        crate::telemetry::record_returned_error(&error);
+    }
 }
 
 fn run() -> Result<()> {
@@ -80,6 +82,7 @@ fn run_registered(
     )
     .map(|(state, previous)| (Some(std::sync::Arc::new(state)), previous))
     .unwrap_or((None, None));
+    crate::telemetry::install_exit_evidence(&paths.runtime);
     let common_context = crate::telemetry::CommonContext::collect(
         option_env!("GITHUB_SHA").unwrap_or("unknown"),
         None,
@@ -468,6 +471,15 @@ fn capture_unclean_previous_exit(
                 filename: "termination-intent.json".to_string(),
                 content_type: "application/json",
             });
+    let previous_exit_attachment =
+        previous
+            .previous_exit_path
+            .as_ref()
+            .map(|path| crate::telemetry::Attachment {
+                path: path.clone(),
+                filename: "previous-exit.json".to_string(),
+                content_type: "application/json",
+            });
     let mut instances = previous
         .active_instances
         .iter()
@@ -520,6 +532,9 @@ fn capture_unclean_previous_exit(
         if let Some(attachment) = &termination_evidence {
             attachments.push(attachment.clone());
         }
+        if let Some(attachment) = &previous_exit_attachment {
+            attachments.push(attachment.clone());
+        }
         let mut event = FailureEvent::new(
             "service.startup",
             "UNCLEAN_PREVIOUS_EXIT",
@@ -543,6 +558,7 @@ fn capture_unclean_previous_exit(
                     intent.acknowledged_utc.is_some().to_string(),
                 );
         }
+        event = with_previous_exit_evidence(event, &previous);
         if let Some(resource_id) = resource_id {
             event = event.with_resource_id(resource_id);
         }
@@ -583,6 +599,9 @@ fn capture_unclean_previous_exit(
         if let Some(attachment) = termination_evidence {
             attachments.push(attachment);
         }
+        if let Some(attachment) = previous_exit_attachment {
+            attachments.push(attachment);
+        }
         let mut event = FailureEvent::new(
             "service.startup",
             "UNCLEAN_PREVIOUS_EXIT",
@@ -604,12 +623,30 @@ fn capture_unclean_previous_exit(
                     intent.acknowledged_utc.is_some().to_string(),
                 );
         }
+        event = with_previous_exit_evidence(event, &previous);
         event.contexts.insert(
             "previous_run".to_string(),
             serde_json::to_value(previous).unwrap_or(serde_json::Value::Null),
         );
         telemetry.capture_failure(event);
     }
+}
+
+fn with_previous_exit_evidence(
+    mut event: FailureEvent,
+    previous: &crate::telemetry::PreviousRun,
+) -> FailureEvent {
+    let Some(evidence) = &previous.previous_exit else {
+        return event.with_tag("previous_exit.kind", "unrecorded");
+    };
+    event = event
+        .with_tag("previous_exit.kind", &evidence.kind)
+        .with_tag("previous_exit.reason", &evidence.stable_reason);
+    event.contexts.insert(
+        "previous_exit".to_string(),
+        serde_json::to_value(evidence).unwrap_or(serde_json::Value::Null),
+    );
+    event
 }
 
 fn acknowledge_termination_intent(paths: &ServicePaths, telemetry: &Telemetry) {

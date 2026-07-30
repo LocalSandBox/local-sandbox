@@ -372,13 +372,16 @@ fn enforce_stop_deadline(
     match *forced_deadline {
         Some(deadline) if now >= deadline => {
             eprintln!("{abort_reason}");
-            std::process::abort();
+            crate::telemetry::abort_with_evidence("VM_STOP_DEADLINE_EXCEEDED", abort_reason);
         }
         Some(_) => {}
         None if now >= graceful_deadline => {
             if let Err(error) = containment.terminate(1) {
                 eprintln!("authoritative QEMU Job termination failed: {error}");
-                std::process::abort();
+                crate::telemetry::abort_with_evidence(
+                    "QEMU_JOB_TERMINATION_FAILED",
+                    format!("authoritative QEMU Job termination failed: {error}"),
+                );
             }
             *forced_deadline = Some(now + FORCED_JOB_STOP_GRACE);
         }
@@ -513,7 +516,10 @@ impl Drop for ManagedVm {
             return;
         };
         if thread.join().is_err() {
-            std::process::abort();
+            crate::telemetry::abort_with_evidence(
+                "MANAGED_VM_THREAD_PANICKED",
+                "managed VM thread panicked during drop",
+            );
         }
     }
 }

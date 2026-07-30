@@ -7,9 +7,25 @@ use serde::{Deserialize, Serialize};
 
 const MARKER_NAME: &str = "run-marker.json";
 const CONTEXT_NAME: &str = "crash-context.json";
+const LAST_EXIT_NAME: &str = "last-exit.json";
+const PREVIOUS_EXIT_NAME: &str = "previous-exit.json";
 const MAX_MARKER_BYTES: u64 = 256 * 1024;
+const MAX_EXIT_BYTES: u64 = 16 * 1024;
+const MAX_EXIT_SUMMARY_BYTES: usize = 2 * 1024;
 const MAX_ACTIVE_INSTANCES: usize = 64;
 const MAX_PREVIOUS_RUNS: usize = 8;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreviousExit {
+    pub schema_version: u32,
+    pub run_id: String,
+    pub timestamp_utc: String,
+    pub kind: String,
+    pub stable_reason: String,
+    pub phase: String,
+    pub summary: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,6 +40,8 @@ pub struct PreviousRun {
     pub context_path: PathBuf,
     pub termination_intent: Option<lsb_seawork_update::TerminationIntent>,
     pub termination_intent_path: Option<PathBuf>,
+    pub previous_exit: Option<PreviousExit>,
+    pub previous_exit_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,8 +177,10 @@ fn read_previous(
     context_path: &Path,
 ) -> Result<Option<PreviousRun>> {
     let active_intent_path = runtime_root.join("termination-intent.json");
+    let active_exit_path = runtime_root.join(LAST_EXIT_NAME);
     let Some(marker) = read_document(marker_path)? else {
         let _ = lsb_seawork_update::remove_file_if_exists(&active_intent_path);
+        let _ = lsb_seawork_update::remove_file_if_exists(&active_exit_path);
         return Ok(None);
     };
     let termination_intent =
@@ -169,8 +189,13 @@ fn read_previous(
             .filter(|intent| intent.validate().is_ok() && intent.run_id == marker.run_id);
     if marker.orderly_stop {
         let _ = lsb_seawork_update::remove_file_if_exists(&active_intent_path);
+        let _ = lsb_seawork_update::remove_file_if_exists(&active_exit_path);
         return Ok(None);
     }
+    let previous_exit = read_exit_document(&active_exit_path)
+        .ok()
+        .flatten()
+        .filter(|evidence| evidence.run_id == marker.run_id);
     let context = read_document(context_path)?.unwrap_or_else(|| marker.clone());
     let snapshot_root = runtime_root
         .join("telemetry")
@@ -179,6 +204,7 @@ fn read_previous(
     let snapshot_marker = snapshot_root.join(MARKER_NAME);
     let snapshot_context = snapshot_root.join(CONTEXT_NAME);
     let snapshot_intent = snapshot_root.join("termination-intent.json");
+    let snapshot_exit = snapshot_root.join(PREVIOUS_EXIT_NAME);
     crate::ledger::atomic::write_value(&snapshot_marker, &marker)
         .context("snapshot previous telemetry run marker")?;
     crate::ledger::atomic::write_value(&snapshot_context, &context)
@@ -188,7 +214,13 @@ fn read_previous(
             .ok()
             .map(|()| snapshot_intent)
     });
+    let previous_exit_path = previous_exit.as_ref().and_then(|evidence| {
+        crate::ledger::atomic::write_value(&snapshot_exit, evidence)
+            .ok()
+            .map(|()| snapshot_exit)
+    });
     let _ = lsb_seawork_update::remove_file_if_exists(&active_intent_path);
+    let _ = lsb_seawork_update::remove_file_if_exists(&active_exit_path);
     prune_previous_runs(
         snapshot_root
             .parent()
@@ -205,7 +237,36 @@ fn read_previous(
         context_path: snapshot_context,
         termination_intent,
         termination_intent_path,
+        previous_exit,
+        previous_exit_path,
     }))
+}
+
+pub(super) fn record_current_exit(
+    runtime_root: &Path,
+    kind: &str,
+    stable_reason: &str,
+    summary: impl Into<String>,
+) -> Result<()> {
+    let marker_path = runtime_root.join(MARKER_NAME);
+    let context_path = runtime_root.join(CONTEXT_NAME);
+    let marker = read_document(&marker_path)?.context("telemetry run marker is missing")?;
+    if marker.orderly_stop {
+        bail!("refuse to record fatal exit for an orderly service run");
+    }
+    let context = read_document(&context_path)?.unwrap_or_else(|| marker.clone());
+    let evidence = PreviousExit {
+        schema_version: 1,
+        run_id: marker.run_id,
+        timestamp_utc: now_utc(),
+        kind: kind.to_string(),
+        stable_reason: stable_reason.to_string(),
+        phase: context.current_phase,
+        summary: bounded(summary.into(), MAX_EXIT_SUMMARY_BYTES),
+    };
+    validate_exit(&evidence)?;
+    crate::ledger::atomic::write_value(&runtime_root.join(LAST_EXIT_NAME), &evidence)
+        .context("write telemetry last-exit evidence")
 }
 
 fn prune_previous_runs(root: &Path) {
@@ -247,6 +308,25 @@ fn read_document(path: &Path) -> Result<Option<RunDocument>> {
     Ok(Some(document))
 }
 
+fn read_exit_document(path: &Path) -> Result<Option<PreviousExit>> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > MAX_EXIT_BYTES
+    {
+        bail!("telemetry last-exit evidence is not a bounded regular file");
+    }
+    let bytes = std::fs::read(path).context("read telemetry last-exit evidence")?;
+    let evidence: PreviousExit =
+        serde_json::from_slice(&bytes).context("parse telemetry last-exit evidence")?;
+    validate_exit(&evidence)?;
+    Ok(Some(evidence))
+}
+
 fn validate_document(document: &RunDocument) -> Result<()> {
     if document.schema_version != 1
         || !valid_id(&document.run_id)
@@ -266,6 +346,31 @@ fn validate_document(document: &RunDocument) -> Result<()> {
         bail!("telemetry run marker violates compiled bounds");
     }
     Ok(())
+}
+
+fn validate_exit(evidence: &PreviousExit) -> Result<()> {
+    if evidence.schema_version != 1
+        || !valid_id(&evidence.run_id)
+        || evidence.timestamp_utc.len() > 64
+        || !matches!(
+            evidence.kind.as_str(),
+            "returned_error" | "panic" | "explicit_abort"
+        )
+        || !valid_reason(&evidence.stable_reason)
+        || evidence.phase.len() > 128
+        || evidence.summary.len() > MAX_EXIT_SUMMARY_BYTES
+    {
+        bail!("telemetry last-exit evidence violates compiled bounds");
+    }
+    Ok(())
+}
+
+fn valid_reason(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 96
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
 fn random_id() -> Result<String> {
@@ -374,6 +479,84 @@ mod tests {
             .as_ref()
             .is_some_and(|path| path.is_file()));
         assert!(!intent_path.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unclean_run_snapshots_matching_last_exit_evidence() {
+        let root = root("last-exit");
+        let (state, _) = RunState::begin(&root, "2026-07-25T00:00:00Z").unwrap();
+        let run_id = state.run_id().unwrap();
+        state
+            .update("service.running".to_string(), None, None, true)
+            .unwrap();
+        record_current_exit(
+            &root,
+            "returned_error",
+            "SERVICE_MAIN_ERROR",
+            "pipe task returned an error",
+        )
+        .unwrap();
+        drop(state);
+
+        let (_, previous) = RunState::begin(&root, "2026-07-25T00:01:00Z").unwrap();
+        let previous = previous.unwrap();
+        let evidence = previous.previous_exit.unwrap();
+        assert_eq!(evidence.run_id, run_id);
+        assert_eq!(evidence.kind, "returned_error");
+        assert_eq!(evidence.stable_reason, "SERVICE_MAIN_ERROR");
+        assert_eq!(evidence.phase, "service.running");
+        assert!(previous
+            .previous_exit_path
+            .as_ref()
+            .is_some_and(|path| path.is_file()));
+        assert!(!root.join(LAST_EXIT_NAME).exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stale_last_exit_evidence_is_not_attributed_to_another_run() {
+        let root = root("stale-last-exit");
+        let (state, _) = RunState::begin(&root, "2026-07-25T00:00:00Z").unwrap();
+        let mut evidence = PreviousExit {
+            schema_version: 1,
+            run_id: "1".repeat(32),
+            timestamp_utc: "2026-07-25T00:00:01Z".to_string(),
+            kind: "panic".to_string(),
+            stable_reason: "RUST_PANIC".to_string(),
+            phase: "service.running".to_string(),
+            summary: "fixture".to_string(),
+        };
+        if evidence.run_id == state.run_id().unwrap() {
+            evidence.run_id = "2".repeat(32);
+        }
+        crate::ledger::atomic::write_value(&root.join(LAST_EXIT_NAME), &evidence).unwrap();
+        drop(state);
+
+        let (_, previous) = RunState::begin(&root, "2026-07-25T00:01:00Z").unwrap();
+        let previous = previous.unwrap();
+        assert!(previous.previous_exit.is_none());
+        assert!(previous.previous_exit_path.is_none());
+        assert!(!root.join(LAST_EXIT_NAME).exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn last_exit_summary_is_bounded_on_utf8_boundary() {
+        let root = root("bounded-last-exit");
+        let (_, _) = RunState::begin(&root, "2026-07-25T00:00:00Z").unwrap();
+        record_current_exit(
+            &root,
+            "panic",
+            "RUST_PANIC",
+            "界".repeat(MAX_EXIT_SUMMARY_BYTES),
+        )
+        .unwrap();
+        let evidence = read_exit_document(&root.join(LAST_EXIT_NAME))
+            .unwrap()
+            .unwrap();
+        assert!(evidence.summary.len() <= MAX_EXIT_SUMMARY_BYTES);
+        assert!(evidence.summary.is_char_boundary(evidence.summary.len()));
         std::fs::remove_dir_all(root).unwrap();
     }
 

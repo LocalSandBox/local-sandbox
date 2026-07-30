@@ -73,7 +73,10 @@ impl Drop for HostChangeMonitor {
             .take()
             .is_some_and(|thread| thread.join().is_err())
         {
-            std::process::abort();
+            crate::telemetry::abort_with_evidence(
+                "HOST_CHANGE_MONITOR_THREAD_PANICKED",
+                "authorized host change monitor thread panicked",
+            );
         }
     }
 }

@@ -7,8 +7,12 @@ mod run_marker;
 mod windows_events;
 
 use std::collections::BTreeMap;
+#[cfg(windows)]
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+#[cfg(windows)]
+use std::sync::OnceLock;
 use std::time::Duration;
 
 pub use context::CommonContext;
@@ -32,6 +36,64 @@ pub(crate) use windows_events::capture_termination_evidence;
 pub const TRANSACTION_SERVICE_STARTUP: &str = "service.startup";
 pub const TRANSACTION_SANDBOX_START: &str = "sandbox.start";
 pub const TRANSACTION_SANDBOX_STOP: &str = "sandbox.stop";
+
+#[cfg(windows)]
+static EXIT_EVIDENCE_RUNTIME_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+#[cfg(windows)]
+pub fn install_exit_evidence(runtime_root: &Path) {
+    if EXIT_EVIDENCE_RUNTIME_ROOT
+        .set(runtime_root.to_path_buf())
+        .is_err()
+    {
+        return;
+    }
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic| {
+        let location = panic
+            .location()
+            .map_or_else(|| "unknown".to_string(), ToString::to_string);
+        let payload = panic
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|value| (*value).to_string())
+            .or_else(|| panic.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "non-string panic payload".to_string());
+        let thread = std::thread::current()
+            .name()
+            .unwrap_or("unnamed")
+            .to_string();
+        record_registered_exit(
+            "panic",
+            "RUST_PANIC",
+            format!("panic on thread '{thread}' at {location}: {payload}"),
+        );
+        previous_hook(panic);
+    }));
+}
+
+#[cfg(windows)]
+pub fn record_returned_error(error: &anyhow::Error) {
+    record_registered_exit(
+        "returned_error",
+        "SERVICE_MAIN_ERROR",
+        format_error_chain(error),
+    );
+}
+
+#[cfg(windows)]
+pub fn abort_with_evidence(stable_reason: &'static str, summary: impl Into<String>) -> ! {
+    record_registered_exit("explicit_abort", stable_reason, summary.into());
+    std::process::abort()
+}
+
+#[cfg(windows)]
+fn record_registered_exit(kind: &str, stable_reason: &str, summary: impl Into<String>) {
+    let Some(runtime_root) = EXIT_EVIDENCE_RUNTIME_ROOT.get() else {
+        return;
+    };
+    let _ = run_marker::record_current_exit(runtime_root, kind, stable_reason, summary);
+}
 
 #[derive(Debug, Clone, Copy)]
 #[repr(usize)]

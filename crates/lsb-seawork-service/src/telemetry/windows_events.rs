@@ -101,20 +101,7 @@ pub(crate) fn capture_termination_evidence(previous: &PreviousRun) -> Result<Att
     let now = time::OffsetDateTime::now_utc();
     let elapsed_ms = (now - started).whole_milliseconds().max(0);
     let lookback_ms = (elapsed_ms + 120_000).min(MAX_LOOKBACK_MS);
-    let system_query = format!(
-        "*[System[TimeCreated[timediff(@SystemTime) <= {lookback_ms}] and \
-         ((Provider[@Name='Service Control Manager'] and \
-         (EventID=7031 or EventID=7034 or EventID=7035 or EventID=7036)) or \
-         (Provider[@Name='Microsoft-Windows-Kernel-Power'] and EventID=41) or \
-         (Provider[@Name='EventLog'] and \
-         (EventID=6005 or EventID=6006 or EventID=6008)) or \
-         (Provider[@Name='User32'] and EventID=1074))]]"
-    );
-    let application_query = format!(
-        "*[System[TimeCreated[timediff(@SystemTime) <= {lookback_ms}] and \
-         ((Provider[@Name='Application Error'] and EventID=1000) or \
-         (Provider[@Name='Windows Error Reporting'] and EventID=1001))]]"
-    );
+    let (system_query, application_query) = termination_queries(lookback_ms);
 
     let mut events = Vec::new();
     let mut query_errors = Vec::new();
@@ -167,6 +154,27 @@ pub(crate) fn capture_termination_evidence(previous: &PreviousRun) -> Result<Att
         filename: "windows-termination-events.json".to_string(),
         content_type: "application/json",
     })
+}
+
+fn termination_queries(lookback_ms: i128) -> (String, String) {
+    let service_name = crate::SERVICE_NAME;
+    let system_query = format!(
+        "*[System[TimeCreated[timediff(@SystemTime) <= {lookback_ms}] and \
+         ((Provider[@Name='Service Control Manager'] and \
+         (EventID=7023 or EventID=7024 or EventID=7031 or EventID=7034 or \
+          EventID=7035 or EventID=7036)) or \
+         (Provider[@Name='Microsoft-Windows-Kernel-Power'] and EventID=41) or \
+         (Provider[@Name='EventLog'] and \
+         (EventID=6005 or EventID=6006 or EventID=6008)) or \
+         (Provider[@Name='User32'] and EventID=1074))]]"
+    );
+    let application_query = format!(
+        "*[System[TimeCreated[timediff(@SystemTime) <= {lookback_ms}] and \
+         ((Provider[@Name='Application Error'] and EventID=1000) or \
+         (Provider[@Name='Windows Error Reporting'] and EventID=1001) or \
+         (Provider[@Name='{service_name}'] and EventID=6))]]"
+    );
+    (system_query, application_query)
 }
 
 pub(crate) fn capture_hyperv_evidence(
@@ -446,9 +454,10 @@ fn render_xml(event: EVT_HANDLE) -> Result<String> {
 
 fn relevant(channel: &str, xml: &str) -> bool {
     if channel == "Application" {
-        return xml
-            .to_ascii_lowercase()
-            .contains("localsandbox-seawork-service.exe");
+        return xml.contains("LocalSandboxSeaWork")
+            || xml
+                .to_ascii_lowercase()
+                .contains("localsandbox-seawork-service.exe");
     }
     if xml.contains("Service Control Manager") {
         return xml.contains("LocalSandboxSeaWork") || xml.contains("LocalSandbox for SeaWork");
@@ -496,6 +505,8 @@ mod tests {
             context_path: root.join("crash-context.json"),
             termination_intent: None,
             termination_intent_path: None,
+            previous_exit: None,
+            previous_exit_path: None,
         };
 
         let attachment = capture_termination_evidence(&previous).unwrap();
@@ -511,6 +522,17 @@ mod tests {
         assert!(evidence["query_errors"].is_array());
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn termination_queries_include_service_exit_codes_and_native_fatal_event() {
+        let (system, application) = termination_queries(120_000);
+        assert!(system.contains("EventID=7023"));
+        assert!(system.contains("EventID=7024"));
+        assert!(application.contains(&format!(
+            "Provider[@Name='{}'] and EventID=6",
+            crate::SERVICE_NAME
+        )));
     }
 
     #[test]

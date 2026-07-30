@@ -47,7 +47,13 @@ impl Drop for ImpersonationGuard {
     fn drop(&mut self) {
         if self.active {
             if unsafe { RevertToSelf() } == 0 {
-                std::process::abort();
+                crate::telemetry::abort_with_evidence(
+                    "IMPERSONATION_REVERT_FAILED",
+                    format!(
+                        "RevertToSelf failed while dropping impersonation guard: {}",
+                        std::io::Error::last_os_error()
+                    ),
+                );
             }
             self.active = false;
         }

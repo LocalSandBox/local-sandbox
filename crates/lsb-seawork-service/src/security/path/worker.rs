@@ -216,7 +216,10 @@ impl Drop for PathWorker {
             .take()
             .is_some_and(|thread| thread.join().is_err())
         {
-            std::process::abort();
+            crate::telemetry::abort_with_evidence(
+                "PATH_WORKER_THREAD_PANICKED",
+                "filesystem worker thread panicked",
+            );
         }
     }
 }
