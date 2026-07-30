@@ -1,0 +1,43 @@
+crates/lsb-seawork-service/src/telemetry/windows_events.rs
+  s_518de3d6436b46::t_42979dce119d2e 104,159,161-174,176-179,457-460,508-509,527-531
+  s_518de3d6436b46::t_8cf49993cd394b 160,175,532-535
+  s_518de3d6436b46::t_8e62a36ecfd536 536-537
+crates/lsb-seawork-service/src/telemetry/mod.rs
+  s_518de3d6436b46::t_82415679b3b9de 10-11,14-15,40-96
+  s_518de3d6436b46::t_086c76d2dc491a 97
+docs/seawork-service-sentry-runbook.md
+  s_518de3d6436b46::t_b549c05abdb045 30-36
+crates/lsb-seawork-service/src/security/impersonation.rs
+  s_518de3d6436b46::t_843d2733019899 50-56
+crates/lsb-seawork-service/src/security/path/monitor.rs
+  s_518de3d6436b46::t_843d2733019899 76-79
+crates/lsb-seawork-service/src/telemetry/run_marker.rs
+  s_518de3d6436b46::t_2258b9568c0e92 10-11,13-14,18-29,43-44,180,183,192,195-198,207,217-221,223,240-241,246-271,311-329,351-375,485-561
+  s_518de3d6436b46::t_b549c05abdb045 245
+  s_518de3d6436b46::t_0c87a298b5f920 562
+crates/lsb-seawork-service/src/security/path/worker.rs
+  s_518de3d6436b46::t_843d2733019899 219-222
+crates/lsb-seawork-service/src/scm.rs
+  s_518de3d6436b46::t_428fc00812fd03 474-482,535-537,561,602-604,626,635-649
+  s_518de3d6436b46::t_843d2733019899 39-41,85
+  s_518de3d6436b46::t_e591e83329e006 650-651
+crates/lsb-seawork-service/src/resource/vm.rs
+  s_518de3d6436b46::t_9b08b192433b83 375
+  s_518de3d6436b46::t_843d2733019899 381-384,519-522
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "2e88a82e60c5d5fe1bd1bee5019a9b00c1266233",
+  "prompts": {},
+  "sessions": {
+    "s_518de3d6436b46": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fb2aa-3b6e-7e73-83ce-4a1e88abc43b",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
