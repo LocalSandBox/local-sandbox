@@ -653,7 +653,7 @@ fn enforce_connection_policy(
 
     if !is_allowed_destination(dst.ip()) {
         anyhow::bail!(
-            "{protocol} connection denied: destination is neither public nor in 100.64.0.0/10"
+            "{protocol} connection denied: destination is neither public nor in an allowed intranet range (10.0.0.0/8, 100.64.0.0/10, 192.168.0.0/16)"
         );
     }
 
@@ -1167,7 +1167,7 @@ mod tests {
             .unwrap_err();
         assert!(error
             .to_string()
-            .contains("neither public nor in 100.64.0.0/10"));
+            .contains("neither public nor in an allowed intranet range"));
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
                 .await
@@ -1336,19 +1336,23 @@ mod tests {
     }
 
     #[test]
-    fn allowlist_policy_allows_dns_bound_cgnat_destination() {
+    fn allowlist_policy_allows_dns_bound_intranet_destinations() {
         let config = allowed_config("internal.example.test");
-        let allowed_ip = Ipv4Addr::new(100, 64, 12, 66);
-        let cache = cache_answer("internal.example.test", allowed_ip);
-
-        enforce_connection_policy(
-            &config,
-            &cache,
-            Some("internal.example.test"),
-            dst(allowed_ip, 443),
-            "TLS",
-        )
-        .expect("DNS-bound CGNAT destination should pass");
+        for allowed_ip in [
+            Ipv4Addr::new(10, 73, 69, 44),
+            Ipv4Addr::new(100, 64, 12, 66),
+            Ipv4Addr::new(192, 168, 1, 10),
+        ] {
+            let cache = cache_answer("internal.example.test", allowed_ip);
+            enforce_connection_policy(
+                &config,
+                &cache,
+                Some("internal.example.test"),
+                dst(allowed_ip, 443),
+                "TLS",
+            )
+            .expect("DNS-bound intranet destination should pass");
+        }
     }
 
     #[test]
@@ -1386,23 +1390,29 @@ mod tests {
     }
 
     #[test]
-    fn default_network_allows_public_and_cgnat_destinations_and_denies_other_non_global_ranges() {
+    fn default_network_allows_public_and_selected_intranet_destinations() {
         let config = ProxyConfig::default();
         let cache = dns::new_shared_dns_cache();
         for allowed in [
             Ipv4Addr::new(93, 184, 216, 34),
+            Ipv4Addr::new(10, 0, 0, 0),
+            Ipv4Addr::new(10, 73, 69, 44),
+            Ipv4Addr::new(10, 255, 255, 255),
             Ipv4Addr::new(100, 64, 0, 0),
             Ipv4Addr::new(100, 64, 12, 66),
             Ipv4Addr::new(100, 127, 255, 255),
+            Ipv4Addr::new(192, 168, 0, 0),
+            Ipv4Addr::new(192, 168, 1, 1),
+            Ipv4Addr::new(192, 168, 255, 255),
         ] {
             enforce_connection_policy(&config, &cache, None, dst(allowed, 443), "TLS")
-                .expect("public and CGNAT destinations should pass default policy");
+                .expect("public and selected intranet destinations should pass default policy");
         }
 
         for denied in [
             Ipv4Addr::LOCALHOST,
-            Ipv4Addr::new(10, 0, 0, 1),
             Ipv4Addr::new(169, 254, 169, 254),
+            Ipv4Addr::new(172, 16, 0, 1),
             Ipv4Addr::new(192, 0, 2, 1),
             Ipv4Addr::new(198, 51, 100, 1),
             Ipv4Addr::new(203, 0, 113, 1),
@@ -1411,7 +1421,7 @@ mod tests {
                 .expect_err("non-global destination must fail closed");
             assert!(error
                 .to_string()
-                .contains("neither public nor in 100.64.0.0/10"));
+                .contains("neither public nor in an allowed intranet range"));
         }
     }
 

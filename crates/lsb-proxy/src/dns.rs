@@ -473,13 +473,13 @@ mod tests {
     }
 
     #[test]
-    fn removes_non_public_host_resolver_addresses() {
+    fn removes_disallowed_private_host_resolver_addresses() {
         let query = build_query("internal.example.test", 1);
         let response = resolve_query_with_resolver(&query, &ProxyConfig::default(), |domain| {
             assert_eq!(domain, "internal.example.test");
             Ok(vec![
-                IpAddr::V4(Ipv4Addr::new(10, 134, 2, 6)),
-                IpAddr::V4(Ipv4Addr::new(10, 134, 2, 7)),
+                IpAddr::V4(Ipv4Addr::new(172, 16, 2, 6)),
+                IpAddr::V4(Ipv4Addr::new(172, 31, 2, 7)),
             ])
         })
         .expect("resolve query");
@@ -490,30 +490,41 @@ mod tests {
     }
 
     #[test]
-    fn retains_cgnat_host_resolver_addresses_in_response_and_cache() {
+    fn retains_allowed_intranet_addresses_in_response_and_cache() {
         let query = build_query("internal.example.test", 1);
-        let cgnat = Ipv4Addr::new(100, 64, 12, 66);
+        let allowed = [
+            Ipv4Addr::new(10, 73, 69, 44),
+            Ipv4Addr::new(100, 64, 12, 66),
+            Ipv4Addr::new(192, 168, 1, 10),
+        ];
         let resolved =
             resolve_query_with_resolver_result(&query, &ProxyConfig::default(), |domain| {
                 assert_eq!(domain, "internal.example.test");
                 Ok(vec![
-                    IpAddr::V4(cgnat),
-                    IpAddr::V4(Ipv4Addr::new(10, 134, 2, 6)),
+                    IpAddr::V4(allowed[0]),
+                    IpAddr::V4(allowed[1]),
+                    IpAddr::V4(allowed[2]),
+                    IpAddr::V4(Ipv4Addr::new(172, 16, 2, 6)),
                 ])
             })
             .expect("resolve query");
 
-        assert_eq!(a_addresses(&resolved.response), vec![cgnat]);
+        assert_eq!(a_addresses(&resolved.response), allowed);
         let answer = resolved
             .allowed_answer
-            .expect("CGNAT answer should be policy-visible");
+            .expect("intranet answers should be policy-visible");
         let cache = new_shared_dns_cache();
         record_allowed_dns_answer(&cache, &answer.domain, &answer.addresses);
-        assert!(destination_matches_dns_answer(&cache, &answer.domain, IpAddr::V4(cgnat)).unwrap());
+        for address in allowed {
+            assert!(
+                destination_matches_dns_answer(&cache, &answer.domain, IpAddr::V4(address))
+                    .unwrap()
+            );
+        }
         assert!(!destination_matches_dns_answer(
             &cache,
             &answer.domain,
-            IpAddr::V4(Ipv4Addr::new(10, 134, 2, 6))
+            IpAddr::V4(Ipv4Addr::new(172, 16, 2, 6))
         )
         .unwrap());
     }

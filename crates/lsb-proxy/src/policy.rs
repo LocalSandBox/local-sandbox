@@ -39,7 +39,7 @@ pub(crate) fn is_wpad_name(domain: &str) -> bool {
 
 pub(crate) fn is_allowed_destination(address: IpAddr) -> bool {
     is_public_destination(address)
-        || matches!(address, IpAddr::V4(address) if is_cgnat_ipv4(address))
+        || matches!(address, IpAddr::V4(address) if is_allowed_intranet_ipv4(address))
 }
 
 pub(crate) fn is_public_destination(address: IpAddr) -> bool {
@@ -49,9 +49,12 @@ pub(crate) fn is_public_destination(address: IpAddr) -> bool {
     }
 }
 
-fn is_cgnat_ipv4(address: Ipv4Addr) -> bool {
-    let [a, b, _, _] = address.octets();
-    a == 100 && (64..=127).contains(&b)
+fn is_allowed_intranet_ipv4(address: Ipv4Addr) -> bool {
+    let [a, b, c, d] = address.octets();
+    matches!(
+        (a, b, c, d),
+        (10, _, _, _) | (100, 64..=127, _, _) | (192, 168, _, _)
+    )
 }
 
 pub(crate) fn is_public_ipv4(address: Ipv4Addr) -> bool {
@@ -192,12 +195,18 @@ mod tests {
     }
 
     #[test]
-    fn destination_policy_allows_public_and_cgnat_addresses_only() {
+    fn destination_policy_allows_public_and_selected_intranet_ranges() {
         for allowed in [
             "1.1.1.1",
+            "10.0.0.0",
+            "10.73.69.44",
+            "10.255.255.255",
             "100.64.0.0",
             "100.64.12.66",
             "100.127.255.255",
+            "192.168.0.0",
+            "192.168.1.1",
+            "192.168.255.255",
             "2606:4700:4700::1111",
         ] {
             assert!(
@@ -206,11 +215,10 @@ mod tests {
             );
         }
         for denied in [
-            "10.0.0.1",
             "127.0.0.1",
             "169.254.169.254",
             "172.16.0.1",
-            "192.168.0.1",
+            "192.0.2.1",
             "::1",
             "fc00::1",
             "fe80::1",
@@ -220,12 +228,33 @@ mod tests {
     }
 
     #[test]
-    fn cgnat_range_matches_exact_cidr_boundaries() {
-        for allowed in ["100.64.0.0", "100.64.0.1", "100.127.255.255"] {
-            assert!(is_cgnat_ipv4(allowed.parse().unwrap()), "{allowed}");
+    fn intranet_ranges_match_exact_cidr_boundaries() {
+        for allowed in [
+            "10.0.0.0",
+            "10.255.255.255",
+            "100.64.0.0",
+            "100.127.255.255",
+            "192.168.0.0",
+            "192.168.255.255",
+        ] {
+            assert!(
+                is_allowed_intranet_ipv4(allowed.parse().unwrap()),
+                "{allowed}"
+            );
         }
-        for denied in ["100.63.255.255", "100.128.0.0", "10.0.0.1"] {
-            assert!(!is_cgnat_ipv4(denied.parse().unwrap()), "{denied}");
+        for denied in [
+            "9.255.255.255",
+            "11.0.0.0",
+            "100.63.255.255",
+            "100.128.0.0",
+            "172.16.0.1",
+            "192.167.255.255",
+            "192.169.0.0",
+        ] {
+            assert!(
+                !is_allowed_intranet_ipv4(denied.parse().unwrap()),
+                "{denied}"
+            );
         }
     }
 }
