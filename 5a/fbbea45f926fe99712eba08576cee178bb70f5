@@ -1,0 +1,35 @@
+crates/lsb-proxy/src/dns.rs
+  s_4449c3f25aed32::t_2bb9abb9c6ad8c 476,481-482,498,508-509,529,714,717,723,730,738-739
+  s_4449c3f25aed32::t_bc1a2cfbe13df1 740
+docs/seawork-service-release.md
+  s_4449c3f25aed32::t_e0bf16e41a57b0 215-218,238-241
+skills/lsb/references/networking.md
+  s_4449c3f25aed32::t_e0bf16e41a57b0 19-22
+contracts/seawork-parity-v1.json
+  s_4449c3f25aed32::t_e0bf16e41a57b0 70,91
+crates/lsb-proxy/src/policy.rs
+  s_4449c3f25aed32::t_4303aa416b6bf2 59
+  s_4449c3f25aed32::t_2bb9abb9c6ad8c 42-45,63-66,214-215,219-220,233-234,248-249,263-264,273-285,287-288
+  s_4449c3f25aed32::t_bee6ec31fdaaae 286
+contracts/seawork-test-release-v1.json
+  s_4449c3f25aed32::t_e0bf16e41a57b0 54
+crates/lsb-proxy/src/proxy.rs
+  s_4449c3f25aed32::t_2bb9abb9c6ad8c 656,1025,1027,1344,1357-1366,1415-1416,1424-1433
+  s_4449c3f25aed32::t_c5d668af4a437f 1434
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "5afbbea45f926fe99712eba08576cee178bb70f5",
+  "prompts": {},
+  "sessions": {
+    "s_4449c3f25aed32": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fb73d-1562-71f0-b113-e271546deeaf",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
