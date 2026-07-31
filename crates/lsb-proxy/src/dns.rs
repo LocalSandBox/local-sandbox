@@ -473,13 +473,13 @@ mod tests {
     }
 
     #[test]
-    fn removes_disallowed_private_host_resolver_addresses() {
+    fn removes_disallowed_non_intranet_host_resolver_addresses() {
         let query = build_query("internal.example.test", 1);
         let response = resolve_query_with_resolver(&query, &ProxyConfig::default(), |domain| {
             assert_eq!(domain, "internal.example.test");
             Ok(vec![
-                IpAddr::V4(Ipv4Addr::new(172, 16, 2, 6)),
-                IpAddr::V4(Ipv4Addr::new(172, 31, 2, 7)),
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                IpAddr::V4(Ipv4Addr::new(169, 254, 2, 7)),
             ])
         })
         .expect("resolve query");
@@ -495,6 +495,7 @@ mod tests {
         let allowed = [
             Ipv4Addr::new(10, 73, 69, 44),
             Ipv4Addr::new(100, 64, 12, 66),
+            Ipv4Addr::new(172, 16, 2, 6),
             Ipv4Addr::new(192, 168, 1, 10),
         ];
         let resolved =
@@ -504,7 +505,8 @@ mod tests {
                     IpAddr::V4(allowed[0]),
                     IpAddr::V4(allowed[1]),
                     IpAddr::V4(allowed[2]),
-                    IpAddr::V4(Ipv4Addr::new(172, 16, 2, 6)),
+                    IpAddr::V4(allowed[3]),
+                    IpAddr::V4(Ipv4Addr::new(169, 254, 2, 7)),
                 ])
             })
             .expect("resolve query");
@@ -524,7 +526,7 @@ mod tests {
         assert!(!destination_matches_dns_answer(
             &cache,
             &answer.domain,
-            IpAddr::V4(Ipv4Addr::new(172, 16, 2, 6))
+            IpAddr::V4(Ipv4Addr::new(169, 254, 2, 7))
         )
         .unwrap());
     }
@@ -709,28 +711,32 @@ mod tests {
     }
 
     #[test]
-    fn aaaa_query_retains_only_public_ipv6_answers_and_cache_entries() {
+    fn aaaa_query_retains_public_and_intranet_ipv6_answers_and_cache_entries() {
         let query = build_query("example.com", u16::from(TYPE::AAAA));
         let public: Ipv6Addr = "2606:2800:220:1:248:1893:25c8:1946".parse().unwrap();
+        let intranet: Ipv6Addr = "fd00:1234::1".parse().unwrap();
         let resolved =
             resolve_query_with_resolver_result(&query, &ProxyConfig::default(), |_domain| {
                 Ok(vec![
                     IpAddr::V6(public),
                     IpAddr::V6(Ipv6Addr::LOCALHOST),
-                    IpAddr::V6("fc00::1".parse().unwrap()),
+                    IpAddr::V6(intranet),
                     IpAddr::V6("fe80::1".parse().unwrap()),
                     IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)),
                 ])
             })
             .expect("resolve query");
 
-        assert_eq!(aaaa_addresses(&resolved.response), vec![public]);
+        assert_eq!(aaaa_addresses(&resolved.response), vec![public, intranet]);
         assert!(a_addresses(&resolved.response).is_empty());
         let answer = resolved.allowed_answer.unwrap();
         let cache = new_shared_dns_cache();
         record_allowed_dns_answer(&cache, &answer.domain, &answer.addresses);
         assert!(
             destination_matches_dns_answer(&cache, &answer.domain, IpAddr::V6(public)).unwrap()
+        );
+        assert!(
+            destination_matches_dns_answer(&cache, &answer.domain, IpAddr::V6(intranet)).unwrap()
         );
         assert!(!destination_matches_dns_answer(
             &cache,

@@ -39,7 +39,10 @@ pub(crate) fn is_wpad_name(domain: &str) -> bool {
 
 pub(crate) fn is_allowed_destination(address: IpAddr) -> bool {
     is_public_destination(address)
-        || matches!(address, IpAddr::V4(address) if is_allowed_intranet_ipv4(address))
+        || match address {
+            IpAddr::V4(address) => is_allowed_intranet_ipv4(address),
+            IpAddr::V6(address) => is_allowed_intranet_ipv6(address),
+        }
 }
 
 pub(crate) fn is_public_destination(address: IpAddr) -> bool {
@@ -53,8 +56,12 @@ fn is_allowed_intranet_ipv4(address: Ipv4Addr) -> bool {
     let [a, b, c, d] = address.octets();
     matches!(
         (a, b, c, d),
-        (10, _, _, _) | (100, 64..=127, _, _) | (192, 168, _, _)
+        (10, _, _, _) | (100, 64..=127, _, _) | (172, 16..=31, _, _) | (192, 168, _, _)
     )
+}
+
+fn is_allowed_intranet_ipv6(address: Ipv6Addr) -> bool {
+    in_ipv6_prefix(address, Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 0), 7)
 }
 
 pub(crate) fn is_public_ipv4(address: Ipv4Addr) -> bool {
@@ -204,9 +211,13 @@ mod tests {
             "100.64.0.0",
             "100.64.12.66",
             "100.127.255.255",
+            "172.16.0.0",
+            "172.31.255.255",
             "192.168.0.0",
             "192.168.1.1",
             "192.168.255.255",
+            "fc00::",
+            "fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
             "2606:4700:4700::1111",
         ] {
             assert!(
@@ -217,10 +228,10 @@ mod tests {
         for denied in [
             "127.0.0.1",
             "169.254.169.254",
-            "172.16.0.1",
             "192.0.2.1",
             "::1",
-            "fc00::1",
+            "fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+            "fe00::",
             "fe80::1",
         ] {
             assert!(!is_allowed_destination(denied.parse().unwrap()), "{denied}");
@@ -234,6 +245,8 @@ mod tests {
             "10.255.255.255",
             "100.64.0.0",
             "100.127.255.255",
+            "172.16.0.0",
+            "172.31.255.255",
             "192.168.0.0",
             "192.168.255.255",
         ] {
@@ -247,12 +260,29 @@ mod tests {
             "11.0.0.0",
             "100.63.255.255",
             "100.128.0.0",
-            "172.16.0.1",
+            "172.15.255.255",
+            "172.32.0.0",
             "192.167.255.255",
             "192.169.0.0",
         ] {
             assert!(
                 !is_allowed_intranet_ipv4(denied.parse().unwrap()),
+                "{denied}"
+            );
+        }
+        for allowed in ["fc00::", "fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"] {
+            assert!(
+                is_allowed_intranet_ipv6(allowed.parse().unwrap()),
+                "{allowed}"
+            );
+        }
+        for denied in [
+            "fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+            "fe00::",
+            "fe80::1",
+        ] {
+            assert!(
+                !is_allowed_intranet_ipv6(denied.parse().unwrap()),
                 "{denied}"
             );
         }

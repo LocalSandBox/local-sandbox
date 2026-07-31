@@ -212,8 +212,10 @@ canonical absolute protected paths containing only elevated installer/repair
 entry points. Every accepted binary must have a valid Authenticode chain whose
 embedded SHA-256 signer matches `publisher_thumbprints`.
 `egress_allow` is the installer-protected product host policy. Empty permits all
-otherwise-safe public hosts and CGNAT destinations in `100.64.0.0/10`; a non-empty
-list is intersected with every caller allowlist.
+otherwise-safe public hosts and intranet destinations in IPv4 ranges
+`10.0.0.0/8`, `100.64.0.0/10`, `172.16.0.0/12`, and `192.168.0.0/16`, plus
+IPv6 ULA `fc00::/7`; a non-empty list is intersected with every caller
+allowlist.
 An optional product CA bundle must be installed at
 `%ProgramData%\LocalSandbox\SeaWork\config\product-ca.pem`. The service reads this
 fixed, installer-protected path once at startup, accepts only a bounded PEM certificate
@@ -233,10 +235,10 @@ endpoint:
 The optional `authorization` value is a complete `Proxy-Authorization` value. It is
 redacted and zeroized, and is sent only on the CONNECT handshake to that configured
 endpoint. The tunnel targets the already policy-authorized destination IP, preventing
-the proxy from resolving a permitted name to a blocked non-global destination outside
-the approved `100.64.0.0/10` CGNAT range. The service never discovers a proxy through
-WPAD, environment variables, or operating-system defaults and never acquires default
-Windows or machine credentials.
+the proxy from resolving a permitted name to a destination outside the approved public
+and intranet address policy. The service never discovers a proxy through WPAD,
+environment variables, or operating-system defaults and never acquires default Windows
+or machine credentials.
 Empty roots or publishers intentionally keep normal admissions closed; an
 empty maintenance root denies all maintenance calls. Host ports remain
 compiled fail-closed, so setting `ports_enabled` to `true` is rejected.

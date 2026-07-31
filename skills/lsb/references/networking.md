@@ -16,8 +16,10 @@ ICMP (ping) is not supported — only TCP traffic is proxied.
 The generated guest image configures both proxy links: `10.0.0.2/24` through
 `10.0.0.1` and `fd00::2/64` through `fd00::1`. The ULA addresses exist only on
 the isolated guest-to-proxy link. Host-resolved A and AAAA answers are filtered
-to globally routable destinations plus the IPv4 CGNAT range `100.64.0.0/10`
-before they are returned or connected. Other non-global ranges remain blocked.
+to globally routable destinations, IPv4 intranet ranges `10.0.0.0/8`,
+`100.64.0.0/10`, `172.16.0.0/12`, and `192.168.0.0/16`, plus IPv6 ULA
+`fc00::/7` before they are returned or connected. Other non-global ranges,
+including loopback, link-local, and metadata destinations, remain blocked.
 
 When networking is enabled, the guest should resolve DNS through the proxy
 gateway:

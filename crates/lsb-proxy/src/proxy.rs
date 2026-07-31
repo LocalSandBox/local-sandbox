@@ -653,7 +653,7 @@ fn enforce_connection_policy(
 
     if !is_allowed_destination(dst.ip()) {
         anyhow::bail!(
-            "{protocol} connection denied: destination is neither public nor in an allowed intranet range (10.0.0.0/8, 100.64.0.0/10, 192.168.0.0/16)"
+            "{protocol} connection denied: destination is neither public nor in an allowed intranet range (10.0.0.0/8, 100.64.0.0/10, 172.16.0.0/12, 192.168.0.0/16, fc00::/7)"
         );
     }
 
@@ -1022,9 +1022,9 @@ mod tests {
         }
     }
 
-    fn cache_answer(domain: &str, addr: Ipv4Addr) -> SharedDnsCache {
+    fn cache_answer(domain: &str, addr: impl Into<IpAddr>) -> SharedDnsCache {
         let cache = dns::new_shared_dns_cache();
-        dns::record_allowed_dns_answer(&cache, domain, &[IpAddr::V4(addr)]);
+        dns::record_allowed_dns_answer(&cache, domain, &[addr.into()]);
         cache
     }
 
@@ -1341,6 +1341,7 @@ mod tests {
         for allowed_ip in [
             Ipv4Addr::new(10, 73, 69, 44),
             Ipv4Addr::new(100, 64, 12, 66),
+            Ipv4Addr::new(172, 16, 2, 6),
             Ipv4Addr::new(192, 168, 1, 10),
         ] {
             let cache = cache_answer("internal.example.test", allowed_ip);
@@ -1353,6 +1354,16 @@ mod tests {
             )
             .expect("DNS-bound intranet destination should pass");
         }
+        let allowed_ip: std::net::Ipv6Addr = "fd00:1234::1".parse().unwrap();
+        let cache = cache_answer("internal.example.test", allowed_ip);
+        enforce_connection_policy(
+            &config,
+            &cache,
+            Some("internal.example.test"),
+            SocketAddr::new(IpAddr::V6(allowed_ip), 443),
+            "TLS",
+        )
+        .expect("DNS-bound IPv6 intranet destination should pass");
     }
 
     #[test]
@@ -1401,6 +1412,8 @@ mod tests {
             Ipv4Addr::new(100, 64, 0, 0),
             Ipv4Addr::new(100, 64, 12, 66),
             Ipv4Addr::new(100, 127, 255, 255),
+            Ipv4Addr::new(172, 16, 0, 0),
+            Ipv4Addr::new(172, 31, 255, 255),
             Ipv4Addr::new(192, 168, 0, 0),
             Ipv4Addr::new(192, 168, 1, 1),
             Ipv4Addr::new(192, 168, 255, 255),
@@ -1408,11 +1421,21 @@ mod tests {
             enforce_connection_policy(&config, &cache, None, dst(allowed, 443), "TLS")
                 .expect("public and selected intranet destinations should pass default policy");
         }
+        for allowed in ["fc00::", "fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"] {
+            let allowed = allowed.parse().unwrap();
+            enforce_connection_policy(
+                &config,
+                &cache,
+                None,
+                SocketAddr::new(IpAddr::V6(allowed), 443),
+                "TLS",
+            )
+            .expect("IPv6 intranet destinations should pass default policy");
+        }
 
         for denied in [
             Ipv4Addr::LOCALHOST,
             Ipv4Addr::new(169, 254, 169, 254),
-            Ipv4Addr::new(172, 16, 0, 1),
             Ipv4Addr::new(192, 0, 2, 1),
             Ipv4Addr::new(198, 51, 100, 1),
             Ipv4Addr::new(203, 0, 113, 1),
