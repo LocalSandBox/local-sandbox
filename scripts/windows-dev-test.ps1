@@ -228,15 +228,11 @@ try {
 finally {
     Pop-Location
     $finished = [DateTime]::UtcNow
-    $releaseArtifact = @(
-        Get-ChildItem -LiteralPath $runPath -File `
-            -Filter 'lsb-seawork-service-v*-windows-x86_64.zip' -ErrorAction SilentlyContinue |
-            Where-Object Name -NotMatch '-symbols\.zip$'
-    )
+    . (Join-Path $PSScriptRoot 'windows-test\lib\evidence.ps1')
+    $releaseArtifact = @(Get-WindowsTestReleaseArtifact -RunRoot $runPath)
     $releaseArtifactSha = if ($releaseArtifact.Count -eq 1) {
         (Get-FileHash -LiteralPath $releaseArtifact[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     } else { $null }
-    . (Join-Path $PSScriptRoot 'windows-test\lib\evidence.ps1')
     $sourceTreeSha = (& git -C $repositoryRoot rev-parse "${SnapshotSha}^{tree}").Trim().ToLowerInvariant()
     $baseCommitSha = (& git -C $repositoryRoot rev-parse "${SnapshotSha}^").Trim().ToLowerInvariant()
     if ($LASTEXITCODE -ne 0 -or $sourceTreeSha -notmatch '^[0-9a-f]{40}$' -or

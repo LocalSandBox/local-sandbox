@@ -82,6 +82,25 @@ function Get-WindowsTestArtifactKind {
     return 'manifest'
 }
 
+function Get-WindowsTestReleaseArtifact {
+    param([Parameter(Mandatory = $true)][string] $RunRoot)
+    $candidateEvidencePath = Join-Path $RunRoot 'evidence-release-candidate.json'
+    if (Test-Path -LiteralPath $candidateEvidencePath -PathType Leaf) {
+        $candidateEvidence = Read-WindowsTestJson -Path $candidateEvidencePath `
+            -MaximumBytes 256KB
+        $candidateName = [string]$candidateEvidence.payload.name
+        if ($candidateName -notmatch
+            '^lsb-seawork-service-v[0-9A-Za-z.+-]+-windows-x86_64\.zip$') {
+            throw 'Candidate evidence does not name a canonical service archive.'
+        }
+        return @(Get-ChildItem -LiteralPath $RunRoot -File -ErrorAction SilentlyContinue |
+            Where-Object Name -CEQ $candidateName)
+    }
+    return @(Get-ChildItem -LiteralPath $RunRoot -File `
+        -Filter 'lsb-seawork-service-v*-windows-x86_64.zip' `
+        -ErrorAction SilentlyContinue | Where-Object Name -NotMatch '-symbols\.zip$')
+}
+
 function Write-WindowsTestFetchManifest {
     param(
         [Parameter(Mandatory = $true)][string] $RunRoot,

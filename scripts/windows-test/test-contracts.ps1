@@ -83,6 +83,21 @@ try {
     if ($diagnosticsPlan[-1] -cne "qemu-sentry-acceptance`tnone") {
         throw 'Optional diagnostics suite is absent from the catalog-derived plan.'
     }
+    $candidateArchive = Join-Path $testRoot `
+        'lsb-seawork-service-v2.0.0-windows-x86_64.zip'
+    $baselineArchive = Join-Path $testRoot `
+        'lsb-seawork-service-v1.0.0-windows-x86_64.zip'
+    Set-Content -LiteralPath $candidateArchive -Value 'candidate' -Encoding utf8NoBOM
+    Set-Content -LiteralPath $baselineArchive -Value 'baseline' -Encoding utf8NoBOM
+    Write-WindowsTestJsonAtomic -Path (Join-Path $testRoot `
+        'evidence-release-candidate.json') -Value ([ordered]@{
+            payload = [ordered]@{ name = Split-Path -Leaf $candidateArchive }
+        })
+    $selectedRelease = @(Get-WindowsTestReleaseArtifact -RunRoot $testRoot)
+    if ($selectedRelease.Count -ne 1 -or
+        $selectedRelease[0].Name -cne (Split-Path -Leaf $candidateArchive)) {
+        throw 'Candidate evidence did not disambiguate the release archive from its baseline.'
+    }
     Write-Output 'Validated shared Windows results, evidence fetching, and profile planning.'
 }
 finally { Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue }

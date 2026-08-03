@@ -161,11 +161,7 @@ try {
             evidence = @($mapped | ForEach-Object name | Sort-Object -Unique)
         }
     }
-    $candidate = @(
-        Get-ChildItem -LiteralPath $runRoot -File `
-            -Filter 'lsb-seawork-service-v*-windows-x86_64.zip' |
-            Where-Object Name -NotMatch '-symbols\.zip$'
-    )
+    $candidate = @(Get-WindowsTestReleaseArtifact -RunRoot $runRoot)
     $releaseArtifact = if ($candidate.Count -eq 1) {
         [ordered]@{
             name = $candidate[0].Name
