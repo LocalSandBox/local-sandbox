@@ -129,6 +129,17 @@ LSB_ROOTFS=/path/to/rootfs.ext4 \
 scripts/validate-office-rootfs.sh --iterations 3
 ```
 
+For repeatable before/after startup measurements, run the narrower fixture against
+each runtime asset set. It reports end-to-end and guest duration, npm scratch-install
+time, rootfs size, root-mount options, and guest disk writes:
+
+```sh
+LSB_KERNEL=/path/to/Image \
+LSB_INITRD=/path/to/initramfs.cpio.gz \
+LSB_ROOTFS=/path/to/rootfs.ext4 \
+scripts/validate-rootfs-startup.sh --iterations 3
+```
+
 ## Platform Support
 
 | Host | Runtime backend | Status |
