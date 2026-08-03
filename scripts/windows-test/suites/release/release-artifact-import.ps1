@@ -160,9 +160,8 @@ function Assert-SafeZip {
 
 if (-not [string]::IsNullOrWhiteSpace($ReuseRunId)) {
     Import-ReusedCandidate
-    exit 0
 }
-
+else {
 $importPath = Join-Path $RunRoot 'imported-release-artifact.json'
 $import = Get-Content -LiteralPath (Resolve-RegularFile $importPath 'import record' 64KB).FullName `
     -Raw | ConvertFrom-Json
@@ -269,3 +268,4 @@ $records = foreach ($name in @(
     artifacts = @($records)
 } | ConvertTo-Json -Depth 6 | Set-Content `
     -LiteralPath (Join-Path $RunRoot 'fetch-manifest.json') -Encoding utf8NoBOM
+}

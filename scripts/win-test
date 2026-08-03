@@ -63,6 +63,7 @@ validate_host() {
 
 ssh_windows() {
     ssh \
+        -n \
         -o BatchMode=yes \
         -o ConnectTimeout=8 \
         -o ServerAliveInterval=15 \
