@@ -237,13 +237,11 @@ fn run_recovery(stop_rx: &std::sync::mpsc::Receiver<()>) -> Result<()> {
                         .archive_sha256,
                 );
             }
-            if transaction.transaction.reported_event_id.is_some() {
-                let history = backend
-                    .paths
-                    .history
-                    .join(format!("{}.json", transaction.transaction.transaction_id));
-                archive_file(&backend.paths.current_transaction, &history)?;
-            }
+            let history = backend
+                .paths
+                .history
+                .join(format!("{}.json", transaction.transaction.transaction_id));
+            archive_file(&backend.paths.current_transaction, &history)?;
         }
         RecoveryOutcome::Quarantined => {
             let _ = report_update_event(
