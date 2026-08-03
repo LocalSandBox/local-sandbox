@@ -1,0 +1,22 @@
+scripts/win-test
+  s_be97528113af86::t_d192c5815e0b79 331,335-339
+scripts/windows-test/suites/release/release-service-core-update-reboot.ps1
+  s_be97528113af86::t_5e128757bf2ccd 212-215,231-232,247-248
+  s_be97528113af86::t_4ff27b81e26282 208-211
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "32212c04f93616547774f62b7d5c01b38a54c8d9",
+  "prompts": {},
+  "sessions": {
+    "s_be97528113af86": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc8ca-d9dd-72a0-8144-f6f8a59bb3e4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
