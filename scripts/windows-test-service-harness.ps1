@@ -498,6 +498,7 @@ function Invoke-ClientSmoke {
         [switch] $Network,
         [switch] $Sequential,
         [switch] $UpdateCheck,
+        [switch] $Maintenance,
         [switch] $AdmissionRejected,
         [string] $ClientHarnessRoot = '',
         [string] $ClientExecutableName = 'node.exe',
@@ -545,12 +546,15 @@ function Invoke-ClientSmoke {
         )
     } else { @() }
     $configPath = Join-Path $clientData 'client-config.json'
+    $expectedUserName = if ($Maintenance) {
+        [Security.Principal.WindowsIdentity]::GetCurrent().Name.Split('\')[-1]
+    } else { [string]$State.client_user_name }
     $clientConfig = [ordered]@{
         bindingEntry = Join-Path $harnessRoot 'index.js'
         instanceId = "acceptance-$Suffix"
         mounts = $mountList
         resultPath = $resultPath
-        expectedUserName = [string]$State.client_user_name
+        expectedUserName = $expectedUserName
     }
     $secretValue = $null
     if ($Network) {
@@ -584,15 +588,45 @@ function Invoke-ClientSmoke {
         $configPath
     )
     $tokenProofPath = Join-Path $clientData 'client-token-proof.json'
+    $smokeKind = if ($Maintenance) { 'maintenance' } else { 'filtered-token' }
     try {
-        $tokenProof = Invoke-FilteredUserProcess `
-            -State $State `
-            -Executable $clientExecutable `
-            -Arguments $clientArguments `
-            -WorkingDirectory $harnessRoot `
-            -ProofPath $tokenProofPath `
-            -TaskSuffix $Suffix `
-            -TimeoutSeconds 1800
+        if ($Maintenance) {
+            $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+            $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+            if (-not $principal.IsInRole(
+                    [Security.Principal.WindowsBuiltInRole]::Administrator)) {
+                throw 'The maintenance client requires the elevated harness token.'
+            }
+            Push-Location $harnessRoot
+            try {
+                & $clientExecutable @clientArguments
+                $processExitCode = $LASTEXITCODE
+            }
+            finally { Pop-Location }
+            $tokenProof = [pscustomobject]@{
+                source = 'elevated-current-process'
+                mode = 'elevated-maintenance'
+                user_name = $identity.Name
+                user_sid = $identity.User.Value
+                integrity_level = 'high'
+                integrity_rid = 12288
+                elevated = $true
+                administrator = $true
+                process_exit_code = $processExitCode
+                privilege_behavior_validated = $true
+                separate_account_profile_validated = $false
+            }
+        }
+        else {
+            $tokenProof = Invoke-FilteredUserProcess `
+                -State $State `
+                -Executable $clientExecutable `
+                -Arguments $clientArguments `
+                -WorkingDirectory $harnessRoot `
+                -ProofPath $tokenProofPath `
+                -TaskSuffix $Suffix `
+                -TimeoutSeconds 1800
+        }
         if ([int]$tokenProof.process_exit_code -ne 0) {
             if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
                 $failedResult = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
@@ -620,32 +654,33 @@ function Invoke-ClientSmoke {
                     [string]$failedResult.stable_detail
                 }
                 else { 'no stable detail' }
-                throw "The filtered-token Node smoke '$Suffix' failed at stage " +
+                throw "The $smokeKind Node smoke '$Suffix' failed at stage " +
                     "'$($failedResult.failed_stage)' after $(@($failedResult.checks).Count) checks: " +
                     $stableDetail
             }
-            throw "The filtered-token Node smoke '$Suffix' exited " +
+            throw "The $smokeKind Node smoke '$Suffix' exited " +
                 "$($tokenProof.process_exit_code) without a result."
         }
         if ($AdmissionRejected) {
             throw "The client '$Suffix' unexpectedly passed service admission."
         }
         if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
-            throw 'The filtered-token Node smoke did not produce a result.'
+            throw "The $smokeKind Node smoke did not produce a result."
         }
         $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
-        if ($result.status -ne 'passed') { throw 'The filtered-token Node smoke reported failure.' }
+        if ($result.status -ne 'passed') { throw "The $smokeKind Node smoke reported failure." }
         $result | Add-Member -NotePropertyName client_token -NotePropertyValue ([ordered]@{
-            mode = 'filtered-current-user'
+            mode = [string]$tokenProof.mode
             source = [string]$tokenProof.source
             user_name = [string]$tokenProof.user_name
             user_sid = [string]$tokenProof.user_sid
-            integrity_level = 'medium'
+            integrity_level = [string]$tokenProof.integrity_level
             integrity_rid = [int]$tokenProof.integrity_rid
             elevated = [bool]$tokenProof.elevated
             administrator = [bool]$tokenProof.administrator
-            privilege_behavior_validated = $true
-            separate_account_profile_validated = $false
+            privilege_behavior_validated = [bool]$tokenProof.privilege_behavior_validated
+            separate_account_profile_validated = `
+                [bool]$tokenProof.separate_account_profile_validated
         })
         if ($Network) {
             $observedChecks = @($result.checks | ForEach-Object { [string]$_.name })
@@ -922,7 +957,9 @@ function Install-And-Smoke {
     }
     Invoke-ClientSmoke $state -Mounts -Suffix 'direct-mounts'
     Invoke-ClientSmoke $state -Network -Suffix 'network'
-    Invoke-ClientSmoke $state -UpdateCheck -Suffix 'update-check'
+    Invoke-ClientSmoke $state -UpdateCheck -Maintenance `
+        -ClientHarnessRoot ([string]$state.client_signing_harness_root) `
+        -Suffix 'update-check'
     if ($Scope -eq 'Broad') {
         Invoke-ClientSmoke $state -Mounts -Suffix 'direct-mounts-repeat'
         Invoke-ClientSmoke $state -Sequential -Suffix 'sequential'
@@ -966,7 +1003,9 @@ function Smoke-Core {
         -ClientExecutableName 'node-untrusted.exe' -Suffix 'core-caller-wrong-publisher'
     Invoke-ClientSmoke $state -Mounts -Suffix 'core-direct-mounts'
     Invoke-ClientSmoke $state -Network -Suffix 'core-network'
-    Invoke-ClientSmoke $state -UpdateCheck -Suffix 'core-update-check'
+    Invoke-ClientSmoke $state -UpdateCheck -Maintenance `
+        -ClientHarnessRoot ([string]$state.client_signing_harness_root) `
+        -Suffix 'core-update-check'
     Assert-CompatibleResourcesRestored $before $state.state_root
     [ordered]@{
         schema_version = 1
