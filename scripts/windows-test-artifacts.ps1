@@ -24,6 +24,8 @@ function Test-AllowlistedName {
     param([Parameter(Mandatory = $true)][string] $Name)
 
     return $Name -eq 'fetch-manifest.json' -or
+        $Name -eq 'profile-result.json' -or
+        $Name -eq 'acceptance-evidence-manifest.json' -or
         $Name -eq 'seawork-test-release-manifest.json' -or
         $Name -eq 'SHA256SUMS' -or
         $Name -match '^lsb-seawork-service-v[0-9A-Za-z.+-]+-windows-x86_64(-symbols)?\.zip$' -or
@@ -31,8 +33,8 @@ function Test-AllowlistedName {
         $Name -match '^lsb-seawork-updater-v[0-9A-Za-z.+-]+-windows-x86_64-manifest\.json$' -or
         $Name -match '^lsb-seawork-updater-v[0-9A-Za-z.+-]+-SHA256SUMS$' -or
         $Name -match '^[A-Za-z0-9][A-Za-z0-9._+-]{0,120}\.tgz$' -or
-        $Name -match '^evidence-[a-z0-9][a-z0-9._-]{0,80}\.json$' -or
-        $Name -match '^result-(normal|beforereboot|afterreboot)\.json$'
+        $Name -match '^evidence-[a-z0-9][a-z0-9._-]{0,80}\.redacted\.json$' -or
+        $Name -match '^result-[a-z0-9][a-z0-9-]{0,63}-(normal|beforereboot|afterreboot)\.json$'
 }
 
 $state = [IO.Path]::GetFullPath($StateRoot).TrimEnd('\', '/')
@@ -60,11 +62,12 @@ if ($manifestItem.Length -le 0 -or $manifestItem.Length -gt 256KB) {
     throw 'The fetch manifest size is outside the supported bound.'
 }
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-if ($manifest.schema_version -ne 1 -or $manifest.run_id -ne $RunId) {
+if ($manifest.schema_version -ne 2 -or $manifest.run_id -ne $RunId -or
+    [string]$manifest.generated_utc -notmatch '^\d{4}-\d{2}-\d{2}T') {
     throw 'The fetch manifest identity is invalid.'
 }
 $artifacts = @($manifest.artifacts)
-if ($artifacts.Count -eq 0 -or $artifacts.Count -gt 32) {
+if ($artifacts.Count -eq 0 -or $artifacts.Count -gt 128) {
     throw 'The fetch manifest artifact count is outside the supported bound.'
 }
 $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -79,12 +82,17 @@ foreach ($artifact in $artifacts) {
     $name = [string]$artifact.name
     $expectedHash = ([string]$artifact.sha256).ToLowerInvariant()
     $expectedSize = [long]$artifact.size
+    $kind = [string]$artifact.kind
+    $redacted = [bool]$artifact.redacted
     if (-not (Test-AllowlistedName -Name $name) -or $name -eq 'fetch-manifest.json' -or
         -not $seen.Add($name)) {
         throw 'The fetch manifest contains an unsafe, reserved, or duplicate artifact name.'
     }
     if ($expectedHash -notmatch '^[0-9a-f]{64}$' -or $expectedSize -lt 0 -or
-        $expectedSize -gt 8GB) {
+        $expectedSize -gt 8GB -or
+        $kind -notin @('result', 'evidence', 'manifest', 'release-artifact') -or
+        (($name -match '^evidence-|^result-' -or $name -eq 'profile-result.json') -and
+            -not $redacted)) {
         throw "The fetch manifest metadata is invalid for $name."
     }
     $path = Join-Path $resolvedRun $name

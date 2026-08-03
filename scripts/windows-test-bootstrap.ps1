@@ -138,6 +138,8 @@ $repoPath = Join-Path $rootPath 'repo'
 $lockPath = Join-Path $statePath 'locks\runner.lock'
 $runPath = Join-Path (Join-Path $statePath 'runs') $RunId
 $continuationPath = Join-Path $runPath 'continuation.json'
+$metadataPath = Join-Path $runPath 'run-metadata.json'
+$activePath = Join-Path $runPath 'active.json'
 New-Item -ItemType Directory -Force -Path $runPath | Out-Null
 
 $lock = Open-RunnerLock -Path $lockPath
@@ -169,6 +171,37 @@ try {
         [string]::IsNullOrWhiteSpace($SnapshotRef)) {
         throw 'SnapshotSha and SnapshotRef are required for Run and Reboot modes.'
     }
+
+    if (Test-Path -LiteralPath $metadataPath -PathType Leaf) {
+        $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+        if ($metadata.schema_version -ne 1 -or $metadata.run_id -cne $RunId -or
+            $metadata.snapshot_sha -cne $SnapshotSha -or $metadata.snapshot_ref -cne $SnapshotRef) {
+            throw 'Existing run metadata does not match the requested snapshot identity.'
+        }
+        if (-not [string]::IsNullOrWhiteSpace($ReuseRunId) -and
+            -not [string]::IsNullOrWhiteSpace([string]$metadata.reuse_run_id) -and
+            [string]$metadata.reuse_run_id -cne $ReuseRunId) {
+            throw 'Existing run metadata is bound to a different release candidate.'
+        }
+    }
+    else {
+        Write-JsonAtomic -Path $metadataPath -Value ([ordered]@{
+            schema_version = 1
+            run_id = $RunId
+            snapshot_sha = $SnapshotSha
+            snapshot_ref = $SnapshotRef
+            reuse_run_id = $ReuseRunId
+            created_utc = [DateTime]::UtcNow.ToString('o')
+        })
+    }
+    Write-JsonAtomic -Path $activePath -Value ([ordered]@{
+        schema_version = 1
+        run_id = $RunId
+        suite = $Suite
+        phase = $Mode
+        process_id = $PID
+        started_utc = [DateTime]::UtcNow.ToString('o')
+    })
 
     Sync-Checkout -RepoPath $repoPath -MirrorPath $mirrorPath -Ref $SnapshotRef -Sha $SnapshotSha
     $runner = Join-Path $repoPath 'scripts\windows-dev-test.ps1'
@@ -218,6 +251,7 @@ try {
         }
         Write-JsonAtomic -Path $continuationPath -Value $continuation
         Write-Output "REBOOT_ARMED $RunId"
+        Remove-Item -LiteralPath $activePath -Force -ErrorAction Stop
         & shutdown.exe /r /t 5 /f /c "LocalSandbox agent test $RunId"
         if ($LASTEXITCODE -ne 0) {
             throw "shutdown.exe failed with exit code $LASTEXITCODE"
@@ -233,5 +267,6 @@ try {
     }
 }
 finally {
+    Remove-Item -LiteralPath $activePath -Force -ErrorAction SilentlyContinue
     $lock.Dispose()
 }

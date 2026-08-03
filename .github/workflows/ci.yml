@@ -87,6 +87,7 @@ jobs:
         run: |
           .\scripts\windows-test\validate-catalog.ps1
           .\scripts\windows-test\validate-contracts.ps1
+          .\scripts\windows-test\test-contracts.ps1
       - name: Cargo check Windows target
         run: cargo check --workspace --locked --target x86_64-pc-windows-msvc
       - uses: actions/cache@v4

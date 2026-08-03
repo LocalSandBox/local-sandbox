@@ -95,11 +95,11 @@ function Assert-FetchManifest {
 
     $fetch = Read-JsonFile (Join-Path $Root 'fetch-manifest.json') `
         'source fetch manifest' 256KB
-    if ($fetch.schema_version -ne 1 -or $fetch.run_id -cne $ExpectedRunId) {
+    if ($fetch.schema_version -notin @(1, 2) -or $fetch.run_id -cne $ExpectedRunId) {
         throw 'Source fetch manifest identity is invalid.'
     }
     $entries = @($fetch.artifacts)
-    if ($entries.Count -eq 0 -or $entries.Count -gt 32) {
+    if ($entries.Count -eq 0 -or $entries.Count -gt 128) {
         throw 'Source fetch manifest artifact count is outside the supported bound.'
     }
     $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -122,7 +122,11 @@ function Assert-FetchManifest {
 function Get-CandidateConstructionProof {
     param([string] $Root, [string] $ExpectedSnapshot)
 
-    $results = @('result-normal.json', 'result-beforereboot.json')
+    $results = @('result-normal.json', 'result-beforereboot.json') + @(
+        Get-ChildItem -LiteralPath $Root -File -Filter 'result-*.json' |
+            Where-Object Name -Match '^result-(release-candidate|installed-service-smoke|service-reboot)-(normal|beforereboot)\.json$' |
+            ForEach-Object Name
+    )
     $runtimeFailureResult = $null
     foreach ($name in $results) {
         $path = Join-Path $Root $name
@@ -320,9 +324,7 @@ $payloadName = [string]$releaseEvidence.payload.name
 $symbolsName = [string]$releaseEvidence.symbols.name
 $nodeNames = @($nodeEvidence.packages | ForEach-Object { [string]$_.file })
 $sourceRequired = @(
-    $payloadName, $symbolsName, 'SHA256SUMS', 'seawork-test-release-manifest.json',
-    'evidence-release-candidate.json', 'evidence-node-packages.json',
-    'evidence-event-messages.json'
+    $payloadName, $symbolsName, 'SHA256SUMS', 'seawork-test-release-manifest.json'
 ) + $nodeNames
 Assert-FetchManifest $source $SourceRunId $sourceRequired | Out-Null
 $sourceResult = Get-CandidateConstructionProof $source ([string]$releaseEvidence.snapshot_sha)

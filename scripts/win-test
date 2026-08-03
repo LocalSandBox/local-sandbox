@@ -16,6 +16,7 @@ Usage:
   scripts/win-test list
   scripts/win-test doctor [profile]
   scripts/win-test reset [--full]
+  scripts/win-test accept <runtime|diagnostics|service|release> [options]
   scripts/win-test setup
   scripts/win-test verify
   scripts/win-test provision-signing
@@ -325,6 +326,107 @@ resume_run() {
         "${windows_root}/bootstrap.ps1" -Mode Resume -RunId "$resume_id"
 }
 
+invoke_current_reboot_suite() {
+    local suite_name="$1" reuse_run_id="${2:-}" old_boot_id
+    old_boot_id="$(get_boot_id)"
+    old_boot_id="${old_boot_id//$'\r'/}"
+    old_boot_id="${old_boot_id//$'\n'/}"
+    invoke_bootstrap Reboot "$suite_name" '' "$reuse_run_id"
+    wait_for_reboot "$old_boot_id"
+    wait_for_interactive_user
+    resume_run "$run_id"
+}
+
+accept_profile() {
+    local profile="$1"
+    shift
+    local include_optional=0 reuse_run_id='' profile_status=0 suite_name
+    while [[ "$#" -gt 0 ]]; do
+        case "$1" in
+            --include-optional)
+                (( include_optional == 0 )) || fail '--include-optional was specified more than once'
+                include_optional=1
+                shift
+                ;;
+            --reuse-candidate)
+                [[ "$#" -ge 2 && "$2" =~ ^[a-z0-9][a-z0-9._-]{0,95}$ ]] || \
+                    fail '--reuse-candidate requires a valid run ID'
+                [[ -z "$reuse_run_id" ]] || fail '--reuse-candidate was specified more than once'
+                reuse_run_id="$2"
+                shift 2
+                ;;
+            *) fail "unknown accept option: $1" ;;
+        esac
+    done
+    if [[ "$profile" != diagnostics && "$include_optional" -eq 1 ]]; then
+        fail '--include-optional is supported only by the diagnostics profile'
+    fi
+    if [[ "$profile" != service && "$profile" != release && -n "$reuse_run_id" ]]; then
+        fail '--reuse-candidate is supported only by service and release profiles'
+    fi
+    if [[ "$profile" == release && -z "$reuse_run_id" ]]; then
+        fail 'release acceptance requires --reuse-candidate <run-id> for an exact signed artifact'
+    fi
+
+    if [[ "$profile" == service || "$profile" == release ]]; then
+        ssh_windows pwsh -NoProfile -NonInteractive -File \
+            "${windows_root}/windows-test/host/windows-test-reset.ps1" '-Confirm:$false'
+    fi
+    ssh_windows pwsh -NoProfile -NonInteractive -File \
+        "${windows_root}/windows-test/host/windows-test-doctor.ps1" -Profile "$profile"
+
+    create_snapshot
+    case "$profile" in
+        runtime)
+            profile_suites=( product-runtime rootfs-startup-smoke office-rootfs-smoke )
+            ;;
+        diagnostics)
+            profile_suites=( sentry-smoke qemu-package-tests qemu-telemetry-smoke )
+            if (( include_optional == 1 )); then
+                profile_suites+=( qemu-sentry-acceptance )
+            fi
+            ;;
+        service|release)
+            profile_suites=( system-maintenance-ipc filtered-client-token service-reboot )
+            ;;
+    esac
+
+    for suite_name in "${profile_suites[@]}"; do
+        if (( profile_status != 0 )); then
+            break
+        fi
+        if [[ "$suite_name" == service-reboot ]]; then
+            if ! invoke_current_reboot_suite "$suite_name" "$reuse_run_id"; then
+                profile_status=$?
+                (( profile_status != 0 )) || profile_status=1
+            fi
+        elif ! invoke_bootstrap Run "$suite_name" '' "$reuse_run_id"; then
+            profile_status=$?
+            (( profile_status != 0 )) || profile_status=1
+        fi
+    done
+    if [[ "$profile" == release && "$profile_status" -eq 0 ]]; then
+        if ! invoke_bootstrap Run archive-acceptance '' "$reuse_run_id"; then
+            profile_status=$?
+            (( profile_status != 0 )) || profile_status=1
+        fi
+    fi
+
+    finalize_arguments=(
+        pwsh -NoProfile -NonInteractive -File
+        "${windows_root}/windows-test/host/windows-test-profile.ps1"
+        -Profile "$profile" -RunId "$run_id"
+    )
+    if (( include_optional == 1 )); then
+        finalize_arguments+=( -IncludeOptional )
+    fi
+    if ! ssh_windows "${finalize_arguments[@]}"; then
+        profile_status=$?
+        (( profile_status != 0 )) || profile_status=1
+    fi
+    return "$profile_status"
+}
+
 validate_host
 [[ "$#" -gt 0 ]] || { usage; exit 2; }
 action="$1"
@@ -359,6 +461,13 @@ case "$action" in
             reset_arguments+=( -Full )
         fi
         ssh_windows "${reset_arguments[@]}"
+        ;;
+    accept)
+        [[ "$#" -ge 1 ]] || fail 'accept requires a profile'
+        [[ "$1" =~ ^(runtime|diagnostics|service|release)$ ]] || fail 'invalid acceptance profile'
+        profile_name="$1"
+        shift
+        accept_profile "$profile_name" "$@"
         ;;
     setup)
         [[ "$#" -eq 0 ]] || fail 'setup takes no arguments'
