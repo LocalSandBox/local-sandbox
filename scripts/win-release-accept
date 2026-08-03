@@ -41,7 +41,7 @@ while IFS=$'\t' read -r run_id status run_url head_sha; do
     artifact_count="$(gh api "repos/$owner_repo/actions/runs/$run_id/artifacts" \
         --jq '[.artifacts[] | select(.expired == false and .name == "seawork-service-release")] | length')"
     [[ "$artifact_count" == 1 ]] || continue
-    qualified="$(gh api "repos/$owner_repo/actions/artifacts?per_page=100" \
+    qualified="$(gh api "repos/$owner_repo/actions/artifacts?name=seawork-windows-evidence-$run_id&per_page=100" \
         --jq "[.artifacts[] | select(.expired == false and .name == \"seawork-windows-evidence-$run_id\")] | length")"
     [[ "$qualified" == 0 ]] || continue
     jq -cn --argjson run_id "$run_id" --arg url "$run_url" \
@@ -60,7 +60,12 @@ echo "Qualifying v$version from $release_url"
 attempt_root="$state_root/$release_run_id"
 mkdir -p "$attempt_root"
 descriptor="$attempt_root/acceptance-descriptor.json"
-cp "$descriptor_source" "$descriptor"
+if [[ -f "$descriptor" ]]; then
+    cmp "$descriptor_source" "$descriptor" >/dev/null || \
+        fail 'saved attempt descriptor differs from the trusted release descriptor'
+else
+    cp "$descriptor_source" "$descriptor"
+fi
 candidate_dir="$attempt_root/candidate"
 baseline_dir="$attempt_root/baseline"
 mkdir -p "$candidate_dir" "$baseline_dir"
@@ -79,11 +84,25 @@ while IFS=$'\t' read -r name url sha size; do
 done < <(jq -r '.baseline.assets[] | [.name,.api_url,.sha256,(.size|tostring)] | @tsv' "$descriptor")
 
 while IFS=$'\t' read -r name sha size; do
-    path="$(find "$candidate_dir" -type f -name "$name" -print -quit)"
-    [[ -n "$path" ]] || fail "candidate tuple member is missing: $name"
+    paths="$(find "$candidate_dir" -type f -name "$name" -print)"
+    [[ "$(printf '%s\n' "$paths" | sed '/^$/d' | wc -l | tr -d ' ')" == 1 ]] || \
+        fail "candidate tuple member is missing or duplicated: $name"
+    path="$paths"
     [[ "$(wc -c < "$path" | tr -d ' ')" == "$size" ]] || fail "candidate size mismatch: $name"
     [[ "$(shasum -a 256 "$path" | awk '{print $1}')" == "$sha" ]] || fail "candidate digest mismatch: $name"
 done < <(jq -r '[.candidate.service,.candidate.updater,.candidate.updater_manifest][] | [.name,.sha256,(.size|tostring)] | @tsv' "$descriptor")
+candidate_manifest_name="$(jq -r .candidate.updater_manifest.name "$descriptor")"
+candidate_manifest="$(find "$candidate_dir" -type f -name "$candidate_manifest_name" -print)"
+jq -e --arg version "$version" --arg subject "$(jq -r .publisher.subject "$descriptor")" \
+    --arg sha "$(jq -r .publisher.sha256 "$descriptor")" \
+    '.version == $version and .publisher_subject == $subject and .publisher_sha256_thumbprint == $sha' \
+    "$candidate_manifest" >/dev/null || fail 'candidate publisher binding is invalid'
+baseline_manifest_name="$(jq -r '.baseline.assets[] | select(.name|endswith("-manifest.json")) | .name' "$descriptor")"
+jq -e --arg version "$(jq -r .baseline.version "$descriptor")" \
+    --arg subject "$(jq -r .baseline.publisher.subject "$descriptor")" \
+    --arg sha "$(jq -r .baseline.publisher.sha256 "$descriptor")" \
+    '.version == $version and .publisher_subject == $subject and .publisher_sha256_thumbprint == $sha' \
+    "$baseline_dir/$baseline_manifest_name" >/dev/null || fail 'baseline publisher binding is invalid'
 
 worktree="$attempt_root/worktree"
 if [[ ! -d "$worktree/.git" && ! -f "$worktree/.git" ]]; then
@@ -95,22 +114,56 @@ service_name="$(jq -r .candidate.service.name "$descriptor")"
 service_path="$(find "$candidate_dir" -type f -name "$service_name" -print -quit)"
 
 hardware_log="$attempt_root/hardware.log"
-set +e
-(cd "$worktree" && scripts/win-test accept release --artifact "$service_path" \
-    --baseline-dir "$baseline_dir") 2>&1 | tee "$hardware_log"
-hardware_status=${PIPESTATUS[0]}
-set -e
-hardware_run_id="$(sed -n 's/^Windows test run: //p' "$hardware_log" | tail -n 1)"
-[[ "$hardware_run_id" =~ ^[a-z0-9][a-z0-9._-]{0,95}$ ]] || fail 'hardware run ID was not reported'
-printf '%s\n' "$hardware_run_id" > "$attempt_root/hardware-run-id"
-if (( hardware_status != 0 )); then
-    (cd "$worktree" && scripts/win-test reset) || true
-    fail "Windows acceptance failed; evidence remains in $attempt_root"
+hardware_run_id=''
+if [[ -f "$attempt_root/hardware-run-id" ]]; then
+    hardware_run_id="$(tr -d '\r\n' < "$attempt_root/hardware-run-id")"
+elif [[ -f "$hardware_log" ]]; then
+    hardware_run_id="$(sed -n 's/^Windows test run: //p' "$hardware_log" | tail -n 1)"
+fi
+if [[ -n "$hardware_run_id" ]]; then
+    [[ "$hardware_run_id" =~ ^[a-z0-9][a-z0-9._-]{0,95}$ ]] || fail 'saved hardware run ID is invalid'
+    printf '%s\n' "$hardware_run_id" > "$attempt_root/hardware-run-id"
+    remote="$(cd "$worktree" && scripts/win-test show "$hardware_run_id")"
+    candidate_sha="$(jq -r .candidate.service.sha256 "$descriptor")"
+    jq -e --arg sha "$release_sha" --arg artifact "$candidate_sha" '
+      .documents["result-release-service-core-update-reboot-beforereboot.json"] as $result |
+      $result.base_commit_sha == $sha and $result.bindings.release_artifact_sha256 == $artifact
+    ' <<< "$remote" >/dev/null || fail 'remote continuation does not match the release SHA and candidate tuple'
+    continuation="$(jq -r '.documents["continuation.json"].status // "none"' <<< "$remote")"
+    if [[ "$continuation" == awaiting_reboot ]]; then
+        (cd "$worktree" && scripts/win-test resume "$hardware_run_id")
+    elif [[ "$continuation" != completed ]]; then
+        fail "saved hardware run is not resumable: $continuation"
+    fi
+    remote="$(cd "$worktree" && scripts/win-test show "$hardware_run_id")"
+    if [[ "$(jq -r '.documents["profile-result.json"].status // "none"' <<< "$remote")" != passed ]]; then
+        (cd "$worktree" && scripts/win-test finalize release "$hardware_run_id")
+    fi
+else
+    set +e
+    (cd "$worktree" && scripts/win-test accept release --artifact "$service_path" \
+        --baseline-dir "$baseline_dir") 2>&1 | tee "$hardware_log"
+    hardware_status=${PIPESTATUS[0]}
+    set -e
+    hardware_run_id="$(sed -n 's/^Windows test run: //p' "$hardware_log" | tail -n 1)"
+    [[ "$hardware_run_id" =~ ^[a-z0-9][a-z0-9._-]{0,95}$ ]] || fail 'hardware run ID was not reported'
+    printf '%s\n' "$hardware_run_id" > "$attempt_root/hardware-run-id"
+    if (( hardware_status != 0 )); then
+        remote="$(cd "$worktree" && scripts/win-test show "$hardware_run_id" 2>/dev/null || true)"
+        if [[ "$(jq -r '.documents["continuation.json"].status // "none"' <<< "${remote:-{}}")" == awaiting_reboot ]]; then
+            fail "Windows reboot is pending; rerun just win-release-accept to resume $hardware_run_id"
+        fi
+        (cd "$worktree" && scripts/win-test reset) || true
+        mv "$hardware_log" "$attempt_root/hardware-failed-$(date -u '+%Y%m%dt%H%M%Sz').log"
+        rm -f "$attempt_root/hardware-run-id"
+        fail "Windows acceptance failed; diagnostics remain in $attempt_root"
+    fi
 fi
 
 evidence_dir="$attempt_root/evidence-$hardware_run_id"
-[[ ! -e "$evidence_dir" ]] || rm -rf -- "$evidence_dir"
-(cd "$worktree" && scripts/win-test fetch "$hardware_run_id" "$evidence_dir")
+if [[ ! -e "$evidence_dir" ]]; then
+    (cd "$worktree" && scripts/win-test fetch "$hardware_run_id" "$evidence_dir")
+fi
 bundle="$attempt_root/evidence-$hardware_run_id.tgz"
 "$worktree/scripts/package-windows-release-evidence.sh" "$evidence_dir" "$bundle" >/dev/null
 bundle_b64="$(base64 < "$bundle" | tr -d '\n')"

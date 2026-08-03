@@ -29,6 +29,7 @@ Usage:
   scripts/win-test suite <suite-name> [--reuse-candidate <run-id>]
   scripts/win-test reboot <suite-name> [--reuse-candidate <run-id>]
   scripts/win-test resume <run-id>
+  scripts/win-test finalize <runtime|diagnostics|service|release> <run-id>
   scripts/win-test fetch <run-id> <new-local-directory>
   scripts/win-test runs
   scripts/win-test show <run-id>
@@ -325,6 +326,15 @@ resume_run() {
     [[ "$resume_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$ ]] || fail 'invalid run ID'
     ssh_windows pwsh -NoProfile -NonInteractive -File \
         "${windows_root}/bootstrap.ps1" -Mode Resume -RunId "$resume_id"
+}
+
+finalize_profile() {
+    local profile="$1" finalize_run_id="$2"
+    [[ "$profile" =~ ^(runtime|diagnostics|service|release)$ ]] || fail 'invalid profile'
+    [[ "$finalize_run_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$ ]] || fail 'invalid run ID'
+    ssh_windows pwsh -NoProfile -NonInteractive -File \
+        "${windows_root}/windows-test/host/windows-test-profile.ps1" \
+        -Profile "$profile" -RunId "$finalize_run_id"
 }
 
 invoke_current_reboot_suite() {
@@ -645,7 +655,12 @@ case "$action" in
         ;;
     resume)
         [[ "$#" -eq 1 ]] || fail 'resume requires exactly one run ID'
+        wait_for_interactive_user
         resume_run "$1"
+        ;;
+    finalize)
+        [[ "$#" -eq 2 ]] || fail 'finalize requires a profile and run ID'
+        finalize_profile "$1" "$2"
         ;;
     fetch)
         [[ "$#" -eq 2 ]] || fail 'fetch requires a run ID and a new local destination directory'
