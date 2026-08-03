@@ -1,0 +1,19 @@
+scripts/windows-test/host/windows-test-doctor.ps1
+  s_523ebb0e045371::t_a1606581f5cb1a 160,170,173,176
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "74d4e96133981bf7fecad74214f9edc08b496a0c",
+  "prompts": {},
+  "sessions": {
+    "s_523ebb0e045371": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc78c-68b1-75e3-950f-a99ecb1b2cb9",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
