@@ -118,7 +118,7 @@ fn run_windows(options: Options) -> Result<()> {
     use lsb_seawork_update::{
         load_json, verify_bundle_root, verify_windows_directory_protection, verify_windows_package,
         write_json_atomic, CommittedState, CommittedStateEnvelope, PackagePolicy,
-        PreinstallRequest, PreinstallRequestEnvelope, PublisherIdentity, ReleaseCandidate,
+        PreinstallRequest, PreinstallRequestEnvelope, ReleaseCandidate,
     };
     use lsb_service_proto::{PIPE_NAME, SERVICE_NAME, SUPPORTED};
     use sha2::{Digest, Sha256};
@@ -147,15 +147,16 @@ fn run_windows(options: Options) -> Result<()> {
         pipe_sddl: PIPE_SDDL,
     };
     let verification = verify_bundle_root(&options.bundle, &policy)?;
+    if verification.publisher.subject != options.publisher_subject
+        || !verification
+            .publisher
+            .sha256_thumbprint
+            .eq_ignore_ascii_case(&options.publisher_sha256)
+    {
+        bail!("verified bundle publisher differs from the descriptor binding");
+    }
     verify_windows_directory_protection(&options.bundle)?;
-    verify_windows_package(
-        &options.bundle,
-        &verification,
-        &[PublisherIdentity {
-            subject: options.publisher_subject,
-            sha256_thumbprint: options.publisher_sha256,
-        }],
-    )?;
+    verify_windows_package(&options.bundle, &verification, &[options.publisher_sha256])?;
     let identity = verification.bundle_identity(&archive_sha256)?;
     match options.mode {
         Mode::InitializeBaseline => {
