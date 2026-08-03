@@ -1,0 +1,32 @@
+xtask/src/seawork_seed_update.rs
+  s_be97528113af86::t_38bdd8e2887807 245-249,258-261
+  s_be97528113af86::t_cc38379162bfac 168-174,228-244,250-257,262-283
+  s_be97528113af86::t_7261f7d73aad0d 22,71,84,104
+  s_be97528113af86::t_32769757f6c7f5 340-342
+  s_be97528113af86::t_8d56ad8a2cadc4 163-167
+  s_be97528113af86::t_1bde4fe14900e7 284-286
+  s_be97528113af86::t_0576cae713a55e 339
+xtask/Cargo.toml
+  s_be97528113af86::t_8d56ad8a2cadc4 14
+  s_be97528113af86::t_7261f7d73aad0d 19-21
+scripts/windows-test/suites/release/release-service-core-update-reboot.ps1
+  s_be97528113af86::t_cc38379162bfac 266
+Cargo.lock
+  s_be97528113af86::t_49f695d25a0ce6 2374
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "6d10385d92e56490d5f0f7891aef09a989fdedd8",
+  "prompts": {},
+  "sessions": {
+    "s_be97528113af86": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc8ca-d9dd-72a0-8144-f6f8a59bb3e4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
