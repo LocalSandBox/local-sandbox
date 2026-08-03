@@ -1,0 +1,21 @@
+fixtures/rootfs-startup-smoke.mjs
+  s_0369d76947c5d2::t_ea6b64422d533d 34
+fixtures/office-rootfs-smoke.mjs
+  s_0369d76947c5d2::t_ea6b64422d533d 198
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "1c5ec0acc1579e472aa4eef310e68917f5f47e46",
+  "prompts": {},
+  "sessions": {
+    "s_0369d76947c5d2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc632-1a9d-7293-9182-cb74c40c1917",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
