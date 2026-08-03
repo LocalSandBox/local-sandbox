@@ -1,0 +1,33 @@
+scripts/win-test
+  s_0369d76947c5d2::t_5d36419e4dfef3 4,30
+fixtures/office-rootfs-smoke.mjs
+  s_0369d76947c5d2::t_bec4e6d28910d4 1-9,18-109,111-197,199-204,209-210
+  s_0369d76947c5d2::t_2e071b96899a7e 10-17,198,205-208
+  s_0369d76947c5d2::t_4ea57af34c512a 110
+docs/windows-agent-testing.md
+  s_0369d76947c5d2::t_5d36419e4dfef3 4,39,67
+scripts/windows-test-suites/office-rootfs-smoke.ps1
+  s_0369d76947c5d2::t_e0d50ed7454eda 81
+  s_0369d76947c5d2::t_5d36419e4dfef3 1-80,82
+scripts/validate-office-rootfs.sh
+  s_0369d76947c5d2::t_a92fac8790cf2c 60,64
+  s_0369d76947c5d2::t_2e071b96899a7e 1-59,61-63,65-92
+README.md
+  s_0369d76947c5d2::t_f03d462d5c0800 107-131
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "e6a0152e913c713f000c0db31ec300001e17692a",
+  "prompts": {},
+  "sessions": {
+    "s_0369d76947c5d2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc632-1a9d-7293-9182-cb74c40c1917",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
