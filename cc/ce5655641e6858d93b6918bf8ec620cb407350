@@ -1,0 +1,21 @@
+xtask/src/rootfs.rs
+  s_0369d76947c5d2::t_8e2194498cec3e 196
+crates/lsb-guest/src/main.rs
+  s_0369d76947c5d2::t_8e2194498cec3e 933
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "ccce5655641e6858d93b6918bf8ec620cb407350",
+  "prompts": {},
+  "sessions": {
+    "s_0369d76947c5d2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc632-1a9d-7293-9182-cb74c40c1917",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
