@@ -491,7 +491,9 @@ accept_profile() {
         "${windows_root}/windows-test/host/windows-test-doctor.ps1" -Profile "$profile"
 
     create_snapshot
-    import_baseline_tuple "$baseline_dir"
+    if [[ "$profile" == release ]]; then
+        import_baseline_tuple "$baseline_dir"
+    fi
     if [[ -n "$artifact_path" ]]; then
         import_candidate_tuple "$artifact_path"
     fi
