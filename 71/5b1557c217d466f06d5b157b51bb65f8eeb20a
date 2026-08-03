@@ -1,0 +1,19 @@
+crates/lsb-platform/src/windows_x86_64/qemu/process.rs
+  s_2bef937a37569f::t_6b0fe97545ba81 2060-2062
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "715b1557c217d466f06d5b157b51bb65f8eeb20a",
+  "prompts": {},
+  "sessions": {
+    "s_2bef937a37569f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc71c-0114-71c0-80e0-c165dc4f7299",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
