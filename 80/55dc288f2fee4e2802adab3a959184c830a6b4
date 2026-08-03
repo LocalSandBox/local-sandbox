@@ -1,0 +1,26 @@
+xtask/src/seawork_seed_update.rs
+  s_be97528113af86::t_ab78838d7903c2 55-58,119-121,201-204
+  s_be97528113af86::t_b1d870d9786b21 1-54,59-118,122-200,205-279
+xtask/src/main.rs
+  s_be97528113af86::t_b3b586c1f9cadf 10,35,61
+xtask/Cargo.toml
+  s_be97528113af86::t_b3b586c1f9cadf 14
+Cargo.lock
+  s_be97528113af86::t_15f8e7afb74001 2367
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "8055dc288f2fee4e2802adab3a959184c830a6b4",
+  "prompts": {},
+  "sessions": {
+    "s_be97528113af86": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc8ca-d9dd-72a0-8144-f6f8a59bb3e4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
