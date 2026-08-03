@@ -33,6 +33,105 @@ function Get-Record {
     }
 }
 
+function Import-ReusedCandidate {
+    if ([string]::IsNullOrWhiteSpace($env:LSB_WINDOWS_TEST_STATE_ROOT)) {
+        throw 'Windows test state root is not configured.'
+    }
+    $runsRoot = Join-Path ([IO.Path]::GetFullPath($env:LSB_WINDOWS_TEST_STATE_ROOT)) 'runs'
+    $sourceRoot = [IO.Path]::GetFullPath((Join-Path $runsRoot $ReuseRunId)).TrimEnd('\')
+    if ((Split-Path -Parent $sourceRoot) -cne [IO.Path]::GetFullPath($runsRoot).TrimEnd('\')) {
+        throw 'Reused candidate escaped the owned runs root.'
+    }
+    $sourceItem = Get-Item -LiteralPath $sourceRoot -Force
+    if (-not $sourceItem.PSIsContainer -or
+        ($sourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'Reused candidate is not a plain run directory.'
+    }
+    $sourceEvidence = Get-Content -LiteralPath (Resolve-RegularFile `
+        (Join-Path $sourceRoot 'evidence-release-candidate.json') 'source evidence' 256KB).FullName `
+        -Raw | ConvertFrom-Json
+    $sourceManifest = Get-Content -LiteralPath (Resolve-RegularFile `
+        (Join-Path $sourceRoot 'seawork-test-release-manifest.json') 'source manifest' 1MB).FullName `
+        -Raw | ConvertFrom-Json
+    $sourceFetch = Get-Content -LiteralPath (Resolve-RegularFile `
+        (Join-Path $sourceRoot 'fetch-manifest.json') 'source fetch manifest' 256KB).FullName `
+        -Raw | ConvertFrom-Json
+    $tree = (& git rev-parse "${SnapshotSha}^{tree}").Trim().ToLowerInvariant()
+    $base = (& git rev-parse "${SnapshotSha}^").Trim().ToLowerInvariant()
+    if ($LASTEXITCODE -ne 0 -or $tree -notmatch '^[0-9a-f]{40}$' -or
+        $base -notmatch '^[0-9a-f]{40}$') {
+        throw 'Could not resolve reused candidate snapshot provenance.'
+    }
+    if ($sourceEvidence.status -cne 'passed' -or
+        $sourceEvidence.service_profile -cne 'production' -or
+        [string]$sourceEvidence.snapshot_sha -notmatch '^[0-9a-f]{40}$' -or
+        [string]$sourceEvidence.base_commit -cne $base -or
+        [string]$sourceManifest.local_sandbox_commit -cne $base -or
+        [string]$sourceManifest.synthetic_snapshot_sha -cne [string]$sourceEvidence.snapshot_sha -or
+        [string]$sourceManifest.candidate_version -cne [string]$sourceEvidence.version -or
+        [string]$sourceFetch.run_id -cne $ReuseRunId) {
+        throw 'Reused run is not a release candidate for this exact commit.'
+    }
+
+    $expected = @(
+        [pscustomobject]@{ name = [string]$sourceEvidence.payload.name; sha256 = [string]$sourceEvidence.payload.sha256 },
+        [pscustomobject]@{ name = [string]$sourceEvidence.updater.archive.name; sha256 = [string]$sourceEvidence.updater.archive.sha256 },
+        [pscustomobject]@{ name = [string]$sourceEvidence.updater.manifest.name; sha256 = [string]$sourceEvidence.updater.manifest.sha256 }
+    )
+    foreach ($artifact in $expected) {
+        if ($artifact.name -notmatch '^lsb-seawork-(service|updater)-v[0-9A-Za-z.+-]+-windows-x86_64(\.zip|-manifest\.json)$' -or
+            $artifact.sha256 -notmatch '^[0-9a-f]{64}$') {
+            throw 'Reused candidate declares a noncanonical tuple member.'
+        }
+        $fetchRecord = @($sourceFetch.artifacts | Where-Object name -CEQ $artifact.name)
+        if ($fetchRecord.Count -ne 1 -or [string]$fetchRecord[0].sha256 -cne $artifact.sha256) {
+            throw "Reused candidate fetch record is missing or disagrees: $($artifact.name)"
+        }
+        $source = Join-Path $sourceRoot $artifact.name
+        $record = Get-Record $source "reused candidate $($artifact.name)"
+        if ($record.sha256 -cne $artifact.sha256 -or $record.size -ne [int64]$fetchRecord[0].size) {
+            throw "Reused candidate tuple member changed after publication: $($artifact.name)"
+        }
+        $destination = Join-Path $RunRoot $artifact.name
+        if (Test-Path -LiteralPath $destination) {
+            throw "Current run already contains the candidate tuple member: $($artifact.name)"
+        }
+        Copy-Item -LiteralPath $source -Destination $destination
+    }
+
+    $sourceEvidence.snapshot_sha = $SnapshotSha
+    $sourceEvidence.snapshot_tree_sha = $tree
+    $sourceEvidence.base_commit = $base
+    $sourceEvidence.suite = 'release-artifact-import'
+    $sourceEvidence | Add-Member -NotePropertyName artifact_import -NotePropertyValue `
+        ([ordered]@{ mode = 'reused-local-candidate'; source_run_id = $ReuseRunId }) -Force
+    $sourceManifest.synthetic_snapshot_sha = $SnapshotSha
+    $sourceManifest.windows_run_ids = @(
+        Split-Path -Leaf ([IO.Path]::GetFullPath($RunRoot).TrimEnd('\'))
+    )
+    $sourceManifest.artifact_provenance = [pscustomobject]@{
+        mode = 'reused-local-candidate'; source_run_id = $ReuseRunId
+    }
+    $evidencePath = Join-Path $RunRoot 'evidence-release-candidate.json'
+    $manifestPath = Join-Path $RunRoot 'seawork-test-release-manifest.json'
+    $sourceEvidence | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $evidencePath `
+        -Encoding utf8NoBOM
+    $sourceManifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $manifestPath `
+        -Encoding utf8NoBOM
+    $records = foreach ($name in @($expected.name + @(
+        'evidence-release-candidate.json', 'seawork-test-release-manifest.json'
+    ))) {
+        $record = Get-Record (Join-Path $RunRoot $name) "reuse output $name"
+        [ordered]@{ name = $name; sha256 = $record.sha256; size = $record.size }
+    }
+    [ordered]@{
+        schema_version = 1
+        run_id = Split-Path -Leaf ([IO.Path]::GetFullPath($RunRoot).TrimEnd('\'))
+        artifacts = @($records)
+    } | ConvertTo-Json -Depth 6 | Set-Content `
+        -LiteralPath (Join-Path $RunRoot 'fetch-manifest.json') -Encoding utf8NoBOM
+}
+
 function Assert-SafeZip {
     param([string] $Path)
     $zip = [IO.Compression.ZipFile]::OpenRead($Path)
@@ -57,6 +156,11 @@ function Assert-SafeZip {
         }
     }
     finally { $zip.Dispose() }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($ReuseRunId)) {
+    Import-ReusedCandidate
+    exit 0
 }
 
 $importPath = Join-Path $RunRoot 'imported-release-artifact.json'
