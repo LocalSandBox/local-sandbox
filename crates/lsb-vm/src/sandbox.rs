@@ -80,6 +80,7 @@ use lsb_proto::{
 #[cfg(target_os = "macos")]
 use lsb_proto::{VSOCK_PORT, VSOCK_PORT_FORWARD};
 
+use crate::lifecycle::{LifecyclePhaseGuard, SandboxLifecycleObserver, SandboxLifecyclePhase};
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use crate::mount_metrics::{
     CacheDecision, DurationMetric, ErrorCategory, FailedPhase, FallbackReason, MountSourceSummary,
@@ -156,6 +157,7 @@ pub struct VmConfigBuilder {
     nbd_uri: Option<String>,
     mounts: Vec<MountConfig>,
     mount_prune_subtrees: Vec<Vec<String>>,
+    lifecycle_observer: Option<Arc<dyn SandboxLifecycleObserver>>,
 }
 
 impl VmConfigBuilder {
@@ -176,6 +178,7 @@ impl VmConfigBuilder {
             nbd_uri: None,
             mounts: Vec::new(),
             mount_prune_subtrees: Vec::new(),
+            lifecycle_observer: None,
         }
     }
 
@@ -220,6 +223,14 @@ impl VmConfigBuilder {
         containment: Arc<dyn lsb_platform::PlatformProcessContainment>,
     ) -> Self {
         self.process_containment = Some(containment);
+        self
+    }
+
+    /// Observe coarse sandbox mount and cleanup phases without depending on a
+    /// particular telemetry backend.
+    #[doc(hidden)]
+    pub fn lifecycle_observer(mut self, observer: Arc<dyn SandboxLifecycleObserver>) -> Self {
+        self.lifecycle_observer = Some(observer);
         self
     }
 
@@ -391,6 +402,7 @@ impl VmConfigBuilder {
             port_forward_session: Arc::new(Mutex::new(())),
             #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
             mount_metrics,
+            lifecycle_observer: self.lifecycle_observer,
         })
     }
 }
@@ -422,6 +434,7 @@ pub struct Sandbox {
     port_forward_session: Arc<Mutex<()>>,
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     mount_metrics: WindowsMountMetrics,
+    lifecycle_observer: Option<Arc<dyn SandboxLifecycleObserver>>,
 }
 
 struct SandboxMountPlan {
@@ -992,12 +1005,19 @@ impl Sandbox {
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         let snapshot_started = Instant::now();
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        let snapshot_phase = LifecyclePhaseGuard::start(
+            self.lifecycle_observer.as_ref(),
+            SandboxLifecyclePhase::SnapshotWalk,
+            std::collections::BTreeMap::new(),
+        );
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         let windows_mount_snapshots = match self.snapshot_windows_mounts() {
             Ok(snapshots) => snapshots,
             Err(error) => {
                 self.mount_metrics
                     .add_duration(DurationMetric::SnapshotWalk, snapshot_started.elapsed());
                 self.mount_metrics.finish_current_failure();
+                snapshot_phase.finish(false, std::collections::BTreeMap::new());
                 return Err(error).context("Failed to snapshot Windows mounts");
             }
         };
@@ -1014,18 +1034,63 @@ impl Sandbox {
                 });
             self.mount_metrics
                 .record_snapshot_bytes_hashed(snapshot_bytes);
+            let file_count = windows_mount_snapshots
+                .iter()
+                .map(|snapshot| snapshot.file_count)
+                .sum::<u64>();
+            let directory_count = windows_mount_snapshots
+                .iter()
+                .map(|snapshot| snapshot.directory_count)
+                .sum::<u64>();
+            snapshot_phase.finish(
+                true,
+                std::collections::BTreeMap::from([
+                    (
+                        "mount.count".to_string(),
+                        windows_mount_snapshots.len().to_string(),
+                    ),
+                    ("file.count".to_string(), file_count.to_string()),
+                    ("directory.count".to_string(), directory_count.to_string()),
+                    ("logical.bytes".to_string(), snapshot_bytes.to_string()),
+                ]),
+            );
         }
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         let cache_lookup_started = Instant::now();
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        let cache_lookup_phase = LifecyclePhaseGuard::start(
+            self.lifecycle_observer.as_ref(),
+            SandboxLifecyclePhase::CacheLookup,
+            std::collections::BTreeMap::new(),
+        );
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         let mut windows_mount_cache_run = self.plan_windows_mount_cache(&windows_mount_snapshots);
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         self.mount_metrics
             .add_duration(DurationMetric::CacheLookup, cache_lookup_started.elapsed());
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        cache_lookup_phase.finish(
+            true,
+            std::collections::BTreeMap::from([
+                (
+                    "cache.image_count".to_string(),
+                    windows_mount_cache_run.images.len().to_string(),
+                ),
+                (
+                    "cache.selected".to_string(),
+                    windows_mount_cache_run.has_selected_routes().to_string(),
+                ),
+            ]),
+        );
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         if windows_mount_cache_run.has_disks() {
+            let cache_configuration_phase = LifecyclePhaseGuard::start(
+                self.lifecycle_observer.as_ref(),
+                SandboxLifecyclePhase::CacheConfiguration,
+                std::collections::BTreeMap::new(),
+            );
             let disk_config_started = Instant::now();
             let disks = windows_mount_cache_run.data_disks();
             let disk_config_result = self.vm.configure_data_disks(disks);
@@ -1040,19 +1105,42 @@ impl Sandbox {
                 windows_mount_cache_run
                     .disable_before_boot(format!("cache disk configuration failed: {error:#}"));
                 let _ = self.vm.configure_data_disks(Vec::new());
+                cache_configuration_phase.finish(
+                    false,
+                    std::collections::BTreeMap::from([(
+                        "cache.fallback_reason".to_string(),
+                        "disk_configuration_failed".to_string(),
+                    )]),
+                );
+            } else {
+                cache_configuration_phase.finish(true, std::collections::BTreeMap::new());
             }
         }
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        if let Err(error) = self
-            .prepare_windows_smb_mounts()
-            .context("Failed to prepare Windows SMB mounts")
         {
-            self.mount_metrics.finish_failure(
-                FailedPhase::Configuration,
-                ErrorCategory::InvalidConfiguration,
+            let smb_setup_phase = LifecyclePhaseGuard::start(
+                self.lifecycle_observer.as_ref(),
+                SandboxLifecyclePhase::SmbSetup,
+                std::collections::BTreeMap::new(),
             );
-            return Err(error);
+            let smb_setup_result = self
+                .prepare_windows_smb_mounts()
+                .context("Failed to prepare Windows SMB mounts");
+            smb_setup_phase.finish(
+                smb_setup_result.is_ok(),
+                std::collections::BTreeMap::from([(
+                    "transport.type".to_string(),
+                    "smb".to_string(),
+                )]),
+            );
+            if let Err(error) = smb_setup_result {
+                self.mount_metrics.finish_failure(
+                    FailedPhase::Configuration,
+                    ErrorCategory::InvalidConfiguration,
+                );
+                return Err(error);
+            }
         }
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -1060,6 +1148,11 @@ impl Sandbox {
             .set_failure_context(FailedPhase::GuestReady, ErrorCategory::VmStartFailed);
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         let guest_ready_started = Instant::now();
+        let vm_boot_phase = LifecyclePhaseGuard::start(
+            self.lifecycle_observer.as_ref(),
+            SandboxLifecyclePhase::VmBoot,
+            std::collections::BTreeMap::new(),
+        );
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         let vm_start_result = match self.vm.start() {
             Ok(()) => Ok(()),
@@ -1087,6 +1180,7 @@ impl Sandbox {
         #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
         let vm_start_result = self.vm.start();
         if let Err(error) = vm_start_result.context("Failed to start VM") {
+            vm_boot_phase.finish(false, std::collections::BTreeMap::new());
             #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
             {
                 self.mount_metrics
@@ -1099,6 +1193,7 @@ impl Sandbox {
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         self.mount_metrics
             .add_duration(DurationMetric::GuestReady, guest_ready_started.elapsed());
+        vm_boot_phase.finish(true, std::collections::BTreeMap::new());
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         if !self.supports_mount_cache() && windows_mount_cache_run.has_disks() {
@@ -1139,10 +1234,35 @@ impl Sandbox {
     pub fn stop(&self) -> Result<()> {
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         {
-            self.sync_windows_smb_mounts_best_effort();
+            let smb_sync_phase = LifecyclePhaseGuard::start(
+                self.lifecycle_observer.as_ref(),
+                SandboxLifecyclePhase::SmbSync,
+                std::collections::BTreeMap::new(),
+            );
+            let smb_sync_succeeded = self.sync_windows_smb_mounts_best_effort();
+            smb_sync_phase.finish(
+                smb_sync_succeeded,
+                std::collections::BTreeMap::from([(
+                    "transport.type".to_string(),
+                    "smb".to_string(),
+                )]),
+            );
+            let vm_stop_phase = LifecyclePhaseGuard::start(
+                self.lifecycle_observer.as_ref(),
+                SandboxLifecyclePhase::VmStop,
+                std::collections::BTreeMap::new(),
+            );
             let stop_result = self.vm.stop().context("Failed to stop VM");
+            vm_stop_phase.finish(stop_result.is_ok(), std::collections::BTreeMap::new());
             if stop_result.is_ok() {
-                if let Err(error) = self.vm.configure_data_disks(Vec::new()) {
+                let detach_phase = LifecyclePhaseGuard::start(
+                    self.lifecycle_observer.as_ref(),
+                    SandboxLifecyclePhase::CacheDiskDetach,
+                    std::collections::BTreeMap::new(),
+                );
+                let detach_result = self.vm.configure_data_disks(Vec::new());
+                detach_phase.finish(detach_result.is_ok(), std::collections::BTreeMap::new());
+                if let Err(error) = detach_result {
                     eprintln!("lsb: failed to clear stopped mount cache disks: {error:#}");
                 }
                 let cache_run = self
@@ -1151,10 +1271,38 @@ impl Sandbox {
                     .map_err(|_| anyhow::anyhow!("Windows mount cache run lock poisoned"))?
                     .take();
                 if let Some(cache_run) = cache_run {
+                    let image_count = cache_run.images.len();
+                    let image_bytes = cache_run.images.iter().fold(0u64, |total, image| {
+                        total.saturating_add(image.lease.virtual_size())
+                    });
+                    let cache_finalize_phase = LifecyclePhaseGuard::start(
+                        self.lifecycle_observer.as_ref(),
+                        SandboxLifecyclePhase::CacheFinalize,
+                        std::collections::BTreeMap::new(),
+                    );
                     cache_run.finalize_after_stop(&self.mount_metrics);
+                    cache_finalize_phase.finish(
+                        true,
+                        std::collections::BTreeMap::from([
+                            ("cache.image_count".to_string(), image_count.to_string()),
+                            ("cache.image_bytes".to_string(), image_bytes.to_string()),
+                        ]),
+                    );
                 }
             }
+            let smb_teardown_phase = LifecyclePhaseGuard::start(
+                self.lifecycle_observer.as_ref(),
+                SandboxLifecyclePhase::SmbTeardown,
+                std::collections::BTreeMap::new(),
+            );
             let cleanup_result = self.cleanup_windows_smb_mounts();
+            smb_teardown_phase.finish(
+                cleanup_result.is_ok(),
+                std::collections::BTreeMap::from([(
+                    "transport.type".to_string(),
+                    "smb".to_string(),
+                )]),
+            );
             let result = match (stop_result, cleanup_result) {
                 (Ok(()), Ok(())) => Ok(()),
                 (Err(error), Ok(())) => Err(error),
@@ -2873,12 +3021,13 @@ impl Sandbox {
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    fn sync_windows_smb_mounts_best_effort(&self) {
+    fn sync_windows_smb_mounts_best_effort(&self) -> bool {
         if !self.has_windows_smb_resources() {
-            return;
+            return true;
         }
 
-        let _ = self.exec(&["sync"], &mut std::io::sink(), &mut std::io::sink());
+        self.exec(&["sync"], &mut std::io::sink(), &mut std::io::sink())
+            .is_ok()
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -3070,11 +3219,33 @@ impl Sandbox {
                 if cache_run.route_is_selected(snapshot_index) {
                     continue;
                 }
+                let transfer_phase = LifecyclePhaseGuard::start(
+                    self.lifecycle_observer.as_ref(),
+                    SandboxLifecyclePhase::Transfer,
+                    std::collections::BTreeMap::from([
+                        ("mount.id".to_string(), snapshot.descriptor.tag.clone()),
+                        (
+                            "logical.bytes".to_string(),
+                            snapshot.logical_bytes.to_string(),
+                        ),
+                        ("transport.type".to_string(), "mux".to_string()),
+                    ]),
+                );
                 let transfer_started = Instant::now();
                 let copy_result = self
                     .copy_windows_mount_snapshot_on_session(writer, reader, snapshot, defer_sync);
                 self.mount_metrics
                     .add_duration(DurationMetric::Transfer, transfer_started.elapsed());
+                transfer_phase.finish(
+                    copy_result.is_ok(),
+                    std::collections::BTreeMap::from([
+                        ("mount.id".to_string(), snapshot.descriptor.tag.clone()),
+                        (
+                            "transferred.bytes".to_string(),
+                            snapshot.logical_bytes.to_string(),
+                        ),
+                    ]),
+                );
                 copy_result.with_context(|| {
                     format!(
                         "copying Windows mount '{}' into guest staging path '{}'",
@@ -3090,9 +3261,15 @@ impl Sandbox {
             self.mount_metrics
                 .set_failure_context(FailedPhase::OverlayMount, ErrorCategory::GuestRejected);
             let overlay_started = Instant::now();
+            let overlay_phase = LifecyclePhaseGuard::start(
+                self.lifecycle_observer.as_ref(),
+                SandboxLifecyclePhase::OverlayMount,
+                std::collections::BTreeMap::new(),
+            );
             let result = self.send_mount_requests(writer, reader);
             self.mount_metrics
                 .add_duration(DurationMetric::OverlayMount, overlay_started.elapsed());
+            overlay_phase.finish(result.is_ok(), self.mount_metrics.lifecycle_counts());
             result
         })
     }
@@ -3134,6 +3311,17 @@ impl Sandbox {
                 }
             };
             let prepare_started = Instant::now();
+            let prepare_phase = LifecyclePhaseGuard::start(
+                self.lifecycle_observer.as_ref(),
+                SandboxLifecyclePhase::CachePrepare,
+                std::collections::BTreeMap::from([
+                    ("cache.image_id".to_string(), image_id.clone()),
+                    (
+                        "cache.outcome".to_string(),
+                        if is_hit { "hit" } else { "build" }.to_string(),
+                    ),
+                ]),
+            );
             let prepare_response =
                 self.send_mount_cache_request_on_session(writer, reader, &prepare)?;
             self.mount_metrics.add_duration(
@@ -3144,6 +3332,7 @@ impl Sandbox {
                 },
                 prepare_started.elapsed(),
             );
+            prepare_phase.finish(true, std::collections::BTreeMap::new());
             match prepare_response {
                 MountCacheResponse::Rejected { reason, .. } => {
                     eprintln!(
@@ -3185,11 +3374,30 @@ impl Sandbox {
                     anyhow::anyhow!("cache image binding references a missing snapshot")
                 })?;
                 let transfer_started = Instant::now();
+                let transfer_phase = LifecyclePhaseGuard::start(
+                    self.lifecycle_observer.as_ref(),
+                    SandboxLifecyclePhase::Transfer,
+                    std::collections::BTreeMap::from([
+                        ("mount.id".to_string(), snapshot.descriptor.tag.clone()),
+                        (
+                            "logical.bytes".to_string(),
+                            snapshot.logical_bytes.to_string(),
+                        ),
+                        ("transport.type".to_string(), "mount_cache".to_string()),
+                    ]),
+                );
                 let copy_result = self.copy_windows_mount_snapshot_to_cache_on_session(
                     writer, reader, snapshot, &image_id,
                 );
                 self.mount_metrics
                     .add_duration(DurationMetric::Transfer, transfer_started.elapsed());
+                transfer_phase.finish(
+                    copy_result.is_ok(),
+                    std::collections::BTreeMap::from([(
+                        "transferred.bytes".to_string(),
+                        snapshot.logical_bytes.to_string(),
+                    )]),
+                );
                 if let Err(error) = copy_result {
                     if let Some(rejected) = error.downcast_ref::<MountCacheImportRejected>() {
                         eprintln!(
@@ -3217,10 +3425,19 @@ impl Sandbox {
                     expected_key: image_id.clone(),
                 };
                 let seal_started = Instant::now();
+                let validate_phase = LifecyclePhaseGuard::start(
+                    self.lifecycle_observer.as_ref(),
+                    SandboxLifecyclePhase::CacheValidate,
+                    std::collections::BTreeMap::from([(
+                        "cache.image_id".to_string(),
+                        image_id.clone(),
+                    )]),
+                );
                 let seal_response =
                     self.send_mount_cache_request_on_session(writer, reader, &seal)?;
                 self.mount_metrics
                     .add_duration(DurationMetric::CacheValidate, seal_started.elapsed());
+                validate_phase.finish(true, std::collections::BTreeMap::new());
                 match seal_response {
                     MountCacheResponse::Rejected { reason, .. } => {
                         eprintln!(
@@ -3278,10 +3495,19 @@ impl Sandbox {
                     target: snapshot.descriptor.guest_target.clone(),
                 };
                 let overlay_started = Instant::now();
+                let overlay_phase = LifecyclePhaseGuard::start(
+                    self.lifecycle_observer.as_ref(),
+                    SandboxLifecyclePhase::OverlayMount,
+                    std::collections::BTreeMap::from([(
+                        "mount.id".to_string(),
+                        snapshot.descriptor.tag.clone(),
+                    )]),
+                );
                 let response =
                     self.send_mount_cache_request_on_session(writer, reader, &request)?;
                 self.mount_metrics
                     .add_duration(DurationMetric::OverlayMount, overlay_started.elapsed());
+                overlay_phase.finish(true, std::collections::BTreeMap::new());
                 if let MountCacheResponse::Rejected { reason, .. } = response {
                     rejected = Some(reason);
                     break;
@@ -3404,6 +3630,18 @@ impl Sandbox {
             let mux_open_before = self
                 .mount_metrics
                 .duration_ms(DurationMetric::MuxSessionOpen);
+            let transfer_phase = LifecyclePhaseGuard::start(
+                self.lifecycle_observer.as_ref(),
+                SandboxLifecyclePhase::Transfer,
+                std::collections::BTreeMap::from([
+                    ("mount.id".to_string(), snapshot.descriptor.tag.clone()),
+                    (
+                        "logical.bytes".to_string(),
+                        snapshot.logical_bytes.to_string(),
+                    ),
+                    ("transport.type".to_string(), "legacy".to_string()),
+                ]),
+            );
             let transfer_started = Instant::now();
             let copy_result = self.copy_windows_mount_snapshot_legacy(snapshot, defer_sync);
             let transfer_elapsed_ms = transfer_started.elapsed().as_secs_f64() * 1000.0;
@@ -3413,6 +3651,13 @@ impl Sandbox {
             self.mount_metrics.add_duration_ms(
                 DurationMetric::Transfer,
                 (transfer_elapsed_ms - (mux_open_after - mux_open_before)).max(0.0),
+            );
+            transfer_phase.finish(
+                copy_result.is_ok(),
+                std::collections::BTreeMap::from([(
+                    "transferred.bytes".to_string(),
+                    snapshot.logical_bytes.to_string(),
+                )]),
             );
             copy_result.with_context(|| {
                 format!(
@@ -3434,9 +3679,15 @@ impl Sandbox {
             .set_failure_context(FailedPhase::OverlayMount, ErrorCategory::GuestRejected);
         self.with_guest_control_session("mount init", |writer, reader| {
             let overlay_started = Instant::now();
+            let overlay_phase = LifecyclePhaseGuard::start(
+                self.lifecycle_observer.as_ref(),
+                SandboxLifecyclePhase::OverlayMount,
+                std::collections::BTreeMap::new(),
+            );
             let result = self.send_mount_requests(writer, reader);
             self.mount_metrics
                 .add_duration(DurationMetric::OverlayMount, overlay_started.elapsed());
+            overlay_phase.finish(result.is_ok(), self.mount_metrics.lifecycle_counts());
             result
         })
     }
@@ -3751,6 +4002,11 @@ impl Sandbox {
     ) -> Result<()> {
         self.mount_metrics
             .set_failure_context(FailedPhase::Barrier, ErrorCategory::BarrierFailed);
+        let barrier_phase = LifecyclePhaseGuard::start(
+            self.lifecycle_observer.as_ref(),
+            SandboxLifecyclePhase::SyncBarrier,
+            std::collections::BTreeMap::new(),
+        );
         let barrier_started = Instant::now();
         let result = self.void_fs_op_on_session(
             writer,
@@ -3765,6 +4021,7 @@ impl Sandbox {
         if result.is_ok() {
             self.mount_metrics.record_final_barrier();
         }
+        barrier_phase.finish(result.is_ok(), std::collections::BTreeMap::new());
         result.context("syncing deferred Windows mount imports")
     }
 }
@@ -4430,6 +4687,7 @@ mod tests {
             port_forward_session: Arc::new(Mutex::new(())),
             #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
             mount_metrics: WindowsMountMetrics::default(),
+            lifecycle_observer: None,
         }
     }
 

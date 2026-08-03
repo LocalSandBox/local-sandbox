@@ -339,6 +339,9 @@ pub trait Adapter: Send + Sync {
         span: SpanDescription,
     ) -> Result<Option<u64>, ()>;
     fn finish_span(&self, span_id: u64, status: SpanStatus) -> Result<(), ()>;
+    fn set_span_data(&self, _span_id: u64, _key: &str, _value: &str) -> Result<(), ()> {
+        Ok(())
+    }
     fn flush(&self, timeout: Duration) -> Result<(), ()>;
 }
 
@@ -527,6 +530,12 @@ impl SpanGuard {
         self.status = status;
     }
 
+    pub fn set_data(&self, key: &str, value: &str) {
+        if let Some(span_id) = self.span_id {
+            let _ = self.adapter.set_span_data(span_id, key, value);
+        }
+    }
+
     pub fn finish(mut self, status: SpanStatus) {
         self.status = status;
         self.finish_once();
@@ -623,6 +632,7 @@ mod tests {
         events: Vec<FailureEvent>,
         spans: Vec<(u64, Option<u64>, String, SpanDescription)>,
         finished: Vec<(u64, SpanStatus)>,
+        span_data: Vec<(u64, String, String)>,
         flushes: Vec<Duration>,
         fail_calls: bool,
     }
@@ -700,6 +710,15 @@ mod tests {
                 return Err(());
             }
             state.finished.push((span_id, status));
+            Ok(())
+        }
+
+        fn set_span_data(&self, span_id: u64, key: &str, value: &str) -> Result<(), ()> {
+            self.state.lock().unwrap().span_data.push((
+                span_id,
+                key.to_string(),
+                value.to_string(),
+            ));
             Ok(())
         }
 
@@ -955,5 +974,18 @@ mod tests {
         let state = adapter.state.lock().unwrap();
         assert_eq!(state.sessions_started, 1);
         assert_eq!(state.sessions_ended, 1);
+    }
+
+    #[test]
+    fn span_data_can_be_attached_at_phase_completion() {
+        let adapter = Arc::new(FakeAdapter::default());
+        let telemetry = Telemetry::new(adapter.clone());
+        let span = telemetry.start_span(SpanDescription::transaction("cleanup"));
+        span.set_data("cleanup.result", "partial");
+        span.finish(SpanStatus::InternalError);
+        assert_eq!(
+            adapter.state.lock().unwrap().span_data,
+            [(1, "cleanup.result".to_string(), "partial".to_string())]
+        );
     }
 }

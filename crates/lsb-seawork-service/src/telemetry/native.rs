@@ -354,6 +354,24 @@ impl Adapter for NativeAdapter {
         Ok(())
     }
 
+    fn set_span_data(&self, span_id: u64, key: &str, value: &str) -> Result<(), ()> {
+        let state = self.state.lock().map_err(|_| ())?;
+        let native = state.spans.get(&span_id).ok_or(())?;
+        let key = CString::new(key).map_err(|_| ())?;
+        let value = unsafe { rust_string_value(value)? };
+        unsafe {
+            match native {
+                NativeSpan::Transaction(transaction) => {
+                    sentry_transaction_set_data(*transaction as *mut c_void, key.as_ptr(), value)
+                }
+                NativeSpan::Span(span) => {
+                    sentry_span_set_data(*span as *mut c_void, key.as_ptr(), value)
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn flush(&self, timeout: Duration) -> Result<(), ()> {
         let timeout = timeout.as_millis().min(u128::from(u64::MAX)) as u64;
         if unsafe { sentry_flush(timeout) } == 0 {

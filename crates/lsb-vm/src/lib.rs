@@ -1,9 +1,13 @@
 #![forbid(unsafe_code)]
 
+mod lifecycle;
 #[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
 mod mount_metrics;
 mod sandbox;
 
+pub use lifecycle::{
+    SandboxLifecycleEvent, SandboxLifecycleObserver, SandboxLifecyclePhase, SandboxLifecycleState,
+};
 pub use lsb_platform::{PlatformNetworkAttachment, PlatformProcessContainment, VmState};
 pub use lsb_proto::{
     frame, ExecRequest, ForwardRequest, ForwardResponse, MountRequest, MountResponse, PortMapping,

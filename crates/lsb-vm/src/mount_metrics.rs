@@ -298,6 +298,29 @@ pub(crate) struct WindowsMountMetrics {
 }
 
 impl WindowsMountMetrics {
+    pub(crate) fn lifecycle_counts(&self) -> std::collections::BTreeMap<String, String> {
+        let Some(inner) = &self.inner else {
+            return std::collections::BTreeMap::new();
+        };
+        let Ok(state) = inner.state.lock() else {
+            return std::collections::BTreeMap::new();
+        };
+        std::collections::BTreeMap::from([
+            (
+                "request.count".to_string(),
+                state.record.filesystem_requests.to_string(),
+            ),
+            (
+                "response.count".to_string(),
+                state.record.filesystem_responses.to_string(),
+            ),
+            (
+                "transferred.bytes".to_string(),
+                state.record.bytes_transferred.to_string(),
+            ),
+        ])
+    }
+
     pub(crate) fn from_env() -> Self {
         let Some(path) = env::var_os(WINDOWS_MOUNT_METRICS_ENV).filter(|value| !value.is_empty())
         else {

@@ -194,6 +194,194 @@ pub struct ManagedVm {
     telemetry: crate::telemetry::Telemetry,
     correlation_id: String,
     resource_id: String,
+    lifecycle_observer: Arc<SandboxLifecycleTrace>,
+}
+
+struct SandboxLifecycleTrace {
+    telemetry: crate::telemetry::Telemetry,
+    parent: Mutex<crate::telemetry::SpanParent>,
+    containment: std::sync::Weak<SandboxJob>,
+    resource_id: String,
+    correlation_id: String,
+    active: Mutex<
+        std::collections::HashMap<
+            (lsb_vm::SandboxLifecyclePhase, Option<String>),
+            crate::telemetry::SpanGuard,
+        >,
+    >,
+    transferred_mounts: Mutex<std::collections::HashSet<String>>,
+    cleanup_root: Mutex<Option<crate::telemetry::SpanGuard>>,
+    cleanup_context: Mutex<Option<(&'static str, Duration)>>,
+}
+
+impl std::fmt::Debug for SandboxLifecycleTrace {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SandboxLifecycleTrace")
+            .field("resource_id", &self.resource_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SandboxLifecycleTrace {
+    fn attach_parent(&self, parent: crate::telemetry::SpanParent) {
+        if let Ok(mut current) = self.parent.lock() {
+            *current = parent;
+        }
+    }
+
+    fn set_cleanup_context(&self, trigger: &'static str, deadline: Duration) {
+        if let Ok(mut context) = self.cleanup_context.lock() {
+            *context = Some((trigger, deadline));
+        }
+    }
+
+    fn begin_cleanup(&self, trigger: &'static str) {
+        self.set_cleanup_context(trigger, crate::ipc::connection::DEFAULT_STOP_DEADLINE);
+        let root = self.telemetry.start_span(
+            crate::telemetry::SpanDescription::transaction("sandbox.cleanup")
+                .with_data("cleanup.trigger", trigger),
+        );
+        self.attach_parent(root.parent());
+        if let Some(containment) = self.containment.upgrade() {
+            containment.attach_qemu_lifecycle(self.telemetry.clone(), root.parent());
+        }
+        if let Ok(mut current) = self.cleanup_root.lock() {
+            *current = Some(root);
+        }
+    }
+
+    fn finish_cleanup(&self, result: &'static str) {
+        let root = self
+            .cleanup_root
+            .lock()
+            .ok()
+            .and_then(|mut root| root.take());
+        if let Some(root) = root {
+            root.set_data("cleanup.result", result);
+            root.finish(if result == "complete" {
+                crate::telemetry::SpanStatus::Ok
+            } else {
+                crate::telemetry::SpanStatus::InternalError
+            });
+        }
+    }
+}
+
+impl lsb_vm::SandboxLifecycleObserver for SandboxLifecycleTrace {
+    fn record(&self, event: lsb_vm::SandboxLifecycleEvent) {
+        let mount_id = event.data.get("mount.id").cloned();
+        if event.phase == lsb_vm::SandboxLifecyclePhase::Transfer {
+            if let Some(mount_id) = &mount_id {
+                let Ok(mut transferred) = self.transferred_mounts.lock() else {
+                    return;
+                };
+                if event.state == lsb_vm::SandboxLifecycleState::Started
+                    && !transferred.insert(mount_id.clone())
+                {
+                    return;
+                }
+            }
+        }
+        let key = (event.phase, mount_id);
+        match event.state {
+            lsb_vm::SandboxLifecycleState::Started => {
+                let (operation, description) = sandbox_lifecycle_description(event.phase);
+                self.telemetry.update_crash_context(
+                    operation,
+                    Some(&self.resource_id),
+                    None,
+                    false,
+                );
+                let Ok(parent) = self.parent.lock() else {
+                    return;
+                };
+                let mut span = crate::telemetry::SpanDescription::child(operation, description);
+                for (key, value) in event.data {
+                    span = span.with_data(key, value);
+                }
+                if let Some((trigger, deadline)) = self
+                    .cleanup_context
+                    .lock()
+                    .ok()
+                    .and_then(|context| *context)
+                {
+                    span = span
+                        .with_data("cleanup.trigger", trigger)
+                        .with_data("deadline.remaining_ms", deadline.as_millis().to_string());
+                }
+                let guard = parent.start_child(span);
+                if matches!(
+                    event.phase,
+                    lsb_vm::SandboxLifecyclePhase::VmBoot | lsb_vm::SandboxLifecyclePhase::VmStop
+                ) {
+                    if let Some(containment) = self.containment.upgrade() {
+                        containment.attach_qemu_lifecycle(self.telemetry.clone(), guard.parent());
+                    }
+                }
+                if let Ok(mut active) = self.active.lock() {
+                    active.insert(key, guard);
+                }
+            }
+            lsb_vm::SandboxLifecycleState::Completed => {
+                let (operation, _) = sandbox_lifecycle_description(event.phase);
+                self.telemetry
+                    .update_crash_context(operation, Some(&self.resource_id), None, true);
+                let span = self
+                    .active
+                    .lock()
+                    .ok()
+                    .and_then(|mut active| active.remove(&key));
+                if let Some(span) = span {
+                    for (key, value) in &event.data {
+                        span.set_data(key, value);
+                    }
+                    span.finish(if event.succeeded == Some(true) {
+                        crate::telemetry::SpanStatus::Ok
+                    } else {
+                        crate::telemetry::SpanStatus::InternalError
+                    });
+                }
+                if event.succeeded == Some(false) {
+                    self.telemetry.capture_failure(
+                        crate::telemetry::FailureEvent::new(
+                            operation,
+                            "SANDBOX_LIFECYCLE_PHASE_FAILED",
+                            crate::telemetry::Level::Error,
+                            format!("sandbox lifecycle phase {operation} failed"),
+                        )
+                        .with_detailed_failure_kind("lifecycle_phase")
+                        .with_correlation_id(&self.correlation_id)
+                        .with_resource_id(&self.resource_id)
+                        .with_phase(operation),
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn sandbox_lifecycle_description(
+    phase: lsb_vm::SandboxLifecyclePhase,
+) -> (&'static str, &'static str) {
+    use lsb_vm::SandboxLifecyclePhase as Phase;
+    match phase {
+        Phase::SnapshotWalk => ("mount.snapshot_walk", "walk mount snapshots"),
+        Phase::CacheLookup => ("mount.cache_lookup", "select mount cache routes"),
+        Phase::CacheConfiguration => ("mount.cache_configuration", "configure cache disks"),
+        Phase::SmbSetup => ("mount.smb_setup", "prepare SMB mounts"),
+        Phase::VmBoot => ("vm.boot", "boot sandbox VM"),
+        Phase::Transfer => ("mount.transfer", "transfer mount payload"),
+        Phase::CachePrepare => ("mount.cache_prepare", "prepare mount cache"),
+        Phase::CacheValidate => ("mount.cache_validate", "validate mount cache"),
+        Phase::SyncBarrier => ("mount.sync_barrier", "flush mount transfers"),
+        Phase::OverlayMount => ("mount.overlay", "mount guest overlays"),
+        Phase::SmbSync => ("cleanup.smb_sync", "sync SMB mounts"),
+        Phase::VmStop => ("vm.stop", "stop sandbox VM"),
+        Phase::CacheDiskDetach => ("cleanup.cache_disk_detach", "detach cache disks"),
+        Phase::CacheFinalize => ("cleanup.cache_finalize", "finalize mount cache"),
+        Phase::SmbTeardown => ("cleanup.smb_teardown", "tear down SMB mounts"),
+    }
 }
 
 impl std::fmt::Debug for ManagedVm {
@@ -232,7 +420,19 @@ impl ManagedVm {
                 ResourceHandle::random()?.to_string(),
             )?;
             let containment = Arc::new(containment);
+            let lifecycle_observer = Arc::new(SandboxLifecycleTrace {
+                telemetry: telemetry.clone(),
+                parent: Mutex::new(trace_parent.clone()),
+                containment: Arc::downgrade(&containment),
+                resource_id: spec.resource_id.clone(),
+                correlation_id: spec.correlation_id.clone(),
+                active: Mutex::new(std::collections::HashMap::new()),
+                transferred_mounts: Mutex::new(std::collections::HashSet::new()),
+                cleanup_root: Mutex::new(None),
+                cleanup_context: Mutex::new(None),
+            });
             let thread_containment = containment.clone();
+            let thread_lifecycle_observer = lifecycle_observer.clone();
             let engine = engine.clone();
             let managed_telemetry = telemetry.clone();
             let (commands, receiver) = mpsc::sync_channel(8);
@@ -250,6 +450,7 @@ impl ManagedVm {
                         ready,
                         telemetry,
                         trace_parent,
+                        thread_lifecycle_observer,
                     )
                 })
                 .context("spawn managed VM thread")?;
@@ -264,6 +465,7 @@ impl ManagedVm {
                     telemetry: managed_telemetry,
                     correlation_id: correlation_id.clone(),
                     resource_id: resource_id.clone(),
+                    lifecycle_observer,
                 }),
                 Err(error) => {
                     let _ = thread.join();
@@ -295,7 +497,9 @@ impl ManagedVm {
         timeout: Duration,
         trace_parent: Option<crate::telemetry::SpanParent>,
     ) -> Result<()> {
+        self.lifecycle_observer.set_cleanup_context("rpc", timeout);
         if let Some(parent) = trace_parent {
+            self.lifecycle_observer.attach_parent(parent.clone());
             self.containment
                 .attach_qemu_lifecycle(self.telemetry.clone(), parent);
         }
@@ -536,6 +740,7 @@ fn run(
     ready: mpsc::SyncSender<Result<()>>,
     telemetry: crate::telemetry::Telemetry,
     trace_parent: crate::telemetry::SpanParent,
+    lifecycle_observer: Arc<SandboxLifecycleTrace>,
 ) {
     telemetry.update_crash_context(
         "sandbox.boot",
@@ -553,13 +758,32 @@ fn run(
         &engine,
         &mut spec,
         process_containment.clone(),
+        &telemetry,
         &trace_parent,
+        lifecycle_observer.clone(),
     );
     let Ok((sandbox, proxy_handle)) = result else {
         if let Err(error) = &result {
             capture_vm_failure(&telemetry, &engine, &spec, error, "boot");
         }
-        let _ = cleanup_instance(&engine, &spec);
+        lifecycle_observer.begin_cleanup("startup_rollback");
+        let cleanup_span = process_containment.start_lifecycle_span(
+            "sandbox.instance_cleanup",
+            "remove protected sandbox instance",
+        );
+        let cleanup_result = cleanup_instance(&engine, &spec);
+        if let Some(span) = cleanup_span {
+            span.finish(if cleanup_result.is_ok() {
+                crate::telemetry::SpanStatus::Ok
+            } else {
+                crate::telemetry::SpanStatus::InternalError
+            });
+        }
+        lifecycle_observer.finish_cleanup(if cleanup_result.is_ok() {
+            "partial"
+        } else {
+            "failed"
+        });
         telemetry.update_crash_context("sandbox.cleaned_up", Some(&spec.resource_id), None, true);
         let _ = ready.send(result.map(|_| ()));
         return;
@@ -571,25 +795,43 @@ fn run(
     if let Err(error) = process_containment.check_notifications() {
         capture_vm_failure(&telemetry, &engine, &spec, &error, "boot");
         let _ = process_containment.terminate(1);
-        let _ = sandbox.stop();
+        lifecycle_observer.begin_cleanup("startup_rollback");
+        let stop_succeeded = sandbox.stop().is_ok();
         let _ = cleanup_instance(&engine, &spec);
+        lifecycle_observer.finish_cleanup(if stop_succeeded { "partial" } else { "failed" });
         let _ = ready.send(Err(error));
         return;
     }
     if let Err(error) = process_containment.set_transaction_state(LifecycleState::Running) {
         capture_vm_failure(&telemetry, &engine, &spec, &error, "boot");
-        let _ = sandbox.stop();
+        lifecycle_observer.begin_cleanup("startup_rollback");
+        let stop_succeeded = sandbox.stop().is_ok();
         let _ = cleanup_instance(&engine, &spec);
+        lifecycle_observer.finish_cleanup(if stop_succeeded { "partial" } else { "failed" });
         let _ = ready.send(Err(error));
         return;
     }
     if session_cancellation.is_cancelled() || startup_cancellation.is_cancelled() {
-        let _ = stop_and_cleanup(&sandbox, &engine, &spec, &process_containment);
+        lifecycle_observer.begin_cleanup("startup_rollback");
+        let _ = stop_and_cleanup(
+            &sandbox,
+            &engine,
+            &spec,
+            &process_containment,
+            &lifecycle_observer,
+        );
         let _ = ready.send(Err(anyhow::anyhow!("operation cancelled")));
         return;
     }
     if ready.send(Ok(())).is_err() {
-        let _ = stop_and_cleanup(&sandbox, &engine, &spec, &process_containment);
+        lifecycle_observer.begin_cleanup("session_closure");
+        let _ = stop_and_cleanup(
+            &sandbox,
+            &engine,
+            &spec,
+            &process_containment,
+            &lifecycle_observer,
+        );
         telemetry.update_crash_context("sandbox.cleaned_up", Some(&spec.resource_id), None, true);
         return;
     }
@@ -609,12 +851,21 @@ fn run(
             );
             capture_vm_failure(&telemetry, &engine, &spec, &error, "runtime");
             let _ = process_containment.terminate(1);
-            let _ = sandbox.stop();
+            lifecycle_observer.begin_cleanup("runtime_failure");
+            let stop_succeeded = sandbox.stop().is_ok();
             let _ = cleanup_instance(&engine, &spec);
+            lifecycle_observer.finish_cleanup(if stop_succeeded { "partial" } else { "failed" });
             return;
         }
         if session_cancellation.is_cancelled() {
-            let _ = stop_and_cleanup(&sandbox, &engine, &spec, &process_containment);
+            lifecycle_observer.begin_cleanup("session_closure");
+            let _ = stop_and_cleanup(
+                &sandbox,
+                &engine,
+                &spec,
+                &process_containment,
+                &lifecycle_observer,
+            );
             return;
         }
         match commands.recv_timeout(Duration::from_millis(100)) {
@@ -625,7 +876,13 @@ fn run(
                     Some(&spec.instance_dir),
                     false,
                 );
-                let result = stop_and_cleanup(&sandbox, &engine, &spec, &process_containment);
+                let result = stop_and_cleanup(
+                    &sandbox,
+                    &engine,
+                    &spec,
+                    &process_containment,
+                    &lifecycle_observer,
+                );
                 if result.is_ok() {
                     telemetry.update_crash_context(
                         "sandbox.cleaned_up",
@@ -695,7 +952,14 @@ fn run(
             }
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let _ = stop_and_cleanup(&sandbox, &engine, &spec, &process_containment);
+                lifecycle_observer.begin_cleanup("session_closure");
+                let _ = stop_and_cleanup(
+                    &sandbox,
+                    &engine,
+                    &spec,
+                    &process_containment,
+                    &lifecycle_observer,
+                );
                 return;
             }
         }
@@ -1034,16 +1298,37 @@ fn stop_and_cleanup(
     engine: &ServiceEngineConfig,
     spec: &ManagedVmSpec,
     containment: &SandboxJob,
+    lifecycle_observer: &SandboxLifecycleTrace,
 ) -> Result<()> {
-    sandbox.stop()?;
-    let relative_path = spec
-        .instance_dir
-        .strip_prefix(engine.resources_root())
-        .context("protected instance is not relative to resources root")?
-        .display()
-        .to_string();
-    let file_id = crate::resource::mount::protected_identity(&spec.instance_dir)?;
-    containment.require_staging_identity(&relative_path, &file_id)?;
+    if let Err(error) = sandbox.stop() {
+        lifecycle_observer.finish_cleanup("failed");
+        return Err(error);
+    }
+    let identity_span = containment.start_lifecycle_span(
+        "cleanup.identity_verification",
+        "verify protected sandbox identity",
+    );
+    let identity_result = (|| {
+        let relative_path = spec
+            .instance_dir
+            .strip_prefix(engine.resources_root())
+            .context("protected instance is not relative to resources root")?
+            .display()
+            .to_string();
+        let file_id = crate::resource::mount::protected_identity(&spec.instance_dir)?;
+        containment.require_staging_identity(&relative_path, &file_id)
+    })();
+    if let Some(span) = identity_span {
+        span.finish(if identity_result.is_ok() {
+            crate::telemetry::SpanStatus::Ok
+        } else {
+            crate::telemetry::SpanStatus::InternalError
+        });
+    }
+    if let Err(error) = identity_result {
+        lifecycle_observer.finish_cleanup("partial");
+        return Err(error);
+    }
     let cleanup_span = containment.start_lifecycle_span(
         "sandbox.instance_cleanup",
         "remove protected sandbox instance",
@@ -1056,7 +1341,10 @@ fn stop_and_cleanup(
             crate::telemetry::SpanStatus::InternalError
         });
     }
-    cleanup_result?;
+    if let Err(error) = cleanup_result {
+        lifecycle_observer.finish_cleanup("partial");
+        return Err(error);
+    }
     let ledger_span =
         containment.start_lifecycle_span("sandbox.ledger_finish", "finish sandbox resource ledger");
     let ledger_result = containment.finish_transaction();
@@ -1068,6 +1356,11 @@ fn stop_and_cleanup(
         });
     }
     let _ = sandbox.record_resource_ledger_finished(ledger_result.is_ok());
+    lifecycle_observer.finish_cleanup(if ledger_result.is_ok() {
+        "complete"
+    } else {
+        "partial"
+    });
     ledger_result
 }
 
@@ -1321,7 +1614,9 @@ fn build_and_start(
     engine: &ServiceEngineConfig,
     spec: &mut ManagedVmSpec,
     process_containment: Arc<SandboxJob>,
+    telemetry: &crate::telemetry::Telemetry,
     trace_parent: &crate::telemetry::SpanParent,
+    lifecycle_observer: Arc<SandboxLifecycleTrace>,
 ) -> Result<(lsb_vm::Sandbox, Option<lsb_proxy::ProxyHandle>)> {
     let proxy_span = trace_parent.start_child(crate::telemetry::SpanDescription::child(
         "sandbox.proxy_start",
@@ -1354,10 +1649,16 @@ fn build_and_start(
         crate::telemetry::SpanStatus::InternalError
     });
     let (network_attachment, proxy_handle) = proxy_result?;
+    let mount_span = trace_parent.start_child(crate::telemetry::SpanDescription::child(
+        "sandbox.mount_initialize",
+        "initialize sandbox mounts and boot VM",
+    ));
+    lifecycle_observer.attach_parent(mount_span.parent());
     let mut builder = lsb_vm::Sandbox::builder()
         .data_dir(path_text(engine.resources_root())?)
         .service_qemu_executable(path_text(engine.qemu_executable())?)
         .service_process_containment(process_containment)
+        .lifecycle_observer(lifecycle_observer)
         .kernel(path_text(engine.kernel_image())?)
         .initrd(path_text(engine.initrd_image())?)
         .rootfs(path_text(&spec.rootfs_image)?)
@@ -1377,11 +1678,13 @@ fn build_and_start(
             mount.prune_subtrees.clone(),
         );
     }
-    let sandbox = builder.build()?;
-    let mount_span = trace_parent.start_child(crate::telemetry::SpanDescription::child(
-        "sandbox.mount_initialize",
-        "initialize sandbox mounts and boot VM",
-    ));
+    let sandbox = match builder.build() {
+        Ok(sandbox) => sandbox,
+        Err(error) => {
+            mount_span.finish(crate::telemetry::SpanStatus::InternalError);
+            return Err(error);
+        }
+    };
     let start_result = sandbox.start();
     mount_span.finish(if start_result.is_ok() {
         crate::telemetry::SpanStatus::Ok
@@ -1391,7 +1694,17 @@ fn build_and_start(
     start_result?;
     if let Some(handle) = &proxy_handle {
         if handle.requires_guest_ca {
-            if let Err(error) = install_proxy_ca(&sandbox, &handle.ca_cert_pem) {
+            let proxy_ca_span = trace_parent.start_child(crate::telemetry::SpanDescription::child(
+                "sandbox.proxy_ca_install",
+                "install guest proxy CA",
+            ));
+            let install_result = install_proxy_ca(&sandbox, &handle.ca_cert_pem);
+            proxy_ca_span.finish(if install_result.is_ok() {
+                crate::telemetry::SpanStatus::Ok
+            } else {
+                crate::telemetry::SpanStatus::InternalError
+            });
+            if let Err(error) = install_result {
                 let _ = sandbox.stop();
                 return Err(error);
             }

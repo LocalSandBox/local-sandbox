@@ -97,6 +97,25 @@ Job-drain, instance-cleanup, and ledger-finish spans. Platform lifecycle events
 drive these spans through a Sentry-independent callback; the local timeline
 remains authoritative when trace sampling drops a transaction.
 
+Mount initialization further separates snapshot walking, cache lookup and disk
+configuration, SMB setup, `vm.boot`, per-mount transfer, cache
+prepare/validation, sync barriers, and overlay mounting. QEMU startup spans are
+children of `vm.boot`. The post-start certificate step is reported separately
+as `sandbox.proxy_ca_install`.
+
+Cleanup separates dependent process/watch stop, SMB sync, `vm.stop`, cache-disk
+detach, cache finalization, SMB teardown, protected identity verification,
+instance removal, and ledger completion. QEMU exit spans are children of
+`vm.stop`. Automatic cleanup creates a fresh `sandbox.cleanup` root with a
+`cleanup.trigger`; its terminal `cleanup.result` is `complete`, `partial`, or
+`failed`. Phase failures emit `SANDBOX_LIFECYCLE_PHASE_FAILED` events and the
+current phase is persisted in crash context.
+
+Create cleanup duration p50/p95 widgets grouped by span operation, `release`,
+and `cache.outcome`. Add a p95 alert just below the default stop deadline and a
+separate count of `cleanup.result:partial OR cleanup.result:failed` so a faster
+but incomplete cleanup does not look healthy.
+
 Only the newest three completed local QEMU dump incidents are retained. A
 missing `sentry-receipt.json` means local evidence was captured but no Sentry
 acceptance receipt was committed. A retained incident under

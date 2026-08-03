@@ -751,15 +751,39 @@ impl SessionManager {
             }
             (vm, processes, watches)
         };
+        let process_stop_span = trace_parent.as_ref().map(|parent| {
+            parent.start_child(
+                crate::telemetry::SpanDescription::child(
+                    "cleanup.dependent_process_stop",
+                    "stop dependent sandbox processes",
+                )
+                .with_data("dependent.process_count", processes.len().to_string()),
+            )
+        });
         for process in processes {
             if let Some(controller) = process.controller() {
                 let _ = controller.kill();
             }
         }
+        if let Some(span) = process_stop_span {
+            span.finish(crate::telemetry::SpanStatus::Ok);
+        }
+        let watch_stop_span = trace_parent.as_ref().map(|parent| {
+            parent.start_child(
+                crate::telemetry::SpanDescription::child(
+                    "cleanup.dependent_watch_stop",
+                    "stop dependent sandbox watches",
+                )
+                .with_data("dependent.watch_count", watches.len().to_string()),
+            )
+        });
         for watch in watches {
             if let Some(controller) = watch.controller() {
                 controller.stop();
             }
+        }
+        if let Some(span) = watch_stop_span {
+            span.finish(crate::telemetry::SpanStatus::Ok);
         }
         let mut slot = vm;
         let result = slot
