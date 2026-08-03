@@ -1,0 +1,19 @@
+scripts/windows-test-reuse-candidate.ps1
+  s_be97528113af86::t_ea45340d4de31f 304,325-332,335-336,339-362,370-371,429-430
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "9a830187c412de14116f8e045c1deb1cd5e8726e",
+  "prompts": {},
+  "sessions": {
+    "s_be97528113af86": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc8ca-d9dd-72a0-8144-f6f8a59bb3e4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
