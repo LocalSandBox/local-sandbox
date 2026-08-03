@@ -172,6 +172,7 @@ else {
     [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
 }
 $service = Join-Path $targetRoot 'x86_64-pc-windows-msvc\release\localsandbox-seawork-service.exe'
+$updater = Join-Path $targetRoot 'x86_64-pc-windows-msvc\release\localsandbox-seawork-updater.exe'
 $dumpHelper = Join-Path $targetRoot 'x86_64-pc-windows-msvc\release\localsandbox-qemu-dump-helper.exe'
 $pdb = Join-Path $targetRoot 'x86_64-pc-windows-msvc\release\localsandbox_seawork_service.pdb'
 $eventTools = Resolve-EventMessageTools
@@ -182,7 +183,7 @@ $priorRcPath = $env:LSB_WINDOWS_RC_PATH
 $priorPublisher = $env:SEAWORK_PUBLISHER_SHA256
 $priorPreviousPublisher = $env:SEAWORK_PUBLISHER_SHA256_PREVIOUS
 try {
-    foreach ($outputPath in @($service, $dumpHelper, $pdb)) {
+    foreach ($outputPath in @($service, $updater, $dumpHelper, $pdb)) {
         if (Test-Path -LiteralPath $outputPath) {
             Resolve-RegularFile $outputPath 'cached release output' | Out-Null
             Remove-Item -LiteralPath $outputPath -Force
@@ -195,7 +196,8 @@ try {
     $env:SEAWORK_PUBLISHER_SHA256 = [string]$certificateInfo.sha256_thumbprint
     $env:SEAWORK_PUBLISHER_SHA256_PREVIOUS = ''
     Invoke-Native cargo @(
-        'build', '-p', 'lsb-seawork-service', '-p', 'lsb-qemu-dump-helper', '--locked', '--release',
+        'build', '-p', 'lsb-seawork-service', '-p', 'lsb-seawork-updater',
+        '-p', 'lsb-qemu-dump-helper', '--locked', '--release',
         '--target', 'x86_64-pc-windows-msvc', '--features', 'sentry-telemetry'
     ) 'production service build'
 }
@@ -208,6 +210,7 @@ finally {
     $env:SEAWORK_PUBLISHER_SHA256_PREVIOUS = $priorPreviousPublisher
 }
 Resolve-RegularFile $service 'release service PE' | Out-Null
+Resolve-RegularFile $updater 'release updater PE' | Out-Null
 Resolve-RegularFile $dumpHelper 'release QEMU dump helper PE' | Out-Null
 Resolve-RegularFile $pdb 'release service PDB' | Out-Null
 
@@ -226,6 +229,21 @@ Invoke-Native (Join-Path $PWD 'scripts\sign-seawork-service.ps1') @(
     '-ExpectedPublisherSubject', [string]$certificateInfo.subject,
     '-ExpectedPublisherSha256', [string]$certificateInfo.sha256_thumbprint
 ) 'service PE signing'
+Invoke-Native (Join-Path $PWD 'scripts\sign-seawork-service.ps1') @(
+    '-Mode', 'SignUpdaterPe',
+    '-UseLocalMachineStore',
+    '-UpdaterBinary', $updater,
+    '-PfxPath', $pfx,
+    '-PasswordFile', $passwordFile,
+    '-ExpectedPublisherSubject', [string]$certificateInfo.subject,
+    '-ExpectedPublisherSha256', [string]$certificateInfo.sha256_thumbprint
+) 'updater PE signing'
+Invoke-Native (Join-Path $PWD 'scripts\sign-seawork-service.ps1') @(
+    '-Mode', 'VerifyUpdaterPe',
+    '-UpdaterBinary', $updater,
+    '-ExpectedPublisherSubject', [string]$certificateInfo.subject,
+    '-ExpectedPublisherSha256', [string]$certificateInfo.sha256_thumbprint
+) 'updater PE signature verification'
 Invoke-Native (Join-Path $PWD 'scripts\sign-seawork-service.ps1') @(
     '-Mode', 'SignDumpHelperPe',
     '-UseLocalMachineStore',
@@ -358,6 +376,30 @@ Invoke-Native cargo @(
     '--debug-id-evidence', $debugIdEvidence
 ) 'service archive construction'
 
+Invoke-Native cargo @(
+    'run', '-p', 'xtask', '--release', '--locked', '--', 'package-release',
+    '--artifact', 'seawork-updater',
+    '--platform', 'windows-x86_64',
+    '--version', $version,
+    '--output-dir', $out,
+    '--updater-binary', $updater,
+    '--publisher-subject', [string]$certificateInfo.subject,
+    '--publisher-thumbprint', [string]$certificateInfo.sha256_thumbprint
+) 'updater archive construction'
+$updaterArchiveName = "lsb-seawork-updater-v$version-windows-x86_64.zip"
+$updaterManifestName = "lsb-seawork-updater-v$version-windows-x86_64-manifest.json"
+$updaterSumsName = "lsb-seawork-updater-v$version-SHA256SUMS"
+$updaterManifest = Get-Content -LiteralPath (Resolve-RegularFile `
+    (Join-Path $out $updaterManifestName) 'updater manifest') -Raw | ConvertFrom-Json
+$updaterBinarySha256 = (Get-FileHash -LiteralPath $updater -Algorithm SHA256).Hash.ToLowerInvariant()
+if ([int]$updaterManifest.schema_version -ne 2 -or
+    [string]$updaterManifest.version -cne $version -or
+    [string]$updaterManifest.binary_sha256 -cne $updaterBinarySha256 -or
+    [string]$updaterManifest.publisher_sha256_thumbprint -cne
+        [string]$certificateInfo.sha256_thumbprint) {
+    throw 'Packaged updater manifest does not bind the signed updater candidate.'
+}
+
 $symbolsPath = Resolve-RegularFile `
     (Join-Path $out "lsb-seawork-service-v$version-windows-x86_64-symbols.zip") `
     'symbols archive'
@@ -445,6 +487,10 @@ foreach ($name in @($payloadName, $symbolsName)) {
     Copy-Item -LiteralPath (Resolve-RegularFile (Join-Path $out $name) "release artifact $name") `
         -Destination (Join-Path $RunRoot $name)
 }
+foreach ($name in @($updaterArchiveName, $updaterManifestName, $updaterSumsName)) {
+    Copy-Item -LiteralPath (Resolve-RegularFile (Join-Path $out $name) "release artifact $name") `
+        -Destination (Join-Path $RunRoot $name)
+}
 Copy-Item -LiteralPath (Resolve-RegularFile (Join-Path $out $sumsName) 'release checksums') `
     -Destination (Join-Path $RunRoot 'SHA256SUMS')
 Copy-Item -LiteralPath $eventSigned -Destination (Join-Path $RunRoot 'evidence-event-messages.json')
@@ -474,6 +520,21 @@ if ($LASTEXITCODE -ne 0 -or $snapshotTreeSha -notmatch '^[0-9a-f]{40}$' -or
         name = $symbolsName
         sha256 = (Get-FileHash -LiteralPath (Join-Path $RunRoot $symbolsName) -Algorithm SHA256).Hash.ToLowerInvariant()
     }
+    updater = [ordered]@{
+        archive = [ordered]@{
+            name = $updaterArchiveName
+            sha256 = (Get-FileHash -LiteralPath `
+                (Join-Path $RunRoot $updaterArchiveName) -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        manifest = [ordered]@{
+            name = $updaterManifestName
+            sha256 = (Get-FileHash -LiteralPath `
+                (Join-Path $RunRoot $updaterManifestName) -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        binary_sha256 = $updaterBinarySha256
+        helper_protocol_major = 1
+        helper_protocol_minor = 1
+    }
     sentry = [ordered]@{
         native_tag = [string]$sentryDependency.sentry_native_tag
         native_commit = [string]$sentryDependency.sentry_native_commit
@@ -500,6 +561,9 @@ Invoke-Native (Join-Path $PWD 'scripts\write-seawork-test-release-manifest.ps1')
 $fetchNames = @(
     $payloadName,
     $symbolsName,
+    $updaterArchiveName,
+    $updaterManifestName,
+    $updaterSumsName,
     'SHA256SUMS',
     'seawork-test-release-manifest.json',
     'evidence-event-messages.json',
