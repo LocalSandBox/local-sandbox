@@ -112,6 +112,9 @@ pub fn ensure_linux_rootfs_prerequisites() -> Result<()> {
     if !command_exists("xz") {
         missing_packages.push("xz-utils");
     }
+    if !command_exists("unzip") {
+        missing_packages.push("unzip");
+    }
 
     if !missing_packages.is_empty() {
         run_command(

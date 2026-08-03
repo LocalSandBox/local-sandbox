@@ -925,6 +925,23 @@ mod guest {
         mount_fs("tmpfs", "/tmp", "tmpfs", None);
     }
 
+    const DEFAULT_HOME: &str = "/root";
+    const DEFAULT_PATH: &str =
+        "/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+    const DEFAULT_NODE_PATH: &str = "/usr/local/lib/node_modules";
+    const DEFAULT_BUN_INSTALL: &str = "/root/.bun";
+    const DEFAULT_NODE_EXTRA_CA_CERTS: &str = "/usr/local/share/ca-certificates/lsb-proxy.crt";
+
+    fn configure_default_environment() {
+        std::env::set_var("HOME", DEFAULT_HOME);
+        std::env::set_var("PATH", DEFAULT_PATH);
+        std::env::set_var("NODE_PATH", DEFAULT_NODE_PATH);
+        std::env::set_var("BUN_INSTALL", DEFAULT_BUN_INSTALL);
+        std::env::set_var("BUN_INSTALL_GLOBAL_DIR", "/root/.bun/install/global");
+        std::env::set_var("BUN_INSTALL_BIN", "/root/.bun/bin");
+        std::env::set_var("NODE_EXTRA_CA_CERTS", DEFAULT_NODE_EXTRA_CA_CERTS);
+    }
+
     fn process_mount(req: &MountRequest) -> MountResponse {
         let (source, target) = match req {
             MountRequest::Overlay { source, target } => (source.clone(), target.as_str()),
@@ -3819,10 +3836,7 @@ mod guest {
                     libc::putenv(term.into_raw());
                 }
                 if !req.env.contains_key("PATH") {
-                    let path = CString::new(
-                        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                    )
-                    .unwrap();
+                    let path = CString::new(format!("PATH={DEFAULT_PATH}")).unwrap();
                     libc::putenv(path.into_raw());
                 }
 
@@ -4534,6 +4548,7 @@ mod guest {
 
         eprintln!("lsb-guest: starting as PID 1");
 
+        configure_default_environment();
         mount_filesystems();
         eprintln!("lsb-guest: filesystems mounted");
 
