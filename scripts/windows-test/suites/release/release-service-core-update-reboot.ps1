@@ -274,6 +274,13 @@ if ($Phase -eq 'BeforeReboot') {
             $candidateVersion $candidateRecord.sha256
         $mainService = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
         $expectedBinary = Join-Path $finalVersionRoot 'bin\localsandbox-seawork-service.exe'
+        # The committed identity proves SCM now belongs to the candidate. Persist that
+        # ownership before later assertions so failure cleanup cannot mistake the
+        # production-switched service for an unrelated installation.
+        $installState.version = $candidateVersion
+        $installState.service_binary = $expectedBinary
+        $installState | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $installedStatePath `
+            -Encoding utf8NoBOM
         if ($mainService.State -cne 'Running' -or
             -not $mainService.PathName.Contains($expectedBinary,
                 [StringComparison]::OrdinalIgnoreCase) -or
@@ -281,10 +288,6 @@ if ($Phase -eq 'BeforeReboot') {
                 'updates\transactions\current.json'))) {
             throw 'Committed candidate service, SCM path, or transaction cleanup is invalid.'
         }
-        $installState.version = $candidateVersion
-        $installState.service_binary = $expectedBinary
-        $installState | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $installedStatePath `
-            -Encoding utf8NoBOM
         & $harness -Mode SmokeCore -Scope Core -RunRoot $RunRoot -SnapshotSha $SnapshotSha
         [ordered]@{
             schema_version = 1; contract = 'release-core-update-reboot-v1'
