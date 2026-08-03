@@ -33,7 +33,6 @@ $initrd = Resolve-RegularFile (Join-Path $runtime 'initramfs.cpio.gz') 'initramf
 $rootfs = Resolve-RegularFile (Join-Path $runtime 'rootfs.ext4') 'root filesystem'
 $env:LSB_QEMU = Resolve-RegularFile (Join-Path $qemu 'qemu-system-x86_64.exe') 'QEMU executable'
 $env:LSB_QEMU_IMG = Resolve-RegularFile (Join-Path $qemu 'qemu-img.exe') 'QEMU image executable'
-$env:CARGO_TARGET_DIR = Join-Path $RunRoot 'cargo-target'
 $metricsPath = Join-Path $RunRoot 'office-rootfs-mount-metrics.json'
 $env:LSB_WINDOWS_MOUNT_METRICS_PATH = $metricsPath
 
