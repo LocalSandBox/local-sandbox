@@ -149,7 +149,9 @@ function Invoke-SeedUtility {
 
 function Wait-CandidateCommit {
     param([string] $CommittedPath, [string] $BaselineVersion,
-        [string] $CandidateVersion, [string] $CandidateSha256)
+        [string] $CandidateVersion, [string] $CandidateSha256,
+        [string] $CurrentTransactionPath, [string] $HistoryTransactionPath,
+        [string] $TransactionId)
     $deadline = [DateTime]::UtcNow.AddMinutes(15)
     do {
         Start-Sleep -Milliseconds 500
@@ -161,7 +163,20 @@ function Wait-CandidateCommit {
                     $BaselineVersion) {
                     throw 'Committed candidate did not retain the baseline as last-known-good.'
                 }
-                return $committed
+                if (-not (Test-Path -LiteralPath $CurrentTransactionPath) -and
+                    (Test-Path -LiteralPath $HistoryTransactionPath -PathType Leaf)) {
+                    $history = Get-Content -LiteralPath $HistoryTransactionPath -Raw |
+                        ConvertFrom-Json
+                    if ([string]$history.transaction.transaction_id -cne $TransactionId -or
+                        [string]$history.transaction.phase -cne 'target_committed' -or
+                        [string]$history.transaction.target_bundle_identity.version -cne
+                            $CandidateVersion -or
+                        [string]$history.transaction.target_bundle_identity.archive_sha256 -cne
+                            $CandidateSha256) {
+                        throw 'Archived candidate transaction identity is invalid.'
+                    }
+                    return $committed
+                }
             }
         }
     } while ([DateTime]::UtcNow -lt $deadline)
@@ -270,8 +285,13 @@ if ($Phase -eq 'BeforeReboot') {
         ) 'protected candidate preinstall seeding'
 
         $candidateRecord = Get-Record $candidateService
+        $currentTransactionPath = Join-Path ([string]$installState.state_root) `
+            'updates\transactions\current.json'
+        $historyTransactionPath = Join-Path ([string]$installState.state_root) `
+            "updates\history\$transactionId.json"
         $committed = Wait-CandidateCommit $committedPath $baselineVersion `
-            $candidateVersion $candidateRecord.sha256
+            $candidateVersion $candidateRecord.sha256 $currentTransactionPath `
+            $historyTransactionPath $transactionId
         $mainService = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
         $expectedBinary = Join-Path $finalVersionRoot 'bin\localsandbox-seawork-service.exe'
         # The committed identity proves SCM now belongs to the candidate. Persist that
@@ -284,8 +304,7 @@ if ($Phase -eq 'BeforeReboot') {
         if ($mainService.State -cne 'Running' -or
             -not $mainService.PathName.Contains($expectedBinary,
                 [StringComparison]::OrdinalIgnoreCase) -or
-            (Test-Path -LiteralPath (Join-Path ([string]$installState.state_root) `
-                'updates\transactions\current.json'))) {
+            (Test-Path -LiteralPath $currentTransactionPath)) {
             throw 'Committed candidate service, SCM path, or transaction cleanup is invalid.'
         }
         & $harness -Mode SmokeCore -Scope Core -RunRoot $RunRoot -SnapshotSha $SnapshotSha
