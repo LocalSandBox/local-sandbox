@@ -19,5 +19,9 @@ done < <(tar -tzf "$bundle")
 if tar -tvzf "$bundle" | awk 'substr($1,1,1) != "-" && substr($1,1,1) != "d" { exit 1 }'; then :; else
     echo 'evidence bundle contains a non-regular entry' >&2; exit 1
 fi
+expanded_size="$(
+    (set +o pipefail; tar -xOzf "$bundle" | head -c 8388609) | wc -c | tr -d ' '
+)"
+(( expanded_size <= 8388608 )) || { echo 'expanded evidence exceeds 8 MiB' >&2; exit 1; }
 mkdir -p "$destination"
 tar -xzf "$bundle" --no-same-owner --no-same-permissions -C "$destination"

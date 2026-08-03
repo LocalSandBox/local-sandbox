@@ -103,3 +103,7 @@ tar -czf "$fixture/unsafe.tgz" -C "$fixture/unsafe-source" .
 expect_rejected "$repo_root/scripts/extract-windows-release-evidence.sh" "$fixture/unsafe.tgz" "$fixture/unsafe-output"
 head -c 46081 /dev/urandom > "$fixture/oversized.tgz"
 expect_rejected "$repo_root/scripts/extract-windows-release-evidence.sh" "$fixture/oversized.tgz" "$fixture/oversized-output"
+mkdir "$fixture/expanded-source"
+dd if=/dev/zero of="$fixture/expanded-source/evidence-large.redacted.json" bs=1048576 count=9 2>/dev/null
+tar -czf "$fixture/expanded.tgz" -C "$fixture/expanded-source" .
+expect_rejected "$repo_root/scripts/extract-windows-release-evidence.sh" "$fixture/expanded.tgz" "$fixture/expanded-output"
