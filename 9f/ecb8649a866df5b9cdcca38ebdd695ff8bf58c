@@ -1,0 +1,39 @@
+scripts/win-test
+  s_be97528113af86::t_6f0e28607be68d 340,344,370-390,394,417-422,435-440,462,464
+scripts/windows-test/suites/release/release-service-core-update-reboot.ps1
+  s_be97528113af86::t_a9b2a171ab895a 1-121,126-324,332-338
+  s_be97528113af86::t_f0207a69816671 122-125
+  s_be97528113af86::t_3ad7ac0692cddd 325-331
+scripts/windows-test/test-contracts.ps1
+  s_be97528113af86::t_ee7d4dca48d135 78-80
+scripts/windows-test/validate-catalog.ps1
+  s_be97528113af86::t_bba0dfd6becc20 21-22
+scripts/windows-test-service-harness.ps1
+  s_be97528113af86::t_6b206c27e82436 4,12-19,700-709,728-733,888-907,911-916,920-923,951-971,973-977,984-988,1071-1072
+  s_be97528113af86::t_f0207a69816671 1006-1023
+  s_be97528113af86::t_b69b5dfc48c57d 500,506-507,575-577,919,972
+scripts/windows-test/catalog.json
+  s_be97528113af86::t_3bc2274de38389 52,55,57-59,184-194
+  s_be97528113af86::t_5983f7e3573b9a 195
+scripts/windows-test/host/windows-test-release-artifact.ps1
+  s_be97528113af86::t_6f0e28607be68d 7-11
+fixtures/windows/guest/service-acceptance.mjs
+  s_be97528113af86::t_b69b5dfc48c57d 47-65,67-69
+  s_be97528113af86::t_4dde27e738fd36 66
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "9fecb8649a866df5b9cdcca38ebdd695ff8bf58c",
+  "prompts": {},
+  "sessions": {
+    "s_be97528113af86": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc8ca-d9dd-72a0-8144-f6f8a59bb3e4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
