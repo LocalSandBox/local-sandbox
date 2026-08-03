@@ -1,0 +1,24 @@
+.github/workflows/release.yml
+  s_be97528113af86::t_685ecac36b844c 1020-1027
+  s_be97528113af86::t_18020e4f0a2258 889-891,905-906,915-916
+  s_be97528113af86::t_c6b701236d291b 986,988-990,993,996,998,1003,1008,1010,1012-1019,1028-1051,1084,1296
+  s_be97528113af86::t_d993826b318869 814-888,892-904,907-914,917-925
+.github/workflows/windows-release-evidence.yml
+  s_be97528113af86::t_18020e4f0a2258 1-89
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "0daf5f34bb76b719995c0ec644d94638a90b38b5",
+  "prompts": {},
+  "sessions": {
+    "s_be97528113af86": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc8ca-d9dd-72a0-8144-f6f8a59bb3e4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
