@@ -1,0 +1,19 @@
+scripts/win-test
+  s_be97528113af86::t_76b854ecbc6c42 494-496
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "fa32c7b54c82987daeb2382e2eb713272554a4fd",
+  "prompts": {},
+  "sessions": {
+    "s_be97528113af86": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc8ca-d9dd-72a0-8144-f6f8a59bb3e4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
