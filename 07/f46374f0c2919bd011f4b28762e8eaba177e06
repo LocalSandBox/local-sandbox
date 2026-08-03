@@ -1,0 +1,22 @@
+scripts/win-test
+  s_be97528113af86::t_ee0c9d2242ff98 32,331-339,658,661-663
+  s_be97528113af86::t_1cad466aa34e6c 664
+scripts/win-release-accept
+  s_be97528113af86::t_ee0c9d2242ff98 44,63-68,87-90,94-105,117-160,164-166
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "07f46374f0c2919bd011f4b28762e8eaba177e06",
+  "prompts": {},
+  "sessions": {
+    "s_be97528113af86": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc8ca-d9dd-72a0-8144-f6f8a59bb3e4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
