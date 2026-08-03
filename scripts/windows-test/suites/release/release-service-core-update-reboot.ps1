@@ -205,14 +205,14 @@ if ($Phase -eq 'BeforeReboot') {
         $baselineUpdaterManifest = Resolve-OneFile `
             "lsb-seawork-updater-v$baselineVersion-windows-x86_64-manifest.json" `
             'baseline updater manifest'
-        $baselineUpdaterTuple = Expand-UpdaterTuple $baselineUpdater `
-            $baselineUpdaterManifest $baselineVersion $publisherSubject $publisherSha256 'baseline'
-        $candidateUpdaterTuple = Expand-UpdaterTuple $candidateUpdater `
-            $candidateUpdaterManifest $candidateVersion $publisherSubject $publisherSha256 'candidate'
-        $baselineBundle = Expand-ServiceTuple $baselineService $baselineVersion `
-            $publisherSubject $publisherSha256 'baseline'
-        $candidateBundle = Expand-ServiceTuple $candidateService $candidateVersion `
-            $publisherSubject $publisherSha256 'candidate'
+        $baselineUpdaterTuple = @(Expand-UpdaterTuple $baselineUpdater `
+            $baselineUpdaterManifest $baselineVersion $publisherSubject $publisherSha256 'baseline')[-1]
+        $candidateUpdaterTuple = @(Expand-UpdaterTuple $candidateUpdater `
+            $candidateUpdaterManifest $candidateVersion $publisherSubject $publisherSha256 'candidate')[-1]
+        $baselineBundle = [string](@(Expand-ServiceTuple $baselineService $baselineVersion `
+            $publisherSubject $publisherSha256 'baseline')[-1])
+        $candidateBundle = [string](@(Expand-ServiceTuple $candidateService $candidateVersion `
+            $publisherSubject $publisherSha256 'candidate')[-1])
         $baselineEvidencePath = Join-Path $RunRoot 'baseline-release-evidence.json'
         [ordered]@{
             schema_version = 1; status = 'passed'; service_profile = 'production'
@@ -228,7 +228,8 @@ if ($Phase -eq 'BeforeReboot') {
         & $harness -Mode InstallOnly -Scope Core -RunRoot $RunRoot `
             -SnapshotSha $SnapshotSha -InstallBundleRoot $baselineBundle `
             -InstallEvidencePath $baselineEvidencePath
-        $installedUpdater = Install-UpdaterService $baselineUpdaterTuple.binary.FullName
+        $installedUpdater = [string](@(Install-UpdaterService `
+            $baselineUpdaterTuple.binary.FullName)[-1])
         $installState = Get-Content -LiteralPath $installedStatePath -Raw | ConvertFrom-Json
         $committedPath = Join-Path ([string]$installState.state_root) 'updates\committed.json'
         $baselineInstalledBundle = Join-Path ([string]$installState.install_root) `
@@ -243,7 +244,8 @@ if ($Phase -eq 'BeforeReboot') {
         Restart-Service -Name $serviceName
         (Get-Service -Name $serviceName).WaitForStatus('Running', [TimeSpan]::FromMinutes(2))
 
-        $installedUpdater = Replace-UpdaterBinary $candidateUpdaterTuple.binary.FullName
+        $installedUpdater = [string](@(Replace-UpdaterBinary `
+            $candidateUpdaterTuple.binary.FullName)[-1])
         $transactionId = ([Guid]::NewGuid().ToString('N')).ToLowerInvariant()
         $stagingParent = Join-Path ([string]$installState.state_root) `
             "updates\staging\$transactionId"

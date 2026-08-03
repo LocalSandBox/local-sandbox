@@ -328,11 +328,15 @@ resume_run() {
 }
 
 invoke_current_reboot_suite() {
-    local suite_name="$1" reuse_run_id="${2:-}" old_boot_id
+    local suite_name="$1" reuse_run_id="${2:-}" old_boot_id reboot_status
     old_boot_id="$(get_boot_id)"
     old_boot_id="${old_boot_id//$'\r'/}"
     old_boot_id="${old_boot_id//$'\n'/}"
-    invoke_bootstrap Reboot "$suite_name" '' "$reuse_run_id"
+    if ! invoke_bootstrap Reboot "$suite_name" '' "$reuse_run_id"; then
+        reboot_status=$?
+        (( reboot_status != 0 )) || reboot_status=1
+        return "$reboot_status"
+    fi
     wait_for_reboot "$old_boot_id"
     wait_for_interactive_user
     resume_run "$run_id"
