@@ -393,6 +393,23 @@ import_baseline_tuple() {
     [[ "$count" -eq 3 ]] || fail 'baseline tuple must contain exactly three required files'
 }
 
+import_candidate_tuple() {
+    local service_archive="$1" directory version updater_archive updater_manifest
+    directory="$(cd "$(dirname "$service_archive")" && pwd)"
+    service_archive="$directory/$(basename "$service_archive")"
+    [[ "$(basename "$service_archive")" =~ ^lsb-seawork-service-v([0-9A-Za-z.+-]+)-windows-x86_64\.zip$ ]] || \
+        fail 'candidate service archive filename is not canonical'
+    version="${BASH_REMATCH[1]}"
+    updater_archive="$directory/lsb-seawork-updater-v${version}-windows-x86_64.zip"
+    updater_manifest="$directory/lsb-seawork-updater-v${version}-windows-x86_64-manifest.json"
+    [[ -f "$updater_archive" && -f "$updater_manifest" ]] || \
+        fail 'candidate directory must contain the matching updater archive and manifest'
+    # Import the service last so imported-release-artifact.json remains the service record.
+    import_release_file "$updater_archive"
+    import_release_file "$updater_manifest"
+    import_release_file "$service_archive"
+}
+
 accept_profile() {
     local profile="$1"
     shift
@@ -466,7 +483,7 @@ accept_profile() {
     create_snapshot
     import_baseline_tuple "$baseline_dir"
     if [[ -n "$artifact_path" ]]; then
-        import_release_file "$artifact_path"
+        import_candidate_tuple "$artifact_path"
     fi
     profile_plan_arguments=(
         pwsh -NoProfile -NonInteractive -File

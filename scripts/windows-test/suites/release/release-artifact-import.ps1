@@ -177,6 +177,18 @@ if ($archive.sha256 -cne [string]$import.sha256 -or $archive.size -ne [int64]$im
     throw 'Imported service archive no longer matches its transfer digest.'
 }
 Assert-SafeZip -Path $archivePath
+$updaterArchivePath = Join-Path $RunRoot `
+    "lsb-seawork-updater-v$version-windows-x86_64.zip"
+$updaterManifestPath = Join-Path $RunRoot `
+    "lsb-seawork-updater-v$version-windows-x86_64-manifest.json"
+$updaterArchive = Get-Record $updaterArchivePath 'imported updater archive'
+$updaterManifestRecord = Get-Record $updaterManifestPath 'imported updater manifest'
+$updaterManifest = Get-Content -LiteralPath $updaterManifestPath -Raw | ConvertFrom-Json
+if ($updaterManifest.schema_version -ne 2 -or
+    [string]$updaterManifest.version -cne $version -or
+    [string]$updaterManifest.service_name -cne 'LocalSandboxSeaWorkUpdater') {
+    throw 'Imported updater tuple identity is invalid.'
+}
 
 $metadata = (& cargo metadata --locked --format-version 1 --no-deps | Out-String | ConvertFrom-Json)
 if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed while binding the imported artifact.' }
@@ -211,7 +223,10 @@ if ($bundleManifest.schema_version -ne 1 -or $bundleManifest.local_sandbox_versi
 $certificate = (& scripts\windows-test-signing-assets.ps1 -Mode Verify | Out-String | ConvertFrom-Json)
 if ($certificate.status -ne 'ready' -or
     [string]$bundleManifest.publisher.subject -cne [string]$certificate.subject -or
-    [string]$bundleManifest.publisher.sha256_thumbprint -cne [string]$certificate.sha256_thumbprint) {
+    [string]$bundleManifest.publisher.sha256_thumbprint -cne [string]$certificate.sha256_thumbprint -or
+    [string]$updaterManifest.publisher_subject -cne [string]$certificate.subject -or
+    [string]$updaterManifest.publisher_sha256_thumbprint -cne
+        [string]$certificate.sha256_thumbprint) {
     throw 'Imported artifact publisher does not match the protected acceptance identity.'
 }
 & scripts\sign-seawork-service.ps1 -Mode Verify -BundleRoot $bundle `
@@ -233,12 +248,21 @@ $releaseEvidencePath = Join-Path $RunRoot 'evidence-release-candidate.json'
     publisher_subject = [string]$certificate.subject
     publisher_sha256 = [string]$certificate.sha256_thumbprint
     payload = [ordered]@{ name = $archive.file; sha256 = $archive.sha256; size = $archive.size }
+    updater = [ordered]@{
+        archive = [ordered]@{ name = $updaterArchive.file; sha256 = $updaterArchive.sha256; size = $updaterArchive.size }
+        manifest = [ordered]@{ name = $updaterManifestRecord.file; sha256 = $updaterManifestRecord.sha256; size = $updaterManifestRecord.size }
+        binary_sha256 = [string]$updaterManifest.binary_sha256
+        helper_protocol_major = [int]$updaterManifest.protocol.major
+        helper_protocol_minor = [int]$updaterManifest.protocol.min
+    }
     artifact_import = [ordered]@{ mode = 'exact-ci-artifact'; transferred_sha256 = $archive.sha256 }
     trusted_signature_required = $true; timestamp_required = $true
 } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $releaseEvidencePath -Encoding utf8NoBOM
 
 $artifactHashes = [ordered]@{
     service_zip = $archive
+    updater_zip = $updaterArchive
+    updater_manifest = $updaterManifestRecord
     bundle_manifest = Get-Record $bundleManifestPath 'bundle manifest'
     service_contract = Get-Record $serviceContractPath 'service contract'
     runtime_dependencies = Get-Record $dependencyPath 'runtime dependencies'
@@ -257,7 +281,8 @@ $artifactHashes = [ordered]@{
     -LiteralPath (Join-Path $RunRoot 'seawork-test-release-manifest.json') -Encoding utf8NoBOM
 
 $records = foreach ($name in @(
-    $archive.file, 'evidence-release-candidate.json', 'seawork-test-release-manifest.json'
+    $archive.file, $updaterArchive.file, $updaterManifestRecord.file,
+    'evidence-release-candidate.json', 'seawork-test-release-manifest.json'
 )) {
     $record = Get-Record (Join-Path $RunRoot $name) "import output $name"
     [ordered]@{ name = $name; sha256 = $record.sha256; size = $record.size }
