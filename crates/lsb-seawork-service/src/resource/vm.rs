@@ -758,7 +758,6 @@ fn run(
         &engine,
         &mut spec,
         process_containment.clone(),
-        &telemetry,
         &trace_parent,
         lifecycle_observer.clone(),
     );
@@ -1614,7 +1613,6 @@ fn build_and_start(
     engine: &ServiceEngineConfig,
     spec: &mut ManagedVmSpec,
     process_containment: Arc<SandboxJob>,
-    telemetry: &crate::telemetry::Telemetry,
     trace_parent: &crate::telemetry::SpanParent,
     lifecycle_observer: Arc<SandboxLifecycleTrace>,
 ) -> Result<(lsb_vm::Sandbox, Option<lsb_proxy::ProxyHandle>)> {

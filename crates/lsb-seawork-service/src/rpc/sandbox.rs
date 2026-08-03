@@ -555,7 +555,9 @@ fn finish_operation(
     resource_id: Option<&str>,
 ) {
     match result {
-        Ok(_) => span.finish(SpanStatus::Ok),
+        Ok(_) => {
+            span.finish(SpanStatus::Ok);
+        }
         Err(error) => {
             let status = match error {
                 ErrorCode::Cancelled => SpanStatus::Cancelled,

@@ -87,7 +87,7 @@ function Write-WindowsTestFetchManifest {
         [Parameter(Mandatory = $true)][string] $RunRoot,
         [Parameter(Mandatory = $true)][string] $RunId,
         [Parameter(Mandatory = $true)][string] $ResultPath,
-        [Parameter(Mandatory = $true)][string[]] $ExpectedArtifacts,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]] $ExpectedArtifacts,
         [switch] $RequireExpected
     )
     $run = [IO.Path]::GetFullPath($RunRoot).TrimEnd('\', '/')
