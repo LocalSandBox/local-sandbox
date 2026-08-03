@@ -7,6 +7,67 @@ use crate::{
     UPDATE_STATE_SCHEMA_VERSION,
 };
 
+const MAX_TIMELINE_ENTRIES: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateActor {
+    Service,
+    Updater,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateTransitionOutcome {
+    Succeeded,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateTransition {
+    pub phase: String,
+    pub actor: UpdateActor,
+    pub started_utc: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_utc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<UpdateTransitionOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<String>,
+}
+
+impl UpdateTransition {
+    fn validate(&self) -> Result<()> {
+        if self.phase.is_empty()
+            || self.phase.len() > 64
+            || !self.phase.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_')
+            })
+        {
+            bail!("update timeline phase is invalid");
+        }
+        validate_utc(&self.started_utc)?;
+        if let Some(completed) = &self.completed_utc {
+            validate_utc(completed)?;
+        }
+        if self.completed_utc.is_some() != self.duration_ms.is_some()
+            || self.completed_utc.is_some() != self.outcome.is_some()
+            || self.outcome != Some(UpdateTransitionOutcome::Failed) && self.failure_code.is_some()
+            || self
+                .failure_code
+                .as_ref()
+                .is_some_and(|code| code.is_empty() || code.len() > 64 || !code.is_ascii())
+        {
+            bail!("update timeline completion is inconsistent");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HelperProtocol {
@@ -160,6 +221,10 @@ pub struct UpdateTransaction {
     pub last_failure_step: Option<UpdateFailureStep>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_failure_code: Option<UpdateFailureCode>,
+    #[serde(default)]
+    pub timeline: Vec<UpdateTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_event_id: Option<String>,
 }
 
 impl UpdateTransaction {
@@ -198,10 +263,18 @@ impl UpdateTransaction {
             || self.attempt_count == 0
             || self.attempt_count > 3
             || self.last_failure_step.is_some() != self.last_failure_code.is_some()
+            || self.timeline.len() > MAX_TIMELINE_ENTRIES
+            || self
+                .reported_event_id
+                .as_ref()
+                .is_some_and(|event_id| !self.phase.is_terminal() || !is_lower_hex(event_id, 32))
         {
             bail!("transaction mutation identity or attempt count is invalid");
         }
         self.helper_protocol.validate()?;
+        for transition in &self.timeline {
+            transition.validate()?;
+        }
         Ok(())
     }
 
@@ -263,6 +336,75 @@ impl TransactionEnvelope {
         self.validate()?;
         self.transaction.last_failure_step = Some(step);
         self.transaction.last_failure_code = Some(code);
+        if let Some(transition) = self
+            .transaction
+            .timeline
+            .iter_mut()
+            .rev()
+            .find(|transition| transition.outcome == Some(UpdateTransitionOutcome::Failed))
+        {
+            transition.failure_code = Some(code.stable_code().to_string());
+        }
+        self.checksum_sha256 = sha256_json(&self.transaction)?;
+        Ok(())
+    }
+
+    pub fn begin_transition(
+        &mut self,
+        phase: impl Into<String>,
+        actor: UpdateActor,
+        started_utc: impl Into<String>,
+    ) -> Result<()> {
+        self.validate()?;
+        if self.transaction.timeline.len() >= MAX_TIMELINE_ENTRIES {
+            bail!("update transition timeline is full");
+        }
+        let transition = UpdateTransition {
+            phase: phase.into(),
+            actor,
+            started_utc: started_utc.into(),
+            completed_utc: None,
+            duration_ms: None,
+            outcome: None,
+            failure_code: None,
+        };
+        transition.validate()?;
+        self.transaction.timeline.push(transition);
+        self.checksum_sha256 = sha256_json(&self.transaction)?;
+        Ok(())
+    }
+
+    pub fn complete_transition(
+        &mut self,
+        completed_utc: impl Into<String>,
+        duration_ms: u64,
+        outcome: UpdateTransitionOutcome,
+    ) -> Result<()> {
+        self.validate()?;
+        let transition = self
+            .transaction
+            .timeline
+            .last_mut()
+            .filter(|transition| transition.completed_utc.is_none())
+            .ok_or_else(|| anyhow::anyhow!("update timeline has no active transition"))?;
+        transition.completed_utc = Some(completed_utc.into());
+        transition.duration_ms = Some(duration_ms);
+        transition.outcome = Some(outcome);
+        transition.validate()?;
+        self.checksum_sha256 = sha256_json(&self.transaction)?;
+        Ok(())
+    }
+
+    pub fn mark_reported(&mut self, event_id: impl Into<String>) -> Result<()> {
+        self.validate()?;
+        if !self.transaction.phase.is_terminal() {
+            bail!("only terminal update transactions can be reported");
+        }
+        let event_id = event_id.into();
+        if !is_lower_hex(&event_id, 32) {
+            bail!("reported Sentry event id is invalid");
+        }
+        self.transaction.reported_event_id = Some(event_id);
         self.checksum_sha256 = sha256_json(&self.transaction)?;
         Ok(())
     }
@@ -315,6 +457,8 @@ mod tests {
             last_error_category: None,
             last_failure_step: None,
             last_failure_code: None,
+            timeline: Vec::new(),
+            reported_event_id: None,
         }
     }
 

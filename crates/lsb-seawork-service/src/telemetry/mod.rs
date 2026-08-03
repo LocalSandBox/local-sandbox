@@ -3,6 +3,7 @@ mod diagnostics;
 #[cfg(all(windows, feature = "sentry-telemetry"))]
 mod native;
 mod run_marker;
+mod update_trace;
 #[cfg(windows)]
 mod windows_events;
 
@@ -37,6 +38,9 @@ pub const TRANSACTION_SERVICE_STARTUP: &str = "service.startup";
 pub const TRANSACTION_SANDBOX_START: &str = "sandbox.start";
 pub const TRANSACTION_SANDBOX_STOP: &str = "sandbox.stop";
 pub const TRANSACTION_SERVICE_HEARTBEAT: &str = "service.heartbeat";
+pub const TRANSACTION_SERVICE_UPDATE: &str = "service.update";
+
+pub(crate) use update_trace::reconstruct_update;
 
 #[cfg(windows)]
 static EXIT_EVIDENCE_RUNTIME_ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -279,6 +283,7 @@ pub struct SpanDescription {
     pub description: &'static str,
     pub data: BTreeMap<String, String>,
     pub sampled: Option<bool>,
+    pub started_at_micros: Option<u64>,
 }
 
 impl SpanDescription {
@@ -288,6 +293,7 @@ impl SpanDescription {
             description: name,
             data: BTreeMap::new(),
             sampled: None,
+            started_at_micros: None,
         }
     }
 
@@ -297,6 +303,7 @@ impl SpanDescription {
             description,
             data: BTreeMap::new(),
             sampled: None,
+            started_at_micros: None,
         }
     }
 
@@ -307,6 +314,11 @@ impl SpanDescription {
 
     pub fn always_sampled(mut self) -> Self {
         self.sampled = Some(true);
+        self
+    }
+
+    pub fn started_at(mut self, timestamp_micros: u64) -> Self {
+        self.started_at_micros = Some(timestamp_micros);
         self
     }
 }
@@ -338,7 +350,12 @@ pub trait Adapter: Send + Sync {
         root_trace: Option<&TraceContext>,
         span: SpanDescription,
     ) -> Result<Option<u64>, ()>;
-    fn finish_span(&self, span_id: u64, status: SpanStatus) -> Result<(), ()>;
+    fn finish_span(
+        &self,
+        span_id: u64,
+        status: SpanStatus,
+        timestamp_micros: Option<u64>,
+    ) -> Result<Option<String>, ()>;
     fn set_span_data(&self, _span_id: u64, _key: &str, _value: &str) -> Result<(), ()> {
         Ok(())
     }
@@ -536,21 +553,31 @@ impl SpanGuard {
         }
     }
 
-    pub fn finish(mut self, status: SpanStatus) {
+    pub fn finish(mut self, status: SpanStatus) -> Option<String> {
         self.status = status;
-        self.finish_once();
+        self.finish_once(None)
     }
 
-    fn finish_once(&mut self) {
+    pub fn finish_at(mut self, status: SpanStatus, timestamp_micros: u64) -> Option<String> {
+        self.status = status;
+        self.finish_once(Some(timestamp_micros))
+    }
+
+    fn finish_once(&mut self, timestamp_micros: Option<u64>) -> Option<String> {
         if let Some(span_id) = self.span_id.take() {
-            let _ = self.adapter.finish_span(span_id, self.status);
+            return self
+                .adapter
+                .finish_span(span_id, self.status, timestamp_micros)
+                .ok()
+                .flatten();
         }
+        None
     }
 }
 
 impl Drop for SpanGuard {
     fn drop(&mut self) {
-        self.finish_once();
+        let _ = self.finish_once(None);
     }
 }
 
@@ -574,8 +601,13 @@ impl Adapter for NoopAdapter {
         Ok(None)
     }
 
-    fn finish_span(&self, _span_id: u64, _status: SpanStatus) -> Result<(), ()> {
-        Ok(())
+    fn finish_span(
+        &self,
+        _span_id: u64,
+        _status: SpanStatus,
+        _timestamp_micros: Option<u64>,
+    ) -> Result<Option<String>, ()> {
+        Ok(None)
     }
 
     fn flush(&self, _timeout: Duration) -> Result<(), ()> {
@@ -631,7 +663,7 @@ mod tests {
         breadcrumbs: Vec<Breadcrumb>,
         events: Vec<FailureEvent>,
         spans: Vec<(u64, Option<u64>, String, SpanDescription)>,
-        finished: Vec<(u64, SpanStatus)>,
+        finished: Vec<(u64, SpanStatus, Option<u64>)>,
         span_data: Vec<(u64, String, String)>,
         flushes: Vec<Duration>,
         fail_calls: bool,
@@ -704,13 +736,18 @@ mod tests {
             Ok(Some(id))
         }
 
-        fn finish_span(&self, span_id: u64, status: SpanStatus) -> Result<(), ()> {
+        fn finish_span(
+            &self,
+            span_id: u64,
+            status: SpanStatus,
+            timestamp_micros: Option<u64>,
+        ) -> Result<Option<String>, ()> {
             let mut state = self.state.lock().unwrap();
             if state.fail_calls {
                 return Err(());
             }
-            state.finished.push((span_id, status));
-            Ok(())
+            state.finished.push((span_id, status, timestamp_micros));
+            Ok(Some(format!("{span_id:032x}")))
         }
 
         fn set_span_data(&self, span_id: u64, key: &str, value: &str) -> Result<(), ()> {
@@ -759,7 +796,7 @@ mod tests {
         assert_eq!(state.breadcrumbs.len(), 1);
         assert_eq!(state.events.len(), 1);
         assert_eq!(state.spans.len(), 1);
-        assert_eq!(state.finished, vec![(1, SpanStatus::Ok)]);
+        assert_eq!(state.finished, vec![(1, SpanStatus::Ok, None)]);
         assert_eq!(state.flushes, vec![Duration::from_millis(50)]);
     }
 
@@ -815,7 +852,10 @@ mod tests {
         let state = adapter.state.lock().unwrap();
         assert_eq!(state.spans[1].1, Some(1));
         assert_eq!(state.spans[1].3.operation, "qemu.preflight");
-        assert_eq!(state.finished, [(2, SpanStatus::Ok), (1, SpanStatus::Ok)]);
+        assert_eq!(
+            state.finished,
+            [(2, SpanStatus::Ok, None), (1, SpanStatus::Ok, None)]
+        );
     }
 
     #[test]
@@ -842,8 +882,8 @@ mod tests {
         assert_eq!(
             state.finished,
             vec![
-                (1, SpanStatus::InternalError),
-                (2, SpanStatus::InternalError)
+                (1, SpanStatus::InternalError, None),
+                (2, SpanStatus::InternalError, None)
             ]
         );
     }
@@ -987,5 +1027,103 @@ mod tests {
             adapter.state.lock().unwrap().span_data,
             [(1, "cleanup.result".to_string(), "partial".to_string())]
         );
+    }
+
+    #[test]
+    fn successful_failed_interrupted_and_rolled_back_journals_replay_once() {
+        use lsb_seawork_update::{
+            HelperProtocol, TransactionEnvelope, TransactionPhase, UpdateActor, UpdateFailureCode,
+            UpdateFailureStep, UpdateTransaction, UpdateTransition, UpdateTransitionOutcome,
+        };
+        use lsb_service_proto::{BundleIdentity, LedgerCompatibility, ProtocolRange};
+
+        let identity = |version: &str, byte: char| BundleIdentity {
+            version: version.to_string(),
+            bundle_manifest_sha256: byte.to_string().repeat(64),
+            archive_sha256: byte.to_string().repeat(64),
+            protocol: ProtocolRange {
+                major: 1,
+                min_minor: 0,
+                max_minor: 6,
+            },
+            ledger: LedgerCompatibility {
+                reader_min_schema: 1,
+                reader_max_schema: 1,
+                writer_schema: 1,
+            },
+            service_configuration_revision: 2,
+        };
+        for (phase, outcome) in [
+            (
+                TransactionPhase::TargetCommitted,
+                Some(UpdateTransitionOutcome::Succeeded),
+            ),
+            (
+                TransactionPhase::Quarantined,
+                Some(UpdateTransitionOutcome::Failed),
+            ),
+            (TransactionPhase::TargetCommitted, None),
+            (
+                TransactionPhase::RollbackComplete,
+                Some(UpdateTransitionOutcome::Succeeded),
+            ),
+        ] {
+            let failed = matches!(
+                phase,
+                TransactionPhase::Quarantined | TransactionPhase::RollbackComplete
+            );
+            let mut journal = TransactionEnvelope::new(UpdateTransaction {
+                transaction_id: "1".repeat(32),
+                update_id: "2".repeat(32),
+                phase,
+                created_utc: "2026-07-22T12:00:00Z".to_string(),
+                old_bundle_identity: identity("0.5.0", 'a'),
+                target_bundle_identity: identity("0.5.1", 'b'),
+                old_image_path: r"C:\Program Files\SeaWork\old.exe".to_string(),
+                target_image_path: r"C:\Program Files\SeaWork\new.exe".to_string(),
+                old_event_message_path: r"C:\Program Files\SeaWork\old.exe".to_string(),
+                target_event_message_path: r"C:\Program Files\SeaWork\new.exe".to_string(),
+                staged_root: r"C:\ProgramData\SeaWork\staging\one".to_string(),
+                final_version_root: r"C:\Program Files\SeaWork\versions\0.5.1".to_string(),
+                helper_protocol: HelperProtocol { major: 1, minor: 1 },
+                attempt_count: 1,
+                last_error_category: None,
+                last_failure_step: failed.then_some(UpdateFailureStep::TargetHealthAssertion),
+                last_failure_code: failed.then_some(UpdateFailureCode::OperationFailed),
+                timeline: vec![UpdateTransition {
+                    phase: "update.target_health".to_string(),
+                    actor: UpdateActor::Updater,
+                    started_utc: "2026-07-22T12:01:00Z".to_string(),
+                    completed_utc: outcome.map(|_| "2026-07-22T12:02:00Z".to_string()),
+                    duration_ms: outcome.map(|_| 60_000),
+                    outcome,
+                    failure_code: (outcome == Some(UpdateTransitionOutcome::Failed))
+                        .then(|| "UPDATE_OPERATION_FAILED".to_string()),
+                }],
+                reported_event_id: None,
+            })
+            .unwrap();
+            let adapter = Arc::new(FakeAdapter::default());
+            let telemetry = Telemetry::new(adapter.clone());
+            let receipt = reconstruct_update(&telemetry, &journal).unwrap();
+            assert_eq!(receipt.len(), 32);
+            let state = adapter.state.lock().unwrap();
+            assert_eq!(state.spans.len(), 2);
+            assert!(state
+                .spans
+                .iter()
+                .all(|(_, _, trace, _)| trace == &state.spans[0].2));
+            let expected_start = update_trace::timestamp_micros("2026-07-22T12:01:00Z");
+            let expected_end = update_trace::timestamp_micros(if outcome.is_some() {
+                "2026-07-22T12:02:00Z"
+            } else {
+                "2026-07-22T12:01:00Z"
+            });
+            assert_eq!(state.spans[0].3.started_at_micros, expected_start);
+            assert_eq!(state.finished.last().unwrap().2, expected_end);
+            drop(state);
+            journal.mark_reported(receipt).unwrap();
+            assert_eq!(reconstruct_update(&telemetry, &journal), None);
+        }
     }
 }

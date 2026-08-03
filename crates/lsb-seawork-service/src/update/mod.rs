@@ -30,6 +30,7 @@ use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 use crate::logging::ServiceLogger;
 use crate::paths::ServicePaths;
 use crate::pipe::HealthContext;
+use crate::telemetry::{reconstruct_update, Telemetry};
 use crate::{PIPE_NAME, PIPE_SDDL, SERVICE_NAME};
 
 const RELEASES_API: &str = "https://api.github.com/repos/LocalSandBox/local-sandbox/releases";
@@ -120,6 +121,24 @@ pub fn recovery_journal_requires_quarantine(path: &Path) -> bool {
         }
         Err(error) if is_not_found(&error) => false,
         Err(_) => true,
+    }
+}
+
+pub fn report_terminal_journal(path: &Path, telemetry: &Telemetry) {
+    let Ok(mut journal) = protected_load_json::<TransactionEnvelope>(path) else {
+        return;
+    };
+    if journal.validate().is_err()
+        || !journal.transaction.phase.is_terminal()
+        || journal.transaction.reported_event_id.is_some()
+    {
+        return;
+    }
+    let Some(event_id) = reconstruct_update(telemetry, &journal) else {
+        return;
+    };
+    if journal.mark_reported(event_id).is_ok() {
+        let _ = write_json_atomic(path, &journal);
     }
 }
 
@@ -493,6 +512,8 @@ impl Coordinator {
                 last_error_category: None,
                 last_failure_step: None,
                 last_failure_code: None,
+                timeline: Vec::new(),
+                reported_event_id: None,
             })?;
             create_json(&self.paths.updates.current_transaction, &transaction)?;
             journal_created = true;

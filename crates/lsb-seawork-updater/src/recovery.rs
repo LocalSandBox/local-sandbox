@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
 use lsb_seawork_update::{
-    TransactionEnvelope, TransactionPhase, UpdateFailureCode, UpdateFailureStep,
+    TransactionEnvelope, TransactionPhase, UpdateActor, UpdateFailureCode, UpdateFailureStep,
+    UpdateTransitionOutcome,
 };
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureDisposition {
@@ -76,12 +78,18 @@ pub fn recover_transaction(
     loop {
         let phase = transaction.transaction.phase;
         let result = match phase {
-            TransactionPhase::Prepared => backend
-                .verify_handoff(transaction)
-                .and_then(|()| transition(transaction, store, TransactionPhase::HelperStarted)),
-            TransactionPhase::HelperStarted => backend
-                .install_and_verify_target(transaction)
-                .and_then(|()| transition(transaction, store, TransactionPhase::FinalPathVerified)),
+            TransactionPhase::Prepared => {
+                run_action(transaction, store, "update.verification", |transaction| {
+                    backend.verify_handoff(transaction)
+                })
+                .and_then(|()| transition(transaction, store, TransactionPhase::HelperStarted))
+            }
+            TransactionPhase::HelperStarted => {
+                run_action(transaction, store, "update.preinstall", |transaction| {
+                    backend.install_and_verify_target(transaction)
+                })
+                .and_then(|()| transition(transaction, store, TransactionPhase::FinalPathVerified))
+            }
             TransactionPhase::FinalPathVerified => {
                 transition(
                     transaction,
@@ -90,14 +98,24 @@ pub fn recover_transaction(
                 )?;
                 continue;
             }
-            TransactionPhase::OldServiceStopRequested => backend
-                .stop_old_service(transaction)
-                .and_then(|()| transition(transaction, store, TransactionPhase::OldServiceStopped)),
-            TransactionPhase::OldServiceStopped => backend
-                .change_to_target(transaction)
-                .and_then(|()| transition(transaction, store, TransactionPhase::ImagePathChanged)),
+            TransactionPhase::OldServiceStopRequested => {
+                run_action(transaction, store, "update.service_stop", |transaction| {
+                    backend.stop_old_service(transaction)
+                })
+                .and_then(|()| transition(transaction, store, TransactionPhase::OldServiceStopped))
+            }
+            TransactionPhase::OldServiceStopped => run_action(
+                transaction,
+                store,
+                "update.image_path_switch",
+                |transaction| backend.change_to_target(transaction),
+            )
+            .and_then(|()| transition(transaction, store, TransactionPhase::ImagePathChanged)),
             TransactionPhase::ImagePathChanged => {
-                backend.start_target(transaction).and_then(|()| {
+                run_action(transaction, store, "update.target_start", |transaction| {
+                    backend.start_target(transaction)
+                })
+                .and_then(|()| {
                     transition(transaction, store, TransactionPhase::TargetStartRequested)
                 })
             }
@@ -105,24 +123,41 @@ pub fn recover_transaction(
                 transition(transaction, store, TransactionPhase::TargetHealthPending)?;
                 continue;
             }
-            TransactionPhase::TargetHealthPending => backend
-                .health_and_commit_target(transaction)
-                .and_then(|()| transition(transaction, store, TransactionPhase::TargetCommitted)),
+            TransactionPhase::TargetHealthPending => {
+                run_action(transaction, store, "update.target_health", |transaction| {
+                    backend.health_and_commit_target(transaction)
+                })
+                .and_then(|()| transition(transaction, store, TransactionPhase::TargetCommitted))
+            }
             TransactionPhase::TargetCommitted => {
-                backend.finalize_commit(transaction)?;
+                if !completed_action(transaction, "update.commit") {
+                    run_action(transaction, store, "update.commit", |transaction| {
+                        backend.finalize_commit(transaction)
+                    })?;
+                }
                 return Ok(RecoveryOutcome::Committed);
             }
-            TransactionPhase::RollbackRequested => backend
-                .stop_target(transaction)
-                .and_then(|()| transition(transaction, store, TransactionPhase::TargetStopped)),
-            TransactionPhase::TargetStopped => backend
-                .restore_old_configuration(transaction)
-                .and_then(|()| transition(transaction, store, TransactionPhase::OldPathRestored)),
-            TransactionPhase::OldPathRestored => {
-                backend.start_and_abort_old(transaction).and_then(|()| {
-                    transition(transaction, store, TransactionPhase::OldServiceRestarted)
-                })
-            }
+            TransactionPhase::RollbackRequested => run_action(
+                transaction,
+                store,
+                "update.rollback_target_stop",
+                |transaction| backend.stop_target(transaction),
+            )
+            .and_then(|()| transition(transaction, store, TransactionPhase::TargetStopped)),
+            TransactionPhase::TargetStopped => run_action(
+                transaction,
+                store,
+                "update.rollback_restore_configuration",
+                |transaction| backend.restore_old_configuration(transaction),
+            )
+            .and_then(|()| transition(transaction, store, TransactionPhase::OldPathRestored)),
+            TransactionPhase::OldPathRestored => run_action(
+                transaction,
+                store,
+                "update.rollback_old_start",
+                |transaction| backend.start_and_abort_old(transaction),
+            )
+            .and_then(|()| transition(transaction, store, TransactionPhase::OldServiceRestarted)),
             TransactionPhase::OldServiceRestarted => {
                 transition(transaction, store, TransactionPhase::RollbackComplete)?;
                 continue;
@@ -185,6 +220,56 @@ fn transition(
     store.persist(transaction)
 }
 
+fn run_action(
+    transaction: &mut TransactionEnvelope,
+    store: &mut impl TransactionStore,
+    phase: &'static str,
+    action: impl FnOnce(&TransactionEnvelope) -> Result<()>,
+) -> Result<()> {
+    if transaction
+        .transaction
+        .timeline
+        .last()
+        .is_some_and(|transition| transition.completed_utc.is_none())
+    {
+        transaction.complete_transition(now_utc(), 0, UpdateTransitionOutcome::Failed)?;
+        store
+            .persist(transaction)
+            .context("persist interrupted update transition")?;
+    }
+    transaction.begin_transition(phase, UpdateActor::Updater, now_utc())?;
+    store
+        .persist(transaction)
+        .context("persist update transition intent")?;
+    let started = Instant::now();
+    let result = action(transaction);
+    transaction.complete_transition(
+        now_utc(),
+        started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+        if result.is_ok() {
+            UpdateTransitionOutcome::Succeeded
+        } else {
+            UpdateTransitionOutcome::Failed
+        },
+    )?;
+    store
+        .persist(transaction)
+        .context("persist update transition completion")?;
+    result
+}
+
+fn now_utc() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+fn completed_action(transaction: &TransactionEnvelope, phase: &str) -> bool {
+    transaction.transaction.timeline.iter().any(|transition| {
+        transition.phase == phase && transition.outcome == Some(UpdateTransitionOutcome::Succeeded)
+    })
+}
+
 fn is_rollback_phase(phase: TransactionPhase) -> bool {
     matches!(
         phase,
@@ -204,12 +289,14 @@ mod tests {
     #[derive(Default)]
     struct MemoryStore {
         phases: Vec<TransactionPhase>,
+        snapshots: Vec<TransactionEnvelope>,
     }
 
     impl TransactionStore for MemoryStore {
         fn persist(&mut self, transaction: &TransactionEnvelope) -> Result<()> {
             transaction.validate()?;
             self.phases.push(transaction.transaction.phase);
+            self.snapshots.push(transaction.clone());
             Ok(())
         }
     }
@@ -297,6 +384,31 @@ mod tests {
             store.phases.last(),
             Some(&TransactionPhase::TargetCommitted)
         );
+        assert!(transaction.transaction.timeline.iter().all(|transition| {
+            transition.completed_utc.is_some()
+                && transition.outcome == Some(UpdateTransitionOutcome::Succeeded)
+        }));
+        for transition in &transaction.transaction.timeline {
+            let intent = store.snapshots.iter().position(|snapshot| {
+                snapshot
+                    .transaction
+                    .timeline
+                    .last()
+                    .is_some_and(|candidate| {
+                        candidate.phase == transition.phase && candidate.completed_utc.is_none()
+                    })
+            });
+            let completion = store.snapshots.iter().position(|snapshot| {
+                snapshot
+                    .transaction
+                    .timeline
+                    .last()
+                    .is_some_and(|candidate| {
+                        candidate.phase == transition.phase && candidate.completed_utc.is_some()
+                    })
+            });
+            assert!(intent.is_some_and(|intent| completion.is_some_and(|done| intent < done)));
+        }
     }
 
     #[test]
@@ -386,6 +498,44 @@ mod tests {
             Some(UpdateFailureCode::OperationFailed)
         );
         assert_eq!(store.phases.last(), Some(&TransactionPhase::TargetStopped));
+        let failed = transaction.transaction.timeline.last().unwrap();
+        assert_eq!(failed.phase, "update.rollback_restore_configuration");
+        assert_eq!(failed.outcome, Some(UpdateTransitionOutcome::Failed));
+        assert_eq!(
+            failed.failure_code.as_deref(),
+            Some("UPDATE_OPERATION_FAILED")
+        );
+    }
+
+    #[test]
+    fn interrupted_action_is_closed_before_retry() {
+        let mut transaction = transaction(TransactionPhase::OldServiceStopRequested);
+        transaction
+            .begin_transition(
+                "update.service_stop",
+                UpdateActor::Updater,
+                "2026-07-22T12:01:00Z",
+            )
+            .unwrap();
+        let mut store = MemoryStore::default();
+        let mut backend = Backend::default();
+
+        assert_eq!(
+            recover_transaction(&mut transaction, &mut store, &mut backend).unwrap(),
+            RecoveryOutcome::Committed
+        );
+        assert_eq!(
+            transaction.transaction.timeline[0].outcome,
+            Some(UpdateTransitionOutcome::Failed)
+        );
+        assert_eq!(
+            transaction.transaction.timeline[1].phase,
+            "update.service_stop"
+        );
+        assert_eq!(
+            transaction.transaction.timeline[1].outcome,
+            Some(UpdateTransitionOutcome::Succeeded)
+        );
     }
 
     #[test]
@@ -452,6 +602,8 @@ mod tests {
             last_error_category: None,
             last_failure_step: None,
             last_failure_code: None,
+            timeline: Vec::new(),
+            reported_event_id: None,
         }).unwrap();
         advance_to(&mut envelope, phase);
         envelope

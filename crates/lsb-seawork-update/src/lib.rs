@@ -15,8 +15,8 @@ pub use archive::{extract_zip_archive, ArchiveExtraction};
 pub use committed::{CommittedState, CommittedStateEnvelope, FailedTargetState};
 pub use discovery::{ReleaseCandidate, ReleaseChannel, ReleaseSelector};
 pub use journal::{
-    HelperProtocol, TransactionEnvelope, TransactionPhase, UpdateFailureCode, UpdateFailureStep,
-    UpdateTransaction,
+    HelperProtocol, TransactionEnvelope, TransactionPhase, UpdateActor, UpdateFailureCode,
+    UpdateFailureStep, UpdateTransaction, UpdateTransition, UpdateTransitionOutcome,
 };
 pub use package::{verify_bundle_root, PackagePolicy, PackageVerification, PublisherIdentity};
 #[cfg(feature = "coordinator-policy")]

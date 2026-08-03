@@ -276,16 +276,32 @@ impl Adapter for NativeAdapter {
         let description = CString::new(span.description).map_err(|_| ())?;
         let native = unsafe {
             match parent_id.and_then(|id| state.spans.get(&id)) {
-                Some(NativeSpan::Transaction(parent)) => sentry_transaction_start_child(
-                    *parent as *mut c_void,
-                    operation.as_ptr(),
-                    description.as_ptr(),
-                ),
-                Some(NativeSpan::Span(parent)) => sentry_span_start_child(
-                    *parent as *mut c_void,
-                    operation.as_ptr(),
-                    description.as_ptr(),
-                ),
+                Some(NativeSpan::Transaction(parent)) => match span.started_at_micros {
+                    Some(timestamp) => sentry_transaction_start_child_ts(
+                        *parent as *mut c_void,
+                        operation.as_ptr(),
+                        description.as_ptr(),
+                        timestamp,
+                    ),
+                    None => sentry_transaction_start_child(
+                        *parent as *mut c_void,
+                        operation.as_ptr(),
+                        description.as_ptr(),
+                    ),
+                },
+                Some(NativeSpan::Span(parent)) => match span.started_at_micros {
+                    Some(timestamp) => sentry_span_start_child_ts(
+                        *parent as *mut c_void,
+                        operation.as_ptr(),
+                        description.as_ptr(),
+                        timestamp,
+                    ),
+                    None => sentry_span_start_child(
+                        *parent as *mut c_void,
+                        operation.as_ptr(),
+                        description.as_ptr(),
+                    ),
+                },
                 None if parent_id.is_some() => return Err(()),
                 None => {
                     let trace = root_trace.ok_or(())?;
@@ -306,7 +322,13 @@ impl Adapter for NativeAdapter {
                     if let Some(sampled) = span.sampled {
                         sentry_transaction_context_set_sampled(context, c_int::from(sampled));
                     }
-                    let transaction = sentry_transaction_start(context, sentry_value_new_null());
+                    let sampling = sentry_value_new_null();
+                    let transaction = match span.started_at_micros {
+                        Some(timestamp) => {
+                            sentry_transaction_start_ts(context, sampling, timestamp)
+                        }
+                        None => sentry_transaction_start(context, sampling),
+                    };
                     transaction
                 }
             }
@@ -336,22 +358,36 @@ impl Adapter for NativeAdapter {
         Ok(Some(id))
     }
 
-    fn finish_span(&self, span_id: u64, status: SpanStatus) -> Result<(), ()> {
+    fn finish_span(
+        &self,
+        span_id: u64,
+        status: SpanStatus,
+        timestamp_micros: Option<u64>,
+    ) -> Result<Option<String>, ()> {
         let mut state = self.state.lock().map_err(|_| ())?;
         let native = state.spans.remove(&span_id).ok_or(())?;
         unsafe {
             match native {
                 NativeSpan::Transaction(transaction) => {
                     sentry_transaction_set_status(transaction as *mut c_void, span_status(status));
-                    sentry_transaction_finish(transaction as *mut c_void);
+                    let uuid = match timestamp_micros {
+                        Some(timestamp) => {
+                            sentry_transaction_finish_ts(transaction as *mut c_void, timestamp)
+                        }
+                        None => sentry_transaction_finish(transaction as *mut c_void),
+                    };
+                    return Ok(uuid_string(&uuid));
                 }
                 NativeSpan::Span(span) => {
                     sentry_span_set_status(span as *mut c_void, span_status(status));
-                    sentry_span_finish(span as *mut c_void);
+                    match timestamp_micros {
+                        Some(timestamp) => sentry_span_finish_ts(span as *mut c_void, timestamp),
+                        None => sentry_span_finish(span as *mut c_void),
+                    }
                 }
             }
         }
-        Ok(())
+        Ok(None)
     }
 
     fn set_span_data(&self, span_id: u64, key: &str, value: &str) -> Result<(), ()> {
@@ -537,15 +573,32 @@ unsafe extern "C" {
         -> *mut c_void;
     fn sentry_transaction_context_set_sampled(context: *mut c_void, sampled: c_int);
     fn sentry_transaction_start(context: *mut c_void, sampling: SentryValue) -> *mut c_void;
+    fn sentry_transaction_start_ts(
+        context: *mut c_void,
+        sampling: SentryValue,
+        timestamp_micros: u64,
+    ) -> *mut c_void;
     fn sentry_transaction_start_child(
         transaction: *mut c_void,
         operation: *const c_char,
         description: *const c_char,
     ) -> *mut c_void;
+    fn sentry_transaction_start_child_ts(
+        transaction: *mut c_void,
+        operation: *const c_char,
+        description: *const c_char,
+        timestamp_micros: u64,
+    ) -> *mut c_void;
     fn sentry_span_start_child(
         span: *mut c_void,
         operation: *const c_char,
         description: *const c_char,
+    ) -> *mut c_void;
+    fn sentry_span_start_child_ts(
+        span: *mut c_void,
+        operation: *const c_char,
+        description: *const c_char,
+        timestamp_micros: u64,
     ) -> *mut c_void;
     fn sentry_transaction_set_status(transaction: *mut c_void, status: c_int);
     fn sentry_transaction_set_data(
@@ -556,5 +609,7 @@ unsafe extern "C" {
     fn sentry_span_set_status(span: *mut c_void, status: c_int);
     fn sentry_span_set_data(span: *mut c_void, key: *const c_char, value: SentryValue);
     fn sentry_transaction_finish(transaction: *mut c_void) -> SentryUuid;
+    fn sentry_transaction_finish_ts(transaction: *mut c_void, timestamp_micros: u64) -> SentryUuid;
     fn sentry_span_finish(span: *mut c_void);
+    fn sentry_span_finish_ts(span: *mut c_void, timestamp_micros: u64);
 }

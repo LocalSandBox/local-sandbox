@@ -293,11 +293,13 @@ fn run_registered(
     startup_span.finish(SpanStatus::Ok);
     telemetry.breadcrumb(Breadcrumb::lifecycle("service", "running"));
     telemetry.start_session();
+    crate::update::report_terminal_journal(&paths.updates.current_transaction, &telemetry);
     let mut telemetry_heartbeat = Some(spawn_telemetry_heartbeat(
         &runtime,
         telemetry.clone(),
         common_context.runtime.machine_name.clone(),
         config.update_channel,
+        paths.updates.current_transaction.clone(),
     ));
     logger.write(EventId::ServiceStarted, "runtime", "RUNNING")?;
     let control = match runtime.block_on(wait_for_runtime_exit(&mut control_rx, &mut pipe_task)) {
@@ -418,6 +420,7 @@ fn spawn_telemetry_heartbeat(
     telemetry: Telemetry,
     machine_name: Option<String>,
     update_channel: crate::config::UpdateChannel,
+    update_journal: std::path::PathBuf,
 ) -> TelemetryHeartbeat {
     let (stop, mut stopped) = tokio::sync::oneshot::channel();
     let task = runtime.spawn(async move {
@@ -426,12 +429,15 @@ fn spawn_telemetry_heartbeat(
         let mut interval = tokio::time::interval_at(first, TELEMETRY_HEARTBEAT_INTERVAL);
         loop {
             tokio::select! {
-                _ = interval.tick() => emit_telemetry_heartbeat(
-                    &telemetry,
-                    machine_name.as_deref(),
-                    update_channel,
-                    started.elapsed(),
-                ),
+                _ = interval.tick() => {
+                    emit_telemetry_heartbeat(
+                        &telemetry,
+                        machine_name.as_deref(),
+                        update_channel,
+                        started.elapsed(),
+                    );
+                    crate::update::report_terminal_journal(&update_journal, &telemetry);
+                },
                 _ = &mut stopped => break,
             }
         }
