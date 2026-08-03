@@ -6,6 +6,7 @@ param(
     [string] $SigningAssetsSource = (Join-Path $PSScriptRoot 'windows-test-signing-assets.ps1'),
     [string] $RuntimeAssetsSource = (Join-Path $PSScriptRoot 'windows-test-runtime-assets.ps1'),
     [string] $ArtifactFetchSource = (Join-Path $PSScriptRoot 'windows-test-artifacts.ps1'),
+    [string] $WindowsTestSupportSource = (Join-Path $PSScriptRoot 'windows-test'),
     [switch] $VerifyOnly
 )
 
@@ -264,6 +265,12 @@ function Test-HostConfiguration {
         (Join-Path $RootPath 'windows-test-signing-assets.ps1'),
         (Join-Path $RootPath 'windows-test-runtime-assets.ps1'),
         (Join-Path $RootPath 'windows-test-artifacts.ps1'),
+        (Join-Path $RootPath 'windows-test\catalog.json'),
+        (Join-Path $RootPath 'windows-test\lib\common.ps1'),
+        (Join-Path $RootPath 'windows-test\host\windows-test-doctor.ps1'),
+        (Join-Path $RootPath 'windows-test\host\windows-test-reset.ps1'),
+        (Join-Path $RootPath 'windows-test\host\windows-test-prune.ps1'),
+        (Join-Path $RootPath 'windows-test\host\windows-test-runs.ps1'),
         (Join-Path $RootPath 'setup-windows-test-host.ps1'),
         $StatePath,
         (Join-Path $StatePath 'locks'),
@@ -366,10 +373,12 @@ $resolvedBootstrap = (Resolve-Path -LiteralPath $BootstrapSource).Path
 $resolvedSigningAssets = (Resolve-Path -LiteralPath $SigningAssetsSource).Path
 $resolvedRuntimeAssets = (Resolve-Path -LiteralPath $RuntimeAssetsSource).Path
 $resolvedArtifactFetch = (Resolve-Path -LiteralPath $ArtifactFetchSource).Path
+$resolvedWindowsTestSupport = (Resolve-Path -LiteralPath $WindowsTestSupportSource).Path
 $installedBootstrap = Join-Path $rootPath 'bootstrap.ps1'
 $installedSigningAssets = Join-Path $rootPath 'windows-test-signing-assets.ps1'
 $installedRuntimeAssets = Join-Path $rootPath 'windows-test-runtime-assets.ps1'
 $installedArtifactFetch = Join-Path $rootPath 'windows-test-artifacts.ps1'
+$installedWindowsTestSupport = Join-Path $rootPath 'windows-test'
 $installedSetup = Join-Path $rootPath 'setup-windows-test-host.ps1'
 if (-not [IO.Path]::GetFullPath($resolvedBootstrap).Equals(
     [IO.Path]::GetFullPath($installedBootstrap),
@@ -394,6 +403,16 @@ if (-not [IO.Path]::GetFullPath($resolvedArtifactFetch).Equals(
     [StringComparison]::OrdinalIgnoreCase
 )) {
     Copy-Item -LiteralPath $resolvedArtifactFetch -Destination $installedArtifactFetch -Force
+}
+if (-not [IO.Path]::GetFullPath($resolvedWindowsTestSupport).Equals(
+    [IO.Path]::GetFullPath($installedWindowsTestSupport),
+    [StringComparison]::OrdinalIgnoreCase
+)) {
+    if (Test-Path -LiteralPath $installedWindowsTestSupport) {
+        Remove-Item -LiteralPath $installedWindowsTestSupport -Recurse -Force
+    }
+    Copy-Item -LiteralPath $resolvedWindowsTestSupport -Destination $installedWindowsTestSupport `
+        -Recurse -Force
 }
 if (-not [IO.Path]::GetFullPath($PSCommandPath).Equals(
     [IO.Path]::GetFullPath($installedSetup),

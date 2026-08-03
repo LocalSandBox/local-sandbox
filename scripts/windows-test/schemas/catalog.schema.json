@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://local-sandbox.dev/schemas/windows-test-catalog-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "capabilities", "profiles", "suites"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "capabilities": {
+      "type": "object", "minProperties": 1,
+      "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 256 }
+    },
+    "profiles": {
+      "type": "object", "minProperties": 4,
+      "additionalProperties": { "$ref": "#/definitions/profile" }
+    },
+    "suites": {
+      "type": "object", "minProperties": 1,
+      "additionalProperties": { "$ref": "#/definitions/suite" }
+    }
+  },
+  "definitions": {
+    "profile": {
+      "type": "object", "additionalProperties": false,
+      "required": ["description", "minimum_free_gib", "reset", "acceptance_checks", "suites"],
+      "properties": {
+        "description": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "minimum_free_gib": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "reset": { "type": "boolean" },
+        "includes": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" } },
+        "acceptance_checks": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z0-9]+\\.[a-z0-9_]+$" } },
+        "suites": {
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["name", "required"],
+            "properties": {
+              "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+              "required": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "suite": {
+      "type": "object", "additionalProperties": false,
+      "required": ["description", "category", "file", "timeout_minutes", "reboot_mode", "minimum_free_gib", "required_capabilities", "mutations", "expected_artifacts", "acceptance_checks"],
+      "properties": {
+        "description": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "category": { "enum": ["native", "runtime", "diagnostics", "service", "release"] },
+        "file": { "type": "string", "pattern": "^scripts/[A-Za-z0-9/._-]+\\.ps1$" },
+        "timeout_minutes": { "type": "integer", "minimum": 1, "maximum": 1440 },
+        "reboot_mode": { "enum": ["none", "required"] },
+        "minimum_free_gib": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "required_capabilities": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" } },
+        "mutations": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1, "maxLength": 256 } },
+        "expected_artifacts": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,159}$" } },
+        "acceptance_checks": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z0-9]+\\.[a-z0-9_]+$" } }
+      }
+    }
+  }
+}

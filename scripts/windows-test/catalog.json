@@ -1,0 +1,280 @@
+{
+  "schema_version": 1,
+  "capabilities": {
+    "administrator": "An elevated administrator token",
+    "windows11_x86_64": "64-bit Windows 11 or newer",
+    "whpx": "Windows Hypervisor Platform with an active hypervisor",
+    "sshd": "OpenSSH Server running with automatic startup",
+    "build_tools": "Git, Rust, CMake, PowerShell, and Visual Studio C++ tools",
+    "runtime_assets": "Pinned kernel, initramfs, and root filesystem assets",
+    "qemu_assets": "Pinned QEMU and qemu-img executables",
+    "signing_assets": "Protected SeaWork test-signing certificate and password",
+    "interactive_user": "A signed-in standard-user console session",
+    "outbound_network": "Outbound network access for the managed-network probe",
+    "sentry_dsn": "A provisioned real-Sentry acceptance DSN"
+  },
+  "profiles": {
+    "runtime": {
+      "description": "Product-level WHPX runtime acceptance, including CLI rootfs images.",
+      "minimum_free_gib": 35,
+      "reset": false,
+      "acceptance_checks": ["mnt01.admin_live", "mnt01.nonadmin_staged", "net02.host_relay", "net02.ports_wfp", "sec02.reconciliation", "win01.whpx_qemu_boot_exec_stop"],
+      "suites": [
+        { "name": "product-runtime", "required": true },
+        { "name": "rootfs-startup-smoke", "required": true },
+        { "name": "office-rootfs-smoke", "required": true }
+      ]
+    },
+    "diagnostics": {
+      "description": "Offline telemetry, packaged QEMU, timeout/dump behavior, and optional real Sentry.",
+      "minimum_free_gib": 30,
+      "reset": false,
+      "acceptance_checks": ["con01.job_containment", "obs01.event_log", "sec02.reconciliation"],
+      "suites": [
+        { "name": "sentry-smoke", "required": true },
+        { "name": "qemu-package-tests", "required": true },
+        { "name": "qemu-telemetry-smoke", "required": true },
+        { "name": "qemu-sentry-acceptance", "required": false }
+      ]
+    },
+    "service": {
+      "description": "Clean-machine LocalSystem, signed install, standard-user, uninstall, and reboot acceptance.",
+      "minimum_free_gib": 45,
+      "reset": true,
+      "acceptance_checks": ["mnt01.admin_live", "net01.managed_network", "sec01.endpoint_auth", "tst02.lifecycle", "win01.scm_lifecycle", "win01.service_identity_session0", "win01.standard_user_no_uac"],
+      "suites": [
+        { "name": "system-maintenance-ipc", "required": true },
+        { "name": "filtered-client-token", "required": true },
+        { "name": "service-reboot", "required": true }
+      ]
+    },
+    "release": {
+      "description": "Exact-artifact service acceptance, archive validation, and full digest-bound evidence.",
+      "minimum_free_gib": 55,
+      "reset": true,
+      "includes": ["service"],
+      "acceptance_checks": ["mnt01.admin_live", "net01.managed_network", "rel01.artifact_trust", "sec01.endpoint_auth", "tst02.lifecycle", "win01.scm_lifecycle", "win01.service_identity_session0", "win01.standard_user_no_uac"],
+      "suites": [
+        { "name": "archive-acceptance", "required": true }
+      ]
+    }
+  },
+  "suites": {
+    "archive-acceptance": {
+      "description": "Validate an exact signed service archive and its artifact-bound release manifest.",
+      "category": "release",
+      "file": "scripts/windows-test-suites/archive-acceptance.ps1",
+      "timeout_minutes": 20,
+      "reboot_mode": "none",
+      "minimum_free_gib": 10,
+      "required_capabilities": ["administrator", "windows11_x86_64", "signing_assets"],
+      "mutations": ["temporary archive extraction beneath the run root"],
+      "expected_artifacts": ["evidence-archive-acceptance.json", "fetch-manifest.json"],
+      "acceptance_checks": ["rel01.artifact_trust"]
+    },
+    "artifact-fetch-smoke": {
+      "description": "Exercise the allowlisted fetch contract with redacted synthetic evidence.",
+      "category": "diagnostics",
+      "file": "scripts/windows-test-suites/artifact-fetch-smoke.ps1",
+      "timeout_minutes": 5,
+      "reboot_mode": "none",
+      "minimum_free_gib": 1,
+      "required_capabilities": ["windows11_x86_64"],
+      "mutations": ["run-local evidence files"],
+      "expected_artifacts": ["evidence-artifact-fetch-smoke.json", "fetch-manifest.json"],
+      "acceptance_checks": []
+    },
+    "filtered-client-token": {
+      "description": "Prove a filtered interactive token can use LocalSystem IPC without UAC.",
+      "category": "service",
+      "file": "scripts/windows-test-suites/filtered-client-token.ps1",
+      "timeout_minutes": 20,
+      "reboot_mode": "none",
+      "minimum_free_gib": 5,
+      "required_capabilities": ["administrator", "windows11_x86_64", "interactive_user"],
+      "mutations": ["test-owned scheduled task"],
+      "expected_artifacts": ["evidence-filtered-client-token.json"],
+      "acceptance_checks": ["win01.standard_user_no_uac", "sec01.endpoint_auth"]
+    },
+    "installed-service-smoke": {
+      "description": "Install and exercise the signed service, then remove every owned resource.",
+      "category": "service",
+      "file": "scripts/windows-test-suites/installed-service-smoke.ps1",
+      "timeout_minutes": 90,
+      "reboot_mode": "none",
+      "minimum_free_gib": 35,
+      "required_capabilities": ["administrator", "windows11_x86_64", "whpx", "build_tools", "runtime_assets", "qemu_assets", "signing_assets", "interactive_user"],
+      "mutations": ["signed service installation", "test client roots", "scheduled tasks", "temporary SMB resources"],
+      "expected_artifacts": ["evidence-installed-smoke.json", "evidence-uninstall.json", "fetch-manifest.json"],
+      "acceptance_checks": ["win01.scm_lifecycle", "win01.service_identity_session0", "win01.standard_user_no_uac", "mnt01.admin_live", "net01.managed_network", "sec01.endpoint_auth"]
+    },
+    "office-rootfs-smoke": {
+      "description": "Boot the office rootfs and validate its supported guest toolchain.",
+      "category": "runtime",
+      "file": "scripts/windows-test-suites/office-rootfs-smoke.ps1",
+      "timeout_minutes": 15,
+      "reboot_mode": "none",
+      "minimum_free_gib": 8,
+      "required_capabilities": ["windows11_x86_64", "whpx", "build_tools", "runtime_assets", "qemu_assets"],
+      "mutations": ["WHPX VM and run-local mount cache"],
+      "expected_artifacts": ["evidence-office-rootfs-smoke.json"],
+      "acceptance_checks": ["win01.whpx_qemu_boot_exec_stop"]
+    },
+    "product-runtime": {
+      "description": "Run focused WHPX boot, exec, spawn/watch, copy, mounts, cleanup, forwarding, network, and checkpoint tests.",
+      "category": "runtime",
+      "file": "scripts/windows-test/suites/runtime/product-runtime.ps1",
+      "timeout_minutes": 120,
+      "reboot_mode": "none",
+      "minimum_free_gib": 30,
+      "required_capabilities": ["administrator", "windows11_x86_64", "whpx", "build_tools", "runtime_assets", "qemu_assets", "outbound_network"],
+      "mutations": ["WHPX VMs", "test-owned SMB users and shares", "port forwards", "checkpoint files beneath the run root"],
+      "expected_artifacts": ["evidence-product-runtime.json"],
+      "acceptance_checks": ["win01.whpx_qemu_boot_exec_stop", "mnt01.admin_live", "mnt01.nonadmin_staged", "net02.host_relay", "net02.ports_wfp", "sec02.reconciliation"]
+    },
+    "qemu-package-tests": {
+      "description": "Validate the pinned managed QEMU package metadata and executables.",
+      "category": "diagnostics",
+      "file": "scripts/windows-test-suites/qemu-package-tests.ps1",
+      "timeout_minutes": 20,
+      "reboot_mode": "none",
+      "minimum_free_gib": 5,
+      "required_capabilities": ["windows11_x86_64", "build_tools", "qemu_assets"],
+      "mutations": ["shared Cargo target cache"],
+      "expected_artifacts": ["evidence-qemu-package-tests.json"],
+      "acceptance_checks": []
+    },
+    "qemu-sentry-acceptance": {
+      "description": "Send one bounded QEMU incident through the real Sentry acceptance project.",
+      "category": "diagnostics",
+      "file": "scripts/windows-test-suites/qemu-sentry-acceptance.ps1",
+      "timeout_minutes": 30,
+      "reboot_mode": "none",
+      "minimum_free_gib": 10,
+      "required_capabilities": ["windows11_x86_64", "whpx", "build_tools", "runtime_assets", "qemu_assets", "sentry_dsn"],
+      "mutations": ["WHPX VM", "outbound Sentry event"],
+      "expected_artifacts": ["evidence-qemu-sentry-acceptance.json", "fetch-manifest.json"],
+      "acceptance_checks": ["obs01.event_log"]
+    },
+    "qemu-telemetry-smoke": {
+      "description": "Exercise QEMU timeout, dump-helper, and service-owned shutdown telemetry offline.",
+      "category": "diagnostics",
+      "file": "scripts/windows-test-suites/qemu-telemetry-smoke.ps1",
+      "timeout_minutes": 75,
+      "reboot_mode": "none",
+      "minimum_free_gib": 20,
+      "required_capabilities": ["administrator", "windows11_x86_64", "whpx", "build_tools", "runtime_assets", "qemu_assets"],
+      "mutations": ["WHPX VMs", "run-local dumps and raw logs"],
+      "expected_artifacts": ["evidence-qemu-telemetry-smoke.json", "fetch-manifest.json"],
+      "acceptance_checks": ["con01.job_containment", "obs01.event_log", "sec02.reconciliation"]
+    },
+    "reboot-smoke": {
+      "description": "Validate runner continuation across a real host reboot.",
+      "category": "diagnostics",
+      "file": "scripts/windows-test-suites/reboot-smoke.ps1",
+      "timeout_minutes": 30,
+      "reboot_mode": "required",
+      "minimum_free_gib": 1,
+      "required_capabilities": ["administrator", "windows11_x86_64", "sshd"],
+      "mutations": ["host reboot", "continuation record"],
+      "expected_artifacts": ["evidence-reboot-smoke.json"],
+      "acceptance_checks": []
+    },
+    "release-candidate": {
+      "description": "Build and sign the service candidate and produce its closed fetch manifest.",
+      "category": "release",
+      "file": "scripts/windows-test-suites/release-candidate.ps1",
+      "timeout_minutes": 90,
+      "reboot_mode": "none",
+      "minimum_free_gib": 30,
+      "required_capabilities": ["administrator", "windows11_x86_64", "build_tools", "signing_assets", "qemu_assets"],
+      "mutations": ["shared Cargo cache", "run-local signed archives"],
+      "expected_artifacts": ["evidence-release-candidate.json", "seawork-test-release-manifest.json", "fetch-manifest.json"],
+      "acceptance_checks": ["rel01.artifact_trust"]
+    },
+    "rootfs-startup-smoke": {
+      "description": "Boot the standard rootfs through the CLI and record startup metrics.",
+      "category": "runtime",
+      "file": "scripts/windows-test-suites/rootfs-startup-smoke.ps1",
+      "timeout_minutes": 15,
+      "reboot_mode": "none",
+      "minimum_free_gib": 8,
+      "required_capabilities": ["windows11_x86_64", "whpx", "build_tools", "runtime_assets", "qemu_assets", "outbound_network"],
+      "mutations": ["WHPX VM and run-local mount cache"],
+      "expected_artifacts": ["evidence-rootfs-startup-smoke.json"],
+      "acceptance_checks": ["win01.whpx_qemu_boot_exec_stop"]
+    },
+    "sentry-smoke": {
+      "description": "Build telemetry support and validate offline envelope and dump redaction.",
+      "category": "diagnostics",
+      "file": "scripts/windows-test-suites/sentry-smoke.ps1",
+      "timeout_minutes": 45,
+      "reboot_mode": "none",
+      "minimum_free_gib": 12,
+      "required_capabilities": ["windows11_x86_64", "build_tools"],
+      "mutations": ["shared Cargo cache", "run-local diagnostics"],
+      "expected_artifacts": ["evidence-sentry-smoke.json"],
+      "acceptance_checks": ["obs01.event_log"]
+    },
+    "service-fast": {
+      "description": "Focused native compile, unit, Clippy, and Node API checks; not hardware acceptance.",
+      "category": "native",
+      "file": "scripts/windows-test-suites/service-fast.ps1",
+      "timeout_minutes": 60,
+      "reboot_mode": "none",
+      "minimum_free_gib": 20,
+      "required_capabilities": ["windows11_x86_64", "build_tools"],
+      "mutations": ["shared Cargo and Node dependency caches"],
+      "expected_artifacts": ["evidence-service-fast.json"],
+      "acceptance_checks": []
+    },
+    "service-reboot": {
+      "description": "Install the signed service, validate it before and after reboot, and uninstall it.",
+      "category": "service",
+      "file": "scripts/windows-test-suites/service-reboot.ps1",
+      "timeout_minutes": 120,
+      "reboot_mode": "required",
+      "minimum_free_gib": 40,
+      "required_capabilities": ["administrator", "windows11_x86_64", "whpx", "sshd", "build_tools", "runtime_assets", "qemu_assets", "signing_assets", "interactive_user"],
+      "mutations": ["signed service installation", "host reboot", "scheduled tasks", "temporary SMB resources"],
+      "expected_artifacts": ["evidence-installed-smoke.json", "evidence-post-reboot.json", "evidence-uninstall.json", "fetch-manifest.json"],
+      "acceptance_checks": ["mnt01.admin_live", "net01.managed_network", "win01.scm_lifecycle", "win01.service_identity_session0", "win01.standard_user_no_uac", "tst02.lifecycle"]
+    },
+    "system-maintenance-ipc": {
+      "description": "Run the maintenance IPC identity proof as LocalSystem.",
+      "category": "service",
+      "file": "scripts/windows-test-suites/system-maintenance-ipc.ps1",
+      "timeout_minutes": 15,
+      "reboot_mode": "none",
+      "minimum_free_gib": 5,
+      "required_capabilities": ["administrator", "windows11_x86_64", "build_tools"],
+      "mutations": ["test-owned scheduled task"],
+      "expected_artifacts": ["evidence-system-maintenance-ipc.json"],
+      "acceptance_checks": ["win01.service_identity_session0", "sec01.endpoint_auth"]
+    },
+    "update-fast": {
+      "description": "Run focused updater checks and the SCM DACL round-trip integration test.",
+      "category": "native",
+      "file": "scripts/windows-test-suites/update-fast.ps1",
+      "timeout_minutes": 90,
+      "reboot_mode": "none",
+      "minimum_free_gib": 25,
+      "required_capabilities": ["administrator", "windows11_x86_64", "build_tools"],
+      "mutations": ["temporary updater service", "shared Cargo cache"],
+      "expected_artifacts": ["evidence-service-fast.json", "evidence-update-fast.json", "fetch-manifest.json"],
+      "acceptance_checks": []
+    },
+    "updater-release-smoke": {
+      "description": "Build, sign, and verify the updater release archive.",
+      "category": "release",
+      "file": "scripts/windows-test-suites/updater-release-smoke.ps1",
+      "timeout_minutes": 60,
+      "reboot_mode": "none",
+      "minimum_free_gib": 20,
+      "required_capabilities": ["administrator", "windows11_x86_64", "build_tools", "signing_assets"],
+      "mutations": ["shared Cargo cache", "run-local signed archives"],
+      "expected_artifacts": ["evidence-updater-release-smoke.json", "fetch-manifest.json"],
+      "acceptance_checks": ["rel01.artifact_trust"]
+    }
+  }
+}

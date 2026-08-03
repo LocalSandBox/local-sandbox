@@ -67,30 +67,26 @@ jobs:
           cmake --version
       - name: Validate Windows diagnostic collector
         run: .\scripts\collect-windows-diagnostics.ps1 -StageRoot "$env:RUNNER_TEMP\windows-diagnostics-probe" -AssetWorkRoot "$env:RUNNER_TEMP\missing-lsb-assets" -SkipCargoLogs
-      - name: Validate Windows release scripts
+      - name: Parse every PowerShell script
         run: |
           $failed = $false
-          foreach ($path in @(
-            '.\scripts\sign-seawork-service.ps1',
-            '.\scripts\prepare-seawork-release-metadata.ps1',
-            '.\scripts\inspect-seawork-service-dependencies.ps1',
-            '.\scripts\prepare-sentry-native.ps1',
-            '.\scripts\windows-test-suites\sentry-smoke.ps1',
-            '.\scripts\verify-seawork-event-messages.ps1',
-            '.\scripts\assemble-windows-evidence.ps1'
-          )) {
+          foreach ($path in Get-ChildItem -LiteralPath . -Filter '*.ps1' -File -Recurse) {
             $errors = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile(
-              (Resolve-Path $path),
+              $path.FullName,
               [ref]$null,
               [ref]$errors
             )
             if ($errors.Count -ne 0) {
               $failed = $true
-              $errors | ForEach-Object { Write-Error "$path`: $($_.ToString())" }
+              $errors | ForEach-Object { Write-Error "$($path.FullName)`: $($_.ToString())" }
             }
           }
-          if ($failed) { throw 'Windows release script parsing failed' }
+          if ($failed) { throw 'PowerShell script parsing failed' }
+      - name: Validate Windows test catalog and schemas
+        run: |
+          .\scripts\windows-test\validate-catalog.ps1
+          .\scripts\windows-test\validate-contracts.ps1
       - name: Cargo check Windows target
         run: cargo check --workspace --locked --target x86_64-pc-windows-msvc
       - uses: actions/cache@v4

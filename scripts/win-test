@@ -13,6 +13,9 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 usage() {
     cat <<'EOF'
 Usage:
+  scripts/win-test list
+  scripts/win-test doctor [profile]
+  scripts/win-test reset [--full]
   scripts/win-test setup
   scripts/win-test verify
   scripts/win-test provision-signing
@@ -26,6 +29,10 @@ Usage:
   scripts/win-test reboot <suite-name> [--reuse-candidate <run-id>]
   scripts/win-test resume <run-id>
   scripts/win-test fetch <run-id> <new-local-directory>
+  scripts/win-test runs
+  scripts/win-test show <run-id>
+  scripts/win-test prune --dry-run
+  scripts/win-test prune [--older-than 14d] [--keep 20]
 
 WIN_TEST_HOST overrides the default SSH alias "win-1".
 EOF
@@ -70,18 +77,21 @@ setup_host() {
         scp \
             -o BatchMode=yes \
             -o ConnectTimeout=8 \
+            -r \
             "$script_dir/setup-windows-test-host.ps1" \
             "$script_dir/windows-test-bootstrap.ps1" \
             "$script_dir/windows-test-signing-assets.ps1" \
             "$script_dir/windows-test-runtime-assets.ps1" \
             "$script_dir/windows-test-artifacts.ps1" \
+            "$script_dir/windows-test" \
             "${host}:${staging}/" && \
         ssh_windows pwsh -NoProfile -NonInteractive -File \
             "${staging}/setup-windows-test-host.ps1" \
             -BootstrapSource "${staging}/windows-test-bootstrap.ps1" \
             -SigningAssetsSource "${staging}/windows-test-signing-assets.ps1" \
             -RuntimeAssetsSource "${staging}/windows-test-runtime-assets.ps1" \
-            -ArtifactFetchSource "${staging}/windows-test-artifacts.ps1" && \
+            -ArtifactFetchSource "${staging}/windows-test-artifacts.ps1" \
+            -WindowsTestSupportSource "${staging}/windows-test" && \
         ssh_windows pwsh -NoProfile -NonInteractive -File \
             "${windows_root}/setup-windows-test-host.ps1" -VerifyOnly; then
         setup_status=0
@@ -321,6 +331,35 @@ action="$1"
 shift
 
 case "$action" in
+    list)
+        [[ "$#" -eq 0 ]] || fail 'list takes no arguments'
+        pwsh -NoProfile -NonInteractive -File "$script_dir/windows-test/list.ps1"
+        ;;
+    doctor)
+        [[ "$#" -le 1 ]] || fail 'doctor takes at most one profile'
+        doctor_arguments=(
+            pwsh -NoProfile -NonInteractive -File
+            "${windows_root}/windows-test/host/windows-test-doctor.ps1"
+        )
+        if [[ "$#" -eq 1 ]]; then
+            [[ "$1" =~ ^(runtime|diagnostics|service|release)$ ]] || fail 'invalid doctor profile'
+            doctor_arguments+=( -Profile "$1" )
+        fi
+        ssh_windows "${doctor_arguments[@]}"
+        ;;
+    reset)
+        [[ "$#" -le 1 ]] || fail 'reset accepts only --full'
+        reset_arguments=(
+            pwsh -NoProfile -NonInteractive -File
+            "${windows_root}/windows-test/host/windows-test-reset.ps1"
+            '-Confirm:$false'
+        )
+        if [[ "$#" -eq 1 ]]; then
+            [[ "$1" == '--full' ]] || fail 'reset accepts only --full'
+            reset_arguments+=( -Full )
+        fi
+        ssh_windows "${reset_arguments[@]}"
+        ;;
     setup)
         [[ "$#" -eq 0 ]] || fail 'setup takes no arguments'
         setup_host
@@ -402,6 +441,43 @@ case "$action" in
     fetch)
         [[ "$#" -eq 2 ]] || fail 'fetch requires a run ID and a new local destination directory'
         fetch_artifacts "$1" "$2"
+        ;;
+    runs)
+        [[ "$#" -eq 0 ]] || fail 'runs takes no arguments'
+        ssh_windows pwsh -NoProfile -NonInteractive -File \
+            "${windows_root}/windows-test/host/windows-test-runs.ps1" -Mode List
+        ;;
+    show)
+        [[ "$#" -eq 1 ]] || fail 'show requires exactly one run ID'
+        [[ "$1" =~ ^[a-z0-9][a-z0-9._-]{0,95}$ ]] || fail 'invalid run ID'
+        ssh_windows pwsh -NoProfile -NonInteractive -File \
+            "${windows_root}/windows-test/host/windows-test-runs.ps1" -Mode Show -RunId "$1"
+        ;;
+    prune)
+        prune_arguments=(
+            pwsh -NoProfile -NonInteractive -File
+            "${windows_root}/windows-test/host/windows-test-prune.ps1"
+        )
+        while [[ "$#" -gt 0 ]]; do
+            case "$1" in
+                --dry-run)
+                    prune_arguments+=( -DryRun )
+                    shift
+                    ;;
+                --older-than)
+                    [[ "$#" -ge 2 && "$2" =~ ^[1-9][0-9]*d$ ]] || fail '--older-than requires a value such as 14d'
+                    prune_arguments+=( -OlderThan "$2" )
+                    shift 2
+                    ;;
+                --keep)
+                    [[ "$#" -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || fail '--keep requires a positive integer'
+                    prune_arguments+=( -Keep "$2" )
+                    shift 2
+                    ;;
+                *) fail "unknown prune option: $1" ;;
+            esac
+        done
+        ssh_windows "${prune_arguments[@]}"
         ;;
     -h|--help|help)
         usage

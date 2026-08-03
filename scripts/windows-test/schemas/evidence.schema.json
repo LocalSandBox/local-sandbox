@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://local-sandbox.dev/schemas/windows-acceptance-evidence-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "git_sha", "artifact_sha256", "artifact_size_bytes", "profile", "generated_utc", "environment", "checks", "files"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "git_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "artifact_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "artifact_size_bytes": { "type": "integer", "minimum": 1 },
+    "profile": { "enum": ["win01", "security", "full"] },
+    "generated_utc": { "type": "string", "format": "date-time" },
+    "environment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["os_build", "architecture", "service_version", "bundle_version", "qemu_version", "runner_identity_sha256", "policy_sha256"],
+      "properties": {
+        "os_build": { "$ref": "#/definitions/token" }, "architecture": { "const": "x86_64" },
+        "service_version": { "$ref": "#/definitions/token" }, "bundle_version": { "$ref": "#/definitions/token" },
+        "qemu_version": { "$ref": "#/definitions/token" }, "runner_identity_sha256": { "$ref": "#/definitions/sha256" },
+        "policy_sha256": { "$ref": "#/definitions/sha256" }
+      }
+    },
+    "checks": {
+      "type": "array", "minItems": 1, "maxItems": 128,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "status", "duration_ms", "evidence"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9]+\\.[a-z0-9_]+$" },
+          "status": { "enum": ["passed", "failed", "blocked", "not_run"] },
+          "duration_ms": { "type": "integer", "minimum": 0, "maximum": 86400000 },
+          "stable_code": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9._+-]{1,64}$" },
+          "evidence": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^evidence/[A-Za-z0-9][A-Za-z0-9._+-]{0,200}$" } }
+        }
+      }
+    },
+    "files": {
+      "type": "array", "minItems": 1, "maxItems": 256,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["relative_path", "sha256", "size_bytes", "redacted"],
+        "properties": {
+          "relative_path": { "type": "string", "pattern": "^evidence/[A-Za-z0-9][A-Za-z0-9._+-]{0,200}$" },
+          "sha256": { "$ref": "#/definitions/sha256" }, "size_bytes": { "type": "integer", "minimum": 0 },
+          "redacted": { "const": true }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "token": { "type": "string", "pattern": "^[A-Za-z0-9._+-]{1,128}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}
