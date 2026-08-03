@@ -1,0 +1,24 @@
+docs/windows-agent-testing.md
+  s_0369d76947c5d2::t_3065b04ee8e6c2 40
+scripts/windows-test-suites/rootfs-startup-smoke.ps1
+  s_0369d76947c5d2::t_3065b04ee8e6c2 1-68
+fixtures/rootfs-startup-smoke.mjs
+  s_0369d76947c5d2::t_3065b04ee8e6c2 1-13,19-50
+  s_0369d76947c5d2::t_55f7c2183cfb74 14-18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "67b52b3857356df153bc2fd738ee24ea92e801a1",
+  "prompts": {},
+  "sessions": {
+    "s_0369d76947c5d2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc632-1a9d-7293-9182-cb74c40c1917",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
