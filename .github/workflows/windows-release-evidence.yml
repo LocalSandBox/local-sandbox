@@ -1,0 +1,89 @@
+name: Submit Windows release evidence
+run-name: Windows evidence for release run ${{ inputs.release_workflow_run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_workflow_run_id:
+        description: Release workflow run ID bound by the acceptance descriptor
+        required: true
+        type: string
+      release_sha:
+        description: Exact release commit SHA bound by the acceptance descriptor
+        required: true
+        type: string
+      evidence_bundle:
+        description: Base64-encoded bounded redacted evidence tarball
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  validate:
+    name: Validate submitted Windows evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_RUN_ID: ${{ inputs.release_workflow_run_id }}
+      RELEASE_SHA: ${{ inputs.release_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Validate and extract bounded data bundle
+        env:
+          EVIDENCE_BUNDLE: ${{ inputs.evidence_bundle }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_RUN_ID" =~ ^[1-9][0-9]{0,19}$ ]] || { echo 'invalid release run ID' >&2; exit 1; }
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'invalid release SHA' >&2; exit 1; }
+          (( ${#EVIDENCE_BUNDLE} <= 65536 )) || { echo 'encoded evidence is oversized' >&2; exit 1; }
+          mkdir -p submission
+          printf '%s' "$EVIDENCE_BUNDLE" | base64 --decode > submission/evidence.tgz
+          scripts/extract-windows-release-evidence.sh submission/evidence.tgz submission/evidence
+
+      - name: Download trusted descriptor and candidate tuple
+        run: |
+          set -euo pipefail
+          mkdir -p submission/descriptor submission/candidate
+          gh run download "$RELEASE_RUN_ID" -n seawork-windows-acceptance-descriptor \
+            -D submission/descriptor
+          gh run download "$RELEASE_RUN_ID" -n seawork-service-release \
+            -D submission/candidate
+          descriptor=submission/descriptor/acceptance-descriptor.json
+          jq -e --argjson run "$RELEASE_RUN_ID" --arg sha "$RELEASE_SHA" \
+            -f scripts/windows-release-descriptor.jq "$descriptor" >/dev/null
+
+      - name: Download descriptor-bound baseline tuple
+        run: |
+          set -euo pipefail
+          mkdir -p submission/baseline
+          while IFS=$'\t' read -r name url; do
+            [[ "$name" != */* && "$name" != *\\* ]] || exit 1
+            gh api "$url" -H 'Accept: application/octet-stream' > "submission/baseline/$name"
+          done < <(jq -r '.baseline.assets[] | [.name,.api_url] | @tsv' \
+            submission/descriptor/acceptance-descriptor.json)
+
+      - name: Verify schemas, tuples, transition, reboot, and cleanup
+        run: |
+          scripts/verify-windows-release-submission.sh \
+            submission/descriptor/acceptance-descriptor.json \
+            submission/evidence submission/candidate submission/baseline \
+            "$RELEASE_RUN_ID" "$RELEASE_SHA" | tee submission/validation-status.txt
+
+      - name: Retain accepted redacted evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: seawork-windows-evidence-${{ inputs.release_workflow_run_id }}
+          path: |
+            submission/descriptor/acceptance-descriptor.json
+            submission/evidence
+            submission/validation-status.txt
+          if-no-files-found: error
+          retention-days: 90

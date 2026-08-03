@@ -811,6 +811,118 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  windows-acceptance-descriptor:
+    name: Bind Windows acceptance tuple
+    if: ${{ vars.SEAWORK_SERVICE_SIGNING_ENABLED == 'true' && inputs.service_evidence == 'required' }}
+    needs: [prepare, build-seawork-service]
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: seawork-service-release
+          path: candidate
+      - name: Resolve and bind the previous Windows release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p descriptor baseline
+          service_name="lsb-seawork-service-v${VERSION}-windows-x86_64.zip"
+          updater_name="lsb-seawork-updater-v${VERSION}-windows-x86_64.zip"
+          updater_manifest_name="lsb-seawork-updater-v${VERSION}-windows-x86_64-manifest.json"
+          service="$(find candidate -type f -name "$service_name" -print -quit)"
+          updater="$(find candidate -type f -name "$updater_name" -print -quit)"
+          updater_manifest="$(find candidate -type f -name "$updater_manifest_name" -print -quit)"
+          for path in "$service" "$updater" "$updater_manifest"; do
+            [[ -f "$path" ]] || { echo 'candidate tuple is incomplete' >&2; exit 1; }
+          done
+          publisher_subject="$(jq -er .publisher_subject "$updater_manifest")"
+          publisher_sha="$(jq -er .publisher_sha256_thumbprint "$updater_manifest")"
+
+          selected=''
+          bootstrap=''
+          while IFS= read -r release; do
+            tag="$(jq -r .tag_name <<< "$release")"
+            baseline_version="${tag#v}"
+            [[ "$baseline_version" != "$tag" ]] || continue
+            [[ "$(printf '%s\n%s\n' "$baseline_version" "$VERSION" | sort -V | head -n 1)" == "$baseline_version" && "$baseline_version" != "$VERSION" ]] || continue
+            status_name="lsb-seawork-service-v${baseline_version}-release-status.json"
+            status_url="$(jq -r --arg name "$status_name" '.assets[] | select(.name == $name) | .url' <<< "$release")"
+            [[ -n "$status_url" ]] || continue
+            gh api "$status_url" -H 'Accept: application/octet-stream' > baseline/status.json
+            evidence_status="$(jq -r .evidence_status baseline/status.json)"
+            if [[ "$evidence_status" == release-core-update-validated ]]; then
+              selected="$release"; bootstrap=false; break
+            fi
+            if [[ -z "$bootstrap" && "$evidence_status" == skipped-by-operator && "$(jq -r .evidence_policy baseline/status.json)" == skip ]]; then
+              bootstrap="$release"
+            fi
+          done < <(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --paginate --jq '.[] | @base64' | while read -r row; do echo "$row" | base64 -d; echo; done)
+          if [[ -z "$selected" ]]; then
+            selected="$bootstrap"
+            bootstrap=true
+          fi
+          [[ -n "$selected" ]] || { echo 'no compatible qualified or explicit bootstrap release exists' >&2; exit 1; }
+
+          baseline_id="$(jq -r .id <<< "$selected")"
+          baseline_tag="$(jq -r .tag_name <<< "$selected")"
+          baseline_version="${baseline_tag#v}"
+          assets='[]'
+          for name in \
+            "lsb-seawork-service-v${baseline_version}-windows-x86_64.zip" \
+            "lsb-seawork-updater-v${baseline_version}-windows-x86_64.zip" \
+            "lsb-seawork-updater-v${baseline_version}-windows-x86_64-manifest.json"; do
+            url="$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .url' <<< "$selected")"
+            [[ -n "$url" ]] || { echo "baseline tuple is missing: $name" >&2; exit 1; }
+            gh api "$url" -H 'Accept: application/octet-stream' > "baseline/$name"
+            sha="$(sha256sum "baseline/$name" | awk '{print $1}')"
+            size="$(stat -c %s "baseline/$name")"
+            assets="$(jq -c --arg name "$name" --arg url "$url" --arg sha "$sha" --argjson size "$size" \
+              '. + [{name:$name,api_url:$url,sha256:$sha,size:$size}]' <<< "$assets")"
+          done
+          baseline_manifest="baseline/lsb-seawork-updater-v${baseline_version}-windows-x86_64-manifest.json"
+          baseline_publisher_subject="$(jq -er .publisher_subject "$baseline_manifest")"
+          baseline_publisher_sha="$(jq -er .publisher_sha256_thumbprint "$baseline_manifest")"
+          record() {
+            jq -cn --arg name "$(basename "$1")" \
+              --arg sha256 "$(sha256sum "$1" | awk '{print $1}')" \
+              --argjson size "$(stat -c %s "$1")" '{name:$name,sha256:$sha256,size:$size}'
+          }
+          jq -n \
+            --argjson run_id "$GITHUB_RUN_ID" --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg release_sha "$RELEASE_SHA" --arg version "$VERSION" \
+            --arg publisher_subject "$publisher_subject" --arg publisher_sha "$publisher_sha" \
+            --argjson service "$(record "$service")" --argjson updater "$(record "$updater")" \
+            --argjson updater_manifest "$(record "$updater_manifest")" \
+            --argjson baseline_id "$baseline_id" --arg baseline_tag "$baseline_tag" \
+            --arg baseline_version "$baseline_version" --argjson assets "$assets" \
+            --arg baseline_publisher_subject "$baseline_publisher_subject" \
+            --arg baseline_publisher_sha "$baseline_publisher_sha" \
+            --argjson bootstrap "$bootstrap" '{
+              schema_version:1, workflow:"release.yml",
+              release_workflow_run_id:$run_id, release_workflow_run_attempt:$run_attempt,
+              release_sha:$release_sha, version:$version, service_evidence:"required",
+              publisher:{subject:$publisher_subject,sha256:$publisher_sha},
+              candidate:{service:$service,updater:$updater,updater_manifest:$updater_manifest},
+              baseline:{mode:"release",release_id:$baseline_id,tag:$baseline_tag,
+                version:$baseline_version,
+                qualification:(if $bootstrap then "bootstrap-skipped-release" else "release-core-update-validated" end),
+                publisher:{subject:$baseline_publisher_subject,sha256:$baseline_publisher_sha},
+                assets:$assets}
+            }' > descriptor/acceptance-descriptor.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: seawork-windows-acceptance-descriptor
+          path: descriptor/acceptance-descriptor.json
+          if-no-files-found: error
+          retention-days: 14
+
   upload-seawork-sentry-symbols:
     name: Optionally upload SeaWork native symbols
     if: ${{ vars.SEAWORK_SENTRY_SYMBOL_UPLOAD_ENABLED == 'true' }}
@@ -871,83 +983,72 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Sentry debug-file upload failed' }
 
   gate-seawork-service-windows:
-    name: Gate signed service on complete Windows evidence
+    name: Gate signed service on hosted Windows evidence validation
     if: ${{ vars.SEAWORK_SERVICE_SIGNING_ENABLED == 'true' && inputs.service_evidence == 'required' }}
-    needs: [prepare, build-seawork-service]
-    runs-on: [self-hosted, Windows, X64, seawork-service]
-    timeout-minutes: 30
+    needs: [prepare, build-seawork-service, windows-acceptance-descriptor]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     environment: seawork-service-production
     permissions:
+      actions: read
       contents: read
-    defaults:
-      run:
-        shell: pwsh
     env:
-      SEAWORK_WINDOWS_EVIDENCE_ROOT: ${{ vars.SEAWORK_WINDOWS_EVIDENCE_ROOT }}
+      GH_TOKEN: ${{ github.token }}
       RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
+      RELEASE_RUN_ID: ${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.sha }}
-
-      - uses: dtolnay/rust-toolchain@stable
+          persist-credentials: false
 
       - uses: actions/download-artifact@v4
         with:
           name: seawork-service-release
-          path: target/release-candidate
+          path: submission/candidate
 
-      - name: Validate exact-artifact full Windows evidence
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:SEAWORK_WINDOWS_EVIDENCE_ROOT) -or
-              -not [IO.Path]::IsPathFullyQualified($env:SEAWORK_WINDOWS_EVIDENCE_ROOT)) {
-            throw 'SEAWORK_WINDOWS_EVIDENCE_ROOT must be a protected absolute runner path'
-          }
-          $candidateOut = Join-Path 'target/release-candidate' 'out'
-          $payload = @(Get-ChildItem -LiteralPath $candidateOut -File -Filter 'lsb-seawork-service-v*-windows-x86_64.zip')
-          if ($payload.Count -ne 1) {
-            throw 'expected exactly one signed SeaWork service payload archive'
-          }
-          $artifactSha = (Get-FileHash -LiteralPath $payload[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          $evidenceRoot = [IO.Path]::GetFullPath($env:SEAWORK_WINDOWS_EVIDENCE_ROOT)
-          $sourceDirectory = Join-Path (Join-Path $evidenceRoot $env:RELEASE_SHA) $artifactSha
-          $sourceManifest = Join-Path $sourceDirectory 'manifest.json'
-          $relative = [IO.Path]::GetRelativePath($evidenceRoot, $sourceManifest)
-          if ([IO.Path]::IsPathRooted($relative) -or $relative -eq '..' -or $relative.StartsWith("..$([IO.Path]::DirectorySeparatorChar)")) {
-            throw 'derived Windows evidence path escaped its protected root'
-          }
-          if (-not (Test-Path -LiteralPath $sourceManifest -PathType Leaf)) {
-            throw 'complete Windows evidence for this exact commit and artifact is unavailable'
-          }
-
-          $destinationParent = Join-Path (Join-Path 'target/release-gate-evidence' $env:RELEASE_SHA) $artifactSha
-          $destinationRoot = Split-Path -Parent $destinationParent
-          if (Test-Path -LiteralPath $destinationParent) {
-            throw 'Windows evidence validation destination already exists'
-          }
-          New-Item -ItemType Directory -Path $destinationRoot -Force | Out-Null
-          try {
-            Copy-Item -LiteralPath $sourceDirectory -Destination $destinationRoot -Recurse -ErrorAction Stop
-          } catch {
-            throw 'copying protected Windows evidence into the validation workspace failed'
-          }
-          $manifest = Join-Path $destinationParent 'manifest.json'
-          cargo run -p xtask --locked -- verify-windows-evidence `
-            --manifest $manifest `
-            --artifact $payload[0].FullName `
-            --require-profile full `
-            --require-complete
-          if ($LASTEXITCODE -ne 0) {
-            throw 'complete Windows evidence validation failed'
-          }
-
-      - name: Retain validated redacted Windows evidence
-        uses: actions/upload-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: seawork-service-windows-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-          path: target/release-gate-evidence
-          if-no-files-found: error
-          retention-days: 90
+          name: seawork-windows-acceptance-descriptor
+          path: submission/descriptor
+
+      - name: Select newest successful submission for this release run
+        id: submission
+        run: |
+          set -euo pipefail
+          name="seawork-windows-evidence-${RELEASE_RUN_ID}"
+          artifact=''
+          while IFS= read -r submission_run_id; do
+            artifact="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${submission_run_id}/artifacts" \
+              --jq ".artifacts[] | select(.expired == false and .name == \"${name}\")" | head -n 1)"
+            [[ -z "$artifact" ]] || break
+          done < <(gh run list --workflow windows-release-evidence.yml --status success \
+            --limit 100 --json databaseId --jq '.[].databaseId')
+          [[ -n "$artifact" ]] || { echo 'no successful hosted evidence submission is ready' >&2; exit 1; }
+          echo "url=$(jq -r .archive_download_url <<< "$artifact")" >> "$GITHUB_OUTPUT"
+
+      - name: Download submitted evidence and descriptor-bound baseline
+        run: |
+          set -euo pipefail
+          mkdir -p submission/accepted submission/baseline
+          gh api '${{ steps.submission.outputs.url }}' -H 'Accept: application/vnd.github+json' \
+            > submission/accepted.zip
+          unzip -q submission/accepted.zip -d submission/accepted
+          descriptor=submission/descriptor/acceptance-descriptor.json
+          jq -e --argjson run "$RELEASE_RUN_ID" --arg sha "$RELEASE_SHA" \
+            -f scripts/windows-release-descriptor.jq "$descriptor" >/dev/null
+          cmp "$descriptor" submission/accepted/descriptor/acceptance-descriptor.json
+          while IFS=$'\t' read -r name url; do
+            [[ "$name" != */* && "$name" != *\\* ]] || exit 1
+            gh api "$url" -H 'Accept: application/octet-stream' > "submission/baseline/$name"
+          done < <(jq -r '.baseline.assets[] | [.name,.api_url] | @tsv' "$descriptor")
+
+      - name: Independently validate exact tuples and submitted evidence
+        run: |
+          scripts/verify-windows-release-submission.sh \
+            submission/descriptor/acceptance-descriptor.json \
+            submission/accepted/evidence submission/candidate submission/baseline \
+            "$RELEASE_RUN_ID" "$RELEASE_SHA"
 
   service-ready:
     name: Resolve SeaWork service readiness
@@ -980,7 +1081,7 @@ jobs:
             echo "required exact-artifact Windows evidence did not validate" >&2
             exit 1
           elif [[ "$EVIDENCE_POLICY" == "required" ]]; then
-            status=validated
+            status=release-core-update-validated
           else
             status=skipped-by-operator
             echo "::warning title=Windows service evidence skipped::The signed service is not Windows-evidence-qualified for this release."
@@ -1192,7 +1293,7 @@ jobs:
             updater_line="Windows updater helper: not included"
           fi
           case "$EVIDENCE_STATUS" in
-            validated) evidence_line="Windows service evidence: validated for the exact payload" ;;
+            release-core-update-validated) evidence_line="Windows service evidence: core update and reboot validated for the exact payload" ;;
             skipped-by-operator) evidence_line="Windows service evidence: skipped by operator (not Windows-evidence-qualified)" ;;
             not-applicable) evidence_line="Windows service evidence: not applicable" ;;
             *) echo "unexpected service evidence status: $EVIDENCE_STATUS" >&2; exit 1 ;;
