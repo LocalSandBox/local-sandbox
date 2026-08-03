@@ -142,7 +142,7 @@ fn run_windows(options: Options) -> Result<()> {
         service_name: SERVICE_NAME,
         service_display_name: "LocalSandbox for SeaWork",
         service_account: "LocalSystem",
-        service_type: "own_process",
+        service_type: "SERVICE_WIN32_OWN_PROCESS",
         pipe_name: PIPE_NAME,
         pipe_sddl: PIPE_SDDL,
     };
