@@ -19,7 +19,7 @@ pub struct PreinstallRequest {
     pub staged_root: String,
     pub final_version_root: String,
     pub helper_protocol: HelperProtocol,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub timeline: Vec<UpdateTransition>,
 }
 
@@ -186,6 +186,17 @@ mod tests {
             helper_protocol: HelperProtocol { major: 1, minor: 1 },
             timeline: Vec::new(),
         }
+    }
+
+    #[test]
+    fn empty_timeline_preserves_previous_request_wire_shape() {
+        let request = request();
+        let value = serde_json::to_value(&request).unwrap();
+        assert!(value.get("timeline").is_none());
+
+        let decoded: PreinstallRequest = serde_json::from_value(value).unwrap();
+        assert!(decoded.timeline.is_empty());
+        assert_eq!(decoded, request);
     }
 
     #[test]
