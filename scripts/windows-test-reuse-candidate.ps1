@@ -301,7 +301,7 @@ if ($LASTEXITCODE -ne 0) {
 $servicePackage = @($workspaceMetadata.packages |
     Where-Object { [string]$_.name -eq 'lsb-seawork-service' })
 if ($servicePackage.Count -ne 1 -or
-    [string]$servicePackage[0].version -notmatch '^\d+\.\d+\.\d+-[0-9A-Za-z.-]+$' -or
+    [string]$servicePackage[0].version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$' -or
     $sourceTree -cne $currentTree -or
     $sourceBase -cne $currentBase -or
     $releaseManifest.local_sandbox_commit -cne $currentBase -or
@@ -322,11 +322,44 @@ if ($certificateInfo.status -ne 'ready' -or
 
 $payloadName = [string]$releaseEvidence.payload.name
 $symbolsName = [string]$releaseEvidence.symbols.name
+$updaterName = [string]$releaseEvidence.updater.archive.name
+$updaterManifestName = [string]$releaseEvidence.updater.manifest.name
+$updaterSumsName = "lsb-seawork-updater-v$($releaseEvidence.version)-SHA256SUMS"
+if ($updaterName -notmatch '^lsb-seawork-updater-v[0-9A-Za-z.+-]+-windows-x86_64\.zip$' -or
+    $updaterManifestName -notmatch '^lsb-seawork-updater-v[0-9A-Za-z.+-]+-windows-x86_64-manifest\.json$' -or
+    $updaterSumsName -notmatch '^lsb-seawork-updater-v[0-9A-Za-z.+-]+-SHA256SUMS$') {
+    throw 'Source candidate does not identify one canonical updater tuple.'
+}
 $nodeNames = @($nodeEvidence.packages | ForEach-Object { [string]$_.file })
 $sourceRequired = @(
-    $payloadName, $symbolsName, 'SHA256SUMS', 'seawork-test-release-manifest.json'
+    $payloadName, $symbolsName, $updaterName, $updaterManifestName, $updaterSumsName,
+    'SHA256SUMS', 'seawork-test-release-manifest.json'
 ) + $nodeNames
 Assert-FetchManifest $source $SourceRunId $sourceRequired | Out-Null
+$updaterArchiveRecord = Get-FileRecord (Join-Path $source $updaterName) 'source updater archive'
+$updaterManifestRecord = Get-FileRecord `
+    (Join-Path $source $updaterManifestName) 'source updater manifest'
+if ($updaterArchiveRecord.sha256 -cne [string]$releaseEvidence.updater.archive.sha256 -or
+    $updaterManifestRecord.sha256 -cne [string]$releaseEvidence.updater.manifest.sha256) {
+    throw 'Source updater tuple does not match release-candidate evidence.'
+}
+$updaterManifest = Read-JsonFile (Join-Path $source $updaterManifestName) `
+    'source updater manifest' 256KB
+if ($updaterManifest.schema_version -ne 2 -or
+    [string]$updaterManifest.version -cne [string]$releaseEvidence.version -or
+    [string]$updaterManifest.publisher_subject -cne [string]$releaseEvidence.publisher_subject -or
+    [string]$updaterManifest.publisher_sha256_thumbprint -cne
+        [string]$releaseEvidence.publisher_sha256 -or
+    [string]$updaterManifest.binary_sha256 -cne
+        [string]$releaseEvidence.updater.binary_sha256 -or
+    [int]$updaterManifest.protocol.major -ne
+        [int]$releaseEvidence.updater.helper_protocol_major -or
+    [int]$updaterManifest.protocol.min -gt
+        [int]$releaseEvidence.updater.helper_protocol_minor -or
+    [int]$updaterManifest.protocol.max -lt
+        [int]$releaseEvidence.updater.helper_protocol_minor) {
+    throw 'Source updater manifest does not bind the candidate updater identity.'
+}
 $sourceResult = Get-CandidateConstructionProof $source ([string]$releaseEvidence.snapshot_sha)
 Assert-SafeTree (Join-Path $source 'release-work') 'source release work' | Out-Null
 Assert-Bundle $source $releaseEvidence $releaseManifest $nodeEvidence $signingScript | Out-Null
@@ -334,7 +367,8 @@ Assert-Bundle $source $releaseEvidence $releaseManifest $nodeEvidence $signingSc
 Copy-Item -LiteralPath (Join-Path $source 'release-work') `
     -Destination (Join-Path $destination 'release-work') -Recurse
 $copiedNames = @(
-    $payloadName, $symbolsName, 'SHA256SUMS', 'evidence-node-packages.json',
+    $payloadName, $symbolsName, $updaterName, $updaterManifestName, $updaterSumsName,
+    'SHA256SUMS', 'evidence-node-packages.json',
     'evidence-event-messages.json'
 ) + $nodeNames
 foreach ($name in $copiedNames) {
@@ -392,7 +426,8 @@ if ($LASTEXITCODE -ne 0) {
     throw 'Reused candidate manifest generation failed.'
 }
 $fetchNames = @(
-    $payloadName, $symbolsName, 'SHA256SUMS', 'seawork-test-release-manifest.json',
+    $payloadName, $symbolsName, $updaterName, $updaterManifestName, $updaterSumsName,
+    'SHA256SUMS', 'seawork-test-release-manifest.json',
     'evidence-event-messages.json', 'evidence-node-packages.json',
     'evidence-release-candidate.json', 'evidence-artifact-reuse.json'
 ) + $nodeNames
