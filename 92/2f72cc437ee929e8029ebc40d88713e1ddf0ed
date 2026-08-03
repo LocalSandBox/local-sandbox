@@ -1,0 +1,21 @@
+scripts/extract-windows-release-evidence.sh
+  s_be97528113af86::t_835247b2c5c12f 22-25
+scripts/windows-test/test-release-submission.sh
+  s_be97528113af86::t_c650eedb30aab9 106-109
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "922f72cc437ee929e8029ebc40d88713e1ddf0ed",
+  "prompts": {},
+  "sessions": {
+    "s_be97528113af86": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc8ca-d9dd-72a0-8144-f6f8a59bb3e4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
