@@ -739,13 +739,14 @@ function Install-And-Smoke {
     $clientUserSid = [string]$clientIdentity.sid
     $clientLocalAppData = [string]$clientIdentity.local_app_data
     $clientPrograms = Join-Path $clientLocalAppData 'Programs'
-    $clientHarness = Join-Path $clientPrograms 'SeaWork'
-    $clientTestHarness = Join-Path $clientPrograms 'SeaWork Test'
+    $clientHarnessBase = Join-Path $clientPrograms 'SeaWork Test'
+    $clientHarness = Join-Path $clientHarnessBase 'Primary'
+    $clientTestHarness = Join-Path $clientHarnessBase 'Untrusted'
     $clientCollisionHarness = Join-Path $clientPrograms "SeaWork-copy-$($evidence.snapshot_sha.Substring(0, 12))"
     $clientSigningHarness = Join-Path $programFiles `
         "SeaWork\LocalSandboxTestHarness\$($evidence.snapshot_sha.Substring(0, 12))"
     $clientSigningHarnessBase = Split-Path -Parent $clientSigningHarness
-    foreach ($path in @($clientHarness, $clientTestHarness, $clientCollisionHarness)) {
+    foreach ($path in @($clientHarnessBase, $clientCollisionHarness)) {
         if (Test-Path -LiteralPath $path) {
             throw "Refusing to adopt an existing LocalAppData test-client root: $path"
         }
@@ -755,9 +756,12 @@ function Install-And-Smoke {
     }
     New-Item -ItemType Directory -Force -Path $clientPrograms | Out-Null
     New-Item -ItemType Directory -Path `
-        (Join-Path $installRoot 'versions'), $clientHarness, $clientTestHarness,
+        (Join-Path $installRoot 'versions'), $clientHarnessBase, $clientHarness,
+        $clientTestHarness,
         $clientCollisionHarness, $clientSigningHarness, $stateRoot, $clientDataRoot |
         Out-Null
+    Write-OwnerMarker (Join-Path $clientHarnessBase '.local-sandbox-agent-client.json') `
+        'client-harness-base'
     Write-OwnerMarker $installMarker 'install-root'
     Write-OwnerMarker (Join-Path $clientHarness '.local-sandbox-agent-client.json') `
         'client-root'
@@ -778,6 +782,7 @@ function Install-And-Smoke {
         schema_version = 1; owner = $owner; snapshot_sha = $SnapshotSha; run_id = $runId
         version = $version; service_binary = $serviceBinary; install_root = $installRoot
         install_marker = $installMarker; state_root = $stateRoot; event_key = $eventKey
+        client_harness_base = $clientHarnessBase
         client_harness_root = $clientHarness
         client_test_harness_root = $clientTestHarness
         client_collision_harness_root = $clientCollisionHarness
@@ -1042,8 +1047,8 @@ function Uninstall-Owned {
         Unregister-ScheduledTask -TaskName $task.TaskName -Confirm:$false
     }
     Assert-OwnerMarker $state.install_marker 'install-root'
-    Assert-OwnerMarker (Join-Path $state.client_harness_root '.local-sandbox-agent-client.json') `
-        'client-root'
+    Assert-OwnerMarker (Join-Path $state.client_harness_base '.local-sandbox-agent-client.json') `
+        'client-harness-base'
     Assert-OwnerMarker (Join-Path $state.client_test_harness_root '.local-sandbox-agent-client.json') `
         'test-client-root'
     Assert-OwnerMarker (Join-Path $state.client_collision_harness_root '.local-sandbox-agent-client.json') `
@@ -1053,8 +1058,7 @@ function Uninstall-Owned {
     Assert-OwnerMarker (Join-Path $state.state_root '.local-sandbox-agent-state.json') 'state-root'
     Assert-OwnerMarker (Join-Path $state.client_data_root '.local-sandbox-agent-client-data.json') 'client-data-root'
     Remove-Item -LiteralPath $state.install_root -Recurse -Force -ErrorAction Stop
-    Remove-Item -LiteralPath $state.client_harness_root -Recurse -Force -ErrorAction Stop
-    Remove-Item -LiteralPath $state.client_test_harness_root -Recurse -Force -ErrorAction Stop
+    Remove-Item -LiteralPath $state.client_harness_base -Recurse -Force -ErrorAction Stop
     Remove-Item -LiteralPath $state.client_collision_harness_root -Recurse -Force `
         -ErrorAction Stop
     Remove-Item -LiteralPath $state.client_signing_harness_base -Recurse -Force `

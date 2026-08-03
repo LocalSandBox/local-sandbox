@@ -179,9 +179,18 @@ try {
         foreach ($client in @(Get-ChildItem -LiteralPath $programs -Directory -Force | Where-Object {
             $_.Name -in @('SeaWork', 'SeaWork Test') -or $_.Name -match '^SeaWork-copy-[0-9a-f]{12}$'
         })) {
+            $markerName = '.local-sandbox-agent-client.json'
+            if (-not (Test-InstallOwnerMarker -Path $client.FullName -MarkerName $markerName)) {
+                if ($client.Name -ceq 'SeaWork') {
+                    # SeaWork is the production desktop application's canonical root.
+                    # A real user install is outside this harness and must be preserved.
+                    continue
+                }
+                throw "Reset target lacks its required ownership marker: $($client.FullName)"
+            }
             $auxiliaryTargets.Add($client.FullName)
             Remove-PlainTree -Path $client.FullName -RequireMarker `
-                -MarkerName '.local-sandbox-agent-client.json'
+                -MarkerName $markerName
         }
     }
 
