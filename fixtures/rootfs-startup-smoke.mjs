@@ -31,6 +31,7 @@ execFileSync('npm', ['install', '--prefix', scratch, '--save-exact', 'is-number@
 })
 const npmInstallMs = performance.now() - installStarted
 writeFileSync('/tmp/rootfs-startup-write.bin', Buffer.alloc(1024 * 1024, 0x5a))
+execFileSync('sync', { stdio: 'ignore', timeout: 60_000 })
 
 const diskSectorsAtEnd = diskSectorsWritten()
 console.log(JSON.stringify({

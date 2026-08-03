@@ -195,6 +195,7 @@ assert.ok(reopenedSlide.get('ppt/slides/slide1.xml').toString().includes(slideTe
 const artifacts = Object.fromEntries(
   readdirSync(outputDir).sort().map((name) => [name, statSync(`${outputDir}/${name}`).size]),
 )
+run('sync')
 const diskSectorsAtEnd = diskSectorsWritten()
 console.log(JSON.stringify({
   schema_version: 1,
