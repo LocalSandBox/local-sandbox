@@ -67,6 +67,13 @@ const sandbox = await service.startSandbox({
   cpus: 2,
   memoryMb: 2048,
   diskSizeMb: 4096,
+  mounts: [{
+    type: 'direct',
+    hostPath: 'C:\\work\\project',
+    guestPath: '/workspace',
+    flags: 0,
+    pruneSubtrees: ['node_modules', '.seawork'],
+  }],
   network: {
     allow: ['api.example.com'],
     secrets: { API_TOKEN: { value: 'secret', hosts: ['api.example.com'] } },
@@ -79,9 +86,14 @@ await service.close()
 ```
 
 This surface includes lifecycle, bounded unary/cancellable exec, credited process streams, guest
-filesystem metadata and byte transfer, and managed watches. Mounts and host ports remain
+filesystem metadata and byte transfer, direct SMB mounts, and managed watches. Host ports remain
 intentionally unavailable in the initial service scope. `SeaWorkService.connect()`, `health()`, and
 `start()` remain compatibility aliases. The existing `Sandbox` API remains the direct SDK path.
+
+SeaWork direct mounts prune `node_modules` and `.seawork` directory basenames from the recursive
+SMB ACL startup traversal by default, at any depth and case-insensitively. Set `pruneSubtrees` to a
+custom list to replace those defaults, or to `[]` to disable pruning. Pruning only affects startup
+inspection and ACL work; it does not hide those paths from the SMB share.
 
 The service start type preserves exact `ports` and `network.exposeHost` requests for the NET-02
 contract, but does not claim those capabilities yet. Host ports return

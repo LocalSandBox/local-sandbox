@@ -24,6 +24,8 @@ use crate::telemetry::{
     TRANSACTION_SANDBOX_START, TRANSACTION_SANDBOX_STOP,
 };
 
+const DEFAULT_SMB_PRUNE_SUBTREES: &[&str] = &["node_modules", ".seawork"];
+
 #[allow(clippy::too_many_arguments)]
 pub async fn start(
     telemetry: Telemetry,
@@ -370,6 +372,12 @@ fn normalize_mounts(
             host_path,
             guest_path: mount.guest_path,
             read_only: mount.read_only,
+            prune_subtrees: mount.prune_subtrees.unwrap_or_else(|| {
+                DEFAULT_SMB_PRUNE_SUBTREES
+                    .iter()
+                    .map(|name| (*name).to_string())
+                    .collect()
+            }),
         });
     }
     Ok((normalized, selected))
@@ -813,11 +821,13 @@ mod tests {
                 host_path: root.join("workspace").display().to_string(),
                 guest_path: "/workspace".to_string(),
                 read_only: true,
+                prune_subtrees: None,
             },
             ServiceMountSpec {
                 host_path: root.join("workspace/output").display().to_string(),
                 guest_path: "/workspace/output".to_string(),
                 read_only: false,
+                prune_subtrees: Some(vec!["vendor".to_string()]),
             },
         ])
         .unwrap();
@@ -825,11 +835,25 @@ mod tests {
         assert_eq!(mounts.len(), 2);
         assert!(mounts[0].read_only);
         assert!(!mounts[1].read_only);
+        assert_eq!(
+            mounts[0].prune_subtrees,
+            ["node_modules".to_string(), ".seawork".to_string()]
+        );
+        assert_eq!(mounts[1].prune_subtrees, ["vendor"]);
         assert_eq!(selected[0].guest_path, "/workspace");
         assert_eq!(selected[1].guest_path, "/workspace/output");
         assert!(selected
             .iter()
             .all(|mount| mount.backend == "compat-smb-direct"));
+
+        let (unpruned, _) = normalize_mounts(vec![ServiceMountSpec {
+            host_path: root.join("workspace").display().to_string(),
+            guest_path: "/workspace".to_string(),
+            read_only: true,
+            prune_subtrees: Some(Vec::new()),
+        }])
+        .unwrap();
+        assert!(unpruned[0].prune_subtrees.is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -845,6 +869,7 @@ mod tests {
             host_path: root.display().to_string(),
             guest_path: guest_path.to_string(),
             read_only: true,
+            prune_subtrees: None,
         };
         assert_eq!(
             normalize_mounts(vec![mount("/workspace"), mount("/workspace")]),
@@ -870,6 +895,7 @@ mod tests {
                 host_path: file.display().to_string(),
                 guest_path: "/workspace".to_string(),
                 read_only: true,
+                prune_subtrees: None,
             }]),
             Err(ErrorCode::InvalidRequest)
         );

@@ -9,6 +9,13 @@ pub struct WindowsSmbAclGrantRequest {
     pub path: PathBuf,
     pub account: WindowsSmbUserAccount,
     pub access: WindowsSmbAccess,
+    pub prune_subtrees: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsSmbAclPlanEntry {
+    pub path: PathBuf,
+    pub is_dir: bool,
 }
 
 /// A recoverable ACL operation. `path` is the mount root; cleanup deliberately
@@ -20,6 +27,7 @@ pub struct WindowsSmbAclGrant {
     pub sid: String,
     pub access: WindowsSmbAccess,
     pub original_dacl_control: Option<u16>,
+    pub planned_entries: Vec<WindowsSmbAclPlanEntry>,
 }
 
 pub trait WindowsSmbAclManager {
@@ -33,12 +41,13 @@ pub trait WindowsSmbAclManager {
             sid: request.account.sid.clone(),
             access: request.access,
             original_dacl_control: None,
+            planned_entries: Vec::new(),
         })
     }
 
     fn grant_access(
         &mut self,
-        request: WindowsSmbAclGrantRequest,
+        grant: WindowsSmbAclGrant,
     ) -> Result<WindowsSmbAclGrant, WindowsSmbLifecycleError>;
 
     fn revoke_access(&mut self, grant: &WindowsSmbAclGrant)
@@ -69,71 +78,66 @@ impl WindowsSmbAclManager for NativeWindowsSmbAclManager {
         &mut self,
         request: &WindowsSmbAclGrantRequest,
     ) -> Result<WindowsSmbAclGrant, WindowsSmbLifecycleError> {
-        enumerate_tree(&request.path, WindowsSmbLifecyclePhase::AclGrant)?;
+        let planned_entries = enumerate_tree(
+            &request.path,
+            &request.prune_subtrees,
+            WindowsSmbLifecyclePhase::AclGrant,
+        )?;
         Ok(WindowsSmbAclGrant {
             path: request.path.clone(),
             principal: request.account.principal.clone(),
             sid: request.account.sid.clone(),
             access: request.access,
             original_dacl_control: Some(security_descriptor_control(&request.path)?),
+            planned_entries,
         })
     }
 
     fn grant_access(
         &mut self,
-        request: WindowsSmbAclGrantRequest,
+        mut grant: WindowsSmbAclGrant,
     ) -> Result<WindowsSmbAclGrant, WindowsSmbLifecycleError> {
-        let entries = enumerate_tree(&request.path, WindowsSmbLifecyclePhase::AclGrant)?;
-        let original_dacl_control = security_descriptor_control(&request.path)?;
-        for (path, is_dir) in &entries {
+        for entry in &grant.planned_entries {
             apply_acl_change(
-                path,
-                &request.account.sid,
-                request.access,
+                &entry.path,
+                &grant.sid,
+                grant.access,
                 windows_sys::Win32::Security::Authorization::GRANT_ACCESS,
-                *is_dir,
+                entry.is_dir,
                 WindowsSmbLifecyclePhase::AclGrant,
             )?;
         }
-        for (path, _) in &entries {
-            verify_effective_access(path, &request.account.sid, request.access)?;
-        }
-        Ok(WindowsSmbAclGrant {
-            path: request.path,
-            principal: request.account.principal,
-            sid: request.account.sid,
-            access: request.access,
-            original_dacl_control: Some(original_dacl_control),
-        })
+        grant.planned_entries.clear();
+        Ok(grant)
     }
 
     fn revoke_access(
         &mut self,
         grant: &WindowsSmbAclGrant,
     ) -> Result<(), WindowsSmbLifecycleError> {
-        let entries = match enumerate_tree(&grant.path, WindowsSmbLifecyclePhase::AclRevoke) {
+        let entries = match enumerate_tree(&grant.path, &[], WindowsSmbLifecyclePhase::AclRevoke) {
             Ok(entries) => entries,
             Err(_error) if !grant.path.exists() => return Ok(()),
             Err(error) => return Err(error),
         };
-        for (path, is_dir) in entries.iter().rev() {
+        for entry in entries.iter().rev() {
             apply_acl_change(
-                path,
+                &entry.path,
                 &grant.sid,
                 grant.access,
                 windows_sys::Win32::Security::Authorization::REVOKE_ACCESS,
-                *is_dir,
+                entry.is_dir,
                 WindowsSmbLifecyclePhase::AclRevoke,
             )?;
         }
-        for (path, _) in &entries {
-            if contains_explicit_sid(path, &grant.sid)? {
+        for entry in &entries {
+            if contains_explicit_sid(&entry.path, &grant.sid)? {
                 return Err(WindowsSmbLifecycleError::operation_failed(
                     WindowsSmbLifecyclePhase::AclRevoke,
                     format!(
                         "explicit ACE for generated SID {} remains on '{}'",
                         grant.sid,
-                        path.display()
+                        entry.path.display()
                     ),
                 ));
             }
@@ -150,12 +154,12 @@ impl WindowsSmbAclManager for NativeWindowsSmbAclManager {
         password: &WindowsSmbPassword,
         grants: &[WindowsSmbAclGrant],
     ) -> Result<(), WindowsSmbLifecycleError> {
-        verify_access_as_account(account, password, grants)
+        verify_mount_roots_as_account(account, password, grants)
     }
 }
 
 #[cfg(windows)]
-fn verify_access_as_account(
+fn verify_mount_roots_as_account(
     account: &WindowsSmbUserAccount,
     password: &WindowsSmbPassword,
     grants: &[WindowsSmbAclGrant],
@@ -202,9 +206,7 @@ fn verify_access_as_account(
 
     let result = (|| {
         for grant in grants {
-            for (path, is_dir) in enumerate_tree(&grant.path, WindowsSmbLifecyclePhase::AclGrant)? {
-                verify_path_open(&path, is_dir, grant.access)?;
-            }
+            verify_path_open(&grant.path, true, grant.access)?;
         }
         Ok(())
     })();
@@ -397,8 +399,9 @@ fn restore_security_descriptor_control(
 #[cfg(windows)]
 fn enumerate_tree(
     root: &std::path::Path,
+    prune_subtrees: &[String],
     phase: WindowsSmbLifecyclePhase,
-) -> Result<Vec<(PathBuf, bool)>, WindowsSmbLifecycleError> {
+) -> Result<Vec<WindowsSmbAclPlanEntry>, WindowsSmbLifecycleError> {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::fs::MetadataExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
@@ -434,7 +437,10 @@ fn enumerate_tree(
             ));
         }
         let is_dir = metadata.is_dir();
-        result.push((path.clone(), is_dir));
+        result.push(WindowsSmbAclPlanEntry {
+            path: path.clone(),
+            is_dir,
+        });
         if result.len() > MAX_ACL_TREE_ENTRIES {
             return Err(WindowsSmbLifecycleError::operation_failed(
                 phase,
@@ -461,6 +467,14 @@ fn enumerate_tree(
                         ),
                     )
                 })?;
+                if prune_subtrees.iter().any(|pruned| {
+                    child
+                        .file_name()
+                        .to_string_lossy()
+                        .eq_ignore_ascii_case(pruned)
+                }) {
+                    continue;
+                }
                 pending.push(child.path());
             }
         }
@@ -583,113 +597,6 @@ fn apply_acl_change(
             path.display()
         ),
     ))
-}
-
-#[cfg(windows)]
-fn verify_effective_access(
-    path: &std::path::Path,
-    sid_string: &str,
-    access: WindowsSmbAccess,
-) -> Result<(), WindowsSmbLifecycleError> {
-    let (allowed, denied) = explicit_rights(path, sid_string)?;
-    let required = ntfs_access_mask(access);
-    if allowed & required != required || denied & required != 0 {
-        return Err(WindowsSmbLifecycleError::operation_failed(
-            WindowsSmbLifecyclePhase::AclGrant,
-            format!(
-                "generated SID {sid_string} lacks required effective access on '{}'",
-                path.display()
-            ),
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn explicit_rights(
-    path: &std::path::Path,
-    sid_string: &str,
-) -> Result<(u32, u32), WindowsSmbLifecycleError> {
-    use std::ptr;
-    use windows_sys::Win32::Foundation::{GetLastError, LocalFree};
-    use windows_sys::Win32::Security::Authorization::{
-        ConvertStringSidToSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
-    };
-    use windows_sys::Win32::Security::{
-        EqualSid, GetAce, ACE_HEADER, DACL_SECURITY_INFORMATION, INHERITED_ACE,
-    };
-    use windows_sys::Win32::System::SystemServices::{
-        ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE,
-    };
-
-    let mut path_w = super::user::wide_null(&path.display().to_string());
-    let sid_w = super::user::wide_null(sid_string);
-    let mut sid = ptr::null_mut();
-    if unsafe { ConvertStringSidToSidW(sid_w.as_ptr(), &mut sid) } == 0 {
-        let code = unsafe { GetLastError() };
-        return Err(WindowsSmbLifecycleError::operation_failed(
-            WindowsSmbLifecyclePhase::AclGrant,
-            format!("ConvertStringSidToSidW failed with win32 error {code}"),
-        ));
-    }
-    let mut dacl = ptr::null_mut();
-    let mut descriptor = ptr::null_mut();
-    let status = unsafe {
-        GetNamedSecurityInfoW(
-            path_w.as_mut_ptr(),
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            &mut dacl,
-            ptr::null_mut(),
-            &mut descriptor,
-        )
-    };
-    if status != 0 {
-        unsafe {
-            LocalFree(sid.cast());
-        }
-        return Err(WindowsSmbLifecycleError::operation_failed(
-            WindowsSmbLifecyclePhase::AclGrant,
-            format!(
-                "GetNamedSecurityInfoW failed for '{}' with win32 error {status}",
-                path.display()
-            ),
-        ));
-    }
-    let ace_count = if dacl.is_null() {
-        0
-    } else {
-        unsafe { (*dacl).AceCount }
-    };
-    let mut allowed = 0;
-    let mut denied = 0;
-    for index in 0..ace_count {
-        let mut raw = ptr::null_mut();
-        if unsafe { GetAce(dacl, index as u32, &mut raw) } == 0 {
-            continue;
-        }
-        let header = unsafe { &*(raw.cast::<ACE_HEADER>()) };
-        if header.AceFlags & INHERITED_ACE as u8 != 0 {
-            continue;
-        }
-        let ace_sid = unsafe { raw.cast::<u8>().add(8).cast() };
-        if unsafe { EqualSid(sid, ace_sid) } == 0 {
-            continue;
-        }
-        let mask = unsafe { *raw.cast::<u8>().add(4).cast::<u32>() };
-        match header.AceType as u32 {
-            ACCESS_ALLOWED_ACE_TYPE => allowed |= mask,
-            ACCESS_DENIED_ACE_TYPE => denied |= mask,
-            _ => {}
-        }
-    }
-    unsafe {
-        LocalFree(descriptor);
-        LocalFree(sid.cast());
-    }
-    Ok((allowed, denied))
 }
 
 #[cfg(windows)]
@@ -823,6 +730,42 @@ mod tests {
     }
 
     #[test]
+    fn acl_plan_prunes_configured_subtrees_at_any_depth_case_insensitively() {
+        let fixture =
+            std::env::temp_dir().join(format!("lsb-windows-smb-prune-plan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&fixture);
+        std::fs::create_dir_all(fixture.join("node_modules/pkg")).unwrap();
+        std::fs::create_dir_all(fixture.join("nested/.SeaWork/cache")).unwrap();
+        std::fs::create_dir_all(fixture.join("nested/src")).unwrap();
+        std::fs::write(fixture.join("node_modules/pkg/index.js"), b"ignored").unwrap();
+        std::fs::write(fixture.join("nested/.SeaWork/cache/state"), b"ignored").unwrap();
+        std::fs::write(fixture.join("nested/src/main.rs"), b"included").unwrap();
+
+        let entries = enumerate_tree(
+            &fixture,
+            &["node_modules".to_string(), ".seawork".to_string()],
+            WindowsSmbLifecyclePhase::AclGrant,
+        )
+        .unwrap();
+        let relative = entries
+            .iter()
+            .map(|entry| entry.path.strip_prefix(&fixture).unwrap().to_path_buf())
+            .collect::<Vec<_>>();
+        assert!(relative.contains(&PathBuf::from("nested")));
+        assert!(relative.contains(&PathBuf::from("nested/src")));
+        assert!(relative.contains(&PathBuf::from("nested/src/main.rs")));
+        assert!(relative.iter().all(|path| {
+            !path.components().any(|component| {
+                matches!(
+                    component.as_os_str().to_str(),
+                    Some("node_modules" | ".SeaWork")
+                )
+            })
+        }));
+        let _ = std::fs::remove_dir_all(fixture);
+    }
+
+    #[test]
     fn windows_smb_protected_acl() {
         let fixture = std::env::temp_dir().join(format!(
             "lsb-windows-smb-protected-acl-{}",
@@ -861,12 +804,15 @@ mod tests {
             .create_user(&name, &password)
             .expect("create temporary SMB user");
         let mut acls = NativeWindowsSmbAclManager;
+        let request = WindowsSmbAclGrantRequest {
+            path: root.clone(),
+            account: account.clone(),
+            access: WindowsSmbAccess::ReadOnly,
+            prune_subtrees: Vec::new(),
+        };
+        let plan = acls.prepare_grant(&request).expect("prepare ACL plan");
         let grant = acls
-            .grant_access(WindowsSmbAclGrantRequest {
-                path: root.clone(),
-                account: account.clone(),
-                access: WindowsSmbAccess::ReadOnly,
-            })
+            .grant_access(plan)
             .expect("grant across protected boundary");
         acls.verify_access(&account, &password, std::slice::from_ref(&grant))
             .expect("generated account should enumerate and read the protected tree");

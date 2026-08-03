@@ -139,6 +139,9 @@ pub(crate) fn build_init_options(opts: SandboxInitOptions) -> lsb_sdk::SandboxIn
 
 #[cfg(lsb_nodejs_supported)]
 fn parse_mount(mount: MountConfig) -> anyhow::Result<lsb_sdk::MountConfig> {
+  if mount.pruneSubtrees.is_some() {
+    anyhow::bail!("pruneSubtrees is supported only by SeaWork service direct mounts");
+  }
   if !mount.guestPath.starts_with('/') {
     anyhow::bail!(
       "guest path must be absolute (start with /): '{}'",

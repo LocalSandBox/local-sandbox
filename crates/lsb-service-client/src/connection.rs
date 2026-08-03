@@ -288,6 +288,14 @@ impl ServiceClient {
                 return Err(ClientError::IncompatibleProtocol);
             }
         }
+        if options
+            .mounts
+            .iter()
+            .any(|mount| mount.prune_subtrees.is_some())
+            && self.core.feature_bits & lsb_service_proto::FEATURE_MOUNT_SUBTREE_PRUNING == 0
+        {
+            return Err(ClientError::IncompatibleProtocol);
+        }
         match self
             .request(RequestOp::StartSandbox {
                 client_instance_id: options.client_instance_id,

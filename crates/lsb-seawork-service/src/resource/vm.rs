@@ -35,6 +35,7 @@ pub struct ManagedVmMountSpec {
     pub host_path: String,
     pub guest_path: String,
     pub read_only: bool,
+    pub prune_subtrees: Vec<String>,
 }
 
 enum Command {
@@ -1367,11 +1368,14 @@ fn build_and_start(
         builder = builder.network_attachment(attachment);
     }
     for mount in &spec.mounts {
-        builder = builder.mount(lsb_vm::MountConfig::Direct {
-            host_path: mount.host_path.clone(),
-            guest_path: mount.guest_path.clone(),
-            flags: u64::from(mount.read_only),
-        });
+        builder = builder.mount_with_pruned_subtrees(
+            lsb_vm::MountConfig::Direct {
+                host_path: mount.host_path.clone(),
+                guest_path: mount.guest_path.clone(),
+                flags: u64::from(mount.read_only),
+            },
+            mount.prune_subtrees.clone(),
+        );
     }
     let sandbox = builder.build()?;
     let mount_span = trace_parent.start_child(crate::telemetry::SpanDescription::child(

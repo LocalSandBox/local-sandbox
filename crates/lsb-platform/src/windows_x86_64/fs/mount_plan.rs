@@ -116,12 +116,27 @@ impl From<CopyPathError> for WindowsMountPlanError {
 pub fn plan_windows_mounts(
     specs: &[WindowsMountSpec],
 ) -> Result<WindowsMountPlan, WindowsMountPlanError> {
+    let prune_subtrees = vec![Vec::new(); specs.len()];
+    plan_windows_mounts_with_pruning(specs, &prune_subtrees)
+}
+
+pub fn plan_windows_mounts_with_pruning(
+    specs: &[WindowsMountSpec],
+    prune_subtrees: &[Vec<String>],
+) -> Result<WindowsMountPlan, WindowsMountPlanError> {
+    if specs.len() != prune_subtrees.len() {
+        return Err(WindowsMountPlanError::InvalidPath(CopyPathError::new(
+            CopyPathOperation::CopyInSource,
+            "Windows mounts",
+            "mount pruning configuration does not match mount count",
+        )));
+    }
     let mut imports = Vec::new();
     let mut smb_directs = Vec::new();
     let mut mount_requests = Vec::new();
     let mut targets = HashSet::new();
 
-    for spec in specs {
+    for (spec, prune_subtrees) in specs.iter().zip(prune_subtrees) {
         validate_guest_path_component(
             &spec.tag,
             CopyPathOperation::CopyInGuestDestination,
@@ -173,6 +188,7 @@ pub fn plan_windows_mounts(
                     &spec.host_path,
                     &spec.guest_path,
                     access,
+                    prune_subtrees,
                 )?);
             }
         }
@@ -188,7 +204,13 @@ pub fn plan_windows_mounts(
 pub fn replan_windows_smb_mount(
     mount: &WindowsSmbMount,
 ) -> Result<WindowsSmbMount, WindowsMountPlanError> {
-    plan_direct_smb_mount("direct", &mount.source, &mount.target, mount.access)
+    plan_direct_smb_mount(
+        "direct",
+        &mount.source,
+        &mount.target,
+        mount.access,
+        &mount.prune_subtrees,
+    )
 }
 
 pub fn windows_mount_guest_source(tag: &str) -> String {
@@ -200,6 +222,7 @@ fn plan_direct_smb_mount(
     host_path: &std::path::Path,
     guest_path: &str,
     access: WindowsSmbAccess,
+    prune_subtrees: &[String],
 ) -> Result<WindowsSmbMount, WindowsMountPlanError> {
     let source = validate_copy_in_source_root(host_path)?;
     if source.kind != CopyInSourceRootKind::Directory {
@@ -213,6 +236,7 @@ fn plan_direct_smb_mount(
         source: source.path,
         target: guest_path.to_string(),
         access,
+        prune_subtrees: prune_subtrees.to_vec(),
     })
 }
 

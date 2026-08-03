@@ -92,6 +92,8 @@ pub struct MountConfig {
   pub guestPath: String,
   /// libc mount flags for direct mounts. Use `0` for read-write, `1` for MS_RDONLY.
   pub flags: Option<f64>,
+  /// Directory basenames to prune from SeaWork SMB startup traversal at any depth.
+  pub pruneSubtrees: Option<Vec<String>>,
 }
 
 /// Options used when booting a sandbox.

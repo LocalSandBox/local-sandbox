@@ -44,10 +44,10 @@ use lsb_platform::windows_x86_64::fs::{
 };
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use lsb_platform::windows_x86_64::fs::{
-    plan_windows_mounts, replan_windows_smb_mount, snapshot_windows_mount, WindowsMountCache,
-    WindowsMountCacheBuild, WindowsMountCacheHit, WindowsMountCacheSelection,
-    WindowsMountDescriptor, WindowsMountMode, WindowsMountSnapshot, WindowsMountSnapshotEntry,
-    WindowsMountSnapshotEntryKind, WindowsMountSpec, WINDOWS_MOUNT_STAGING_ROOT,
+    replan_windows_smb_mount, snapshot_windows_mount, WindowsMountCache, WindowsMountCacheBuild,
+    WindowsMountCacheHit, WindowsMountCacheSelection, WindowsMountDescriptor, WindowsMountMode,
+    WindowsMountSnapshot, WindowsMountSnapshotEntry, WindowsMountSnapshotEntryKind,
+    WindowsMountSpec, WINDOWS_MOUNT_STAGING_ROOT,
 };
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use lsb_platform::PlatformControlSessionKind;
@@ -155,6 +155,7 @@ pub struct VmConfigBuilder {
     network_attachment: Option<PlatformNetworkAttachment>,
     nbd_uri: Option<String>,
     mounts: Vec<MountConfig>,
+    mount_prune_subtrees: Vec<Vec<String>>,
 }
 
 impl VmConfigBuilder {
@@ -174,6 +175,7 @@ impl VmConfigBuilder {
             network_attachment: None,
             nbd_uri: None,
             mounts: Vec::new(),
+            mount_prune_subtrees: Vec::new(),
         }
     }
 
@@ -266,6 +268,19 @@ impl VmConfigBuilder {
     /// Add a host directory mount (virtio-fs).
     pub fn mount(mut self, config: MountConfig) -> Self {
         self.mounts.push(config);
+        self.mount_prune_subtrees.push(Vec::new());
+        self
+    }
+
+    /// Add a direct mount with service-controlled SMB startup traversal pruning.
+    #[doc(hidden)]
+    pub fn mount_with_pruned_subtrees(
+        mut self,
+        config: MountConfig,
+        prune_subtrees: Vec<String>,
+    ) -> Self {
+        self.mounts.push(config);
+        self.mount_prune_subtrees.push(prune_subtrees);
         self
     }
 
@@ -306,7 +321,8 @@ impl VmConfigBuilder {
         mount_metrics.set_failure_context(FailedPhase::InitialPlan, ErrorCategory::UnsafeSource);
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         let initial_plan_started = Instant::now();
-        let mount_plan_result = build_mount_plan(&self.mounts);
+        let mount_plan_result =
+            build_mount_plan_with_pruning(&self.mounts, &self.mount_prune_subtrees);
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         mount_metrics.add_duration(DurationMetric::InitialPlan, initial_plan_started.elapsed());
         let mount_plan = match mount_plan_result {
@@ -845,10 +861,22 @@ fn windows_mount_source_summaries(snapshots: &[WindowsMountSnapshot]) -> Vec<Mou
         .collect()
 }
 
+#[cfg(test)]
 fn build_mount_plan(mounts: &[MountConfig]) -> Result<SandboxMountPlan> {
+    let prune_subtrees = vec![Vec::new(); mounts.len()];
+    build_mount_plan_with_pruning(mounts, &prune_subtrees)
+}
+
+fn build_mount_plan_with_pruning(
+    mounts: &[MountConfig],
+    prune_subtrees: &[Vec<String>],
+) -> Result<SandboxMountPlan> {
+    if mounts.len() != prune_subtrees.len() {
+        bail!("mount pruning configuration does not match mount count");
+    }
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
-        build_windows_mount_plan(mounts)
+        build_windows_mount_plan(mounts, prune_subtrees)
     }
 
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
@@ -905,7 +933,10 @@ fn build_shared_directory_mount_plan(mounts: &[MountConfig]) -> SandboxMountPlan
 }
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-fn build_windows_mount_plan(mounts: &[MountConfig]) -> Result<SandboxMountPlan> {
+fn build_windows_mount_plan(
+    mounts: &[MountConfig],
+    prune_subtrees: &[Vec<String>],
+) -> Result<SandboxMountPlan> {
     let specs = mounts
         .iter()
         .enumerate()
@@ -934,8 +965,9 @@ fn build_windows_mount_plan(mounts: &[MountConfig]) -> Result<SandboxMountPlan> 
             }
         })
         .collect::<Vec<_>>();
-    let plan = plan_windows_mounts(&specs)
-        .map_err(|error| anyhow::anyhow!("planning Windows mount imports: {error}"))?;
+    let plan =
+        lsb_platform::windows_x86_64::fs::plan_windows_mounts_with_pruning(&specs, prune_subtrees)
+            .map_err(|error| anyhow::anyhow!("planning Windows mount imports: {error}"))?;
 
     Ok(SandboxMountPlan {
         shared_dirs: Vec::new(),
@@ -5001,7 +5033,7 @@ mod tests {
         std::fs::create_dir_all(&rw_source).expect("rw source dir");
         std::fs::create_dir_all(&ro_source).expect("ro source dir");
 
-        let plan = build_mount_plan(&[
+        let mounts = [
             MountConfig::Direct {
                 host_path: rw_source.display().to_string(),
                 guest_path: "/workspace".into(),
@@ -5012,7 +5044,14 @@ mod tests {
                 guest_path: "/readonly".into(),
                 flags: MS_RDONLY,
             },
-        ])
+        ];
+        let plan = build_mount_plan_with_pruning(
+            &mounts,
+            &[
+                vec!["node_modules".to_string()],
+                vec![".seawork".to_string()],
+            ],
+        )
         .expect("Windows direct mount plan should build");
 
         assert!(plan.shared_dirs.is_empty());
@@ -5021,6 +5060,7 @@ mod tests {
         assert_eq!(plan.windows_smb_mounts.len(), 2);
         assert_eq!(plan.windows_smb_mounts[0].target, "/workspace");
         assert!(!plan.windows_smb_mounts[0].access.read_only());
+        assert_eq!(plan.windows_smb_mounts[0].prune_subtrees, ["node_modules"]);
         assert_eq!(plan.windows_smb_mounts[1].target, "/readonly");
         assert!(plan.windows_smb_mounts[1].access.read_only());
 

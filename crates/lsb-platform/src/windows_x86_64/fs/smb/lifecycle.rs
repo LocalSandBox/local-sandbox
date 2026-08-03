@@ -162,6 +162,7 @@ where
                 path: mount.source.clone(),
                 account: account.clone(),
                 access: mount.access,
+                prune_subtrees: mount.prune_subtrees.clone(),
             };
             let intended_grant = match self.acls.prepare_grant(&request) {
                 Ok(grant) => grant,
@@ -189,7 +190,7 @@ where
                     return Err(error.with_cleanup_failures(failures));
                 }
             }
-            let grant = match self.acls.grant_access(request) {
+            let grant = match self.acls.grant_access(intended_grant) {
                 Ok(grant) => grant,
                 Err(error) => {
                     let failures = if let Some(path) = manifest_path {
@@ -573,6 +574,7 @@ impl WindowsSmbCleanupManifest {
                     sid: grant.sid.unwrap_or_default(),
                     access: grant.access,
                     original_dacl_control: grant.original_dacl_control,
+                    planned_entries: Vec::new(),
                 })
                 .collect(),
             shares: self
@@ -1075,25 +1077,19 @@ mod tests {
     impl WindowsSmbAclManager for FakeAcls {
         fn grant_access(
             &mut self,
-            request: WindowsSmbAclGrantRequest,
+            grant: WindowsSmbAclGrant,
         ) -> Result<WindowsSmbAclGrant, WindowsSmbLifecycleError> {
             let index = self.grants;
             self.grants += 1;
             self.log
-                .push(format!("grant_acl:{index}:{}", request.path.display()));
+                .push(format!("grant_acl:{index}:{}", grant.path.display()));
             if self.fail_grant_index == Some(index) {
                 return Err(WindowsSmbLifecycleError::operation_failed(
                     WindowsSmbLifecyclePhase::AclGrant,
                     "grant failed",
                 ));
             }
-            Ok(WindowsSmbAclGrant {
-                path: request.path,
-                principal: request.account.principal,
-                sid: request.account.sid,
-                access: request.access,
-                original_dacl_control: None,
-            })
+            Ok(grant)
         }
 
         fn revoke_access(

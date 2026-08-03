@@ -49,8 +49,10 @@ use crate::{LEDGER_SCHEMA_VERSION, PIPE_NAME, PIPE_SDDL};
 const OUTPUT_BACKPRESSURE_TIMEOUT: Duration = Duration::from_secs(30);
 // The client understands the owner-token relay contract, but the service must not
 // negotiate it until the relay implementation and Windows acceptance gates pass.
-const SERVICE_FEATURE_BITS: u64 =
-    FEATURE_NETWORK_EGRESS | FEATURE_NETWORK_SECRETS | FEATURE_HTTPS_INTERCEPTION;
+const SERVICE_FEATURE_BITS: u64 = FEATURE_NETWORK_EGRESS
+    | FEATURE_NETWORK_SECRETS
+    | FEATURE_HTTPS_INTERCEPTION
+    | lsb_service_proto::FEATURE_MOUNT_SUBTREE_PRUNING;
 #[cfg(test)]
 static TEST_HEALTH_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 #[cfg(test)]
@@ -1268,6 +1270,20 @@ where
         {
             let required = network.required_feature_bits();
             if selected_feature_bits & required != required {
+                write_error(
+                    writer,
+                    selected,
+                    frame.header.correlation,
+                    ErrorCode::IncompatibleProtocol,
+                )
+                .await?;
+                continue;
+            }
+        }
+        if let RequestOp::StartSandbox { mounts, .. } = &request.op {
+            if mounts.iter().any(|mount| mount.prune_subtrees.is_some())
+                && selected_feature_bits & lsb_service_proto::FEATURE_MOUNT_SUBTREE_PRUNING == 0
+            {
                 write_error(
                     writer,
                     selected,
@@ -3211,6 +3227,14 @@ fn owner_token_relay_feature_stays_unadvertised() {
     );
     assert_ne!(
         lsb_service_proto::CLIENT_FEATURE_BITS & lsb_service_proto::FEATURE_EXPOSE_HOST_RELAY,
+        0
+    );
+}
+
+#[test]
+fn mount_subtree_pruning_feature_is_advertised() {
+    assert_ne!(
+        SERVICE_FEATURE_BITS & lsb_service_proto::FEATURE_MOUNT_SUBTREE_PRUNING,
         0
     );
 }

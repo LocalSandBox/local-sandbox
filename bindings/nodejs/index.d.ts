@@ -328,6 +328,8 @@ export interface MountConfig {
   guestPath: string
   /** libc mount flags for direct mounts. Use `0` for read-write, `1` for MS_RDONLY. */
   flags?: number
+  /** Directory basenames to prune from SeaWork SMB startup traversal at any depth. */
+  pruneSubtrees?: Array<string>
 }
 
 /** Network policy for a sandbox. */

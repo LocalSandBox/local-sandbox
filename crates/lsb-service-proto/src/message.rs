@@ -290,6 +290,14 @@ impl Request {
                 for mount in mounts {
                     validate_string(&mount.host_path)?;
                     validate_string(&mount.guest_path)?;
+                    if let Some(prune_subtrees) = &mount.prune_subtrees {
+                        if prune_subtrees.len() > 32 {
+                            return Err(ProtocolError::InvalidJson);
+                        }
+                        for name in prune_subtrees {
+                            validate_mount_subtree_name(name)?;
+                        }
+                    }
                 }
                 let mut host_ports = std::collections::BTreeSet::new();
                 for port in ports {
@@ -632,6 +640,8 @@ pub struct ServiceMountSpec {
     pub host_path: String,
     pub guest_path: String,
     pub read_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prune_subtrees: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -955,6 +965,19 @@ fn validate_guest_path(value: &str) -> Result<(), ProtocolError> {
     Ok(())
 }
 
+fn validate_mount_subtree_name(value: &str) -> Result<(), ProtocolError> {
+    validate_string(value)?;
+    if value.is_empty()
+        || value == "."
+        || value == ".."
+        || value.chars().any(char::is_control)
+        || value.contains(['/', '\\', '\0'])
+    {
+        return Err(ProtocolError::InvalidJson);
+    }
+    Ok(())
+}
+
 fn validate_json_depth(json: &str) -> Result<(), ProtocolError> {
     let mut depth = 0usize;
     let mut in_string = false;
@@ -1071,6 +1094,7 @@ mod tests {
             host_path: r"C:\Users\caller\workspace".to_string(),
             guest_path: "/workspace".to_string(),
             read_only: true,
+            prune_subtrees: None,
         };
         let request = Request {
             deadline_ms: None,
@@ -1087,8 +1111,54 @@ mod tests {
         };
         request.validate().unwrap();
         let encoded = serde_json::to_vec(&request).unwrap();
+        assert!(!String::from_utf8_lossy(&encoded).contains("prune_subtrees"));
         let decoded: Request = parse_control(&encoded).unwrap();
         assert_eq!(decoded, request);
+
+        let legacy_mount: ServiceMountSpec = parse_control(
+            br#"{"host_path":"C:\\workspace","guest_path":"/workspace","read_only":true}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy_mount.prune_subtrees, None);
+
+        let mut pruned = mount.clone();
+        pruned.prune_subtrees = Some(vec!["node_modules".to_string(), ".seawork".to_string()]);
+        let pruned_request = Request {
+            deadline_ms: None,
+            op: RequestOp::StartSandbox {
+                client_instance_id: None,
+                from: None,
+                cpus: 2,
+                memory_mib: 2048,
+                disk_mib: 4096,
+                mounts: vec![pruned],
+                ports: Vec::new(),
+                network: None,
+            },
+        };
+        pruned_request.validate().unwrap();
+        assert!(serde_json::to_string(&pruned_request)
+            .unwrap()
+            .contains("prune_subtrees"));
+
+        for invalid_name in ["", ".", "..", "nested/vendor", r"nested\vendor"] {
+            let mut invalid_mount = mount.clone();
+            invalid_mount.prune_subtrees = Some(vec![invalid_name.to_string()]);
+            let invalid_request = Request {
+                deadline_ms: None,
+                op: RequestOp::StartSandbox {
+                    client_instance_id: None,
+                    from: None,
+                    cpus: 2,
+                    memory_mib: 2048,
+                    disk_mib: 4096,
+                    mounts: vec![invalid_mount],
+                    ports: Vec::new(),
+                    network: None,
+                },
+            };
+            assert_eq!(invalid_request.validate(), Err(ProtocolError::InvalidJson));
+        }
 
         let too_many = Request {
             deadline_ms: None,
@@ -1133,7 +1203,10 @@ mod tests {
                 guest_port: 3000,
             }],
         };
-        assert_eq!(network.required_feature_bits(), crate::CLIENT_FEATURE_BITS);
+        assert_eq!(
+            network.required_feature_bits(),
+            crate::CLIENT_FEATURE_BITS & !crate::FEATURE_MOUNT_SUBTREE_PRUNING
+        );
         let request = Request {
             deadline_ms: None,
             op: RequestOp::StartSandbox {

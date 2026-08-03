@@ -42,7 +42,7 @@ pub struct SeaWorkStartOptions {
   pub ports: Option<Vec<PortMappingConfig>>,
   /// Legacy direct mounts. Only flags 0 (read-write) and 1 (MS_RDONLY) are supported.
   #[napi(
-    ts_type = "Array<{ type: 'overlay'; hostPath: string; guestPath: string } | { type: 'direct'; hostPath: string; guestPath: string; flags: number }>"
+    ts_type = "Array<{ type: 'overlay'; hostPath: string; guestPath: string } | { type: 'direct'; hostPath: string; guestPath: string; flags: number; pruneSubtrees?: Array<string> }>"
   )]
   pub mounts: Option<Vec<MountConfig>>,
   /// Service-owned public and CGNAT egress, scoped secrets, and HTTPS interception policy.
@@ -540,6 +540,10 @@ fn service_feature_names(bits: u64) -> Vec<String> {
       lsb_service_proto::FEATURE_EXPOSE_HOST_RELAY,
       "expose-host-relay",
     ),
+    (
+      lsb_service_proto::FEATURE_MOUNT_SUBTREE_PRUNING,
+      "mount-subtree-pruning",
+    ),
   ]
   .into_iter()
   .filter(|(feature, _)| bits & feature != 0)
@@ -672,10 +676,36 @@ fn map_service_mounts(
       let host_path = host_path.into_os_string().into_string().map_err(|_| {
         napi::Error::from_reason("[INVALID_REQUEST] service mount hostPath must be valid Unicode")
       })?;
+      let prune_subtrees = mount
+        .pruneSubtrees
+        .map(|names| {
+          if names.len() > 32 {
+            return Err(napi::Error::from_reason(
+              "[INVALID_REQUEST] pruneSubtrees supports at most 32 directory names",
+            ));
+          }
+          let mut unique = std::collections::BTreeSet::new();
+          for name in &names {
+            if name.is_empty()
+              || name == "."
+              || name == ".."
+              || name.contains(['/', '\\', '\0'])
+              || name.chars().any(char::is_control)
+              || !unique.insert(name.to_ascii_lowercase())
+            {
+              return Err(napi::Error::from_reason(
+                "[INVALID_REQUEST] pruneSubtrees must contain unique directory basenames",
+              ));
+            }
+          }
+          Ok(names)
+        })
+        .transpose()?;
       Ok(lsb_service_proto::ServiceMountSpec {
         host_path,
         guest_path: mount.guestPath,
         read_only,
+        prune_subtrees,
       })
     })
     .collect()
@@ -1295,12 +1325,14 @@ mod tests {
         hostPath: root.join("workspace").display().to_string(),
         guestPath: "/workspace".to_string(),
         flags: Some(1.0),
+        pruneSubtrees: None,
       },
       MountConfig {
         r#type: "direct".to_string(),
         hostPath: root.join("workspace/output").display().to_string(),
         guestPath: "/workspace/output".to_string(),
         flags: Some(0.0),
+        pruneSubtrees: Some(vec!["vendor".to_string()]),
       },
     ]))
     .unwrap();
@@ -1310,6 +1342,8 @@ mod tests {
     assert!(!mapped[1].read_only);
     assert_eq!(mapped[0].guest_path, "/workspace");
     assert_eq!(mapped[1].guest_path, "/workspace/output");
+    assert_eq!(mapped[0].prune_subtrees, None);
+    assert_eq!(mapped[1].prune_subtrees, Some(vec!["vendor".to_string()]));
     let _ = std::fs::remove_dir_all(root);
   }
 
@@ -1320,6 +1354,7 @@ mod tests {
       hostPath: std::env::temp_dir().display().to_string(),
       guestPath: guest_path.to_string(),
       flags,
+      pruneSubtrees: None,
     };
     let overlay = map_service_mounts(Some(vec![mount("overlay", "/workspace", None)])).unwrap_err();
     assert!(overlay.reason.contains("[MOUNT_UNSUPPORTED]"));
@@ -1344,6 +1379,7 @@ mod tests {
       hostPath: file.display().to_string(),
       guestPath: "/workspace".to_string(),
       flags: Some(1.0),
+      pruneSubtrees: None,
     }]))
     .unwrap_err();
     assert!(error.reason.contains("existing directory"));

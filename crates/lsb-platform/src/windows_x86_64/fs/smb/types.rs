@@ -47,6 +47,7 @@ pub struct WindowsSmbMount {
     pub source: PathBuf,
     pub target: String,
     pub access: WindowsSmbAccess,
+    pub prune_subtrees: Vec<String>,
 }
 
 impl WindowsSmbMount {
@@ -55,6 +56,7 @@ impl WindowsSmbMount {
             source: source.into(),
             target: target.into(),
             access: WindowsSmbAccess::ReadOnly,
+            prune_subtrees: Vec::new(),
         }
     }
 
@@ -63,6 +65,7 @@ impl WindowsSmbMount {
             source: source.into(),
             target: target.into(),
             access: WindowsSmbAccess::ReadWrite,
+            prune_subtrees: Vec::new(),
         }
     }
 }
