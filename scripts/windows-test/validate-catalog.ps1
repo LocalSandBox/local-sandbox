@@ -68,10 +68,7 @@ foreach ($property in $catalog.suites.PSObject.Properties) {
     $catalogFiles.Add($full) | Out-Null
 }
 
-$suiteRoots = @(
-    (Join-Path $root 'scripts\windows-test-suites'),
-    (Join-Path $root 'scripts\windows-test\suites')
-)
+$suiteRoots = @((Join-Path $root 'scripts\windows-test\suites'))
 foreach ($suiteRoot in $suiteRoots) {
     if (-not (Test-Path -LiteralPath $suiteRoot -PathType Container)) { continue }
     foreach ($file in @(Get-ChildItem -LiteralPath $suiteRoot -Filter '*.ps1' -File -Recurse)) {

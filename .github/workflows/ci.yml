@@ -98,7 +98,7 @@ jobs:
         run: |
           $runRoot = Join-Path $env:RUNNER_TEMP 'sentry-smoke'
           New-Item -ItemType Directory -Path $runRoot | Out-Null
-          .\scripts\windows-test-suites\sentry-smoke.ps1 `
+          .\scripts\windows-test\suites\diagnostics\sentry-smoke.ps1 `
             -Phase Normal -RunRoot $runRoot -SnapshotSha $env:GITHUB_SHA
       - name: QEMU argv golden tests
         run: cargo test -p lsb-platform --locked windows_x86_64::qemu::argv

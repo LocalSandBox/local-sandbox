@@ -140,6 +140,12 @@ Focused `suite` runs are useful for development and reproducers. Their catalog c
 remains visible in `list` and their result envelope; a `native` suite must never be
 described as hardware acceptance.
 
+Suite implementations live under `scripts/windows-test/suites/<category>/`; host-only
+management and shared result/evidence code live under `host/` and `lib/`. Guest programs
+live under `fixtures/windows/guest/`. The former `scripts/windows-test-suites/*.ps1`
+paths are thin compatibility shims and are not catalog entries; new automation must use
+`scripts/win-test` rather than invoke either path directly.
+
 ## Snapshots, locking, and reboot recovery
 
 Every run creates a temporary Git commit from tracked, untracked, and modified files

@@ -790,7 +790,7 @@ function Install-And-Smoke {
     Copy-Item -LiteralPath 'bindings\nodejs\index.js' -Destination $clientSigningHarness
     Copy-Item -LiteralPath 'bindings\nodejs\lsb-nodejs.win32-x64-msvc.node' `
         -Destination $clientSigningHarness
-    Copy-Item -LiteralPath 'scripts\windows-test-suites\service-acceptance.mjs' `
+    Copy-Item -LiteralPath 'fixtures\windows\guest\service-acceptance.mjs' `
         -Destination $clientSigningHarness
     Set-Sddl $clientSigningHarnessBase $clientSigningHarnessSddl
     Invoke-Native 'scripts\sign-seawork-service.ps1' @(

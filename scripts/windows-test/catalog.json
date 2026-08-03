@@ -63,7 +63,7 @@
     "archive-acceptance": {
       "description": "Validate an exact signed service archive and its artifact-bound release manifest.",
       "category": "release",
-      "file": "scripts/windows-test-suites/archive-acceptance.ps1",
+      "file": "scripts/windows-test/suites/release/archive-acceptance.ps1",
       "timeout_minutes": 20,
       "reboot_mode": "none",
       "minimum_free_gib": 10,
@@ -75,7 +75,7 @@
     "artifact-fetch-smoke": {
       "description": "Exercise the allowlisted fetch contract with redacted synthetic evidence.",
       "category": "diagnostics",
-      "file": "scripts/windows-test-suites/artifact-fetch-smoke.ps1",
+      "file": "scripts/windows-test/suites/diagnostics/artifact-fetch-smoke.ps1",
       "timeout_minutes": 5,
       "reboot_mode": "none",
       "minimum_free_gib": 1,
@@ -87,7 +87,7 @@
     "filtered-client-token": {
       "description": "Prove a filtered interactive token can use LocalSystem IPC without UAC.",
       "category": "service",
-      "file": "scripts/windows-test-suites/filtered-client-token.ps1",
+      "file": "scripts/windows-test/suites/service/filtered-client-token.ps1",
       "timeout_minutes": 20,
       "reboot_mode": "none",
       "minimum_free_gib": 5,
@@ -99,7 +99,7 @@
     "installed-service-smoke": {
       "description": "Install and exercise the signed service, then remove every owned resource.",
       "category": "service",
-      "file": "scripts/windows-test-suites/installed-service-smoke.ps1",
+      "file": "scripts/windows-test/suites/service/installed-service-smoke.ps1",
       "timeout_minutes": 90,
       "reboot_mode": "none",
       "minimum_free_gib": 35,
@@ -111,7 +111,7 @@
     "office-rootfs-smoke": {
       "description": "Boot the office rootfs and validate its supported guest toolchain.",
       "category": "runtime",
-      "file": "scripts/windows-test-suites/office-rootfs-smoke.ps1",
+      "file": "scripts/windows-test/suites/runtime/office-rootfs-smoke.ps1",
       "timeout_minutes": 15,
       "reboot_mode": "none",
       "minimum_free_gib": 8,
@@ -135,7 +135,7 @@
     "qemu-package-tests": {
       "description": "Validate the pinned managed QEMU package metadata and executables.",
       "category": "diagnostics",
-      "file": "scripts/windows-test-suites/qemu-package-tests.ps1",
+      "file": "scripts/windows-test/suites/diagnostics/qemu-package-tests.ps1",
       "timeout_minutes": 20,
       "reboot_mode": "none",
       "minimum_free_gib": 5,
@@ -147,7 +147,7 @@
     "qemu-sentry-acceptance": {
       "description": "Send one bounded QEMU incident through the real Sentry acceptance project.",
       "category": "diagnostics",
-      "file": "scripts/windows-test-suites/qemu-sentry-acceptance.ps1",
+      "file": "scripts/windows-test/suites/diagnostics/qemu-sentry-acceptance.ps1",
       "timeout_minutes": 30,
       "reboot_mode": "none",
       "minimum_free_gib": 10,
@@ -159,7 +159,7 @@
     "qemu-telemetry-smoke": {
       "description": "Exercise QEMU timeout, dump-helper, and service-owned shutdown telemetry offline.",
       "category": "diagnostics",
-      "file": "scripts/windows-test-suites/qemu-telemetry-smoke.ps1",
+      "file": "scripts/windows-test/suites/diagnostics/qemu-telemetry-smoke.ps1",
       "timeout_minutes": 75,
       "reboot_mode": "none",
       "minimum_free_gib": 20,
@@ -183,7 +183,7 @@
     "reboot-smoke": {
       "description": "Validate runner continuation across a real host reboot.",
       "category": "diagnostics",
-      "file": "scripts/windows-test-suites/reboot-smoke.ps1",
+      "file": "scripts/windows-test/suites/diagnostics/reboot-smoke.ps1",
       "timeout_minutes": 30,
       "reboot_mode": "required",
       "minimum_free_gib": 1,
@@ -195,7 +195,7 @@
     "release-candidate": {
       "description": "Build and sign the service candidate and produce its closed fetch manifest.",
       "category": "release",
-      "file": "scripts/windows-test-suites/release-candidate.ps1",
+      "file": "scripts/windows-test/suites/release/release-candidate.ps1",
       "timeout_minutes": 90,
       "reboot_mode": "none",
       "minimum_free_gib": 30,
@@ -207,7 +207,7 @@
     "rootfs-startup-smoke": {
       "description": "Boot the standard rootfs through the CLI and record startup metrics.",
       "category": "runtime",
-      "file": "scripts/windows-test-suites/rootfs-startup-smoke.ps1",
+      "file": "scripts/windows-test/suites/runtime/rootfs-startup-smoke.ps1",
       "timeout_minutes": 15,
       "reboot_mode": "none",
       "minimum_free_gib": 8,
@@ -219,7 +219,7 @@
     "sentry-smoke": {
       "description": "Build telemetry support and validate offline envelope and dump redaction.",
       "category": "diagnostics",
-      "file": "scripts/windows-test-suites/sentry-smoke.ps1",
+      "file": "scripts/windows-test/suites/diagnostics/sentry-smoke.ps1",
       "timeout_minutes": 45,
       "reboot_mode": "none",
       "minimum_free_gib": 12,
@@ -231,7 +231,7 @@
     "service-fast": {
       "description": "Focused native compile, unit, Clippy, and Node API checks; not hardware acceptance.",
       "category": "native",
-      "file": "scripts/windows-test-suites/service-fast.ps1",
+      "file": "scripts/windows-test/suites/native/service-fast.ps1",
       "timeout_minutes": 60,
       "reboot_mode": "none",
       "minimum_free_gib": 20,
@@ -243,7 +243,7 @@
     "service-reboot": {
       "description": "Install the signed service, validate it before and after reboot, and uninstall it.",
       "category": "service",
-      "file": "scripts/windows-test-suites/service-reboot.ps1",
+      "file": "scripts/windows-test/suites/service/service-reboot.ps1",
       "timeout_minutes": 120,
       "reboot_mode": "required",
       "minimum_free_gib": 40,
@@ -255,7 +255,7 @@
     "system-maintenance-ipc": {
       "description": "Run the maintenance IPC identity proof as LocalSystem.",
       "category": "service",
-      "file": "scripts/windows-test-suites/system-maintenance-ipc.ps1",
+      "file": "scripts/windows-test/suites/service/system-maintenance-ipc.ps1",
       "timeout_minutes": 15,
       "reboot_mode": "none",
       "minimum_free_gib": 5,
@@ -267,7 +267,7 @@
     "update-fast": {
       "description": "Run focused updater checks and the SCM DACL round-trip integration test.",
       "category": "native",
-      "file": "scripts/windows-test-suites/update-fast.ps1",
+      "file": "scripts/windows-test/suites/native/update-fast.ps1",
       "timeout_minutes": 90,
       "reboot_mode": "none",
       "minimum_free_gib": 25,
@@ -279,7 +279,7 @@
     "updater-release-smoke": {
       "description": "Build, sign, and verify the updater release archive.",
       "category": "release",
-      "file": "scripts/windows-test-suites/updater-release-smoke.ps1",
+      "file": "scripts/windows-test/suites/release/updater-release-smoke.ps1",
       "timeout_minutes": 60,
       "reboot_mode": "none",
       "minimum_free_gib": 20,
