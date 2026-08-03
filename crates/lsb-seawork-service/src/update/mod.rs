@@ -337,7 +337,7 @@ impl Coordinator {
                     + if let Some(delay) = self.persisted_retry_delay() {
                         delay
                     } else if retry == 0 {
-                        Duration::from_secs(6 * 60 * 60)
+                        Duration::from_secs(60 * 60)
                             + machine_jitter(Duration::ZERO, 30 * 60).unwrap_or(Duration::ZERO)
                     } else {
                         retry_delay(retry)
