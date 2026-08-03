@@ -1,0 +1,19 @@
+xtask/src/rootfs.rs
+  s_493003d26abcfa::t_35b3829a01eb5e 100,371,662,682
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "03d54fa803d82fb0cddd060246d6d5d2880400cf",
+  "prompts": {},
+  "sessions": {
+    "s_493003d26abcfa": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc712-dc80-7ba2-a3b2-3b56baa099ce",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
