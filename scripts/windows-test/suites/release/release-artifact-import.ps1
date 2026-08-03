@@ -4,7 +4,9 @@ param(
     [string] $Phase,
     [Parameter(Mandatory = $true)][string] $RunRoot,
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{40}$')]
-    [string] $SnapshotSha
+    [string] $SnapshotSha,
+    [ValidatePattern('^$|^[a-z0-9][a-z0-9._-]{0,95}$')]
+    [string] $ReuseRunId = ''
 )
 
 $ErrorActionPreference = 'Stop'
