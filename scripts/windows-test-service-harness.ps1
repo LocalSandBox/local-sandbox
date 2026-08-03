@@ -960,13 +960,13 @@ function Smoke-Core {
         Wait-ServiceState 'Running' $postRebootServiceWaitSeconds
     }
     $before = Get-CompatibilityResources
-    Invoke-ClientSmoke $state -Suffix 'mount-free'
+    Invoke-ClientSmoke $state -Suffix 'core-mount-free'
     Invoke-ClientSmoke $state -AdmissionRejected `
         -ClientHarnessRoot ([string]$state.client_test_harness_root) `
-        -ClientExecutableName 'node-untrusted.exe' -Suffix 'caller-wrong-publisher'
-    Invoke-ClientSmoke $state -Mounts -Suffix 'direct-mounts'
-    Invoke-ClientSmoke $state -Network -Suffix 'network'
-    Invoke-ClientSmoke $state -UpdateCheck -Suffix 'update-check'
+        -ClientExecutableName 'node-untrusted.exe' -Suffix 'core-caller-wrong-publisher'
+    Invoke-ClientSmoke $state -Mounts -Suffix 'core-direct-mounts'
+    Invoke-ClientSmoke $state -Network -Suffix 'core-network'
+    Invoke-ClientSmoke $state -UpdateCheck -Suffix 'core-update-check'
     Assert-CompatibleResourcesRestored $before $state.state_root
     [ordered]@{
         schema_version = 1
