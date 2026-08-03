@@ -1,0 +1,21 @@
+README.md
+  s_0369d76947c5d2::t_87285081c6f89f 132-142
+scripts/validate-rootfs-startup.sh
+  s_0369d76947c5d2::t_87285081c6f89f 1-92
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "3a705d124fe1da903e7c341c7189e7877243dac3",
+  "prompts": {},
+  "sessions": {
+    "s_0369d76947c5d2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc632-1a9d-7293-9182-cb74c40c1917",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
