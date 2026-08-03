@@ -130,7 +130,7 @@ test('SeaWork service declarations expose only remote sandbox inputs', (t) => {
   t.regex(options ?? '', /ports\?: Array<PortMappingConfig>/)
   t.regex(
     options ?? '',
-    /mounts\?: Array<\{ type: 'overlay'; hostPath: string; guestPath: string \} \| \{ type: 'direct'; hostPath: string; guestPath: string; flags: number \}>/,
+    /mounts\?: Array<\{ type: 'overlay'; hostPath: string; guestPath: string \} \| \{ type: 'direct'; hostPath: string; guestPath: string; flags: number; pruneSubtrees\?: Array<string> \}>/,
   )
   t.regex(options ?? '', /network\?: NetworkConfig/)
   for (const forbidden of ['dataDir', 'baseVersion', 'qemu', 'identity']) {
