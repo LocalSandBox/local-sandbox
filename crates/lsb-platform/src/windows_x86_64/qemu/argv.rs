@@ -61,10 +61,15 @@ impl QemuArgvBuilder {
 
         let mut command = QemuCommandParts::default();
         push_arg(&mut command, "-nodefaults");
+        push_pair(&mut command, "-machine", DEFAULT_MACHINE_TYPE);
+        // WHPX's in-kernel APIC intermittently loses wakeups for virtio
+        // interrupts, stalling an otherwise idle guest for tens of seconds.
+        // QEMU's userspace irqchip keeps delivery deterministic while WHPX
+        // continues to accelerate vCPU execution.
         push_pair(
             &mut command,
-            "-machine",
-            format!("{DEFAULT_MACHINE_TYPE},accel={PRODUCTION_ACCELERATOR}"),
+            "-accel",
+            format!("{PRODUCTION_ACCELERATOR},kernel-irqchip=off"),
         );
         push_pair(&mut command, "-cpu", DEFAULT_CPU_MODEL);
         push_pair(
@@ -613,7 +618,9 @@ mod tests {
             os_vec(&[
                 "-nodefaults",
                 "-machine",
-                "q35,accel=whpx",
+                "q35",
+                "-accel",
+                "whpx,kernel-irqchip=off",
                 "-cpu",
                 "Westmere",
                 "-smp",
@@ -752,7 +759,9 @@ mod tests {
             os_vec(&[
                 "-nodefaults",
                 "-machine",
-                "q35,accel=whpx",
+                "q35",
+                "-accel",
+                "whpx,kernel-irqchip=off",
                 "-cpu",
                 "Westmere",
                 "-smp",
@@ -848,11 +857,12 @@ mod tests {
     }
 
     #[test]
-    fn production_argv_uses_whpx_without_tcg_fallback() {
+    fn production_argv_uses_whpx_userspace_irqchip_without_tcg_fallback() {
         let command = build(base_config());
         let argv = argv_as_strings(&command);
 
-        assert!(argv.iter().any(|arg| arg == "q35,accel=whpx"));
+        assert!(argv.iter().any(|arg| arg == "q35"));
+        assert!(argv.iter().any(|arg| arg == "whpx,kernel-irqchip=off"));
         assert!(!argv.iter().any(|arg| arg.contains("tcg")));
         assert!(!argv.iter().any(|arg| arg.contains("whpx:tcg")));
     }
