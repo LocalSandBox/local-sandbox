@@ -273,11 +273,13 @@ function Test-HostConfiguration {
         (Join-Path $RootPath 'windows-test\host\windows-test-prune.ps1'),
         (Join-Path $RootPath 'windows-test\host\windows-test-runs.ps1'),
         (Join-Path $RootPath 'windows-test\host\windows-test-profile.ps1'),
+        (Join-Path $RootPath 'windows-test\host\windows-test-release-artifact.ps1'),
         (Join-Path $RootPath 'setup-windows-test-host.ps1'),
         $StatePath,
         (Join-Path $StatePath 'locks'),
         (Join-Path $StatePath 'runs'),
-        (Join-Path $StatePath 'assets')
+        (Join-Path $StatePath 'assets'),
+        (Join-Path $StatePath 'imports')
     )) {
         if (-not (Test-Path -LiteralPath $path)) {
             throw "Required test-host path is missing: $path"
@@ -344,7 +346,9 @@ $cachePath = Join-Path $rootPath 'cache\cargo-target'
 $lockPath = Join-Path $statePath 'locks'
 $runsPath = Join-Path $statePath 'runs'
 $assetsPath = Join-Path $statePath 'assets'
-New-Item -ItemType Directory -Force -Path $cachePath, $lockPath, $runsPath, $assetsPath | Out-Null
+$importsPath = Join-Path $statePath 'imports'
+New-Item -ItemType Directory -Force `
+    -Path $cachePath, $lockPath, $runsPath, $assetsPath, $importsPath | Out-Null
 
 if (-not (Test-Path -LiteralPath $mirrorPath)) {
     Invoke-Git -Arguments @('init', '--bare', $mirrorPath)

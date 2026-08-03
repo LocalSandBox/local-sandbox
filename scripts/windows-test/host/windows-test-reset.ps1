@@ -74,6 +74,24 @@ try {
         foreach ($target in $fullTargets) { Write-Output "  $target" }
     }
 
+    $importsRoot = Assert-WindowsTestDescendant -Path (Join-Path $statePath 'imports') `
+        -Root $statePath
+    if (Test-Path -LiteralPath $importsRoot -PathType Container) {
+        foreach ($stage in @(Get-ChildItem -LiteralPath $importsRoot -Directory -Force)) {
+            $stageOwner = Join-Path $stage.FullName 'owner.json'
+            $owned = $false
+            if (Test-Path -LiteralPath $stageOwner -PathType Leaf) {
+                try {
+                    $marker = Read-WindowsTestJson -Path $stageOwner -MaximumBytes 16KB
+                    $owned = $marker.owner -ceq 'local-sandbox-release-artifact-import'
+                }
+                catch { $owned = $false }
+            }
+            if (-not $owned) { throw "Refusing to remove an unowned artifact import stage: $($stage.FullName)" }
+            Remove-PlainTree -Path $stage.FullName
+        }
+    }
+
     foreach ($name in $serviceNames) {
         $service = Get-Service -Name $name -ErrorAction SilentlyContinue
         if ($null -ne $service) {

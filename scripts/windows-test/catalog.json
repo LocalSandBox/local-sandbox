@@ -168,6 +168,18 @@
       "expected_artifacts": ["evidence-qemu-telemetry-smoke.json", "fetch-manifest.json"],
       "acceptance_checks": ["con01.job_containment", "obs01.event_log", "sec02.reconciliation"]
     },
+    "release-artifact-import": {
+      "description": "Verify and stage one exact signed CI service archive without rebuilding it.",
+      "category": "release",
+      "file": "scripts/windows-test/suites/release/release-artifact-import.ps1",
+      "timeout_minutes": 20,
+      "reboot_mode": "none",
+      "minimum_free_gib": 15,
+      "required_capabilities": ["administrator", "windows11_x86_64", "build_tools", "signing_assets"],
+      "mutations": ["bounded extraction of the imported archive beneath the run root"],
+      "expected_artifacts": ["evidence-release-candidate.json", "seawork-test-release-manifest.json", "fetch-manifest.json"],
+      "acceptance_checks": ["rel01.artifact_trust"]
+    },
     "reboot-smoke": {
       "description": "Validate runner continuation across a real host reboot.",
       "category": "diagnostics",

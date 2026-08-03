@@ -18,7 +18,10 @@ $reuseCandidate = Join-Path (Split-Path -Parent $PSScriptRoot) `
     'windows-test-reuse-candidate.ps1'
 $harness = Join-Path (Split-Path -Parent $PSScriptRoot) 'windows-test-service-harness.ps1'
 if ([string]::IsNullOrWhiteSpace($ReuseRunId)) {
-    & $releaseSuite -Phase Normal -RunRoot $RunRoot -SnapshotSha $SnapshotSha
+    if (-not (Test-Path -LiteralPath (Join-Path $RunRoot 'evidence-release-candidate.json') `
+        -PathType Leaf)) {
+        & $releaseSuite -Phase Normal -RunRoot $RunRoot -SnapshotSha $SnapshotSha
+    }
 }
 else {
     & $reuseCandidate `

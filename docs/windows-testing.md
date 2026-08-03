@@ -108,6 +108,7 @@ scripts/win-test accept runtime
 scripts/win-test accept diagnostics
 scripts/win-test accept diagnostics --include-optional
 scripts/win-test accept service [--reuse-candidate <run-id>]
+scripts/win-test accept release --artifact <signed-ci-service.zip>
 scripts/win-test accept release --reuse-candidate <run-id>
 scripts/win-test suite <suite-name> [--reuse-candidate <run-id>]
 ```
@@ -126,6 +127,14 @@ candidate from a fresh install under a standard-user token, validates reboot rec
 uninstalls, and verifies owned resources are gone. `release` includes the service
 profile, validates the exact candidate archive and artifact-bound release manifest, and
 assembles full redacted evidence.
+
+For `release --artifact`, the local ZIP name must be canonical. The runner computes its
+size and SHA-256 before transfer, stages it beneath the marked import root, verifies the
+same values on `win-1`, and binds it to the current source snapshot. Acceptance checks
+the archive's bounded paths, version, closed bundle inventory, protected publisher,
+Authenticode/catalog closure, and installed-layout verifier before installing that exact
+extracted payload. `--reuse-candidate` is the compatibility path for an already retained
+and equivalently verified candidate run; the two options are mutually exclusive.
 
 Focused `suite` runs are useful for development and reproducers. Their catalog category
 remains visible in `list` and their result envelope; a `native` suite must never be

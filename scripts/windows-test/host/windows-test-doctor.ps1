@@ -69,6 +69,12 @@ function Get-StaleResources {
             $resources.Add("process:$name/$($process.Id)")
         }
     }
+    $imports = Join-Path $StateRoot 'imports'
+    if (Test-Path -LiteralPath $imports -PathType Container) {
+        foreach ($stage in @(Get-ChildItem -LiteralPath $imports -Directory -Force)) {
+            $resources.Add("artifact-import:$($stage.Name)")
+        }
+    }
     return @($resources | Sort-Object -Unique)
 }
 

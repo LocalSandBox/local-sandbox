@@ -43,6 +43,7 @@ try {
     $metadata = Read-WindowsTestJson -Path (Join-Path $runRoot 'run-metadata.json') `
         -MaximumBytes 256KB
     $resultRecords = [Collections.Generic.List[object]]::new()
+    $resultDocuments = [Collections.Generic.List[object]]::new()
     $observedChecks = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $artifactDigests = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $runtimeDigests = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
@@ -73,6 +74,7 @@ try {
                 $result.suite -cne $suiteName) { throw "Suite result identity mismatch: $name" }
             if ($result.status -ne 'passed' -or $result.exit_code -ne 0) { $profilePassed = $false }
             foreach ($check in @($result.acceptance_checks)) { $observedChecks.Add([string]$check) | Out-Null }
+            $resultDocuments.Add([pscustomobject]@{ name = $name; value = $result })
             if ([string]$result.bindings.release_artifact_sha256 -match '^[0-9a-f]{64}$') {
                 $artifactDigests.Add([string]$result.bindings.release_artifact_sha256) | Out-Null
             }
@@ -118,6 +120,71 @@ try {
     Write-WindowsTestJsonAtomic -Path $profileResultPath -Value $profileResult
     Write-WindowsTestFetchManifest -RunRoot $runRoot -RunId $RunId `
         -ResultPath $profileResultPath -ExpectedArtifacts @() | Out-Null
+    $fetch = Read-WindowsTestJson -Path (Join-Path $runRoot 'fetch-manifest.json') `
+        -MaximumBytes 256KB
+    $evidenceFiles = @($fetch.artifacts | Where-Object {
+        $_.redacted -and ($_.name -eq 'profile-result.json' -or $_.name -match '^result-' -or
+            $_.name -match '^evidence-.*\.redacted\.json$')
+    } | ForEach-Object {
+        $duration = [int64](($mapped | ForEach-Object { [int64]$_.value.duration_ms } |
+            Measure-Object -Sum).Sum)
+        [ordered]@{
+            name = [string]$_.name; sha256 = [string]$_.sha256
+            size = [int64]$_.size; redacted = $true
+        }
+    } | Sort-Object name)
+    $checkResults = foreach ($checkId in $declaredChecks) {
+        $mapped = @($resultDocuments | Where-Object {
+            @($_.value.acceptance_checks) -contains $checkId
+        })
+        if ($mapped.Count -eq 0) {
+            [ordered]@{
+                id = $checkId; status = 'not_run'; duration_ms = 0
+                stable_code = 'CHECK_MAPPING_MISSING'; evidence = @('profile-result.json')
+            }
+            continue
+        }
+        $passed = @($mapped | Where-Object { $_.value.status -ne 'passed' }).Count -eq 0
+        [ordered]@{
+            id = $checkId
+            status = if ($passed) { 'passed' } else { 'failed' }
+            duration_ms = $duration
+            stable_code = if ($passed) { $null } else { 'SUITE_FAILED' }
+            evidence = @($mapped | ForEach-Object name | Sort-Object -Unique)
+        }
+    }
+    $candidate = @(
+        Get-ChildItem -LiteralPath $runRoot -File `
+            -Filter 'lsb-seawork-service-v*-windows-x86_64.zip' |
+            Where-Object Name -NotMatch '-symbols\.zip$'
+    )
+    $releaseArtifact = if ($candidate.Count -eq 1) {
+        [ordered]@{
+            name = $candidate[0].Name
+            sha256 = (Get-FileHash -LiteralPath $candidate[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            size = [int64]$candidate[0].Length
+        }
+    } else { $null }
+    $evidenceManifestPath = Join-Path $runRoot 'acceptance-evidence-manifest.json'
+    Write-WindowsTestJsonAtomic -Path $evidenceManifestPath -Value ([ordered]@{
+        schema_version = 1
+        run_id = $RunId
+        snapshot_sha = [string]$metadata.snapshot_sha
+        profile = $Profile
+        status = if ($profilePassed) { 'passed' } else { 'failed' }
+        generated_utc = [DateTime]::UtcNow.ToString('o')
+        bindings = $profileResult.bindings
+        release_artifact = $releaseArtifact
+        checks = @($checkResults)
+        files = $evidenceFiles
+    })
+    if (-not (Test-Json -LiteralPath $evidenceManifestPath -SchemaFile `
+        (Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas\profile-evidence.schema.json'))) {
+        throw 'Generated acceptance evidence does not satisfy profile-evidence.schema.json.'
+    }
+    Write-WindowsTestFetchManifest -RunRoot $runRoot -RunId $RunId `
+        -ResultPath $profileResultPath `
+        -ExpectedArtifacts @('acceptance-evidence-manifest.json') -RequireExpected | Out-Null
     $profileResult | ConvertTo-Json -Depth 12
     if (-not $profilePassed) { exit 1 }
 }

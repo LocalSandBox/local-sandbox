@@ -60,4 +60,24 @@ $evidence = [ordered]@{
 if (-not (Test-Json -Json $evidence -SchemaFile (Join-Path $schemaRoot 'evidence.schema.json'))) {
     throw 'evidence schema rejected its canonical sample'
 }
+$profileEvidence = [ordered]@{
+    schema_version = 1; run_id = 'sample-run'; snapshot_sha = $sha40; profile = 'release'
+    status = 'passed'; generated_utc = '2026-01-01T00:00:01Z'
+    bindings = [ordered]@{ runtime_assets_sha256 = $sha64; release_artifact_sha256 = $sha64 }
+    release_artifact = [ordered]@{
+        name = 'lsb-seawork-service-v1.0.0-windows-x86_64.zip'; sha256 = $sha64; size = 10
+    }
+    checks = @([ordered]@{
+        id = 'rel01.artifact_trust'; status = 'passed'; duration_ms = 10
+        stable_code = $null; evidence = @('result-archive-acceptance-normal.json')
+    })
+    files = @([ordered]@{
+        name = 'result-archive-acceptance-normal.json'; sha256 = $sha64
+        size = 10; redacted = $true
+    })
+} | ConvertTo-Json -Depth 10
+if (-not (Test-Json -Json $profileEvidence `
+    -SchemaFile (Join-Path $schemaRoot 'profile-evidence.schema.json'))) {
+    throw 'profile evidence schema rejected its canonical sample'
+}
 Write-Output 'Validated catalog, result, fetch, and evidence JSON schemas.'

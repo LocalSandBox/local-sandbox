@@ -5,9 +5,8 @@ param(
     [string] $Phase,
     [Parameter(Mandatory = $true)][string] $RunRoot,
     [Parameter(Mandatory = $true)][string] $SnapshotSha,
-    [Parameter(Mandatory = $true)]
-    [ValidatePattern('^[a-z0-9][a-z0-9._-]{0,95}$')]
-    [string] $ReuseRunId
+    [ValidatePattern('^$|^[a-z0-9][a-z0-9._-]{0,95}$')]
+    [string] $ReuseRunId = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -88,7 +87,10 @@ if ((Split-Path -Leaf $stateRoot) -cne 'local-sandbox-agent-state') {
     throw 'The Windows test state root has an unexpected identity.'
 }
 $runsRoot = Join-Path $stateRoot 'runs'
-$sourceRoot = [IO.Path]::GetFullPath((Join-Path $runsRoot $ReuseRunId)).TrimEnd('\')
+$sourceRunId = if ([string]::IsNullOrWhiteSpace($ReuseRunId)) {
+    Split-Path -Leaf ([IO.Path]::GetFullPath($RunRoot).TrimEnd('\'))
+} else { $ReuseRunId }
+$sourceRoot = [IO.Path]::GetFullPath((Join-Path $runsRoot $sourceRunId)).TrimEnd('\')
 if ((Split-Path -Parent $sourceRoot) -cne [IO.Path]::GetFullPath($runsRoot).TrimEnd('\')) {
     throw 'Source run escaped the owned Windows runs root.'
 }
@@ -105,7 +107,7 @@ $fetch = Read-JsonFile (Join-Path $sourceRoot 'fetch-manifest.json') 'fetch mani
 if ($release.status -ne 'passed' -or $release.service_profile -ne 'production' -or
     $manifest.local_sandbox_commit -notmatch '^[0-9a-f]{40}$' -or
     $manifest.synthetic_snapshot_sha -cne [string]$release.snapshot_sha -or
-    $fetch.run_id -cne $ReuseRunId) {
+    $fetch.run_id -cne $sourceRunId) {
     throw 'Source run does not identify one production release candidate.'
 }
 $payloadName = [string]$release.payload.name
@@ -162,7 +164,7 @@ $evidencePath = Join-Path $RunRoot $evidenceName
 [ordered]@{
     schema_version = 1
     status = 'passed'
-    source_run_id = $ReuseRunId
+    source_run_id = $sourceRunId
     source_snapshot_sha = [string]$release.snapshot_sha
     source_base_commit = [string]$manifest.local_sandbox_commit
     validation_snapshot_sha = $SnapshotSha

@@ -337,10 +337,40 @@ invoke_current_reboot_suite() {
     resume_run "$run_id"
 }
 
+import_release_artifact() {
+    local artifact_path="$1" artifact_name expected_sha expected_size remote_stage import_status=0
+    [[ -f "$artifact_path" ]] || fail "release artifact is not a file: $artifact_path"
+    artifact_name="$(basename "$artifact_path")"
+    [[ "$artifact_name" =~ ^lsb-seawork-service-v[0-9A-Za-z.+-]+-windows-x86_64\.zip$ ]] || \
+        fail 'release artifact filename is not canonical'
+    expected_sha="$(shasum -a 256 "$artifact_path" | awk '{print $1}')"
+    expected_size="$(wc -c < "$artifact_path" | tr -d ' ')"
+    remote_stage="$(ssh_windows pwsh -NoProfile -NonInteractive -File \
+        "${windows_root}/windows-test/host/windows-test-release-artifact.ps1" \
+        -Mode Prepare -RunId "$run_id" -FileName "$artifact_name" \
+        -SnapshotSha "$snapshot_sha")"
+    remote_stage="${remote_stage//$'\r'/}"
+    remote_stage="${remote_stage//$'\n'/}"
+    if scp -q -o BatchMode=yes -o ConnectTimeout=8 \
+        "$artifact_path" "${host}:${remote_stage}/${artifact_name}" && \
+        ssh_windows pwsh -NoProfile -NonInteractive -File \
+            "${windows_root}/windows-test/host/windows-test-release-artifact.ps1" \
+            -Mode Commit -RunId "$run_id" -FileName "$artifact_name" \
+            -ExpectedSha256 "$expected_sha" -ExpectedSize "$expected_size"; then
+        import_status=0
+    else
+        import_status=$?
+        ssh_windows pwsh -NoProfile -NonInteractive -File \
+            "${windows_root}/windows-test/host/windows-test-release-artifact.ps1" \
+            -Mode Abort -RunId "$run_id" -FileName "$artifact_name" || true
+    fi
+    return "$import_status"
+}
+
 accept_profile() {
     local profile="$1"
     shift
-    local include_optional=0 reuse_run_id='' profile_status=0 suite_name
+    local include_optional=0 reuse_run_id='' artifact_path='' artifact_basename='' profile_status=0 suite_name
     while [[ "$#" -gt 0 ]]; do
         case "$1" in
             --include-optional)
@@ -355,6 +385,12 @@ accept_profile() {
                 reuse_run_id="$2"
                 shift 2
                 ;;
+            --artifact)
+                [[ "$#" -ge 2 && -n "$2" ]] || fail '--artifact requires a local ZIP path'
+                [[ -z "$artifact_path" ]] || fail '--artifact was specified more than once'
+                artifact_path="$2"
+                shift 2
+                ;;
             *) fail "unknown accept option: $1" ;;
         esac
     done
@@ -364,8 +400,20 @@ accept_profile() {
     if [[ "$profile" != service && "$profile" != release && -n "$reuse_run_id" ]]; then
         fail '--reuse-candidate is supported only by service and release profiles'
     fi
-    if [[ "$profile" == release && -z "$reuse_run_id" ]]; then
-        fail 'release acceptance requires --reuse-candidate <run-id> for an exact signed artifact'
+    if [[ "$profile" != release && -n "$artifact_path" ]]; then
+        fail '--artifact is supported only by the release profile'
+    fi
+    if [[ -n "$reuse_run_id" && -n "$artifact_path" ]]; then
+        fail '--artifact and --reuse-candidate are mutually exclusive'
+    fi
+    if [[ "$profile" == release && -z "$reuse_run_id" && -z "$artifact_path" ]]; then
+        fail 'release acceptance requires --artifact <zip> or --reuse-candidate <run-id>'
+    fi
+    if [[ -n "$artifact_path" ]]; then
+        [[ -f "$artifact_path" ]] || fail "release artifact is not a file: $artifact_path"
+        artifact_basename="$(basename "$artifact_path")"
+        [[ "$artifact_basename" =~ ^lsb-seawork-service-v[0-9A-Za-z.+-]+-windows-x86_64\.zip$ ]] || \
+            fail 'release artifact filename is not canonical'
     fi
 
     if [[ "$profile" == service || "$profile" == release ]]; then
@@ -376,6 +424,12 @@ accept_profile() {
         "${windows_root}/windows-test/host/windows-test-doctor.ps1" -Profile "$profile"
 
     create_snapshot
+    if [[ -n "$artifact_path" ]]; then
+        import_release_artifact "$artifact_path"
+        if ! invoke_bootstrap Run release-artifact-import; then
+            profile_status=1
+        fi
+    fi
     case "$profile" in
         runtime)
             profile_suites=( product-runtime rootfs-startup-smoke office-rootfs-smoke )

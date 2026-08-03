@@ -1,0 +1,60 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://local-sandbox.dev/schemas/windows-test-profile-evidence-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "snapshot_sha", "profile", "status", "generated_utc", "bindings", "release_artifact", "checks", "files"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "run_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,95}$" },
+    "snapshot_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "profile": { "enum": ["runtime", "diagnostics", "service", "release"] },
+    "status": { "enum": ["passed", "failed"] },
+    "generated_utc": { "type": "string", "format": "date-time" },
+    "bindings": {
+      "type": "object", "additionalProperties": false,
+      "required": ["runtime_assets_sha256", "release_artifact_sha256"],
+      "properties": {
+        "runtime_assets_sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+        "release_artifact_sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "release_artifact": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["name", "sha256", "size"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^lsb-seawork-service-v[0-9A-Za-z.+-]+-windows-x86_64\\.zip$" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "size": { "type": "integer", "minimum": 1, "maximum": 8589934592 }
+      }
+    },
+    "checks": {
+      "type": "array", "minItems": 1, "maxItems": 128,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "status", "duration_ms", "stable_code", "evidence"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9]+\\.[a-z0-9_]+$" },
+          "status": { "enum": ["passed", "failed", "not_run"] },
+          "duration_ms": { "type": "integer", "minimum": 0, "maximum": 86400000 },
+          "stable_code": { "type": ["string", "null"], "pattern": "^[A-Z][A-Z0-9_]{0,63}$" },
+          "evidence": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^(?:profile-result|result-[a-z0-9-]+-(?:normal|beforereboot|afterreboot)|evidence-[a-z0-9._-]+\\.redacted)\\.json$" } }
+        }
+      }
+    },
+    "files": {
+      "type": "array", "minItems": 1, "maxItems": 256,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "sha256", "size", "redacted"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^(?:profile-result|result-[a-z0-9-]+-(?:normal|beforereboot|afterreboot)|evidence-[a-z0-9._-]+\\.redacted)\\.json$" },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "size": { "type": "integer", "minimum": 0, "maximum": 16777216 },
+          "redacted": { "const": true }
+        }
+      }
+    }
+  }
+}
