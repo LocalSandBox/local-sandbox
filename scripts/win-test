@@ -370,7 +370,9 @@ import_release_artifact() {
 accept_profile() {
     local profile="$1"
     shift
-    local include_optional=0 reuse_run_id='' artifact_path='' artifact_basename='' profile_status=0 suite_name
+    local include_optional=0 reuse_run_id='' artifact_path='' artifact_basename='' profile_status=0
+    local suite_name reboot_mode profile_plan
+    local -a profile_plan_arguments finalize_arguments
     while [[ "$#" -gt 0 ]]; do
         case "$1" in
             --include-optional)
@@ -430,26 +432,23 @@ accept_profile() {
             profile_status=1
         fi
     fi
-    case "$profile" in
-        runtime)
-            profile_suites=( product-runtime rootfs-startup-smoke office-rootfs-smoke )
-            ;;
-        diagnostics)
-            profile_suites=( sentry-smoke qemu-package-tests qemu-telemetry-smoke )
-            if (( include_optional == 1 )); then
-                profile_suites+=( qemu-sentry-acceptance )
-            fi
-            ;;
-        service|release)
-            profile_suites=( system-maintenance-ipc filtered-client-token service-reboot )
-            ;;
-    esac
-
-    for suite_name in "${profile_suites[@]}"; do
+    profile_plan_arguments=(
+        pwsh -NoProfile -NonInteractive -File
+        "$script_dir/windows-test/profile-plan.ps1" -Profile "$profile"
+    )
+    if (( include_optional == 1 )); then
+        profile_plan_arguments+=( -IncludeOptional )
+    fi
+    profile_plan="$("${profile_plan_arguments[@]}")"
+    while IFS=$'\t' read -r suite_name reboot_mode; do
+        suite_name="${suite_name//$'\r'/}"
+        reboot_mode="${reboot_mode//$'\r'/}"
+        [[ "$suite_name" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || fail 'catalog emitted an invalid suite name'
+        [[ "$reboot_mode" =~ ^(none|required)$ ]] || fail 'catalog emitted an invalid reboot mode'
         if (( profile_status != 0 )); then
             break
         fi
-        if [[ "$suite_name" == service-reboot ]]; then
+        if [[ "$reboot_mode" == required ]]; then
             if ! invoke_current_reboot_suite "$suite_name" "$reuse_run_id"; then
                 profile_status=$?
                 (( profile_status != 0 )) || profile_status=1
@@ -458,13 +457,7 @@ accept_profile() {
             profile_status=$?
             (( profile_status != 0 )) || profile_status=1
         fi
-    done
-    if [[ "$profile" == release && "$profile_status" -eq 0 ]]; then
-        if ! invoke_bootstrap Run archive-acceptance '' "$reuse_run_id"; then
-            profile_status=$?
-            (( profile_status != 0 )) || profile_status=1
-        fi
-    fi
+    done <<< "$profile_plan"
 
     finalize_arguments=(
         pwsh -NoProfile -NonInteractive -File

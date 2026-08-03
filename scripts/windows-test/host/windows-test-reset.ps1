@@ -16,7 +16,8 @@ $processNames = @(
     'lsb-service-spike', 'qemu-system-x86_64', 'qemu-img'
 )
 $taskPrefixes = @('LocalSandboxAgent-')
-$networkPrefix = '^lsb-[a-z0-9-]+$'
+$sharePrefix = '^lsb-[a-z0-9-]+$'
+$userPrefix = '^lsb_[0-9a-f]+$'
 
 function Invoke-Sc {
     param([Parameter(Mandatory = $true)][string[]] $Arguments)
@@ -102,7 +103,7 @@ try {
                 }
             }
             if ($PSCmdlet.ShouldProcess("service:$name", 'Delete')) {
-                $exit = Invoke-Sc @('delete', $name)
+                $exit = Invoke-Sc -Arguments @('delete', $name)
                 if ($exit -notin @(0, 1060)) { throw "sc.exe delete $name failed with exit code $exit" }
             }
         }
@@ -135,7 +136,7 @@ try {
     }
 
     foreach ($mapping in @(Get-SmbMapping -ErrorAction SilentlyContinue | Where-Object {
-        ($_.RemotePath -split '\\')[-1] -match $networkPrefix
+        ($_.RemotePath -split '\\')[-1] -match $sharePrefix
     })) {
         if ($PSCmdlet.ShouldProcess("SMB mapping:$($mapping.RemotePath)", 'Remove')) {
             Remove-SmbMapping -RemotePath $mapping.RemotePath -Force -UpdateProfile:$false `
@@ -143,14 +144,14 @@ try {
         }
     }
     foreach ($share in @(Get-SmbShare -ErrorAction SilentlyContinue | Where-Object {
-        $_.Name -match $networkPrefix
+        $_.Name -match $sharePrefix
     })) {
         if ($PSCmdlet.ShouldProcess("SMB share:$($share.Name)", 'Remove')) {
             Remove-SmbShare -Name $share.Name -Force -Confirm:$false -ErrorAction Stop
         }
     }
     foreach ($user in @(Get-LocalUser -ErrorAction SilentlyContinue | Where-Object {
-        $_.Name -match $networkPrefix
+        $_.Name -match $userPrefix
     })) {
         if ($PSCmdlet.ShouldProcess("local user:$($user.Name)", 'Remove')) {
             Remove-LocalUser -Name $user.Name -Confirm:$false -ErrorAction Stop
@@ -160,12 +161,15 @@ try {
     $canonicalPaths = @(
         (Join-Path $env:ProgramFiles 'SeaWork\LocalSandbox'),
         (Join-Path $env:ProgramData 'LocalSandbox\SeaWork'),
+        (Join-Path $env:ProgramData 'LocalSandbox\SeaWorkSpike'),
         (Join-Path $env:ProgramData 'SeaWork\Installer')
     )
     foreach ($path in $canonicalPaths) { Remove-PlainTree -Path $path }
 
+    $auxiliaryTargets = [Collections.Generic.List[string]]::new()
     $signingHarness = Join-Path $env:ProgramFiles 'SeaWork\LocalSandboxTestHarness'
     if (Test-Path -LiteralPath $signingHarness) {
+        $auxiliaryTargets.Add($signingHarness)
         Remove-PlainTree -Path $signingHarness -RequireMarker `
             -MarkerName '.local-sandbox-agent-client.json'
     }
@@ -175,6 +179,7 @@ try {
         foreach ($client in @(Get-ChildItem -LiteralPath $programs -Directory -Force | Where-Object {
             $_.Name -in @('SeaWork', 'SeaWork Test') -or $_.Name -match '^SeaWork-copy-[0-9a-f]{12}$'
         })) {
+            $auxiliaryTargets.Add($client.FullName)
             Remove-PlainTree -Path $client.FullName -RequireMarker `
                 -MarkerName '.local-sandbox-agent-client.json'
         }
@@ -205,11 +210,19 @@ try {
         $_.TaskName -like 'LocalSandboxAgent-*'
     })) { $remaining.Add("task:$($task.TaskName)") }
     foreach ($share in @(Get-SmbShare -ErrorAction SilentlyContinue | Where-Object {
-        $_.Name -match $networkPrefix
+        $_.Name -match $sharePrefix
     })) { $remaining.Add("share:$($share.Name)") }
     foreach ($user in @(Get-LocalUser -ErrorAction SilentlyContinue | Where-Object {
-        $_.Name -match $networkPrefix
+        $_.Name -match $userPrefix
     })) { $remaining.Add("user:$($user.Name)") }
+    foreach ($mapping in @(Get-SmbMapping -ErrorAction SilentlyContinue | Where-Object {
+        ($_.RemotePath -split '\\')[-1] -match $sharePrefix
+    })) { $remaining.Add("mapping:$($mapping.RemotePath)") }
+    foreach ($path in $auxiliaryTargets) {
+        if (Test-Path -LiteralPath $path) { $remaining.Add("path:$path") }
+    }
+    foreach ($stage in @(Get-ChildItem -LiteralPath $importsRoot -Directory -Force `
+        -ErrorAction SilentlyContinue)) { $remaining.Add("artifact-import:$($stage.Name)") }
     if ($remaining.Count -gt 0) {
         throw "Windows test reset verification failed; resources remain: $($remaining -join ', ')"
     }

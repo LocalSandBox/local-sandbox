@@ -138,6 +138,7 @@ function Invoke-Preflight {
 }
 
 $runPath = [IO.Path]::GetFullPath($RunRoot)
+$repositoryRoot = Split-Path -Parent $PSScriptRoot
 New-Item -ItemType Directory -Force -Path $runPath | Out-Null
 $phaseToken = $Phase.ToLowerInvariant()
 $logPath = Join-Path $runPath "output-$Suite-$phaseToken.log"
@@ -236,10 +237,18 @@ finally {
         (Get-FileHash -LiteralPath $releaseArtifact[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     } else { $null }
     . (Join-Path $PSScriptRoot 'windows-test\lib\evidence.ps1')
+    $sourceTreeSha = (& git -C $repositoryRoot rev-parse "${SnapshotSha}^{tree}").Trim().ToLowerInvariant()
+    $baseCommitSha = (& git -C $repositoryRoot rev-parse "${SnapshotSha}^").Trim().ToLowerInvariant()
+    if ($LASTEXITCODE -ne 0 -or $sourceTreeSha -notmatch '^[0-9a-f]{40}$' -or
+        $baseCommitSha -notmatch '^[0-9a-f]{40}$') {
+        throw 'Could not resolve result source-tree provenance.'
+    }
     $result = [ordered]@{
         schema_version = 2
         run_id = $RunId
         snapshot_sha = $SnapshotSha
+        source_tree_sha = $sourceTreeSha
+        base_commit_sha = $baseCommitSha
         suite = $Suite
         category = $category
         phase = $Phase

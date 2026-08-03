@@ -103,7 +103,7 @@
       "timeout_minutes": 90,
       "reboot_mode": "none",
       "minimum_free_gib": 35,
-      "required_capabilities": ["administrator", "windows11_x86_64", "whpx", "build_tools", "runtime_assets", "qemu_assets", "signing_assets", "interactive_user"],
+      "required_capabilities": ["administrator", "windows11_x86_64", "whpx", "build_tools", "runtime_assets", "qemu_assets", "signing_assets", "interactive_user", "outbound_network"],
       "mutations": ["signed service installation", "test client roots", "scheduled tasks", "temporary SMB resources"],
       "expected_artifacts": ["evidence-installed-smoke.json", "evidence-uninstall.json", "fetch-manifest.json"],
       "acceptance_checks": ["win01.scm_lifecycle", "win01.service_identity_session0", "win01.standard_user_no_uac", "mnt01.admin_live", "net01.managed_network", "sec01.endpoint_auth"]
@@ -247,7 +247,7 @@
       "timeout_minutes": 120,
       "reboot_mode": "required",
       "minimum_free_gib": 40,
-      "required_capabilities": ["administrator", "windows11_x86_64", "whpx", "sshd", "build_tools", "runtime_assets", "qemu_assets", "signing_assets", "interactive_user"],
+      "required_capabilities": ["administrator", "windows11_x86_64", "whpx", "sshd", "build_tools", "runtime_assets", "qemu_assets", "signing_assets", "interactive_user", "outbound_network"],
       "mutations": ["signed service installation", "host reboot", "scheduled tasks", "temporary SMB resources"],
       "expected_artifacts": ["evidence-installed-smoke.json", "evidence-post-reboot.json", "evidence-uninstall.json", "fetch-manifest.json"],
       "acceptance_checks": ["mnt01.admin_live", "net01.managed_network", "win01.scm_lifecycle", "win01.service_identity_session0", "win01.standard_user_no_uac", "tst02.lifecycle"]

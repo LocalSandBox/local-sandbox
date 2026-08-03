@@ -40,6 +40,16 @@ function Test-RegularFile {
     return -not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
 }
 
+function Test-OutboundHttps {
+    $client = [Net.Sockets.TcpClient]::new()
+    try {
+        $task = $client.ConnectAsync('registry.npmjs.org', 443)
+        return $task.Wait(5000) -and $client.Connected
+    }
+    catch { return $false }
+    finally { $client.Dispose() }
+}
+
 function Get-StaleResources {
     $resources = [Collections.Generic.List[string]]::new()
     foreach ($name in @('LocalSandboxSeaWorkUpdater', 'LocalSandboxSeaWork', 'LocalSandboxSeaWorkSpike')) {
@@ -48,6 +58,7 @@ function Get-StaleResources {
     foreach ($path in @(
         (Join-Path $env:ProgramFiles 'SeaWork\LocalSandbox'),
         (Join-Path $env:ProgramData 'LocalSandbox\SeaWork'),
+        (Join-Path $env:ProgramData 'LocalSandbox\SeaWorkSpike'),
         (Join-Path $env:ProgramData 'SeaWork\Installer')
     )) {
         if (Test-Path -LiteralPath $path) { $resources.Add("path:$path") }
@@ -56,11 +67,14 @@ function Get-StaleResources {
         $_.TaskName -like 'LocalSandboxAgent-*'
     })) { $resources.Add("task:$($task.TaskName)") }
     foreach ($user in @(Get-LocalUser -ErrorAction SilentlyContinue | Where-Object {
-        $_.Name -match '^lsb-[a-z0-9-]+$'
+        $_.Name -match '^lsb_[0-9a-f]+$'
     })) { $resources.Add("user:$($user.Name)") }
     foreach ($share in @(Get-SmbShare -ErrorAction SilentlyContinue | Where-Object {
         $_.Name -match '^lsb-[a-z0-9-]+$'
     })) { $resources.Add("share:$($share.Name)") }
+    foreach ($mapping in @(Get-SmbMapping -ErrorAction SilentlyContinue | Where-Object {
+        ($_.RemotePath -split '\\')[-1] -match '^lsb-[a-z0-9-]+$'
+    })) { $resources.Add("mapping:$($mapping.RemotePath)") }
     foreach ($name in @(
         'localsandbox-seawork-service', 'localsandbox-seawork-updater',
         'lsb-service-spike', 'qemu-system-x86_64', 'qemu-img'
@@ -163,7 +177,7 @@ $capabilityState = [ordered]@{
         -not (Test-RegularFile (Join-Path $signing $_))
     }).Count -eq 0
     interactive_user = -not [string]::IsNullOrWhiteSpace([string]$computer.UserName)
-    outbound_network = $true
+    outbound_network = Test-OutboundHttps
     sentry_dsn = Test-RegularFile (Join-Path $StateRoot 'sentry-acceptance-dsn.txt')
 }
 

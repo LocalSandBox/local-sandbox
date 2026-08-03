@@ -17,6 +17,7 @@ $sha40 = '1' * 40
 $sha64 = '2' * 64
 $result = [ordered]@{
     schema_version = 2; run_id = 'sample-run'; snapshot_sha = $sha40
+    source_tree_sha = $sha40; base_commit_sha = $sha40
     suite = 'sample-suite'; category = 'runtime'; phase = 'Normal'; status = 'passed'
     exit_code = 0; failure_code = $null; started_utc = '2026-01-01T00:00:00Z'
     finished_utc = '2026-01-01T00:00:01Z'; duration_ms = 1000; boot_id = '1234'
@@ -61,7 +62,8 @@ if (-not (Test-Json -Json $evidence -SchemaFile (Join-Path $schemaRoot 'evidence
     throw 'evidence schema rejected its canonical sample'
 }
 $profileEvidence = [ordered]@{
-    schema_version = 1; run_id = 'sample-run'; snapshot_sha = $sha40; profile = 'release'
+    schema_version = 1; run_id = 'sample-run'; snapshot_sha = $sha40
+    source_tree_sha = $sha40; base_commit_sha = $sha40; profile = 'release'
     status = 'passed'; generated_utc = '2026-01-01T00:00:01Z'
     bindings = [ordered]@{ runtime_assets_sha256 = $sha64; release_artifact_sha256 = $sha64 }
     release_artifact = [ordered]@{

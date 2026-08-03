@@ -194,3 +194,64 @@ function Get-WindowsTestRuntimeAssetDigest {
     try { return [Convert]::ToHexString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text))).ToLowerInvariant() }
     finally { $sha.Dispose() }
 }
+
+function Assert-WindowsTestProfileEvidenceManifest {
+    param(
+        [Parameter(Mandatory = $true)][string] $RunRoot,
+        [Parameter(Mandatory = $true)][string] $ManifestPath,
+        [Parameter(Mandatory = $true)][string] $SchemaPath
+    )
+    if (-not (Test-Json -LiteralPath $ManifestPath -SchemaFile $SchemaPath)) {
+        throw 'Generated acceptance evidence does not satisfy profile-evidence.schema.json.'
+    }
+    $run = [IO.Path]::GetFullPath($RunRoot).TrimEnd('\', '/')
+    $manifest = Read-WindowsTestJson -Path $ManifestPath -MaximumBytes 1MB
+    $fileNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($record in @($manifest.files)) {
+        $name = [string]$record.name
+        if (-not $fileNames.Add($name) -or -not (Test-WindowsTestFetchName -Name $name)) {
+            throw "Acceptance evidence contains a duplicate or unsafe file: $name"
+        }
+        $path = Join-Path $run $name
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            $item.Length -ne [int64]$record.size) {
+            throw "Acceptance evidence file type or size mismatch: $name"
+        }
+        $digest = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($digest -cne [string]$record.sha256) {
+            throw "Acceptance evidence file digest mismatch: $name"
+        }
+    }
+    foreach ($check in @($manifest.checks)) {
+        foreach ($name in @($check.evidence)) {
+            if (-not $fileNames.Contains([string]$name)) {
+                throw "Acceptance check '$($check.id)' references unbound evidence: $name"
+            }
+        }
+    }
+    $artifactBinding = [string]$manifest.bindings.release_artifact_sha256
+    if ($null -eq $manifest.release_artifact) {
+        if (-not [string]::IsNullOrWhiteSpace($artifactBinding)) {
+            throw 'Release artifact binding exists without a release artifact record.'
+        }
+    }
+    else {
+        $artifact = $manifest.release_artifact
+        $artifactPath = Join-Path $run ([string]$artifact.name)
+        $item = Get-Item -LiteralPath $artifactPath -Force -ErrorAction Stop
+        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            $item.Length -ne [int64]$artifact.size) {
+            throw 'Release artifact type or size does not match acceptance evidence.'
+        }
+        $digest = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($digest -cne [string]$artifact.sha256 -or $digest -cne $artifactBinding) {
+            throw 'Release artifact digest does not match acceptance evidence bindings.'
+        }
+    }
+    if ($manifest.profile -eq 'release' -and $manifest.status -eq 'passed' -and
+        $null -eq $manifest.release_artifact) {
+        throw 'Passed release evidence must bind an exact release artifact.'
+    }
+    return $manifest
+}

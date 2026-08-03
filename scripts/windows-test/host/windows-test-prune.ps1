@@ -119,7 +119,8 @@ try {
         foreach ($relative in @('release-work', 'archive-acceptance-work', 'build', 'target')) {
             $large = Join-Path $run.FullName $relative
             if (Test-Path -LiteralPath $large -PathType Container) {
-                $releasedBytes += Remove-PruneTarget -Path $large -AllowedRoot $runsRoot -Kind 'run-build'
+                $largeBytes = Remove-PruneTarget -Path $large -AllowedRoot $runsRoot -Kind 'run-build'
+                if (-not $DryRun) { $releasedBytes += $largeBytes }
             }
         }
         if (-not $DryRun -and -not (Test-Path -LiteralPath $run.FullName)) { continue }

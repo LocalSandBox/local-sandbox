@@ -47,6 +47,8 @@ try {
     $observedChecks = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $artifactDigests = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $runtimeDigests = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $sourceTrees = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $baseCommits = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $profilePassed = $true
     foreach ($suiteRef in $suiteRefs) {
         $suiteName = [string]$suiteRef.name
@@ -75,6 +77,8 @@ try {
             if ($result.status -ne 'passed' -or $result.exit_code -ne 0) { $profilePassed = $false }
             foreach ($check in @($result.acceptance_checks)) { $observedChecks.Add([string]$check) | Out-Null }
             $resultDocuments.Add([pscustomobject]@{ name = $name; value = $result })
+            $sourceTrees.Add([string]$result.source_tree_sha) | Out-Null
+            $baseCommits.Add([string]$result.base_commit_sha) | Out-Null
             if ([string]$result.bindings.release_artifact_sha256 -match '^[0-9a-f]{64}$') {
                 $artifactDigests.Add([string]$result.bindings.release_artifact_sha256) | Out-Null
             }
@@ -90,9 +94,11 @@ try {
     $declaredChecks = @($profileEntry.acceptance_checks | Sort-Object -Unique)
     $missingChecks = @($declaredChecks | Where-Object { -not $observedChecks.Contains([string]$_) })
     if ($missingChecks.Count -gt 0) { $profilePassed = $false }
-    if ($artifactDigests.Count -gt 1 -or $runtimeDigests.Count -gt 1) {
-        throw 'Profile results disagree on runtime or release artifact digest binding.'
+    if ($artifactDigests.Count -gt 1 -or $runtimeDigests.Count -gt 1 -or
+        $sourceTrees.Count -gt 1 -or $baseCommits.Count -gt 1) {
+        throw 'Profile results disagree on source, runtime, or release artifact binding.'
     }
+    if ($sourceTrees.Count -ne 1 -or $baseCommits.Count -ne 1) { $profilePassed = $false }
     if ($Profile -eq 'release' -and $artifactDigests.Count -ne 1) {
         $profilePassed = $false
         $missingChecks += 'release-artifact-digest'
@@ -102,6 +108,8 @@ try {
         schema_version = 1
         run_id = $RunId
         snapshot_sha = [string]$metadata.snapshot_sha
+        source_tree_sha = if ($sourceTrees.Count -eq 1) { @($sourceTrees)[0] } else { $null }
+        base_commit_sha = if ($baseCommits.Count -eq 1) { @($baseCommits)[0] } else { $null }
         profile = $Profile
         status = if ($profilePassed) { 'passed' } else { 'failed' }
         failure_code = if ($profilePassed) { $null } else { 'PROFILE_INCOMPLETE' }
@@ -126,8 +134,6 @@ try {
         $_.redacted -and ($_.name -eq 'profile-result.json' -or $_.name -match '^result-' -or
             $_.name -match '^evidence-.*\.redacted\.json$')
     } | ForEach-Object {
-        $duration = [int64](($mapped | ForEach-Object { [int64]$_.value.duration_ms } |
-            Measure-Object -Sum).Sum)
         [ordered]@{
             name = [string]$_.name; sha256 = [string]$_.sha256
             size = [int64]$_.size; redacted = $true
@@ -144,6 +150,8 @@ try {
             }
             continue
         }
+        $duration = [int64](($mapped | ForEach-Object { [int64]$_.value.duration_ms } |
+            Measure-Object -Sum).Sum)
         $passed = @($mapped | Where-Object { $_.value.status -ne 'passed' }).Count -eq 0
         [ordered]@{
             id = $checkId
@@ -170,6 +178,8 @@ try {
         schema_version = 1
         run_id = $RunId
         snapshot_sha = [string]$metadata.snapshot_sha
+        source_tree_sha = $profileResult.source_tree_sha
+        base_commit_sha = $profileResult.base_commit_sha
         profile = $Profile
         status = if ($profilePassed) { 'passed' } else { 'failed' }
         generated_utc = [DateTime]::UtcNow.ToString('o')
@@ -178,10 +188,10 @@ try {
         checks = @($checkResults)
         files = $evidenceFiles
     })
-    if (-not (Test-Json -LiteralPath $evidenceManifestPath -SchemaFile `
-        (Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas\profile-evidence.schema.json'))) {
-        throw 'Generated acceptance evidence does not satisfy profile-evidence.schema.json.'
-    }
+    Assert-WindowsTestProfileEvidenceManifest -RunRoot $runRoot `
+        -ManifestPath $evidenceManifestPath `
+        -SchemaPath (Join-Path (Split-Path -Parent $PSScriptRoot) `
+            'schemas\profile-evidence.schema.json') | Out-Null
     Write-WindowsTestFetchManifest -RunRoot $runRoot -RunId $RunId `
         -ResultPath $profileResultPath `
         -ExpectedArtifacts @('acceptance-evidence-manifest.json') -RequireExpected | Out-Null

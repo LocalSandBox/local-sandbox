@@ -68,4 +68,11 @@ $state | Add-Member -NotePropertyName boot_id_after -NotePropertyValue $bootAfte
 $state | Add-Member -NotePropertyName completed_utc `
     -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
 Write-JsonAtomic -Path $statePath -Value $state
+Write-JsonAtomic -Path (Join-Path $RunRoot 'evidence-reboot-smoke.json') -Value ([ordered]@{
+    schema_version = 1
+    status = 'passed'
+    snapshot_sha = $SnapshotSha
+    boot_identity_changed = $true
+    continuation_completed = $true
+})
 Write-Output 'Reboot smoke post-phase passed.'

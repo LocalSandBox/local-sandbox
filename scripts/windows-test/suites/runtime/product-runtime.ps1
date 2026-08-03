@@ -23,7 +23,7 @@ function Resolve-RegularFile {
 function Get-OwnedNetworkResources {
     return [ordered]@{
         users = @(Get-LocalUser -ErrorAction SilentlyContinue | Where-Object {
-            $_.Name -match '^lsb-[a-z0-9-]+$'
+            $_.Name -match '^lsb_[0-9a-f]+$'
         } | ForEach-Object Name | Sort-Object)
         shares = @(Get-SmbShare -ErrorAction SilentlyContinue | Where-Object {
             $_.Name -match '^lsb-[a-z0-9-]+$'

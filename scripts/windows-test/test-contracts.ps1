@@ -12,6 +12,7 @@ try {
     $resultPath = Join-Path $testRoot 'result-sample-suite-normal.json'
     [ordered]@{
         schema_version = 2; run_id = 'sample-run'; snapshot_sha = '1' * 40
+        source_tree_sha = '1' * 40; base_commit_sha = '1' * 40
         suite = 'sample-suite'; category = 'runtime'; phase = 'Normal'; status = 'passed'
         exit_code = 0; failure_code = $null; started_utc = '2026-01-01T00:00:00Z'
         finished_utc = '2026-01-01T00:00:01Z'; duration_ms = 1000; boot_id = '1234'
@@ -42,6 +43,47 @@ try {
         @($manifest.artifacts | ForEach-Object name) -notcontains 'evidence-sample.redacted.json') {
         throw 'Shared fetch manifest test failed.'
     }
-    Write-Output 'Validated shared Windows result redaction and fetch manifest behavior.'
+    $resultItem = Get-Item -LiteralPath $resultPath
+    $profileEvidencePath = Join-Path $testRoot 'acceptance-evidence-manifest.json'
+    Write-WindowsTestJsonAtomic -Path $profileEvidencePath -Value ([ordered]@{
+        schema_version = 1; run_id = 'sample-run'; snapshot_sha = '1' * 40
+        source_tree_sha = '1' * 40; base_commit_sha = '1' * 40
+        profile = 'runtime'; status = 'passed'; generated_utc = '2026-01-01T00:00:01Z'
+        bindings = [ordered]@{ runtime_assets_sha256 = '2' * 64; release_artifact_sha256 = $null }
+        release_artifact = $null
+        checks = @([ordered]@{
+            id = 'win01.whpx_qemu_boot_exec_stop'; status = 'passed'; duration_ms = 1000
+            stable_code = $null; evidence = @($resultItem.Name)
+        })
+        files = @([ordered]@{
+            name = $resultItem.Name
+            sha256 = (Get-FileHash -LiteralPath $resultItem.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            size = [int64]$resultItem.Length; redacted = $true
+        })
+    })
+    $profileSchema = Join-Path $PSScriptRoot 'schemas\profile-evidence.schema.json'
+    Assert-WindowsTestProfileEvidenceManifest -RunRoot $testRoot `
+        -ManifestPath $profileEvidencePath -SchemaPath $profileSchema | Out-Null
+    Add-Content -LiteralPath $resultPath -Value ' ' -Encoding utf8NoBOM
+    $tamperRejected = $false
+    try {
+        Assert-WindowsTestProfileEvidenceManifest -RunRoot $testRoot `
+            -ManifestPath $profileEvidencePath -SchemaPath $profileSchema | Out-Null
+    }
+    catch { $tamperRejected = $true }
+    if (-not $tamperRejected) { throw 'Profile evidence digest verifier accepted a modified file.' }
+    $profilePlan = Join-Path $PSScriptRoot 'profile-plan.ps1'
+    $releasePlan = @(& $profilePlan -Profile release)
+    if (($releasePlan -join "`n") -cne (@(
+        "system-maintenance-ipc`tnone",
+        "filtered-client-token`tnone",
+        "service-reboot`trequired",
+        "archive-acceptance`tnone"
+    ) -join "`n")) { throw 'Release profile plan does not match the catalog expansion.' }
+    $diagnosticsPlan = @(& $profilePlan -Profile diagnostics -IncludeOptional)
+    if ($diagnosticsPlan[-1] -cne "qemu-sentry-acceptance`tnone") {
+        throw 'Optional diagnostics suite is absent from the catalog-derived plan.'
+    }
+    Write-Output 'Validated shared Windows results, evidence fetching, and profile planning.'
 }
 finally { Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue }
