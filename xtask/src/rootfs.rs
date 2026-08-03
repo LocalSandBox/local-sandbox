@@ -97,7 +97,7 @@ DPKGEOF
 chroot /mnt/rootfs apt-get update -qq
 chroot /mnt/rootfs apt-get install -y -qq --no-install-recommends \
     ca-certificates curl git iproute2 \
-    openssh-client jq less procps xz-utils libgomp1 libatomic1 \
+    openssh-client jq less procps rsync xz-utils libgomp1 libatomic1 \
     cifs-utils e2fsprogs > /dev/null 2>&1
 test -x /mnt/rootfs/sbin/mount.cifs || test -x /mnt/rootfs/usr/sbin/mount.cifs
 test -x /mnt/rootfs/sbin/mkfs.ext4 || test -x /mnt/rootfs/usr/sbin/mkfs.ext4
@@ -368,7 +368,7 @@ DPKGEOF
 chroot "$MOUNT_DIR" apt-get update -qq
 chroot "$MOUNT_DIR" apt-get install -y -qq --no-install-recommends \
     ca-certificates curl git iproute2 \
-    openssh-client jq less procps xz-utils libgomp1 libatomic1 \
+    openssh-client jq less procps rsync xz-utils libgomp1 libatomic1 \
     ffmpeg cifs-utils e2fsprogs > /dev/null 2>&1
 test -x "$MOUNT_DIR/sbin/mount.cifs" || test -x "$MOUNT_DIR/usr/sbin/mount.cifs"
 test -x "$MOUNT_DIR/sbin/mkfs.ext4" || test -x "$MOUNT_DIR/usr/sbin/mkfs.ext4"
@@ -659,6 +659,7 @@ mod tests {
         assert!(script.contains("mount.cifs"));
         assert!(script.contains("e2fsprogs"));
         assert!(script.contains("mkfs.ext4"));
+        assert!(script.contains("rsync"));
     }
 
     #[test]
@@ -678,6 +679,7 @@ mod tests {
         assert!(script.contains("mount.cifs"));
         assert!(script.contains("e2fsprogs"));
         assert!(script.contains("mkfs.ext4"));
+        assert!(script.contains("rsync"));
     }
 
     #[test]
