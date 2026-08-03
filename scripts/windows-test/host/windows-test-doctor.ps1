@@ -157,7 +157,7 @@ $qemu = Join-Path $assets 'qemu'
 $signing = Join-Path $assets 'signing'
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 $buildCommands = @('git', 'cargo', 'rustc', 'cmake', 'pwsh')
-$buildReady = ($buildCommands | Where-Object {
+$buildReady = @($buildCommands | Where-Object {
     $null -eq (Get-Command $_ -ErrorAction SilentlyContinue)
 }).Count -eq 0 -and (Test-RegularFile $vswhere)
 
@@ -167,13 +167,13 @@ $capabilityState = [ordered]@{
     whpx = ([bool]$computer.HypervisorPresent -and (Get-WhpxState) -eq 'Enabled')
     sshd = ($null -ne $sshd -and $sshd.Status -eq 'Running' -and $sshd.StartType -eq 'Automatic')
     build_tools = $buildReady
-    runtime_assets = (@('Image', 'initramfs.cpio.gz', 'rootfs.ext4') | Where-Object {
+    runtime_assets = @(@('Image', 'initramfs.cpio.gz', 'rootfs.ext4') | Where-Object {
         -not (Test-RegularFile (Join-Path $runtime $_))
     }).Count -eq 0
-    qemu_assets = (@('qemu-system-x86_64.exe', 'qemu-img.exe') | Where-Object {
+    qemu_assets = @(@('qemu-system-x86_64.exe', 'qemu-img.exe') | Where-Object {
         -not (Test-RegularFile (Join-Path $qemu $_))
     }).Count -eq 0
-    signing_assets = (@('SeaWork-CodeSign.pfx', 'win_csc_key_password.txt') | Where-Object {
+    signing_assets = @(@('SeaWork-CodeSign.pfx', 'win_csc_key_password.txt') | Where-Object {
         -not (Test-RegularFile (Join-Path $signing $_))
     }).Count -eq 0
     interactive_user = -not [string]::IsNullOrWhiteSpace([string]$computer.UserName)
