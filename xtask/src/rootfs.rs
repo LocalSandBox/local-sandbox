@@ -193,7 +193,7 @@ export BUN_INSTALL_GLOBAL_DIR=/root/.bun/install/global
 export BUN_INSTALL_BIN=/root/.bun/bin
 export PATH=/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export NODE_PATH=/usr/local/lib/node_modules
-export NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/lsb-proxy.crt
+export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
 PROFILEEOF
     printf '%s\n' '. /etc/profile.d/lsb-javascript.sh' >> "${install_rootfs_dir}/root/.bashrc"
 }

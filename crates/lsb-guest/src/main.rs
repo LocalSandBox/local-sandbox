@@ -930,7 +930,7 @@ mod guest {
         "/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
     const DEFAULT_NODE_PATH: &str = "/usr/local/lib/node_modules";
     const DEFAULT_BUN_INSTALL: &str = "/root/.bun";
-    const DEFAULT_NODE_EXTRA_CA_CERTS: &str = "/usr/local/share/ca-certificates/lsb-proxy.crt";
+    const DEFAULT_NODE_EXTRA_CA_CERTS: &str = "/etc/ssl/certs/ca-certificates.crt";
 
     fn configure_default_environment() {
         std::env::set_var("HOME", DEFAULT_HOME);
