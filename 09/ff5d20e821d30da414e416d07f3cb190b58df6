@@ -1,0 +1,52 @@
+scripts/windows-test/host/windows-test-profile.ps1
+  s_c21dc9b0e160c1::t_df00b4fd051f35 46,77,123-125,128,131-150,152-187
+  s_c21dc9b0e160c1::t_48256d707b07ed 126-127,129-130,151
+scripts/windows-test/host/windows-test-reset.ps1
+  s_c21dc9b0e160c1::t_d746a5114c5290 77-94
+scripts/windows-test/catalog.json
+  s_c21dc9b0e160c1::t_b6c79a40e34ece 171-182
+scripts/windows-test/schemas/profile-evidence.schema.json
+  s_c21dc9b0e160c1::t_df00b4fd051f35 1-41,43-51,53-60
+  s_c21dc9b0e160c1::t_48256d707b07ed 42,52
+scripts/windows-test/suites/release/release-artifact-import.ps1
+  s_c21dc9b0e160c1::t_4be506383b6bae 1-165
+scripts/windows-test/host/windows-test-doctor.ps1
+  s_c21dc9b0e160c1::t_e3e906af479071 72-77
+docs/windows-testing.md
+  s_c21dc9b0e160c1::t_34043e83fb0784 111,131-137
+  s_c21dc9b0e160c1::t_d367ac9939cb4e 138
+scripts/windows-test/host/windows-test-release-artifact.ps1
+  s_c21dc9b0e160c1::t_3fade388b703a6 1-75
+scripts/setup-windows-test-host.ps1
+  s_c21dc9b0e160c1::t_3fade388b703a6 276,349-351
+  s_c21dc9b0e160c1::t_6df47c9fe192d0 281-282
+scripts/windows-test-suites/installed-service-smoke.ps1
+  s_c21dc9b0e160c1::t_25a0085ae051e2 21-24
+scripts/windows-test-suites/service-reboot.ps1
+  s_c21dc9b0e160c1::t_25a0085ae051e2 22-25
+scripts/win-test
+  s_c21dc9b0e160c1::t_4acd197f6ff943 429-431
+  s_c21dc9b0e160c1::t_9ec398cc954d80 340-369,388-393,403-411,427-428,432
+  s_c21dc9b0e160c1::t_ed58cab5495a56 373
+  s_c21dc9b0e160c1::t_9c4d8ca884ad8f 412-416
+scripts/windows-test-suites/archive-acceptance.ps1
+  s_c21dc9b0e160c1::t_14a0c3176c840b 8-9,90-93,110,167
+scripts/windows-test/validate-contracts.ps1
+  s_c21dc9b0e160c1::t_ad2074ece20cd5 63-82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "09ff5d20e821d30da414e416d07f3cb190b58df6",
+  "prompts": {},
+  "sessions": {
+    "s_c21dc9b0e160c1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc7ba-132a-70b1-a23d-04c749bc4c63",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
