@@ -1,7 +1,7 @@
 # Windows agent testing over SSH
 
 The macOS coding checkout remains authoritative. Tests run on the dedicated Windows 11
-x64 host selected by the `win-test` SSH alias. The Windows directories below are owned
+x64 host selected by the `win-1` SSH alias. The Windows directories below are owned
 exclusively by the agent test flow and may be reset or cleaned by its scripts:
 
 ```text
@@ -36,6 +36,7 @@ scripts/win-test run -- cargo check -p lsb-seawork-service --locked
 
 # Run a named repository suite.
 scripts/win-test suite service-fast
+scripts/win-test suite office-rootfs-smoke
 scripts/win-test suite update-fast
 scripts/win-test suite updater-release-smoke
 
@@ -63,7 +64,7 @@ scripts/win-test suite installed-service-smoke
 scripts/win-test fetch <run-id> <new-local-directory>
 ```
 
-Set `WIN_TEST_HOST` to use an SSH alias other than `win-test`. Commands and arguments are
+Set `WIN_TEST_HOST` to use an SSH alias other than `win-1`. Commands and arguments are
 transported as a base64-encoded, NUL-delimited argument vector; they are never evaluated
 as a PowerShell expression.
 

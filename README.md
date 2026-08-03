@@ -104,6 +104,31 @@ lsb run --allow-net --allow-host api.openai.com --allow-host registry.npmjs.org
 lsb run --cpus 4 --memory 4096 --disk-size 8192 -- make -j4
 ```
 
+### JavaScript and office tooling
+
+Published VM images provide Bun as the default JavaScript package manager and
+runtime, with Node.js 24, npm, and npx retained for compatibility. The image also
+preinstalls the pinned spreadsheet, document, email, Workspace, Atlassian, and
+OpenAPI tools used by common agent tasks. Global Node modules are importable through
+`NODE_PATH=/usr/local/lib/node_modules`.
+
+Use `bun`, `bun install`, and `bunx` first. If a package, lockfile, or lifecycle
+script is incompatible, use `node`, `npm`, or `npx`. Install one-off dependencies
+globally or below `/tmp/task-tools`; do not create `node_modules`, `bun.lock`, or
+`package-lock.json` beside mounted user inputs and deliverables unless the task
+explicitly requires project-local dependency state.
+
+The office-image validation workload measures end-to-end startup and mount time,
+guest disk writes, and artifact generation while checking Bun/npm installs, global
+imports and CLIs, proxy TLS, and reopened XLSX, DOCX, PPTX, and HTML email outputs:
+
+```sh
+LSB_KERNEL=/path/to/Image \
+LSB_INITRD=/path/to/initramfs.cpio.gz \
+LSB_ROOTFS=/path/to/rootfs.ext4 \
+scripts/validate-office-rootfs.sh --iterations 3
+```
+
 ## Platform Support
 
 | Host | Runtime backend | Status |

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-host="${WIN_TEST_HOST:-win-test}"
+host="${WIN_TEST_HOST:-win-1}"
 windows_root='C:/dev/local-sandbox-agent'
 windows_state_root='C:/dev/local-sandbox-agent-state'
 snapshot_index=''
@@ -27,7 +27,7 @@ Usage:
   scripts/win-test resume <run-id>
   scripts/win-test fetch <run-id> <new-local-directory>
 
-WIN_TEST_HOST overrides the default SSH alias "win-test".
+WIN_TEST_HOST overrides the default SSH alias "win-1".
 EOF
 }
 
