@@ -155,10 +155,12 @@ impl Read for MuxSession {
                 return Err(broken_pipe(reason));
             }
 
-            let session = state
-                .sessions
-                .get_mut(&session_id)
-                .ok_or_else(|| broken_pipe("mux session no longer exists"))?;
+            let Some(session) = state.sessions.get_mut(&session_id) else {
+                // A fully drained session is pruned as soon as both FINs have
+                // arrived. A reader that was already blocked on that session
+                // must still observe normal EOF after it wakes.
+                return Ok(0);
+            };
 
             if let Some(reason) = session.reset_reason.clone() {
                 return Err(connection_reset(reason));
@@ -1348,6 +1350,49 @@ mod tests {
         }
 
         write_mux(&mut peer.writer, MuxFrame::Fin { session_id });
+        wait_for_session_pruned(&manager, session_id);
+    }
+
+    #[test]
+    fn blocked_reader_observes_eof_after_clean_session_prune() {
+        let (host, mut peer) = channel_pair(512 * 1024);
+        let manager = MuxManager::start_for_test(host.reader, host.writer);
+
+        let open = {
+            let manager = manager.clone();
+            thread::spawn(move || manager.open_session(MuxSessionKind::Watch).unwrap())
+        };
+        let session_id = accept_open(
+            &mut peer.reader,
+            &mut peer.writer,
+            MuxSessionKind::Watch,
+            1024,
+        );
+        let session = open.join().expect("open session thread should finish");
+        let mut reader = session.clone();
+        let read = thread::spawn(move || {
+            let mut byte = [0u8; 1];
+            reader.read(&mut byte)
+        });
+
+        session.close().expect("host session should close");
+        loop {
+            match read_mux(&mut peer.reader) {
+                MuxFrame::Fin {
+                    session_id: fin_session,
+                } if fin_session == session_id => break,
+                MuxFrame::Window { .. } => {}
+                frame => panic!("unexpected mux frame while waiting for host fin: {frame:?}"),
+            }
+        }
+        write_mux(&mut peer.writer, MuxFrame::Fin { session_id });
+
+        assert_eq!(
+            read.join()
+                .expect("blocked reader thread should finish")
+                .expect("cleanly pruned session should read successfully"),
+            0
+        );
         wait_for_session_pruned(&manager, session_id);
     }
 

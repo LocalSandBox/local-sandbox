@@ -5949,6 +5949,9 @@ mod tests {
             let watch_session = sandbox
                 .open_watch_session(&watch_root, true)
                 .expect("Windows mux guest watch session should open");
+            let mut watch_cancel = watch_session
+                .try_clone()
+                .expect("Windows mux guest watch session should clone for cancellation");
             let (watch_events, watch_reader) = spawn_watch_event_reader(watch_session);
             std::thread::sleep(Duration::from_secs(1));
 
@@ -6139,13 +6142,15 @@ mod tests {
                 Ok(())
             })();
 
-            let stop_result = sandbox.stop();
-            watch_reader
+            let watch_close_result = watch_cancel.close();
+            let watch_reader_result = watch_reader
                 .join()
-                .expect("Windows watch reader thread should not panic")
-                .expect("Windows watch reader should stop cleanly");
+                .expect("Windows watch reader thread should not panic");
+            let stop_result = sandbox.stop();
 
             result.expect("Windows spawn/watch smoke should pass");
+            watch_close_result.expect("Windows watch session should close cleanly");
+            watch_reader_result.expect("Windows watch reader should stop cleanly");
             stop_result.expect("Windows spawn/watch smoke QEMU should stop cleanly");
         }
     }

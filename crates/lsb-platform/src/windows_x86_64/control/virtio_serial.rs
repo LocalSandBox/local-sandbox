@@ -7,6 +7,8 @@ use crate::PlatformControlStream;
 use super::super::qemu::config::QemuControlChannelConfig;
 
 pub(crate) const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const PIPE_DISCOVERY_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const PIPE_SERVER_SETTLE_INTERVAL: Duration = Duration::from_millis(50);
 const PIPE_PREFIX: &str = "lsb";
 const MAX_PIPE_NAME_LEN: usize = 200;
 const RANDOM_SUFFIX_BYTES: usize = 16;
@@ -219,12 +221,56 @@ fn open_pipe_with_timeout(
     use std::time::Instant;
 
     let deadline = Instant::now() + endpoint.connect_timeout;
+    let mut last_error = None;
 
     loop {
+        match crate::windows_named_pipe::WindowsNamedPipeStream::is_server_available(
+            endpoint.pipe_path(),
+        ) {
+            Ok(true) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining < PIPE_SERVER_SETTLE_INTERVAL {
+                    return Err(VirtioSerialControlError::ConnectTimeout {
+                        timeout: endpoint.connect_timeout,
+                        last_error,
+                    });
+                }
+                // WaitNamedPipe can observe the instance after CreateNamedPipe
+                // but before QEMU has entered ConnectNamedPipe. Connecting in
+                // that interval triggers QEMU's unhandled ERROR_PIPE_CONNECTED
+                // path and leaves its main thread waiting forever on an
+                // unsignaled OVERLAPPED event.
+                std::thread::sleep(PIPE_SERVER_SETTLE_INTERVAL);
+            }
+            Ok(false) if Instant::now() < deadline => {
+                last_error = Some("named pipe server is not available yet".to_string());
+                std::thread::sleep(
+                    PIPE_DISCOVERY_POLL_INTERVAL
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+                continue;
+            }
+            Ok(false) => {
+                return Err(VirtioSerialControlError::ConnectTimeout {
+                    timeout: endpoint.connect_timeout,
+                    last_error,
+                });
+            }
+            Err(err) => {
+                return Err(VirtioSerialControlError::OpenFailed {
+                    detail: err.to_string(),
+                });
+            }
+        }
+
         match crate::windows_named_pipe::WindowsNamedPipeStream::open(endpoint.pipe_path()) {
             Ok(stream) => return Ok(PlatformControlStream::from_windows_named_pipe(stream)),
             Err(err) if should_retry_pipe_open(&err) && Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(50));
+                last_error = Some(err.to_string());
+                std::thread::sleep(
+                    PIPE_DISCOVERY_POLL_INTERVAL
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
             }
             Err(err) if should_retry_pipe_open(&err) => {
                 return Err(VirtioSerialControlError::ConnectTimeout {
@@ -455,5 +501,82 @@ mod tests {
 
             assert_eq!(err, VirtioSerialControlError::HostPipeUnsupported);
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_open_settles_after_pipe_visibility_before_connecting() {
+        use std::os::windows::ffi::OsStrExt;
+        use std::ptr;
+        use std::sync::mpsc;
+        use std::thread;
+        use std::time::Instant;
+
+        use windows_sys::Win32::Foundation::{
+            CloseHandle, GetLastError, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE,
+        };
+        use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+        use windows_sys::Win32::System::Pipes::{
+            ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
+        };
+
+        let pipe_name = format!(
+            "lsb-test-{}-{}-control",
+            std::process::id(),
+            random_hex_suffix().expect("random test pipe suffix")
+        );
+        let endpoint = VirtioSerialControlEndpoint::with_pipe_name(pipe_name)
+            .expect("test endpoint should be valid");
+        let wide_path = endpoint
+            .pipe_path()
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let server = thread::spawn(move || {
+            // SAFETY: wide_path is NUL-terminated and all optional pointers are
+            // null. The returned server handle is closed below.
+            let handle = unsafe {
+                CreateNamedPipeW(
+                    wide_path.as_ptr(),
+                    PIPE_ACCESS_DUPLEX,
+                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                    1,
+                    2048,
+                    2048,
+                    5000,
+                    ptr::null(),
+                )
+            };
+            assert_ne!(handle, INVALID_HANDLE_VALUE, "CreateNamedPipeW failed");
+            ready_tx.send(()).expect("signal visible test pipe");
+            // SAFETY: handle is a live synchronous named-pipe server handle.
+            let connected = unsafe { ConnectNamedPipe(handle, ptr::null_mut()) };
+            let error = (connected == 0).then(|| unsafe { GetLastError() });
+            // SAFETY: this thread owns the live server handle.
+            unsafe { CloseHandle(handle) };
+            (connected, error)
+        });
+
+        ready_rx.recv().expect("wait for visible test pipe");
+        let started = Instant::now();
+        let stream = endpoint
+            .open()
+            .expect("settled pipe connection should open");
+        let elapsed = started.elapsed();
+        drop(stream);
+        let (connected, error) = server.join().expect("named-pipe server thread");
+
+        assert!(
+            elapsed >= PIPE_SERVER_SETTLE_INTERVAL.saturating_sub(Duration::from_millis(10)),
+            "client connected before the server settling interval elapsed: {elapsed:?}"
+        );
+        assert_ne!(
+            error,
+            Some(ERROR_PIPE_CONNECTED),
+            "client raced ahead of the server's ConnectNamedPipe call"
+        );
+        assert_ne!(connected, 0, "ConnectNamedPipe failed: {error:?}");
     }
 }

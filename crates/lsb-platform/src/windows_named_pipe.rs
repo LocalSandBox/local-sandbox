@@ -1,6 +1,7 @@
 use std::cmp;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
@@ -8,10 +9,12 @@ use std::ptr;
 use std::sync::Arc;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_BROKEN_PIPE, ERROR_HANDLE_EOF, ERROR_IO_PENDING,
-    ERROR_NOT_FOUND, HANDLE, WAIT_FAILED, WAIT_OBJECT_0,
+    CloseHandle, GetLastError, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_HANDLE_EOF,
+    ERROR_IO_PENDING, ERROR_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_SEM_TIMEOUT, HANDLE, WAIT_FAILED,
+    WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile, FILE_FLAG_OVERLAPPED};
+use windows_sys::Win32::System::Pipes::{WaitNamedPipeW, NMPWAIT_NOWAIT};
 use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
@@ -21,6 +24,32 @@ pub(crate) struct WindowsNamedPipeStream {
 }
 
 impl WindowsNamedPipeStream {
+    /// Reports whether a server pipe instance is visible without connecting to it.
+    ///
+    /// QEMU creates its Windows pipe before it calls `ConnectNamedPipe`. Keeping
+    /// discovery separate from `open` lets the caller allow that server-side
+    /// initialization to settle before `CreateFile` consumes the connection.
+    pub(crate) fn is_server_available(path: &Path) -> io::Result<bool> {
+        let wide_path = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        // SAFETY: wide_path is a live, NUL-terminated UTF-16 string.
+        // NMPWAIT_NOWAIT prevents inheriting the server's default timeout.
+        if unsafe { WaitNamedPipeW(wide_path.as_ptr(), NMPWAIT_NOWAIT) } != 0 {
+            return Ok(true);
+        }
+        let error = last_error_code();
+        if matches!(
+            error,
+            ERROR_FILE_NOT_FOUND | ERROR_PIPE_BUSY | ERROR_SEM_TIMEOUT
+        ) {
+            return Ok(false);
+        }
+        Err(io::Error::from_raw_os_error(error as i32))
+    }
+
     pub(crate) fn open(path: &Path) -> io::Result<Self> {
         let file = OpenOptions::new()
             .read(true)
