@@ -36,6 +36,7 @@ pub(crate) use windows_events::capture_termination_evidence;
 pub const TRANSACTION_SERVICE_STARTUP: &str = "service.startup";
 pub const TRANSACTION_SANDBOX_START: &str = "sandbox.start";
 pub const TRANSACTION_SANDBOX_STOP: &str = "sandbox.stop";
+pub const TRANSACTION_SERVICE_HEARTBEAT: &str = "service.heartbeat";
 
 #[cfg(windows)]
 static EXIT_EVIDENCE_RUNTIME_ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -277,6 +278,7 @@ pub struct SpanDescription {
     pub operation: &'static str,
     pub description: &'static str,
     pub data: BTreeMap<String, String>,
+    pub sampled: Option<bool>,
 }
 
 impl SpanDescription {
@@ -285,6 +287,7 @@ impl SpanDescription {
             operation: name,
             description: name,
             data: BTreeMap::new(),
+            sampled: None,
         }
     }
 
@@ -293,6 +296,7 @@ impl SpanDescription {
             operation,
             description,
             data: BTreeMap::new(),
+            sampled: None,
         }
     }
 
@@ -300,6 +304,17 @@ impl SpanDescription {
         self.data.insert(key.into(), bounded(value.into(), 256));
         self
     }
+
+    pub fn always_sampled(mut self) -> Self {
+        self.sampled = Some(true);
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceContext {
+    pub trace_id: String,
+    pub parent_span_id: Option<String>,
 }
 
 pub trait Adapter: Send + Sync {
@@ -307,9 +322,22 @@ pub trait Adapter: Send + Sync {
         Ok(())
     }
 
+    fn start_session(&self) -> Result<(), ()> {
+        Ok(())
+    }
+
+    fn end_session(&self) -> Result<(), ()> {
+        Ok(())
+    }
+
     fn breadcrumb(&self, breadcrumb: Breadcrumb) -> Result<(), ()>;
     fn capture_failure(&self, event: FailureEvent) -> Result<Option<String>, ()>;
-    fn start_span(&self, parent_id: Option<u64>, span: SpanDescription) -> Result<Option<u64>, ()>;
+    fn start_span(
+        &self,
+        parent_id: Option<u64>,
+        root_trace: Option<&TraceContext>,
+        span: SpanDescription,
+    ) -> Result<Option<u64>, ()>;
     fn finish_span(&self, span_id: u64, status: SpanStatus) -> Result<(), ()>;
     fn flush(&self, timeout: Duration) -> Result<(), ()>;
 }
@@ -375,12 +403,42 @@ impl Telemetry {
     }
 
     pub fn start_span(&self, span: SpanDescription) -> SpanGuard {
-        let span_id = self.adapter.start_span(None, span).ok().flatten();
+        self.start_root_span(fresh_trace_context(), span)
+    }
+
+    pub fn continue_trace(&self, trace: TraceContext, span: SpanDescription) -> SpanGuard {
+        if !valid_trace_context(&trace) {
+            return SpanGuard {
+                adapter: self.adapter.clone(),
+                span_id: None,
+                status: SpanStatus::InternalError,
+            };
+        }
+        self.start_root_span(trace, span)
+    }
+
+    fn start_root_span(&self, trace: TraceContext, span: SpanDescription) -> SpanGuard {
+        let span_id = valid_trace_context(&trace)
+            .then(|| {
+                self.adapter
+                    .start_span(None, Some(&trace), span)
+                    .ok()
+                    .flatten()
+            })
+            .flatten();
         SpanGuard {
             adapter: self.adapter.clone(),
             span_id,
             status: SpanStatus::InternalError,
         }
+    }
+
+    pub fn start_session(&self) {
+        let _ = self.adapter.start_session();
+    }
+
+    pub fn end_session(&self) {
+        let _ = self.adapter.end_session();
     }
 
     pub fn flush(&self, timeout: Duration) {
@@ -432,7 +490,7 @@ impl SpanParent {
     pub(crate) fn start_child(&self, span: SpanDescription) -> SpanGuard {
         let span_id = self.span_id.and_then(|parent_id| {
             self.adapter
-                .start_span(Some(parent_id), span)
+                .start_span(Some(parent_id), None, span)
                 .ok()
                 .flatten()
         });
@@ -453,7 +511,11 @@ impl SpanGuard {
     }
 
     pub fn start_child(&self, span: SpanDescription) -> SpanGuard {
-        let span_id = self.adapter.start_span(self.span_id, span).ok().flatten();
+        let span_id = self
+            .adapter
+            .start_span(self.span_id, None, span)
+            .ok()
+            .flatten();
         SpanGuard {
             adapter: self.adapter.clone(),
             span_id,
@@ -497,6 +559,7 @@ impl Adapter for NoopAdapter {
     fn start_span(
         &self,
         _parent_id: Option<u64>,
+        _root_trace: Option<&TraceContext>,
         _span: SpanDescription,
     ) -> Result<Option<u64>, ()> {
         Ok(None)
@@ -509,6 +572,28 @@ impl Adapter for NoopAdapter {
     fn flush(&self, _timeout: Duration) -> Result<(), ()> {
         Ok(())
     }
+}
+
+fn fresh_trace_context() -> TraceContext {
+    let mut bytes = [0u8; 16];
+    if getrandom::fill(&mut bytes).is_err() {
+        return TraceContext {
+            trace_id: String::new(),
+            parent_span_id: None,
+        };
+    }
+    TraceContext {
+        trace_id: bytes.iter().map(|byte| format!("{byte:02x}")).collect(),
+        parent_span_id: None,
+    }
+}
+
+fn valid_trace_context(trace: &TraceContext) -> bool {
+    trace.trace_id.len() == 32
+        && trace.trace_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && trace.parent_span_id.as_ref().is_none_or(|parent| {
+            parent.len() == 16 && parent.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
 }
 
 fn bounded(mut value: String, max_bytes: usize) -> String {
@@ -532,9 +617,11 @@ mod tests {
     #[derive(Default)]
     struct FakeState {
         run_ids: Vec<String>,
+        sessions_started: usize,
+        sessions_ended: usize,
         breadcrumbs: Vec<Breadcrumb>,
         events: Vec<FailureEvent>,
-        spans: Vec<(u64, Option<u64>, SpanDescription)>,
+        spans: Vec<(u64, Option<u64>, String, SpanDescription)>,
         finished: Vec<(u64, SpanStatus)>,
         flushes: Vec<Duration>,
         fail_calls: bool,
@@ -548,6 +635,16 @@ mod tests {
     impl Adapter for FakeAdapter {
         fn set_run_id(&self, run_id: &str) -> Result<(), ()> {
             self.state.lock().unwrap().run_ids.push(run_id.to_string());
+            Ok(())
+        }
+
+        fn start_session(&self) -> Result<(), ()> {
+            self.state.lock().unwrap().sessions_started += 1;
+            Ok(())
+        }
+
+        fn end_session(&self) -> Result<(), ()> {
+            self.state.lock().unwrap().sessions_ended += 1;
             Ok(())
         }
 
@@ -576,6 +673,7 @@ mod tests {
         fn start_span(
             &self,
             parent_id: Option<u64>,
+            root_trace: Option<&TraceContext>,
             span: SpanDescription,
         ) -> Result<Option<u64>, ()> {
             let mut state = self.state.lock().unwrap();
@@ -583,7 +681,16 @@ mod tests {
                 return Err(());
             }
             let id = state.spans.len() as u64 + 1;
-            state.spans.push((id, parent_id, span));
+            let trace_id = match parent_id {
+                Some(parent_id) => state
+                    .spans
+                    .iter()
+                    .find(|(id, ..)| *id == parent_id)
+                    .map(|(_, _, trace_id, _)| trace_id.clone())
+                    .ok_or(())?,
+                None => root_trace.ok_or(())?.trace_id.clone(),
+            };
+            state.spans.push((id, parent_id, trace_id, span));
             Ok(Some(id))
         }
 
@@ -688,7 +795,7 @@ mod tests {
 
         let state = adapter.state.lock().unwrap();
         assert_eq!(state.spans[1].1, Some(1));
-        assert_eq!(state.spans[1].2.operation, "qemu.preflight");
+        assert_eq!(state.spans[1].3.operation, "qemu.preflight");
         assert_eq!(state.finished, [(2, SpanStatus::Ok), (1, SpanStatus::Ok)]);
     }
 
@@ -821,5 +928,32 @@ mod tests {
         telemetry
             .start_span(SpanDescription::transaction(TRANSACTION_SERVICE_STARTUP))
             .finish(SpanStatus::Ok);
+    }
+
+    #[test]
+    fn independent_roots_have_distinct_traces_and_children_inherit() {
+        let adapter = Arc::new(FakeAdapter::default());
+        let telemetry = Telemetry::new(adapter.clone());
+        let first = telemetry.start_span(SpanDescription::transaction("first"));
+        let child = first.start_child(SpanDescription::child("child", "child"));
+        let second = telemetry.start_span(SpanDescription::transaction("second"));
+        child.finish(SpanStatus::Ok);
+        first.finish(SpanStatus::Ok);
+        second.finish(SpanStatus::Ok);
+
+        let state = adapter.state.lock().unwrap();
+        assert_eq!(state.spans[0].2, state.spans[1].2);
+        assert_ne!(state.spans[0].2, state.spans[2].2);
+    }
+
+    #[test]
+    fn explicit_sessions_are_fail_open() {
+        let adapter = Arc::new(FakeAdapter::default());
+        let telemetry = Telemetry::new(adapter.clone());
+        telemetry.start_session();
+        telemetry.end_session();
+        let state = adapter.state.lock().unwrap();
+        assert_eq!(state.sessions_started, 1);
+        assert_eq!(state.sessions_ended, 1);
     }
 }

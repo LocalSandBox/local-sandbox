@@ -20,7 +20,7 @@ use crate::session::QuotaLimits;
 use crate::status;
 use crate::telemetry::{
     Breadcrumb, FailureEvent, Level, SpanDescription, SpanStatus, Telemetry,
-    TRANSACTION_SERVICE_STARTUP,
+    TRANSACTION_SERVICE_HEARTBEAT, TRANSACTION_SERVICE_STARTUP,
 };
 use crate::SERVICE_NAME;
 
@@ -29,6 +29,7 @@ define_windows_service!(ffi_service_main, service_main);
 const STARTUP_WAIT_HINT: Duration = Duration::from_secs(120);
 const STARTUP_HEARTBEAT: Duration = Duration::from_secs(2);
 const SHUTDOWN_HEARTBEAT: Duration = Duration::from_secs(2);
+const TELEMETRY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
 pub fn dispatch() -> Result<()> {
     service_dispatcher::start(SERVICE_NAME, ffi_service_main)
@@ -291,6 +292,13 @@ fn run_registered(
     telemetry.update_crash_context("service.running", None, None, true);
     startup_span.finish(SpanStatus::Ok);
     telemetry.breadcrumb(Breadcrumb::lifecycle("service", "running"));
+    telemetry.start_session();
+    let mut telemetry_heartbeat = Some(spawn_telemetry_heartbeat(
+        &runtime,
+        telemetry.clone(),
+        common_context.runtime.machine_name.clone(),
+        config.update_channel,
+    ));
     logger.write(EventId::ServiceStarted, "runtime", "RUNNING")?;
     let control = match runtime.block_on(wait_for_runtime_exit(&mut control_rx, &mut pipe_task)) {
         RuntimeExit::Control(Some(control)) => control,
@@ -330,6 +338,9 @@ fn run_registered(
         }
     };
     acknowledge_termination_intent(&paths, &telemetry);
+    if let Some(heartbeat) = telemetry_heartbeat.take() {
+        runtime.block_on(heartbeat.stop());
+    }
     if let Some(mut coordinator) = update_coordinator.take() {
         coordinator.stop();
     }
@@ -381,12 +392,85 @@ fn run_registered(
     }
     let _ = logger.write(EventId::ServiceStopped, "shutdown", "STOPPED");
     telemetry.breadcrumb(Breadcrumb::lifecycle("service", "stopped"));
+    telemetry.end_session();
     if telemetry.close_run() {
         let _ = lsb_seawork_update::remove_file_if_exists(&paths.termination_intent);
     }
     telemetry.flush(Duration::from_secs(2));
     status_handle.set_service_status(status::stopped())?;
     Ok(())
+}
+
+struct TelemetryHeartbeat {
+    stop: tokio::sync::oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl TelemetryHeartbeat {
+    async fn stop(self) {
+        let _ = self.stop.send(());
+        let _ = self.task.await;
+    }
+}
+
+fn spawn_telemetry_heartbeat(
+    runtime: &tokio::runtime::Runtime,
+    telemetry: Telemetry,
+    machine_name: Option<String>,
+    update_channel: crate::config::UpdateChannel,
+) -> TelemetryHeartbeat {
+    let (stop, mut stopped) = tokio::sync::oneshot::channel();
+    let task = runtime.spawn(async move {
+        let started = std::time::Instant::now();
+        let first = tokio::time::Instant::now() + TELEMETRY_HEARTBEAT_INTERVAL;
+        let mut interval = tokio::time::interval_at(first, TELEMETRY_HEARTBEAT_INTERVAL);
+        loop {
+            tokio::select! {
+                _ = interval.tick() => emit_telemetry_heartbeat(
+                    &telemetry,
+                    machine_name.as_deref(),
+                    update_channel,
+                    started.elapsed(),
+                ),
+                _ = &mut stopped => break,
+            }
+        }
+    });
+    TelemetryHeartbeat { stop, task }
+}
+
+fn emit_telemetry_heartbeat(
+    telemetry: &Telemetry,
+    machine_name: Option<&str>,
+    update_channel: crate::config::UpdateChannel,
+    uptime: Duration,
+) {
+    let update_channel = match update_channel {
+        crate::config::UpdateChannel::Stable => "stable",
+        crate::config::UpdateChannel::Prerelease => "prerelease",
+    };
+    let uptime_bucket = match uptime.as_secs() {
+        0..=3_599 => "under_1h",
+        3_600..=21_599 => "1h_to_6h",
+        21_600..=86_399 => "6h_to_24h",
+        _ => "over_24h",
+    };
+    let mut description = SpanDescription::transaction(TRANSACTION_SERVICE_HEARTBEAT)
+        .always_sampled()
+        .with_data(
+            "release",
+            format!("local-sandbox-service@{}", env!("CARGO_PKG_VERSION")),
+        )
+        .with_data("service.version", env!("CARGO_PKG_VERSION"))
+        .with_data("update.channel", update_channel)
+        .with_data("uptime.bucket", uptime_bucket);
+    if let Some(run_id) = telemetry.run_id() {
+        description = description.with_data("run_id", run_id);
+    }
+    if let Some(machine_name) = machine_name {
+        description = description.with_data("user.id", machine_name);
+    }
+    telemetry.start_span(description).finish(SpanStatus::Ok);
 }
 
 #[derive(Debug, PartialEq, Eq)]

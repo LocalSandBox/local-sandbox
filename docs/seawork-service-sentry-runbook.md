@@ -10,8 +10,21 @@ Use the existing SeaWork Sentry project and start with:
 - QEMU hangs: filter `qemu.failure_kind:guest_ready_timeout` or
   `qemu.failure_kind:qemu_shutdown_timeout`
 - traces: filter `service.name:localsandbox-seawork-service` and transaction
-  `service.startup`, `sandbox.start`, or `sandbox.stop`
+  `service.startup`, `service.heartbeat`, `sandbox.start`, or `sandbox.stop`
 - regressions: group by `release:local-sandbox-service@<version>`
+
+Release Health uses the service's explicit session: it begins only after the
+SCM accepts `RUNNING` and ends during an orderly stop. Automatic Native SDK
+session tracking is disabled. Group Release Health by `release` for adoption
+and crash-free machines.
+
+Create an **Observed active fleet** Discover widget with transaction
+`service.heartbeat`, a 30-minute time window, `count_unique(user)` grouped by
+`release`, and a 15-minute display interval. The transaction is always sampled
+client-side and includes `user.id`, `release`, `service.version`, `run_id`,
+`update.channel`, and `uptime.bucket`. Keep the **observed active** label: a
+sleeping, offline, or Sentry-blocked machine is absent, so this is not exact
+inventory.
 
 Create an issue alert for new or regressed fatal crashes and error events with
 `component:local-sandbox-service`, routed to the existing SeaWork notification

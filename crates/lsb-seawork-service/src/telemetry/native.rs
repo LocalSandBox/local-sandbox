@@ -10,7 +10,7 @@ use anyhow::{bail, Context, Result};
 
 use super::{
     Adapter, Breadcrumb, CommonContext, FailureEvent, Level, SpanDescription, SpanStatus,
-    COMPONENT, SERVICE_NAME,
+    TraceContext, COMPONENT, SERVICE_NAME,
 };
 
 #[repr(C)]
@@ -79,6 +79,7 @@ impl NativeAdapter {
                 sentry_options_add_attachmentw(options, attachment.as_ptr());
             }
             sentry_options_set_traces_sample_rate(options, sample_rate);
+            sentry_options_set_auto_session_tracking(options, 0);
             sentry_options_set_shutdown_timeout(options, 2_000);
             if sentry_init(options) != 0 {
                 bail!("Sentry Native initialization failed");
@@ -91,6 +92,7 @@ impl NativeAdapter {
             }),
         };
         adapter.set_common_context(common_context);
+        adapter.set_machine_user(common_context)?;
         Ok(adapter)
     }
 
@@ -105,6 +107,22 @@ impl NativeAdapter {
                 }
             }
         }
+    }
+
+    fn set_machine_user(&self, common_context: &CommonContext) -> Result<()> {
+        let Some(machine_name) = &common_context.runtime.machine_name else {
+            return Ok(());
+        };
+        let machine_name = CString::new(machine_name.as_str())?;
+        unsafe {
+            sentry_set_user(sentry_value_new_user(
+                machine_name.as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -138,6 +156,18 @@ impl Adapter for NativeAdapter {
             }
             sentry_add_breadcrumb(value);
         }
+        Ok(())
+    }
+
+    fn start_session(&self) -> Result<(), ()> {
+        let _guard = self.state.lock().map_err(|_| ())?;
+        unsafe { sentry_start_session() };
+        Ok(())
+    }
+
+    fn end_session(&self) -> Result<(), ()> {
+        let _guard = self.state.lock().map_err(|_| ())?;
+        unsafe { sentry_end_session() };
         Ok(())
     }
 
@@ -235,7 +265,12 @@ impl Adapter for NativeAdapter {
         }
     }
 
-    fn start_span(&self, parent_id: Option<u64>, span: SpanDescription) -> Result<Option<u64>, ()> {
+    fn start_span(
+        &self,
+        parent_id: Option<u64>,
+        root_trace: Option<&TraceContext>,
+        span: SpanDescription,
+    ) -> Result<Option<u64>, ()> {
         let mut state = self.state.lock().map_err(|_| ())?;
         let operation = CString::new(span.operation).map_err(|_| ())?;
         let description = CString::new(span.description).map_err(|_| ())?;
@@ -253,8 +288,24 @@ impl Adapter for NativeAdapter {
                 ),
                 None if parent_id.is_some() => return Err(()),
                 None => {
+                    let trace = root_trace.ok_or(())?;
+                    let trace_id = CString::new(trace.trace_id.as_str()).map_err(|_| ())?;
+                    let parent_span_id = trace
+                        .parent_span_id
+                        .as_ref()
+                        .map(|value| CString::new(value.as_str()).map_err(|_| ()))
+                        .transpose()?;
+                    sentry_set_trace(
+                        trace_id.as_ptr(),
+                        parent_span_id
+                            .as_ref()
+                            .map_or(ptr::null(), |value| value.as_ptr()),
+                    );
                     let context =
                         sentry_transaction_context_new(description.as_ptr(), operation.as_ptr());
+                    if let Some(sampled) = span.sampled {
+                        sentry_transaction_context_set_sampled(context, c_int::from(sampled));
+                    }
                     let transaction = sentry_transaction_start(context, sentry_value_new_null());
                     transaction
                 }
@@ -424,11 +475,22 @@ unsafe extern "C" {
     fn sentry_options_set_handler_pathw(options: *mut c_void, path: *const u16);
     fn sentry_options_add_attachmentw(options: *mut c_void, path: *const u16);
     fn sentry_options_set_traces_sample_rate(options: *mut c_void, sample_rate: f64);
+    fn sentry_options_set_auto_session_tracking(options: *mut c_void, value: c_int);
     fn sentry_options_set_shutdown_timeout(options: *mut c_void, timeout: u64);
     fn sentry_init(options: *mut c_void) -> c_int;
     fn sentry_flush(timeout: u64) -> c_int;
     fn sentry_close() -> c_int;
     fn sentry_set_tag(key: *const c_char, value: *const c_char);
+    fn sentry_set_user(user: SentryValue);
+    fn sentry_value_new_user(
+        id: *const c_char,
+        username: *const c_char,
+        email: *const c_char,
+        ip_address: *const c_char,
+    ) -> SentryValue;
+    fn sentry_start_session();
+    fn sentry_end_session();
+    fn sentry_set_trace(trace_id: *const c_char, parent_span_id: *const c_char);
     fn sentry_set_context(key: *const c_char, value: SentryValue);
     fn sentry_value_new_null() -> SentryValue;
     fn sentry_value_new_double(value: f64) -> SentryValue;
@@ -455,6 +517,7 @@ unsafe extern "C" {
     fn sentry_remove_attachment(attachment: *mut c_void);
     fn sentry_transaction_context_new(name: *const c_char, operation: *const c_char)
         -> *mut c_void;
+    fn sentry_transaction_context_set_sampled(context: *mut c_void, sampled: c_int);
     fn sentry_transaction_start(context: *mut c_void, sampling: SentryValue) -> *mut c_void;
     fn sentry_transaction_start_child(
         transaction: *mut c_void,
