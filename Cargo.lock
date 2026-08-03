@@ -2364,6 +2364,7 @@ dependencies = [
  "crc32fast",
  "flate2",
  "lsb-platform",
+ "lsb-seawork-update",
  "lsb-service-proto",
  "semver",
  "serde",
