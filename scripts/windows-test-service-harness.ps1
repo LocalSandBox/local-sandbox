@@ -966,6 +966,7 @@ function Smoke-Core {
         -ClientExecutableName 'node-untrusted.exe' -Suffix 'caller-wrong-publisher'
     Invoke-ClientSmoke $state -Mounts -Suffix 'direct-mounts'
     Invoke-ClientSmoke $state -Network -Suffix 'network'
+    Invoke-ClientSmoke $state -UpdateCheck -Suffix 'update-check'
     Assert-CompatibleResourcesRestored $before $state.state_root
     [ordered]@{
         schema_version = 1
