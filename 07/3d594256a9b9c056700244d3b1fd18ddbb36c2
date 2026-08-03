@@ -1,0 +1,29 @@
+bindings/nodejs/.gitignore
+  s_be97528113af86::t_fe69d9ec677178 120
+bindings/nodejs/Cargo.lock
+  s_94226540b5147a::t_39b7fb06bea40c 1-2010
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "073d594256a9b9c056700244d3b1fd18ddbb36c2",
+  "prompts": {},
+  "sessions": {
+    "s_94226540b5147a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc733-4b16-7521-bdce-b3b8284bf093",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    },
+    "s_be97528113af86": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc8ca-d9dd-72a0-8144-f6f8a59bb3e4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
