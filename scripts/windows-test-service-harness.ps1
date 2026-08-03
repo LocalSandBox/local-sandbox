@@ -705,8 +705,9 @@ function Install-And-Smoke {
         throw 'Install evidence must remain beneath the run root.'
     }
     $evidence = Get-Content -LiteralPath $evidencePath -Raw | ConvertFrom-Json
-    if (($null -ne $evidence.PSObject.Properties['snapshot_sha'] -and
-        $evidence.snapshot_sha -ne $SnapshotSha) -or $evidence.service_profile -ne 'production') {
+    if ($null -eq $evidence.PSObject.Properties['snapshot_sha'] -or
+        $evidence.snapshot_sha -ne $SnapshotSha -or
+        $evidence.service_profile -ne 'production') {
         throw 'The release-candidate evidence does not match this production snapshot.'
     }
     $version = [string]$evidence.version

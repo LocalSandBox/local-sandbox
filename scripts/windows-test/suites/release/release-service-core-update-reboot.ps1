@@ -216,6 +216,7 @@ if ($Phase -eq 'BeforeReboot') {
         $baselineEvidencePath = Join-Path $RunRoot 'baseline-release-evidence.json'
         [ordered]@{
             schema_version = 1; status = 'passed'; service_profile = 'production'
+            snapshot_sha = $SnapshotSha
             version = $baselineVersion; publisher_subject = $publisherSubject
             publisher_sha256 = $publisherSha256; payload = Get-Record $baselineService
             updater = [ordered]@{
