@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+fail() { echo "win-release-accept: $*" >&2; exit 1; }
+command -v gh >/dev/null || fail 'gh is required'
+command -v jq >/dev/null || fail 'jq is required'
+[[ -z "$(git status --porcelain)" ]] || fail 'repository must be clean'
+gh auth status >/dev/null 2>&1 || fail 'gh authentication is required'
+ssh -o BatchMode=yes -o ConnectTimeout=8 win-1 exit >/dev/null 2>&1 || \
+    fail 'ssh win-1 is unavailable'
+
+default_branch="$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name)"
+owner_repo="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
+state_root="$repo_root/target/windows-release-accept"
+mkdir -p "$state_root"
+discovery="$(mktemp -d "${TMPDIR:-/tmp}/lsb-release-discovery.XXXXXX")"
+trap 'rm -rf -- "$discovery"' EXIT
+
+runs_json="$(gh run list --workflow release.yml --branch "$default_branch" \
+    --event workflow_dispatch --limit 30 \
+    --json databaseId,status,conclusion,url,headSha)"
+eligible_file="$discovery/eligible.jsonl"
+: > "$eligible_file"
+while IFS=$'\t' read -r run_id status run_url head_sha; do
+    [[ "$status" =~ ^(queued|in_progress|waiting|pending|requested)$ ]] || continue
+    candidate="$discovery/$run_id"
+    mkdir -p "$candidate"
+    if ! gh run download "$run_id" -n seawork-windows-acceptance-descriptor \
+        -D "$candidate" >/dev/null 2>&1; then
+        continue
+    fi
+    descriptor="$candidate/acceptance-descriptor.json"
+    [[ -f "$descriptor" ]] || continue
+    if ! jq -e --argjson run "$run_id" --arg sha "$head_sha" \
+        -f "$repo_root/scripts/windows-release-descriptor.jq" "$descriptor" >/dev/null; then
+        continue
+    fi
+    artifact_count="$(gh api "repos/$owner_repo/actions/runs/$run_id/artifacts" \
+        --jq '[.artifacts[] | select(.expired == false and .name == "seawork-service-release")] | length')"
+    [[ "$artifact_count" == 1 ]] || continue
+    qualified="$(gh api "repos/$owner_repo/actions/artifacts?per_page=100" \
+        --jq "[.artifacts[] | select(.expired == false and .name == \"seawork-windows-evidence-$run_id\")] | length")"
+    [[ "$qualified" == 0 ]] || continue
+    jq -cn --argjson run_id "$run_id" --arg url "$run_url" \
+        --arg descriptor "$descriptor" '{run_id:$run_id,url:$url,descriptor:$descriptor}' \
+        >> "$eligible_file"
+done < <(jq -r '.[] | [.databaseId,.status,.url,.headSha] | @tsv' <<< "$runs_json")
+
+selection="$("$repo_root/scripts/select-windows-release-candidate.sh" "$eligible_file")"
+release_run_id="$(jq -r .run_id <<< "$selection")"
+release_url="$(jq -r .url <<< "$selection")"
+descriptor_source="$(jq -r .descriptor <<< "$selection")"
+release_sha="$(jq -r .release_sha "$descriptor_source")"
+version="$(jq -r .version "$descriptor_source")"
+echo "Qualifying v$version from $release_url"
+
+attempt_root="$state_root/$release_run_id"
+mkdir -p "$attempt_root"
+descriptor="$attempt_root/acceptance-descriptor.json"
+cp "$descriptor_source" "$descriptor"
+candidate_dir="$attempt_root/candidate"
+baseline_dir="$attempt_root/baseline"
+mkdir -p "$candidate_dir" "$baseline_dir"
+if [[ ! -f "$attempt_root/candidate.ready" ]]; then
+    gh run download "$release_run_id" -n seawork-service-release -D "$candidate_dir"
+    touch "$attempt_root/candidate.ready"
+fi
+
+while IFS=$'\t' read -r name url sha size; do
+    target="$baseline_dir/$name"
+    if [[ ! -f "$target" ]]; then
+        gh api "$url" -H 'Accept: application/octet-stream' > "$target"
+    fi
+    [[ "$(wc -c < "$target" | tr -d ' ')" == "$size" ]] || fail "baseline size mismatch: $name"
+    [[ "$(shasum -a 256 "$target" | awk '{print $1}')" == "$sha" ]] || fail "baseline digest mismatch: $name"
+done < <(jq -r '.baseline.assets[] | [.name,.api_url,.sha256,(.size|tostring)] | @tsv' "$descriptor")
+
+while IFS=$'\t' read -r name sha size; do
+    path="$(find "$candidate_dir" -type f -name "$name" -print -quit)"
+    [[ -n "$path" ]] || fail "candidate tuple member is missing: $name"
+    [[ "$(wc -c < "$path" | tr -d ' ')" == "$size" ]] || fail "candidate size mismatch: $name"
+    [[ "$(shasum -a 256 "$path" | awk '{print $1}')" == "$sha" ]] || fail "candidate digest mismatch: $name"
+done < <(jq -r '[.candidate.service,.candidate.updater,.candidate.updater_manifest][] | [.name,.sha256,(.size|tostring)] | @tsv' "$descriptor")
+
+worktree="$attempt_root/worktree"
+if [[ ! -d "$worktree/.git" && ! -f "$worktree/.git" ]]; then
+    git worktree add --detach "$worktree" "$release_sha"
+fi
+[[ "$(git -C "$worktree" rev-parse HEAD)" == "$release_sha" ]] || \
+    fail 'isolated worktree does not match the descriptor release SHA'
+service_name="$(jq -r .candidate.service.name "$descriptor")"
+service_path="$(find "$candidate_dir" -type f -name "$service_name" -print -quit)"
+
+hardware_log="$attempt_root/hardware.log"
+set +e
+(cd "$worktree" && scripts/win-test accept release --artifact "$service_path" \
+    --baseline-dir "$baseline_dir") 2>&1 | tee "$hardware_log"
+hardware_status=${PIPESTATUS[0]}
+set -e
+hardware_run_id="$(sed -n 's/^Windows test run: //p' "$hardware_log" | tail -n 1)"
+[[ "$hardware_run_id" =~ ^[a-z0-9][a-z0-9._-]{0,95}$ ]] || fail 'hardware run ID was not reported'
+printf '%s\n' "$hardware_run_id" > "$attempt_root/hardware-run-id"
+if (( hardware_status != 0 )); then
+    (cd "$worktree" && scripts/win-test reset) || true
+    fail "Windows acceptance failed; evidence remains in $attempt_root"
+fi
+
+evidence_dir="$attempt_root/evidence-$hardware_run_id"
+[[ ! -e "$evidence_dir" ]] || rm -rf -- "$evidence_dir"
+(cd "$worktree" && scripts/win-test fetch "$hardware_run_id" "$evidence_dir")
+bundle="$attempt_root/evidence-$hardware_run_id.tgz"
+"$worktree/scripts/package-windows-release-evidence.sh" "$evidence_dir" "$bundle" >/dev/null
+bundle_b64="$(base64 < "$bundle" | tr -d '\n')"
+dispatch_started="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+gh workflow run windows-release-evidence.yml --ref "$default_branch" \
+    -f release_workflow_run_id="$release_run_id" \
+    -f release_sha="$release_sha" -f evidence_bundle="$bundle_b64"
+
+submission_id=''
+for _ in {1..30}; do
+    submission_id="$(gh run list --workflow windows-release-evidence.yml --event workflow_dispatch \
+        --limit 20 --json databaseId,createdAt,displayTitle \
+        --jq ".[] | select(.createdAt >= \"$dispatch_started\" and (.displayTitle | contains(\"$release_run_id\"))) | .databaseId" | head -n 1)"
+    [[ -n "$submission_id" ]] && break
+    sleep 2
+done
+[[ -n "$submission_id" ]] || fail 'could not find the dispatched evidence workflow'
+gh run watch "$submission_id" --exit-status
+echo "Evidence accepted: $(gh run view "$submission_id" --json url -q .url)"

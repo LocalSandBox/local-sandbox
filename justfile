@@ -96,6 +96,10 @@ release version service_evidence="":
     esac; \
     gh workflow run release.yml --ref main -f version="{{ version }}" -f service_evidence="$evidence"
 
+# Discover and qualify the one pending descriptor-bound Windows release.
+win-release-accept:
+    scripts/win-release-accept
+
 # Verify and upload service symbols from the newest published GitHub release.
 upload-symbols:
     pwsh -NoProfile -NonInteractive -File scripts/upload-seawork-sentry-symbols.ps1
