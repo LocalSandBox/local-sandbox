@@ -2057,7 +2057,9 @@ mod tests {
     fn post_spawn_status_failure_terminates_fake_process() {
         let artifact_dir = temp_artifact_dir("post-spawn-status-failure");
         let mut supervisor = fake_supervisor("block-status", artifact_dir.clone());
-        supervisor.config.startup_timeout = Duration::from_millis(500);
+        // Hosted Windows runners can take longer than 500 ms to schedule the
+        // nested test process while the full workspace test suite is busy.
+        supervisor.config.startup_timeout = Duration::from_secs(5);
         supervisor.config.environment.variables.push((
             OsString::from(FAKE_STATUS_PATH_ENV),
             supervisor.artifacts().status.as_os_str().to_owned(),
