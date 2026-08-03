@@ -1,0 +1,97 @@
+scripts/windows-test-suites/rootfs-startup-smoke.ps1
+  s_c21dc9b0e160c1::t_5733384da4078a 1-2
+scripts/windows-test/suites/service/installed-service-smoke.ps1
+  s_c21dc9b0e160c1::t_537c69f1da18cd 1-69
+scripts/windows-test/suites/service/service-reboot.ps1
+  s_c21dc9b0e160c1::t_537c69f1da18cd 1-87
+scripts/windows-test-suites/service-fast.ps1
+  s_c21dc9b0e160c1::t_5733384da4078a 1-2
+scripts/windows-test-suites/reboot-smoke.ps1
+  s_c21dc9b0e160c1::t_5733384da4078a 1-2
+scripts/windows-test-suites/release-candidate.ps1
+  s_c21dc9b0e160c1::t_5733384da4078a 1-2
+scripts/windows-test-suites/system-maintenance-ipc.ps1
+  s_c21dc9b0e160c1::t_5733384da4078a 1-2
+scripts/windows-test-suites/artifact-fetch-smoke.ps1
+  s_c21dc9b0e160c1::t_5733384da4078a 1-2
+scripts/windows-test-suites/office-rootfs-smoke.ps1
+  s_c21dc9b0e160c1::t_5733384da4078a 1-2
+.github/workflows/ci.yml
+  s_c21dc9b0e160c1::t_537c69f1da18cd 101
+scripts/windows-test/catalog.json
+  s_c21dc9b0e160c1::t_ca8a51ae871fdd 66,78,90,102,114,138,150,162,186,198,210,222,234,246,258,270,282
+scripts/windows-test/suites/release/archive-acceptance.ps1
+  s_c21dc9b0e160c1::t_537c69f1da18cd 1-191
+scripts/windows-test-suites/sentry-smoke.ps1
+  s_c21dc9b0e160c1::t_5733384da4078a 1-2
+scripts/windows-test/suites/service/filtered-client-token.ps1
+  s_c21dc9b0e160c1::t_537c69f1da18cd 1-61
+scripts/windows-test/suites/release/updater-release-smoke.ps1
+  s_c21dc9b0e160c1::t_537c69f1da18cd 1-193
+scripts/windows-test-service-harness.ps1
+  s_c21dc9b0e160c1::t_537c69f1da18cd 793
+scripts/windows-test-suites/qemu-sentry-acceptance.ps1
+  s_c21dc9b0e160c1::t_5733384da4078a 1-2
+scripts/windows-test-suites/installed-service-smoke.ps1
+  s_c21dc9b0e160c1::t_5733384da4078a 1-2
+scripts/windows-test-suites/filtered-client-token.ps1
+  s_c21dc9b0e160c1::t_5733384da4078a 1-2
+scripts/windows-test/suites/release/release-candidate.ps1
+  s_c21dc9b0e160c1::t_537c69f1da18cd 1-511
+scripts/windows-test/compat-suite.ps1
+  s_c21dc9b0e160c1::t_5733384da4078a 1-26
+scripts/windows-test-suites/service-reboot.ps1
+  s_c21dc9b0e160c1::t_5733384da4078a 1-2
+scripts/windows-test-suites/updater-release-smoke.ps1
+  s_c21dc9b0e160c1::t_5733384da4078a 1-2
+scripts/windows-test-suites/archive-acceptance.ps1
+  s_c21dc9b0e160c1::t_5733384da4078a 1-2
+scripts/windows-test/validate-catalog.ps1
+  s_c21dc9b0e160c1::t_64fc4afd8bf17b 71
+scripts/windows-test-suites/qemu-package-tests.ps1
+  s_c21dc9b0e160c1::t_5733384da4078a 1-2
+scripts/windows-test-suites/qemu-telemetry-smoke.ps1
+  s_c21dc9b0e160c1::t_5733384da4078a 1-2
+docs/windows-testing.md
+  s_c21dc9b0e160c1::t_aee5d18084876b 143-148
+scripts/windows-test-suites/update-fast.ps1
+  s_c21dc9b0e160c1::t_5733384da4078a 1-2
+scripts/windows-test/suites/diagnostics/artifact-fetch-smoke.ps1
+  s_c21dc9b0e160c1::t_32be89dfd2eeaa 1-33
+scripts/windows-test/suites/diagnostics/qemu-package-tests.ps1
+  s_c21dc9b0e160c1::t_e0fd4c1caad375 1-59
+scripts/windows-test/suites/diagnostics/qemu-sentry-acceptance.ps1
+  s_c21dc9b0e160c1::t_118628443f0035 1-120
+scripts/windows-test/suites/diagnostics/qemu-telemetry-smoke.ps1
+  s_c21dc9b0e160c1::t_6214c6b5c6882e 1-557
+scripts/windows-test/suites/diagnostics/reboot-smoke.ps1
+  s_c21dc9b0e160c1::t_9537a0ad3b3421 1-71
+scripts/windows-test/suites/diagnostics/sentry-smoke.ps1
+  s_c21dc9b0e160c1::t_d2a5bd066cb6b2 1-199
+scripts/windows-test/suites/native/service-fast.ps1
+  s_c21dc9b0e160c1::t_f6c6d00e426054 1-92
+scripts/windows-test/suites/native/update-fast.ps1
+  s_c21dc9b0e160c1::t_f66aa1fc152545 1-139
+scripts/windows-test/suites/runtime/office-rootfs-smoke.ps1
+  s_c21dc9b0e160c1::t_0bfe34cfe7f03d 1-81
+scripts/windows-test/suites/runtime/rootfs-startup-smoke.ps1
+  s_c21dc9b0e160c1::t_f7fa16ec173989 1-68
+scripts/windows-test/suites/service/system-maintenance-ipc.ps1
+  s_c21dc9b0e160c1::t_6004fc2b9f1865 1-147
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "0cf74dc8be9b276b7fc32a56b1f798c2ed1882e9",
+  "prompts": {},
+  "sessions": {
+    "s_c21dc9b0e160c1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc7ba-132a-70b1-a23d-04c749bc4c63",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}

@@ -1,0 +1,60 @@
+scripts/windows-test/host/windows-test-prune.ps1
+  s_c21dc9b0e160c1::t_a70ae09b3d7e4b 122-123
+scripts/windows-test/suites/diagnostics/reboot-smoke.ps1
+  s_c21dc9b0e160c1::t_859969831708f2 71-77
+scripts/windows-test/lib/evidence.ps1
+  s_c21dc9b0e160c1::t_29ed1db36dc2ed 197-257
+scripts/windows-test/test-contracts.ps1
+  s_c21dc9b0e160c1::t_59960c318d2496 46-74
+  s_c21dc9b0e160c1::t_dc6961654ff66d 75-87
+  s_c21dc9b0e160c1::t_2b8f8b9aa6cd67 15
+scripts/windows-test/host/windows-test-reset.ps1
+  s_c21dc9b0e160c1::t_20c8ee089dfa2d 106,164,169,172,182,218,220-225
+  s_c21dc9b0e160c1::t_8e5cd14eaac29e 19-20,139,147,154,213,216,219
+scripts/win-test
+  s_c21dc9b0e160c1::t_21e00961682a10 435-447,451
+  s_c21dc9b0e160c1::t_93b97550a9b495 373-374
+  s_c21dc9b0e160c1::t_21dc4e1ba39d99 375
+  s_c21dc9b0e160c1::t_6c473c7a9b2563 460
+scripts/windows-test/schemas/result.schema.json
+  s_c21dc9b0e160c1::t_2b8f8b9aa6cd67 6,11-12
+scripts/windows-test/profile-plan.ps1
+  s_c21dc9b0e160c1::t_6325ccc0c9d6ee 1-14,16,19-34
+  s_c21dc9b0e160c1::t_f790c70294232f 15,17-18
+scripts/windows-test/host/windows-test-doctor.ps1
+  s_c21dc9b0e160c1::t_ad515f94387ae3 61
+  s_c21dc9b0e160c1::t_2ce8788a5a18c0 70
+  s_c21dc9b0e160c1::t_eb564412f713a6 75-77
+  s_c21dc9b0e160c1::t_329c3af5ae1508 43-52,180
+scripts/windows-dev-test.ps1
+  s_c21dc9b0e160c1::t_2b8f8b9aa6cd67 141,240-245,250-251
+scripts/windows-test/validate-contracts.ps1
+  s_c21dc9b0e160c1::t_8ab7b49182329d 65-66
+  s_c21dc9b0e160c1::t_2b8f8b9aa6cd67 20
+scripts/windows-test/host/windows-test-profile.ps1
+  s_c21dc9b0e160c1::t_8649c8a97bbef6 153-154
+  s_c21dc9b0e160c1::t_29ed1db36dc2ed 191-194
+  s_c21dc9b0e160c1::t_8ab7b49182329d 50-51,80-81,97-99,101,111-112,181-182
+scripts/windows-test/schemas/profile-evidence.schema.json
+  s_c21dc9b0e160c1::t_8ab7b49182329d 6,11-12
+scripts/windows-test/suites/runtime/product-runtime.ps1
+  s_c21dc9b0e160c1::t_2ce8788a5a18c0 26
+scripts/windows-test/catalog.json
+  s_c21dc9b0e160c1::t_50aac299cf5ad5 106,250
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "29759452ddfa11a1f1303df16bd49eabad1f8018",
+  "prompts": {},
+  "sessions": {
+    "s_c21dc9b0e160c1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc7ba-132a-70b1-a23d-04c749bc4c63",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}

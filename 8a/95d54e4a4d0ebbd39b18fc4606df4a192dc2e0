@@ -1,0 +1,43 @@
+scripts/windows-test/host/windows-test-profile.ps1
+  s_c21dc9b0e160c1::t_24920b0497434b 1-124
+scripts/windows-test/lib/evidence.ps1
+  s_c21dc9b0e160c1::t_cfdbda5b81bde2 95,100-106,159-163
+  s_c21dc9b0e160c1::t_74e4142bb9fefb 170-173
+  s_c21dc9b0e160c1::t_c955a519333ea4 1-94,96-99,107-158,164-169,174-196
+scripts/windows-test-bootstrap.ps1
+  s_c21dc9b0e160c1::t_bbd3a61afc9698 141-142,175-205,254,270
+scripts/win-test
+  s_c21dc9b0e160c1::t_defac892b2f6dd 19,329-429,465-470
+  s_c21dc9b0e160c1::t_77edb1982bbbe9 471
+scripts/windows-test-reuse-candidate.ps1
+  s_c21dc9b0e160c1::t_d4be662e2a8c05 98,125,327
+  s_c21dc9b0e160c1::t_fa0f51e41c8eb5 102,126-129
+scripts/windows-dev-test.ps1
+  s_c21dc9b0e160c1::t_db40c7e38dad76 42-60,143-144,149-163,189-202,221-223,230-238,240,244,254-262,265,270-286
+  s_c21dc9b0e160c1::t_74e4142bb9fefb 266-269
+scripts/windows-test/test-contracts.ps1
+  s_c21dc9b0e160c1::t_1db30c44c98dc5 1-47
+scripts/setup-windows-test-host.ps1
+  s_c21dc9b0e160c1::t_24920b0497434b 275
+  s_c21dc9b0e160c1::t_997a256eb3f5a5 270
+.github/workflows/ci.yml
+  s_c21dc9b0e160c1::t_1db30c44c98dc5 90
+scripts/windows-test-artifacts.ps1
+  s_c21dc9b0e160c1::t_d92e5de54b031e 27-28,36-37,65-66,70,85-86,92-95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "8a95d54e4a4d0ebbd39b18fc4606df4a192dc2e0",
+  "prompts": {},
+  "sessions": {
+    "s_c21dc9b0e160c1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc7ba-132a-70b1-a23d-04c749bc4c63",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}

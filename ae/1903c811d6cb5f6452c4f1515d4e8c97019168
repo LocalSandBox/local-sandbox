@@ -1,0 +1,64 @@
+scripts/windows-test/validate-catalog.ps1
+  s_c21dc9b0e160c1::t_abea0badad58b3 92
+  s_c21dc9b0e160c1::t_08951ecedae0a5 91,137
+  s_c21dc9b0e160c1::t_83de77e5d14453 1-90,93-136
+.github/workflows/ci.yml
+  s_c21dc9b0e160c1::t_dff1d737173dad 70,73,76,82,85-89
+scripts/windows-test/host/windows-test-prune.ps1
+  s_c21dc9b0e160c1::t_7b0194eeead666 1-167
+scripts/windows-test/host/windows-test-reset.ps1
+  s_c21dc9b0e160c1::t_134dcf94779cd7 1-208
+docs/windows-testing.md
+  s_c21dc9b0e160c1::t_f56c7f275fd724 1-217
+scripts/windows-test/suites/runtime/product-runtime.ps1
+  s_c21dc9b0e160c1::t_b21402a981c7ff 1-124
+scripts/windows-test/host/windows-test-doctor.ps1
+  s_c21dc9b0e160c1::t_abea0badad58b3 116-118
+  s_c21dc9b0e160c1::t_d1ffcd8b5600e6 1-115,119-197
+scripts/win-test
+  s_c21dc9b0e160c1::t_395d2f861f4c01 16-18,32-35,93-94,334-362,445-481
+  s_c21dc9b0e160c1::t_7a7e504370b9cc 80,86
+scripts/windows-test/schemas/evidence.schema.json
+  s_c21dc9b0e160c1::t_624fb01ded5a9c 1-55
+docs/windows-agent-testing.md
+  s_c21dc9b0e160c1::t_f56c7f275fd724 1,3-6
+scripts/windows-test/lib/common.ps1
+  s_c21dc9b0e160c1::t_ce44f215bbdf6a 1-89
+scripts/windows-test/list.ps1
+  s_c21dc9b0e160c1::t_395d2f861f4c01 1-14,17-26
+  s_c21dc9b0e160c1::t_08951ecedae0a5 15
+  s_c21dc9b0e160c1::t_abea0badad58b3 16
+scripts/windows-test/schemas/result.schema.json
+  s_c21dc9b0e160c1::t_624fb01ded5a9c 1-36
+scripts/windows-test/schemas/catalog.schema.json
+  s_c21dc9b0e160c1::t_e44026ab5e61b1 1-61
+scripts/windows-test/catalog.json
+  s_c21dc9b0e160c1::t_c484abeedb95ae 241
+  s_c21dc9b0e160c1::t_ce44f215bbdf6a 1-20,22-31,33-43,45-55,57-240,242-280
+  s_c21dc9b0e160c1::t_83de77e5d14453 21,32,44,56
+scripts/windows-test/host/windows-test-runs.ps1
+  s_c21dc9b0e160c1::t_47189019bfe2ec 1-72
+scripts/setup-windows-test-host.ps1
+  s_c21dc9b0e160c1::t_395d2f861f4c01 9,268-273,376,381,407-415
+  s_c21dc9b0e160c1::t_e0432b32c87be7 416
+scripts/windows-test/validate-contracts.ps1
+  s_c21dc9b0e160c1::t_e44026ab5e61b1 1-63
+scripts/windows-test/schemas/fetch.schema.json
+  s_c21dc9b0e160c1::t_624fb01ded5a9c 1-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "ae1903c811d6cb5f6452c4f1515d4e8c97019168",
+  "prompts": {},
+  "sessions": {
+    "s_c21dc9b0e160c1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc7ba-132a-70b1-a23d-04c749bc4c63",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
