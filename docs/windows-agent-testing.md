@@ -37,6 +37,7 @@ scripts/win-test run -- cargo check -p lsb-seawork-service --locked
 # Run a named repository suite.
 scripts/win-test suite service-fast
 scripts/win-test suite office-rootfs-smoke
+scripts/win-test suite rootfs-startup-smoke
 scripts/win-test suite update-fast
 scripts/win-test suite updater-release-smoke
 
