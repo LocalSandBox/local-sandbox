@@ -344,6 +344,13 @@ pub trait Adapter: Send + Sync {
 
     fn breadcrumb(&self, breadcrumb: Breadcrumb) -> Result<(), ()>;
     fn capture_failure(&self, event: FailureEvent) -> Result<Option<String>, ()>;
+    fn capture_failure_for_span(
+        &self,
+        _span_id: u64,
+        event: FailureEvent,
+    ) -> Result<Option<String>, ()> {
+        self.capture_failure(event)
+    }
     fn start_span(
         &self,
         parent_id: Option<u64>,
@@ -551,6 +558,12 @@ impl SpanGuard {
         if let Some(span_id) = self.span_id {
             let _ = self.adapter.set_span_data(span_id, key, value);
         }
+    }
+
+    pub fn capture_failure(&self, event: FailureEvent) -> Option<String> {
+        self.span_id
+            .and_then(|span_id| self.adapter.capture_failure_for_span(span_id, event).ok())
+            .flatten()
     }
 
     pub fn finish(mut self, status: SpanStatus) -> Option<String> {

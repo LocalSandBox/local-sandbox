@@ -265,6 +265,23 @@ impl Adapter for NativeAdapter {
         }
     }
 
+    fn capture_failure_for_span(
+        &self,
+        span_id: u64,
+        event: FailureEvent,
+    ) -> Result<Option<String>, ()> {
+        {
+            let state = self.state.lock().map_err(|_| ())?;
+            match state.spans.get(&span_id).ok_or(())? {
+                NativeSpan::Transaction(transaction) => unsafe {
+                    sentry_set_transaction_object(*transaction as *mut c_void)
+                },
+                NativeSpan::Span(span) => unsafe { sentry_set_span(*span as *mut c_void) },
+            }
+        }
+        self.capture_failure(event)
+    }
+
     fn start_span(
         &self,
         parent_id: Option<u64>,
@@ -545,6 +562,8 @@ unsafe extern "C" {
     fn sentry_start_session();
     fn sentry_end_session();
     fn sentry_set_trace(trace_id: *const c_char, parent_span_id: *const c_char);
+    fn sentry_set_transaction_object(transaction: *mut c_void);
+    fn sentry_set_span(span: *mut c_void);
     fn sentry_set_context(key: *const c_char, value: SentryValue);
     fn sentry_value_new_null() -> SentryValue;
     fn sentry_value_new_double(value: f64) -> SentryValue;

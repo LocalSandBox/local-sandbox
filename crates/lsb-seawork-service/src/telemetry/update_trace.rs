@@ -86,7 +86,7 @@ pub(crate) fn reconstruct_update(
                 "trace_id": trace.trace_id,
             }),
         );
-        let _ = telemetry.capture_failure(event);
+        let _ = root.capture_failure(event);
     }
     root.finish_at(status, end)
 }
