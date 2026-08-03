@@ -1,0 +1,21 @@
+scripts/windows-test-service-harness.ps1
+  s_be97528113af86::t_1781ed2d2d0a13 742-744,749,759-760,763-764,785,1050-1051,1061
+scripts/windows-test/host/windows-test-reset.ps1
+  s_be97528113af86::t_1781ed2d2d0a13 182-190,193
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "a832bbd95eafb875f8b7352de6f1f9da2f507440",
+  "prompts": {},
+  "sessions": {
+    "s_be97528113af86": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc8ca-d9dd-72a0-8144-f6f8a59bb3e4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
