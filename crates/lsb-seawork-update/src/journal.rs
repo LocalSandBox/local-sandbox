@@ -221,7 +221,7 @@ pub struct UpdateTransaction {
     pub last_failure_step: Option<UpdateFailureStep>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_failure_code: Option<UpdateFailureCode>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub timeline: Vec<UpdateTransition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_event_id: Option<String>,
@@ -468,6 +468,22 @@ mod tests {
         envelope.validate().unwrap();
         envelope.transaction.target_image_path.push_str(".tampered");
         assert!(envelope.validate().is_err());
+    }
+
+    #[test]
+    fn empty_timeline_preserves_previous_transaction_wire_checksum() {
+        let transaction = transaction();
+        let checksum_sha256 = sha256_json(&transaction).unwrap();
+        let value = serde_json::to_value(&transaction).unwrap();
+        assert!(value.get("timeline").is_none());
+        assert!(value.get("reported_event_id").is_none());
+
+        let envelope = TransactionEnvelope {
+            schema_version: UPDATE_STATE_SCHEMA_VERSION,
+            checksum_sha256,
+            transaction: serde_json::from_value(value).unwrap(),
+        };
+        envelope.validate().unwrap();
     }
 
     #[test]
