@@ -1,0 +1,19 @@
+xtask/src/seawork_seed_update.rs
+  s_be97528113af86::t_36eb7eb5d5b5fe 121,150-157,159
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "e9fc61ea557efe78ba4ec8b7ba0a1c0a50424e80",
+  "prompts": {},
+  "sessions": {
+    "s_be97528113af86": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc8ca-d9dd-72a0-8144-f6f8a59bb3e4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
