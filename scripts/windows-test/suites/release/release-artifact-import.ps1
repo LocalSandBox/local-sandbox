@@ -165,12 +165,14 @@ else {
 $importPath = Join-Path $RunRoot 'imported-release-artifact.json'
 $import = Get-Content -LiteralPath (Resolve-RegularFile $importPath 'import record' 64KB).FullName `
     -Raw | ConvertFrom-Json
+$nameMatch = [regex]::Match([string]$import.name,
+    '^lsb-seawork-service-v([0-9A-Za-z.+-]+)-windows-x86_64\.zip$')
 if ($import.schema_version -ne 1 -or $import.snapshot_sha -cne $SnapshotSha -or
-    [string]$import.name -notmatch '^lsb-seawork-service-v([0-9A-Za-z.+-]+)-windows-x86_64\.zip$' -or
+    -not $nameMatch.Success -or
     [string]$import.sha256 -notmatch '^[0-9a-f]{64}$') {
     throw 'Imported release artifact record is invalid or belongs to another snapshot.'
 }
-$version = $Matches[1]
+$version = $nameMatch.Groups[1].Value
 $archivePath = Join-Path $RunRoot ([string]$import.name)
 $archive = Get-Record $archivePath 'imported service archive'
 if ($archive.sha256 -cne [string]$import.sha256 -or $archive.size -ne [int64]$import.size) {
