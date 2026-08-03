@@ -1,0 +1,22 @@
+scripts/windows-test/suites/release/release-artifact-import.ps1
+  s_be97528113af86::t_2861bf264e2eff 226-229
+  s_be97528113af86::t_886db2edf71684 180-191,251-257,264-265,284-285
+scripts/win-test
+  s_be97528113af86::t_20ddb8781354c0 396-412,486
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "7a720dc6a7e454333dbe00fddf216adb90227389",
+  "prompts": {},
+  "sessions": {
+    "s_be97528113af86": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc8ca-d9dd-72a0-8144-f6f8a59bb3e4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
