@@ -1,0 +1,29 @@
+scripts/windows-test/test-release-submission.sh
+  s_be97528113af86::t_7a46c09cb2deaa 1-105
+scripts/extract-windows-release-evidence.sh
+  s_be97528113af86::t_69e25c5a30ffc5 1-23
+scripts/verify-windows-release-submission.sh
+  s_be97528113af86::t_d9ab349c35e198 22-23,26-28,34,47,49,51-52,55-56
+  s_be97528113af86::t_97a1ebdddd4c23 24-25
+  s_be97528113af86::t_69e25c5a30ffc5 1-14,29-33,35-45,58-110
+  s_be97528113af86::t_39029a514c04ef 15-21,46,48,50,53-54,57
+scripts/windows-release-descriptor.jq
+  s_be97528113af86::t_39029a514c04ef 13-14
+  s_be97528113af86::t_d9ab349c35e198 12,22-29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "a9762a3c06be7234c2b44106e2c38a2e42c4a597",
+  "prompts": {},
+  "sessions": {
+    "s_be97528113af86": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc8ca-d9dd-72a0-8144-f6f8a59bb3e4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
