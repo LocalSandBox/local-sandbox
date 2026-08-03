@@ -49,13 +49,14 @@
       ]
     },
     "release": {
-      "description": "Exact-artifact service acceptance, archive validation, and full digest-bound evidence.",
+      "description": "Exact baseline-to-candidate update, core service acceptance, one reboot, and final cleanup.",
       "minimum_free_gib": 55,
       "reset": true,
-      "includes": ["service"],
-      "acceptance_checks": ["mnt01.admin_live", "net01.managed_network", "rel01.artifact_trust", "sec01.endpoint_auth", "tst02.lifecycle", "win01.scm_lifecycle", "win01.service_identity_session0", "win01.standard_user_no_uac"],
+      "acceptance_checks": ["mnt01.admin_live", "net01.managed_network", "rel01.artifact_trust", "sec01.endpoint_auth", "tst02.lifecycle", "upd01.activation_smoke", "win01.scm_lifecycle", "win01.service_identity_session0", "win01.standard_user_no_uac"],
       "suites": [
-        { "name": "archive-acceptance", "required": true }
+        { "name": "release-artifact-import", "required": true },
+        { "name": "archive-acceptance", "required": true },
+        { "name": "release-service-core-update-reboot", "required": true }
       ]
     }
   },
@@ -179,6 +180,18 @@
       "mutations": ["bounded extraction of the imported archive beneath the run root"],
       "expected_artifacts": ["evidence-release-candidate.json", "seawork-test-release-manifest.json", "fetch-manifest.json"],
       "acceptance_checks": ["rel01.artifact_trust"]
+    },
+    "release-service-core-update-reboot": {
+      "description": "Install the baseline tuple, activate the exact candidate, run core cases, reboot once, and clean up.",
+      "category": "release",
+      "file": "scripts/windows-test/suites/release/release-service-core-update-reboot.ps1",
+      "timeout_minutes": 180,
+      "reboot_mode": "required",
+      "minimum_free_gib": 45,
+      "required_capabilities": ["administrator", "windows11_x86_64", "whpx", "sshd", "build_tools", "runtime_assets", "qemu_assets", "signing_assets", "interactive_user", "outbound_network"],
+      "mutations": ["baseline and candidate production service/updater installation", "protected update transaction", "host reboot", "standard-user core service scenarios"],
+      "expected_artifacts": ["evidence-baseline-installed.json", "evidence-release-core-update.json", "evidence-service-core.json", "evidence-post-reboot.json", "evidence-release-final-cleanup.json", "fetch-manifest.json"],
+      "acceptance_checks": ["mnt01.admin_live", "net01.managed_network", "sec01.endpoint_auth", "tst02.lifecycle", "upd01.activation_smoke", "win01.scm_lifecycle", "win01.service_identity_session0", "win01.standard_user_no_uac"]
     },
     "reboot-smoke": {
       "description": "Validate runner continuation across a real host reboot.",

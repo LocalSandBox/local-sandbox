@@ -4,7 +4,11 @@ param(
     [Parameter(Mandatory = $true)][ValidatePattern('^[a-z0-9][a-z0-9._-]{0,95}$')]
     [string] $RunId,
     [Parameter(Mandatory = $true)]
-    [ValidatePattern('^lsb-seawork-service-v[0-9A-Za-z.+-]+-windows-x86_64\.zip$')]
+    [ValidateScript({
+        $_ -match '^lsb-seawork-service-v[0-9A-Za-z.+-]+-windows-x86_64\.zip$' -or
+        $_ -match '^lsb-seawork-updater-v[0-9A-Za-z.+-]+-windows-x86_64\.zip$' -or
+        $_ -match '^lsb-seawork-updater-v[0-9A-Za-z.+-]+-windows-x86_64-manifest\.json$'
+    })]
     [string] $FileName,
     [ValidatePattern('^$|^[0-9a-f]{64}$')][string] $ExpectedSha256 = '',
     [ValidateRange(0, 8589934592)][int64] $ExpectedSize = 0,

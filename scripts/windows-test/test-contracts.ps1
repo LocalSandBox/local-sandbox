@@ -75,10 +75,9 @@ try {
     $profilePlan = Join-Path $PSScriptRoot 'profile-plan.ps1'
     $releasePlan = @(& $profilePlan -Profile release)
     if (($releasePlan -join "`n") -cne (@(
-        "system-maintenance-ipc`tnone",
-        "filtered-client-token`tnone",
-        "service-reboot`trequired",
-        "archive-acceptance`tnone"
+        "release-artifact-import`tnone",
+        "archive-acceptance`tnone",
+        "release-service-core-update-reboot`trequired"
     ) -join "`n")) { throw 'Release profile plan does not match the catalog expansion.' }
     $diagnosticsPlan = @(& $profilePlan -Profile diagnostics -IncludeOptional)
     if ($diagnosticsPlan[-1] -cne "qemu-sentry-acceptance`tnone") {

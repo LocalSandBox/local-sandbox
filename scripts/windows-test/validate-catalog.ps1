@@ -18,7 +18,8 @@ $knownChecks = @(
     'mnt01.nonadmin_staged', 'net01.managed_network', 'net02.host_relay',
     'net02.ports_wfp', 'obs01.event_log', 'rel01.artifact_trust',
     'sec01.endpoint_auth', 'sec02.reconciliation', 'tst01.adversarial',
-    'tst02.lifecycle', 'win01.scm_lifecycle', 'win01.service_identity_session0',
+    'tst02.lifecycle', 'upd01.activation_smoke', 'win01.scm_lifecycle',
+    'win01.service_identity_session0',
     'win01.standard_user_no_uac', 'win01.two_users_two_logons',
     'win01.whpx_qemu_boot_exec_stop'
 )

@@ -44,7 +44,29 @@ try {
       !info.capabilities.ports,
   )
 
-  if (config.scenario === 'sequential') {
+  if (config.scenario === 'update-check') {
+    failedStage = 'update-check-trigger'
+    await service.checkForUpdate()
+    let sawChecking = false
+    let finalStatus
+    const deadline = Date.now() + 120_000
+    while (Date.now() < deadline) {
+      failedStage = 'update-check-status'
+      const status = await service.getUpdateStatus()
+      if (status.phase === 'update_checking') sawChecking = true
+      if (status.phase === 'update_no_candidate') {
+        finalStatus = status
+        break
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    check('candidate-update-check-observed', sawChecking)
+    check(
+      'candidate-update-no-candidate',
+      finalStatus?.phase === 'update_no_candidate' && finalStatus?.target === undefined,
+    )
+    resultExtras = { updateStatus: finalStatus }
+  } else if (config.scenario === 'sequential') {
     for (let effect = 1; effect <= 10; effect += 1) {
       failedStage = `sequential-start-${effect}`
       sandbox = await service.start({

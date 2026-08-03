@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('InstallAndSmoke', 'SmokeInstalled', 'Uninstall')]
+    [ValidateSet('InstallAndSmoke', 'InstallOnly', 'SmokeCore', 'SmokeInstalled', 'Uninstall')]
     [string] $Mode,
 
     [Parameter(Mandatory = $true)]
@@ -9,7 +9,14 @@ param(
 
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-f]{40}$')]
-    [string] $SnapshotSha
+    [string] $SnapshotSha,
+
+    [ValidateSet('Broad', 'Core')]
+    [string] $Scope = 'Broad',
+
+    [string] $InstallBundleRoot = '',
+
+    [string] $InstallEvidencePath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -490,12 +497,14 @@ function Invoke-ClientSmoke {
         [switch] $Mounts,
         [switch] $Network,
         [switch] $Sequential,
+        [switch] $UpdateCheck,
         [switch] $AdmissionRejected,
         [string] $ClientHarnessRoot = '',
         [string] $ClientExecutableName = 'node.exe',
         [string] $Suffix
     )
-    $scenarioCount = [int]$Mounts.IsPresent + [int]$Network.IsPresent + [int]$Sequential.IsPresent
+    $scenarioCount = [int]$Mounts.IsPresent + [int]$Network.IsPresent + `
+        [int]$Sequential.IsPresent + [int]$UpdateCheck.IsPresent
     if ($scenarioCount -gt 1) {
         throw 'Only one specialized client smoke scenario may be selected.'
     }
@@ -562,6 +571,9 @@ function Invoke-ClientSmoke {
     }
     elseif ($Sequential) {
         $clientConfig['scenario'] = 'sequential'
+    }
+    elseif ($UpdateCheck) {
+        $clientConfig['scenario'] = 'update-check'
     }
     $clientConfig | ConvertTo-Json -Depth 8 |
         Set-Content -LiteralPath $configPath -Encoding utf8NoBOM
@@ -685,8 +697,16 @@ function Install-And-Smoke {
     if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
         throw 'Refusing to touch an existing LocalSandboxSeaWork service.'
     }
-    $evidence = Get-Content -LiteralPath (Join-Path $RunRoot 'evidence-release-candidate.json') -Raw | ConvertFrom-Json
-    if ($evidence.snapshot_sha -ne $SnapshotSha -or $evidence.service_profile -ne 'production') {
+    $evidencePath = if ([string]::IsNullOrWhiteSpace($InstallEvidencePath)) {
+        Join-Path $RunRoot 'evidence-release-candidate.json'
+    } else { [IO.Path]::GetFullPath($InstallEvidencePath) }
+    $expectedRunPrefix = [IO.Path]::GetFullPath($RunRoot).TrimEnd('\') + '\'
+    if (-not $evidencePath.StartsWith($expectedRunPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Install evidence must remain beneath the run root.'
+    }
+    $evidence = Get-Content -LiteralPath $evidencePath -Raw | ConvertFrom-Json
+    if (($null -ne $evidence.PSObject.Properties['snapshot_sha'] -and
+        $evidence.snapshot_sha -ne $SnapshotSha) -or $evidence.service_profile -ne 'production') {
         throw 'The release-candidate evidence does not match this production snapshot.'
     }
     $version = [string]$evidence.version
@@ -705,7 +725,12 @@ function Install-And-Smoke {
         throw 'Refusing to adopt an existing standard-user smoke root.'
     }
     $versionRoot = Join-Path $installRoot "versions\$version"
-    $bundle = Join-Path $RunRoot "release-work\out\lsb-seawork-service-v$version-windows-x86_64-stage\LocalSandbox"
+    $bundle = if ([string]::IsNullOrWhiteSpace($InstallBundleRoot)) {
+        Join-Path $RunRoot "release-work\out\lsb-seawork-service-v$version-windows-x86_64-stage\LocalSandbox"
+    } else { [IO.Path]::GetFullPath($InstallBundleRoot) }
+    if (-not $bundle.StartsWith($expectedRunPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Install bundle must remain beneath the run root.'
+    }
     $serviceBinary = Join-Path $versionRoot 'bin\localsandbox-seawork-service.exe'
     $eventKey = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\$serviceName"
     $clientIdentity = Get-InteractiveClientIdentity
@@ -860,20 +885,42 @@ function Install-And-Smoke {
     $state = Read-InstallState
     $before = Get-CompatibilityResources
     Invoke-ClientSmoke $state -Suffix 'mount-free'
-    Invoke-ClientSmoke $state -ClientHarnessRoot $clientTestHarness -Suffix 'caller-test-root'
-    Invoke-ClientSmoke $state -AdmissionRejected `
-        -ClientHarnessRoot $clientCollisionHarness -Suffix 'caller-prefix-collision'
+    if ($Mode -eq 'InstallOnly') {
+        Assert-CompatibleResourcesRestored $before $stateRoot
+        [ordered]@{
+            schema_version = 1
+            status = 'passed'
+            snapshot_sha = $SnapshotSha
+            version = $version
+            production_identity = $true
+            service_healthy = $true
+            admissions_open = $true
+            standard_user_mount_free = $true
+        } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath `
+            (Join-Path $RunRoot 'evidence-baseline-installed.json') -Encoding utf8NoBOM
+        return
+    }
+    if ($Scope -eq 'Broad') {
+        Invoke-ClientSmoke $state -ClientHarnessRoot $clientTestHarness -Suffix 'caller-test-root'
+        Invoke-ClientSmoke $state -AdmissionRejected `
+            -ClientHarnessRoot $clientCollisionHarness -Suffix 'caller-prefix-collision'
+    }
     Invoke-ClientSmoke $state -AdmissionRejected `
         -ClientHarnessRoot $clientTestHarness -ClientExecutableName 'node-untrusted.exe' `
         -Suffix 'caller-wrong-publisher'
-    Set-PathOwner (Join-Path $clientTestHarness 'node.exe') 'S-1-5-32-544'
-    Invoke-ClientSmoke $state -AdmissionRejected `
-        -ClientHarnessRoot $clientTestHarness -Suffix 'caller-wrong-owner'
-    Set-PathOwner (Join-Path $clientTestHarness 'node.exe') $clientUserSid
+    if ($Scope -eq 'Broad') {
+        Set-PathOwner (Join-Path $clientTestHarness 'node.exe') 'S-1-5-32-544'
+        Invoke-ClientSmoke $state -AdmissionRejected `
+            -ClientHarnessRoot $clientTestHarness -Suffix 'caller-wrong-owner'
+        Set-PathOwner (Join-Path $clientTestHarness 'node.exe') $clientUserSid
+    }
     Invoke-ClientSmoke $state -Mounts -Suffix 'direct-mounts'
-    Invoke-ClientSmoke $state -Mounts -Suffix 'direct-mounts-repeat'
     Invoke-ClientSmoke $state -Network -Suffix 'network'
-    Invoke-ClientSmoke $state -Sequential -Suffix 'sequential'
+    Invoke-ClientSmoke $state -UpdateCheck -Suffix 'update-check'
+    if ($Scope -eq 'Broad') {
+        Invoke-ClientSmoke $state -Mounts -Suffix 'direct-mounts-repeat'
+        Invoke-ClientSmoke $state -Sequential -Suffix 'sequential'
+    }
     Assert-CompatibleResourcesRestored $before $stateRoot
     [ordered]@{
         schema_version = 1
@@ -901,13 +948,44 @@ function Install-And-Smoke {
         ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $RunRoot 'evidence-installed-smoke.json') -Encoding utf8NoBOM
 }
 
+function Smoke-Core {
+    $state = Read-InstallState
+    if ((Get-Service -Name $serviceName).Status -ne 'Running') {
+        Wait-ServiceState 'Running' $postRebootServiceWaitSeconds
+    }
+    $before = Get-CompatibilityResources
+    Invoke-ClientSmoke $state -Suffix 'mount-free'
+    Invoke-ClientSmoke $state -AdmissionRejected `
+        -ClientHarnessRoot ([string]$state.client_test_harness_root) `
+        -ClientExecutableName 'node-untrusted.exe' -Suffix 'caller-wrong-publisher'
+    Invoke-ClientSmoke $state -Mounts -Suffix 'direct-mounts'
+    Invoke-ClientSmoke $state -Network -Suffix 'network'
+    Assert-CompatibleResourcesRestored $before $state.state_root
+    [ordered]@{
+        schema_version = 1
+        status = 'passed'
+        snapshot_sha = $SnapshotSha
+        scope = 'core'
+        mount_free = $true
+        seawork_mounts = $true
+        managed_network = $true
+        candidate_manual_no_candidate = $true
+        wrong_publisher_rejected = $true
+    } | ConvertTo-Json | Set-Content -LiteralPath `
+        (Join-Path $RunRoot 'evidence-service-core.json') -Encoding utf8NoBOM
+}
+
 function Smoke-Installed {
     $state = Read-InstallState
     if ((Get-Service -Name $serviceName).Status -ne 'Running') {
         Wait-ServiceState 'Running' $postRebootServiceWaitSeconds
     }
     $before = Get-CompatibilityResources
-    Invoke-ClientSmoke $state -Mounts -Suffix 'post-reboot'
+    if ($Scope -eq 'Core') {
+        Invoke-ClientSmoke $state -Suffix 'post-reboot'
+    } else {
+        Invoke-ClientSmoke $state -Mounts -Suffix 'post-reboot'
+    }
     Assert-CompatibleResourcesRestored $before $state.state_root
     [ordered]@{
         schema_version = 1
@@ -925,6 +1003,24 @@ function Smoke-Installed {
 
 function Uninstall-Owned {
     $state = Read-InstallState
+    if ($null -ne $state.PSObject.Properties['updater_service_binary']) {
+        $updaterService = Get-CimInstance Win32_Service `
+            -Filter "Name='LocalSandboxSeaWorkUpdater'" -ErrorAction SilentlyContinue
+        if ($null -ne $updaterService) {
+            if (-not $updaterService.PathName.Contains(
+                [string]$state.updater_service_binary,
+                [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Refusing to remove an updater service whose ImagePath is not owned by this run.'
+            }
+            if ((Get-Service -Name 'LocalSandboxSeaWorkUpdater').Status -ne 'Stopped') {
+                Stop-Service -Name 'LocalSandboxSeaWorkUpdater'
+                (Get-Service -Name 'LocalSandboxSeaWorkUpdater').WaitForStatus(
+                    'Stopped', [TimeSpan]::FromMinutes(2))
+            }
+            Invoke-Native sc.exe @('delete', 'LocalSandboxSeaWorkUpdater') `
+                'updater service deletion'
+        }
+    }
     $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction SilentlyContinue
     if ($null -ne $service) {
         if (-not $service.PathName.Contains([string]$state.service_binary, [StringComparison]::OrdinalIgnoreCase)) {
@@ -972,6 +1068,8 @@ if ($MyInvocation.InvocationName -ne '.') {
     Assert-Administrator
     switch ($Mode) {
         'InstallAndSmoke' { Install-And-Smoke }
+        'InstallOnly' { Install-And-Smoke }
+        'SmokeCore' { Smoke-Core }
         'SmokeInstalled' { Smoke-Installed }
         'Uninstall' { Uninstall-Owned }
     }

@@ -337,11 +337,11 @@ invoke_current_reboot_suite() {
     resume_run "$run_id"
 }
 
-import_release_artifact() {
+import_release_file() {
     local artifact_path="$1" artifact_name expected_sha expected_size remote_stage import_status=0
     [[ -f "$artifact_path" ]] || fail "release artifact is not a file: $artifact_path"
     artifact_name="$(basename "$artifact_path")"
-    [[ "$artifact_name" =~ ^lsb-seawork-service-v[0-9A-Za-z.+-]+-windows-x86_64\.zip$ ]] || \
+    [[ "$artifact_name" =~ ^lsb-seawork-(service-v[0-9A-Za-z.+-]+-windows-x86_64\.zip|updater-v[0-9A-Za-z.+-]+-windows-x86_64(\.zip|-manifest\.json))$ ]] || \
         fail 'release artifact filename is not canonical'
     expected_sha="$(shasum -a 256 "$artifact_path" | awk '{print $1}')"
     expected_size="$(wc -c < "$artifact_path" | tr -d ' ')"
@@ -367,10 +367,31 @@ import_release_artifact() {
     return "$import_status"
 }
 
+import_baseline_tuple() {
+    local directory="$1" path version='' observed_version count=0
+    [[ -d "$directory" ]] || fail "baseline tuple directory does not exist: $directory"
+    local -a files=(
+        "$directory"/lsb-seawork-service-v*-windows-x86_64.zip
+        "$directory"/lsb-seawork-updater-v*-windows-x86_64.zip
+        "$directory"/lsb-seawork-updater-v*-windows-x86_64-manifest.json
+    )
+    for path in "${files[@]}"; do
+        [[ -f "$path" ]] || fail 'baseline directory must contain one service/updater/manifest tuple'
+        observed_version="$(basename "$path" | sed -E 's/^lsb-seawork-(service|updater)-v([^/]+)-windows-x86_64(-manifest)?\.(zip|json)$/\2/')"
+        [[ "$observed_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || \
+            fail 'baseline tuple contains a noncanonical version'
+        if [[ -z "$version" ]]; then version="$observed_version"; fi
+        [[ "$version" == "$observed_version" ]] || fail 'baseline tuple versions disagree'
+        import_release_file "$path"
+        count=$((count + 1))
+    done
+    [[ "$count" -eq 3 ]] || fail 'baseline tuple must contain exactly three required files'
+}
+
 accept_profile() {
     local profile="$1"
     shift
-    local include_optional=0 reuse_run_id='' artifact_path='' artifact_basename='' profile_status=0
+    local include_optional=0 reuse_run_id='' artifact_path='' artifact_basename='' baseline_dir='' profile_status=0
     local suite_name reboot_mode profile_plan
     local -a profile_plan_arguments finalize_arguments
     while [[ "$#" -gt 0 ]]; do
@@ -393,6 +414,12 @@ accept_profile() {
                 artifact_path="$2"
                 shift 2
                 ;;
+            --baseline-dir)
+                [[ "$#" -ge 2 && -n "$2" ]] || fail '--baseline-dir requires a local directory'
+                [[ -z "$baseline_dir" ]] || fail '--baseline-dir was specified more than once'
+                baseline_dir="$2"
+                shift 2
+                ;;
             *) fail "unknown accept option: $1" ;;
         esac
     done
@@ -404,6 +431,12 @@ accept_profile() {
     fi
     if [[ "$profile" != release && -n "$artifact_path" ]]; then
         fail '--artifact is supported only by the release profile'
+    fi
+    if [[ "$profile" != release && -n "$baseline_dir" ]]; then
+        fail '--baseline-dir is supported only by the release profile'
+    fi
+    if [[ "$profile" == release && -z "$baseline_dir" ]]; then
+        fail 'release acceptance requires --baseline-dir <directory>'
     fi
     if [[ -n "$reuse_run_id" && -n "$artifact_path" ]]; then
         fail '--artifact and --reuse-candidate are mutually exclusive'
@@ -426,11 +459,9 @@ accept_profile() {
         "${windows_root}/windows-test/host/windows-test-doctor.ps1" -Profile "$profile"
 
     create_snapshot
+    import_baseline_tuple "$baseline_dir"
     if [[ -n "$artifact_path" ]]; then
-        import_release_artifact "$artifact_path"
-        if ! invoke_bootstrap Run release-artifact-import; then
-            profile_status=1
-        fi
+        import_release_file "$artifact_path"
     fi
     profile_plan_arguments=(
         pwsh -NoProfile -NonInteractive -File
