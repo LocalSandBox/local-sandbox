@@ -1,0 +1,24 @@
+crates/lsb-seawork-service/src/telemetry/update_trace.rs
+  s_523ebb0e045371::t_dfd03859a03227 89
+crates/lsb-seawork-service/src/telemetry/native.rs
+  s_523ebb0e045371::t_dfd03859a03227 268-284,565-566
+crates/lsb-seawork-service/src/telemetry/mod.rs
+  s_523ebb0e045371::t_dfd03859a03227 347-353,563-567
+  s_523ebb0e045371::t_d81206eeb42939 568
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "9cd3353b30c43704b60f0eaa565ef3baf1afdf9b",
+  "prompts": {},
+  "sessions": {
+    "s_523ebb0e045371": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc78c-68b1-75e3-950f-a99ecb1b2cb9",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
