@@ -19,6 +19,7 @@ struct Options {
     publisher_sha256: String,
     transaction_id: String,
     request: Option<PathBuf>,
+    helper: Option<PathBuf>,
     final_version_root: Option<String>,
     created_utc: Option<String>,
     release_id: Option<u64>,
@@ -67,6 +68,7 @@ fn parse(args: &[String]) -> Result<Options> {
     let publisher_sha256 = take(&mut values, "--publisher-sha256")?;
     let transaction_id = take(&mut values, "--transaction-id")?;
     let request = values.remove("--request").map(PathBuf::from);
+    let helper = values.remove("--helper").map(PathBuf::from);
     let final_version_root = values.remove("--final-version-root");
     let created_utc = values.remove("--created-utc");
     let release_id = values
@@ -79,6 +81,7 @@ fn parse(args: &[String]) -> Result<Options> {
     }
     let candidate_values = [
         request.is_some(),
+        helper.is_some(),
         final_version_root.is_some(),
         created_utc.is_some(),
         release_id.is_some(),
@@ -98,6 +101,7 @@ fn parse(args: &[String]) -> Result<Options> {
         publisher_sha256,
         transaction_id,
         request,
+        helper,
         final_version_root,
         created_utc,
         release_id,
@@ -156,7 +160,18 @@ fn run_windows(options: Options) -> Result<()> {
         bail!("verified bundle publisher differs from the descriptor binding");
     }
     verify_windows_directory_protection(&options.bundle)?;
-    verify_windows_package(&options.bundle, &verification, &[options.publisher_sha256])?;
+    verify_windows_package(
+        &options.bundle,
+        &verification,
+        std::slice::from_ref(&options.publisher_sha256),
+    )?;
+    if options.mode == Mode::SeedCandidate {
+        verify_installed_helper(
+            options.helper.as_ref().expect("validated candidate option"),
+            &options.publisher_sha256,
+            verification.required_helper_protocol,
+        )?;
+    }
     let identity = verification.bundle_identity(&archive_sha256)?;
     match options.mode {
         Mode::InitializeBaseline => {
@@ -206,6 +221,65 @@ fn run_windows(options: Options) -> Result<()> {
                 &request,
             )?;
         }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn verify_installed_helper(
+    path: &std::path::Path,
+    publisher_sha256: &str,
+    required_protocol: lsb_seawork_update::HelperProtocol,
+) -> Result<()> {
+    use std::process::Command;
+
+    use lsb_seawork_update::{
+        validate_helper_install_output, verify_windows_directory_protection,
+        verify_windows_file_publisher,
+    };
+    use windows_service::service::{ServiceAccess, ServiceType};
+    use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
+
+    const HELPER_SERVICE_NAME: &str = "LocalSandboxSeaWorkUpdater";
+    let updater = path.parent().context("installed helper has no parent")?;
+    let product = updater
+        .parent()
+        .context("updater directory has no parent")?;
+    verify_windows_directory_protection(product)
+        .context("verify helper product root protection")?;
+    verify_windows_directory_protection(updater).context("verify helper directory protection")?;
+    verify_windows_file_publisher(path, &[publisher_sha256.to_owned()])
+        .context("verify installed helper publisher")?;
+    let output = Command::new(path)
+        .args(["--verify-install", "--json"])
+        .output()
+        .context("run installed helper verification")?;
+    if !output.status.success() {
+        bail!(
+            "installed helper verification failed with {}",
+            output.status
+        );
+    }
+    validate_helper_install_output(&output.stdout, HELPER_SERVICE_NAME, required_protocol)
+        .context("validate installed helper protocol")?;
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+    let service = manager.open_service(HELPER_SERVICE_NAME, ServiceAccess::QUERY_CONFIG)?;
+    let config = service.query_config()?;
+    let expected = format!("\"{}\" --service", path_string(path)?);
+    if config.service_type != ServiceType::OWN_PROCESS
+        || config.executable_path.as_os_str() != std::ffi::OsStr::new(&expected)
+        || config
+            .account_name
+            .as_deref()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_none_or(|account| !account.eq_ignore_ascii_case("LocalSystem"))
+    {
+        bail!(
+            "installed helper SCM configuration differs: path={:?}, account={:?}, type={:?}",
+            config.executable_path,
+            config.account_name,
+            config.service_type
+        );
     }
     Ok(())
 }
@@ -262,6 +336,10 @@ mod tests {
         let mut args = common("seed-candidate");
         for pair in [
             ["--request", r"C:\state\request.json"],
+            [
+                "--helper",
+                r"C:\Program Files\SeaWork\LocalSandbox\updater\localsandbox-seawork-updater.exe",
+            ],
             [
                 "--final-version-root",
                 r"C:\Program Files\SeaWork\LocalSandbox\versions\0.5.6",

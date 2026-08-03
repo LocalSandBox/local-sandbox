@@ -263,6 +263,7 @@ if ($Phase -eq 'BeforeReboot') {
             '--bundle', $stagedBundle, '--committed', $committedPath,
             '--publisher-subject', $publisherSubject, '--publisher-sha256', $publisherSha256,
             '--transaction-id', $transactionId, '--request', $requestPath,
+            '--helper', $installedUpdater,
             '--final-version-root', $finalVersionRoot,
             '--created-utc', [DateTime]::UtcNow.ToString('o'), '--release-id', '1',
             '--asset-url', "https://github.com/LocalSandBox/local-sandbox/releases/download/v$candidateVersion/$($candidateService.Name)"

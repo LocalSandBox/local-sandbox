@@ -11,8 +11,11 @@ flate2 = "1"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 lsb-service-proto = { path = "../crates/lsb-service-proto" }
-lsb-seawork-update.workspace = true
+lsb-seawork-update = { workspace = true, features = ["coordinator-policy"] }
 semver = "1"
 serde_json = { version = "1", features = ["preserve_order"] }
 toml_edit = "0.22"
 lsb-platform.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8.1"

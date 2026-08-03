@@ -2371,6 +2371,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "toml_edit",
+ "windows-service",
 ]
 
 [[package]]
