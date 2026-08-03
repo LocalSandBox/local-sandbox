@@ -62,8 +62,14 @@ if ($manifestItem.Length -le 0 -or $manifestItem.Length -gt 256KB) {
     throw 'The fetch manifest size is outside the supported bound.'
 }
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+$generatedUtc = if ($manifest.generated_utc -is [DateTime]) {
+    $manifest.generated_utc.ToUniversalTime().ToString('o')
+}
+else {
+    [string]$manifest.generated_utc
+}
 if ($manifest.schema_version -ne 2 -or $manifest.run_id -ne $RunId -or
-    [string]$manifest.generated_utc -notmatch '^\d{4}-\d{2}-\d{2}T') {
+    $generatedUtc -notmatch '^\d{4}-\d{2}-\d{2}T') {
     throw 'The fetch manifest identity is invalid.'
 }
 $artifacts = @($manifest.artifacts)
