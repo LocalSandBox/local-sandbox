@@ -10,7 +10,8 @@ Use the existing SeaWork Sentry project and start with:
 - QEMU hangs: filter `qemu.failure_kind:guest_ready_timeout` or
   `qemu.failure_kind:qemu_shutdown_timeout`
 - traces: filter `service.name:localsandbox-seawork-service` and transaction
-  `service.startup`, `service.heartbeat`, `sandbox.start`, or `sandbox.stop`
+  `service.startup`, `service.heartbeat`, `service.update`, `sandbox.start`, or
+  `sandbox.stop`
 - regressions: group by `release:local-sandbox-service@<version>`
 
 Release Health uses the service's explicit session: it begins only after the
@@ -115,6 +116,29 @@ Create cleanup duration p50/p95 widgets grouped by span operation, `release`,
 and `cache.outcome`. Add a p95 alert just below the default stop deadline and a
 separate count of `cleanup.result:partial OR cleanup.result:failed` so a faster
 but incomplete cleanup does not look healthy.
+
+## Investigate a service update
+
+Filter traces on transaction `service.update`. The protected update journal is
+the timing source because the updater stops and replaces the instrumented
+service. The restarted target, or restored old service, reconstructs one trace
+with `source.version`, `target.version`, `result`,
+`update.transaction_id`, and any stable `failure.phase`/`failure.code`. Child
+spans cover the check, release selection, download, extraction, verification,
+preinstall, idle wait, activation, service stop, image-path switch, target
+start/health, commit, and rollback actions that occurred.
+
+Create update-duration p50/p95 widgets grouped by `result`, `release`, and
+`target.version`, plus a count grouped by `failure.code`. Alert on
+`result:rolled_back OR result:quarantined`. The transaction ID is correlation
+data only; do not group issues, transaction names, or fingerprints by it.
+
+The service writes the returned Sentry event ID into the checksummed journal
+only after the SDK accepts the reconstructed transaction. Until then the
+terminal journal remains current and is retried after startup or on a
+heartbeat. Once reported, the helper moves it to update history. Rollback and
+quarantine outcomes also emit a structured error event carrying the same trace
+ID and update transaction ID.
 
 Only the newest three completed local QEMU dump incidents are retained. A
 missing `sentry-receipt.json` means local evidence was captured but no Sentry

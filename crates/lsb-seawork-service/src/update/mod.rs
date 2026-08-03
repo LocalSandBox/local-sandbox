@@ -19,7 +19,7 @@ use lsb_seawork_update::{
     CommittedStateEnvelope, FailedTargetDecision, FailedTargetState, HelperProtocol, PackagePolicy,
     PreinstallReceiptEnvelope, PreinstallRequest, PreinstallRequestEnvelope, ReleaseCandidate,
     ReleaseChannel, ReleaseResponseStatus, ReleaseSelector, TransactionEnvelope, TransactionPhase,
-    UpdateTransaction,
+    UpdateActor, UpdateTransaction, UpdateTransition, UpdateTransitionOutcome,
 };
 use lsb_service_proto::{UpdateCheckCategory, UpdatePhase, UpdateRetryState, SUPPORTED};
 use serde::{Deserialize, Serialize};
@@ -469,19 +469,42 @@ impl Coordinator {
             bail!("preinstall request no longer matches committed state");
         }
 
+        let mut timeline = request.request.timeline.clone();
+        timeline.push(UpdateTransition {
+            phase: "update.preinstall".to_string(),
+            actor: UpdateActor::Updater,
+            started_utc: request.request.created_utc.clone(),
+            completed_utc: Some(receipt.receipt.completed_utc.clone()),
+            duration_ms: Some(duration_between(
+                &request.request.created_utc,
+                &receipt.receipt.completed_utc,
+            )),
+            outcome: Some(UpdateTransitionOutcome::Succeeded),
+            failure_code: None,
+        });
         self.wait_for_helper_stopped()?;
         self.set_phase(
             UpdatePhase::UpdateWaitingForIdle,
             Some(request.request.candidate.clone()),
         )?;
-        while !self.context.admissions().try_seal_if_idle()? {
-            self.require_not_stopping("atomic idle seal")?;
-            std::thread::sleep(Duration::from_millis(250));
-        }
+        record_update_action(
+            &mut timeline,
+            "update.idle_wait",
+            UpdateActor::Service,
+            || {
+                while !self.context.admissions().try_seal_if_idle()? {
+                    self.require_not_stopping("atomic idle seal")?;
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                Ok(())
+            },
+        )?;
 
         let mut update_id = None;
         let mut journal_created = false;
         let handoff = (|| {
+            let activation_started = now_utc()?;
+            let activation_timer = Instant::now();
             self.require_not_stopping("sealed activation handoff")?;
             self.set_phase(
                 UpdatePhase::UpdateSealed,
@@ -494,6 +517,13 @@ impl Coordinator {
             let old_image = std::env::current_exe()?;
             let final_root = Path::new(&request.request.final_version_root);
             let target_image = final_root.join("bin").join(MAIN_EXE);
+            timeline.push(completed_update_transition(
+                "update.activation",
+                UpdateActor::Service,
+                activation_started,
+                activation_timer,
+                true,
+            )?);
             let transaction = TransactionEnvelope::new(UpdateTransaction {
                 transaction_id: request.request.request_id.clone(),
                 update_id: id,
@@ -512,7 +542,7 @@ impl Coordinator {
                 last_error_category: None,
                 last_failure_step: None,
                 last_failure_code: None,
-                timeline: Vec::new(),
+                timeline: timeline.clone(),
                 reported_event_id: None,
             })?;
             create_json(&self.paths.updates.current_transaction, &transaction)?;
@@ -591,24 +621,34 @@ impl Coordinator {
         committed.validate()?;
         self.context
             .set_committed_identity(committed.committed.current.clone());
+        let mut timeline = Vec::new();
         let ReleasePages {
             pages,
             etag,
             not_modified,
-        } = self.http.release_pages(self.current_etag().as_deref())?;
-        let candidate = if not_modified {
-            self.cached_candidate(&committed)?
-        } else {
-            let mut selector = ReleaseSelector::new();
-            for page in pages {
-                selector.push_page(&page)?;
-            }
-            selector.select(
-                self.channel,
-                &committed.committed.current.version,
-                &committed.committed.highest_committed_version,
-            )?
-        };
+        } = record_update_action(&mut timeline, "update.check", UpdateActor::Service, || {
+            self.http.release_pages(self.current_etag().as_deref())
+        })?;
+        let candidate = record_update_action(
+            &mut timeline,
+            "update.release_selection",
+            UpdateActor::Service,
+            || {
+                if not_modified {
+                    self.cached_candidate(&committed)
+                } else {
+                    let mut selector = ReleaseSelector::new();
+                    for page in pages {
+                        selector.push_page(&page)?;
+                    }
+                    selector.select(
+                        self.channel,
+                        &committed.committed.current.version,
+                        &committed.committed.highest_committed_version,
+                    )
+                }
+            },
+        )?;
         let Some(candidate) = candidate else {
             self.record_success(UpdatePhase::UpdateNoCandidate, None, etag)?;
             return Ok(());
@@ -620,43 +660,60 @@ impl Coordinator {
             return Ok(());
         }
         self.set_phase(UpdatePhase::UpdateDownloading, Some(candidate.clone()))?;
-        let archive = self
-            .http
-            .download(&candidate, &self.paths.updates.downloads, &self.stop)?;
+        let archive = record_update_action(
+            &mut timeline,
+            "update.download",
+            UpdateActor::Service,
+            || {
+                self.http
+                    .download(&candidate, &self.paths.updates.downloads, &self.stop)
+            },
+        )?;
         self.set_phase(UpdatePhase::UpdateVerifying, Some(candidate.clone()))?;
         let transaction_id = random_id()?;
         let staging = self.paths.updates.staging.join(&transaction_id);
-        let extraction = extract_zip_archive(&archive, &staging)?;
+        let extraction = record_update_action(
+            &mut timeline,
+            "update.extraction",
+            UpdateActor::Service,
+            || extract_zip_archive(&archive, &staging),
+        )?;
         if extraction.archive_sha256 != candidate.archive_sha256 {
             let _ = remove_owned_staging(&self.paths.updates.staging, &transaction_id);
             bail!("staged archive digest differs from release identity");
         }
         let staged_root = staging.join("LocalSandbox");
-        let verified_target = (|| {
-            let policy = PackagePolicy {
-                expected_version: &candidate.version,
-                supported_protocol: SUPPORTED,
-                ledger_writer_schema: committed.committed.current.ledger.writer_schema,
-                service_configuration_revision: crate::bundle::SERVICE_CONFIGURATION_REVISION,
-                service_name: SERVICE_NAME,
-                service_display_name: "LocalSandbox for SeaWork",
-                service_account: "LocalSystem",
-                service_type: "SERVICE_WIN32_OWN_PROCESS",
-                pipe_name: PIPE_NAME,
-                pipe_sddl: PIPE_SDDL,
-            };
-            let verification = verify_bundle_root(&staged_root, &policy)?;
-            let target = verification.bundle_identity(&candidate.archive_sha256)?;
-            let required_helper_protocol = verification.required_helper_protocol;
-            verify_windows_directory_protection(&staged_root)?;
-            verify_windows_package(&staged_root, &verification, &compiled_publishers())?;
-            if target.version != candidate.version
-                || target.ledger.writer_schema != committed.committed.current.ledger.writer_schema
-            {
-                bail!("verified target is incompatible with committed service state");
-            }
-            Ok::<_, anyhow::Error>((target, required_helper_protocol))
-        })();
+        let verified_target = record_update_action(
+            &mut timeline,
+            "update.verification",
+            UpdateActor::Service,
+            || {
+                let policy = PackagePolicy {
+                    expected_version: &candidate.version,
+                    supported_protocol: SUPPORTED,
+                    ledger_writer_schema: committed.committed.current.ledger.writer_schema,
+                    service_configuration_revision: crate::bundle::SERVICE_CONFIGURATION_REVISION,
+                    service_name: SERVICE_NAME,
+                    service_display_name: "LocalSandbox for SeaWork",
+                    service_account: "LocalSystem",
+                    service_type: "SERVICE_WIN32_OWN_PROCESS",
+                    pipe_name: PIPE_NAME,
+                    pipe_sddl: PIPE_SDDL,
+                };
+                let verification = verify_bundle_root(&staged_root, &policy)?;
+                let target = verification.bundle_identity(&candidate.archive_sha256)?;
+                let required_helper_protocol = verification.required_helper_protocol;
+                verify_windows_directory_protection(&staged_root)?;
+                verify_windows_package(&staged_root, &verification, &compiled_publishers())?;
+                if target.version != candidate.version
+                    || target.ledger.writer_schema
+                        != committed.committed.current.ledger.writer_schema
+                {
+                    bail!("verified target is incompatible with committed service state");
+                }
+                Ok::<_, anyhow::Error>((target, required_helper_protocol))
+            },
+        );
         let (target, required_helper_protocol) = match verified_target {
             Ok(target) => target,
             Err(error) => {
@@ -691,6 +748,7 @@ impl Coordinator {
             staged_root: path_string(&staged_root)?,
             final_version_root: path_string(&final_root)?,
             helper_protocol,
+            timeline,
         })?;
         create_json(&self.paths.updates.preinstall_request, &request)
             .context("persist protected preinstall request")?;
@@ -1424,6 +1482,57 @@ fn is_not_found(error: &anyhow::Error) -> bool {
 
 fn now_utc() -> Result<String> {
     Ok(time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339)?)
+}
+
+fn record_update_action<T>(
+    timeline: &mut Vec<UpdateTransition>,
+    phase: &'static str,
+    actor: UpdateActor,
+    action: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let started_utc = now_utc()?;
+    let started = Instant::now();
+    let result = action();
+    timeline.push(completed_update_transition(
+        phase,
+        actor,
+        started_utc,
+        started,
+        result.is_ok(),
+    )?);
+    result
+}
+
+fn completed_update_transition(
+    phase: &'static str,
+    actor: UpdateActor,
+    started_utc: String,
+    started: Instant,
+    succeeded: bool,
+) -> Result<UpdateTransition> {
+    Ok(UpdateTransition {
+        phase: phase.to_string(),
+        actor,
+        started_utc,
+        completed_utc: Some(now_utc()?),
+        duration_ms: Some(started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64),
+        outcome: Some(if succeeded {
+            UpdateTransitionOutcome::Succeeded
+        } else {
+            UpdateTransitionOutcome::Failed
+        }),
+        failure_code: (!succeeded).then(|| "UPDATE_OPERATION_FAILED".to_string()),
+    })
+}
+
+fn duration_between(started: &str, completed: &str) -> u64 {
+    let parse = |value: &str| {
+        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
+    };
+    parse(started)
+        .zip(parse(completed))
+        .and_then(|(started, completed)| (completed - started).whole_milliseconds().try_into().ok())
+        .unwrap_or_default()
 }
 
 fn random_id() -> Result<String> {

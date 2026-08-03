@@ -7,7 +7,7 @@ use crate::{
     UPDATE_STATE_SCHEMA_VERSION,
 };
 
-const MAX_TIMELINE_ENTRIES: usize = 64;
+pub(crate) const MAX_TIMELINE_ENTRIES: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,7 +41,7 @@ pub struct UpdateTransition {
 }
 
 impl UpdateTransition {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         if self.phase.is_empty()
             || self.phase.len() > 64
             || !self.phase.bytes().all(|byte| {

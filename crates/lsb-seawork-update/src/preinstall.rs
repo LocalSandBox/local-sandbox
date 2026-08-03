@@ -2,9 +2,10 @@ use anyhow::{bail, Result};
 use lsb_service_proto::BundleIdentity;
 use serde::{Deserialize, Serialize};
 
+use crate::journal::MAX_TIMELINE_ENTRIES;
 use crate::{
     is_lower_hex, sha256_json, validate_id, validate_utc, validate_windows_absolute_path,
-    HelperProtocol, ReleaseCandidate, UPDATE_STATE_SCHEMA_VERSION,
+    HelperProtocol, ReleaseCandidate, UpdateTransition, UPDATE_STATE_SCHEMA_VERSION,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,6 +19,8 @@ pub struct PreinstallRequest {
     pub staged_root: String,
     pub final_version_root: String,
     pub helper_protocol: HelperProtocol,
+    #[serde(default)]
+    pub timeline: Vec<UpdateTransition>,
 }
 
 impl PreinstallRequest {
@@ -44,6 +47,12 @@ impl PreinstallRequest {
         }
         validate_windows_absolute_path(&self.staged_root)?;
         validate_windows_absolute_path(&self.final_version_root)?;
+        if self.timeline.len() > MAX_TIMELINE_ENTRIES {
+            bail!("preinstall update timeline is full");
+        }
+        for transition in &self.timeline {
+            transition.validate()?;
+        }
         self.helper_protocol.validate()
     }
 }
@@ -175,6 +184,7 @@ mod tests {
             final_version_root:
                 r"C:\Program Files\SeaWork\LocalSandbox\versions\0.5.0-rc.5".to_string(),
             helper_protocol: HelperProtocol { major: 1, minor: 1 },
+            timeline: Vec::new(),
         }
     }
 
