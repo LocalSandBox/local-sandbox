@@ -2622,10 +2622,9 @@ mod guest {
 
                 let status = child.wait().expect("failed to wait on child");
                 let exit_code = status.code().unwrap_or(-1);
-
-                unsafe {
-                    libc::sync();
-                }
+                // Exec completion reports process and output completion only. The
+                // caller owns durability boundaries such as checkpoint creation;
+                // ephemeral VM teardown must not pay a guest-wide filesystem flush.
 
                 let output_drain_deadline = std::time::Instant::now() + Duration::from_secs(2);
                 let mut drained_outputs = 0usize;
@@ -3991,12 +3990,8 @@ mod guest {
             libc::waitpid(child_pid, &mut status, 0);
         }
 
-        // Flush all filesystem writes to disk before reporting exit.
-        // Without this, data can be lost if the VM is stopped immediately
-        // after the exit code is sent (e.g. during checkpoint create).
-        unsafe {
-            libc::sync();
-        }
+        // Interactive exec has the same process-only completion contract as
+        // piped exec. Checkpoint creation performs its own durability barrier.
 
         let exit_code = if libc::WIFEXITED(status) {
             libc::WEXITSTATUS(status)
@@ -4473,7 +4468,9 @@ mod guest {
 
     extern "C" fn sigterm_handler(_: libc::c_int) {
         unsafe {
-            libc::sync();
+            // VM shutdown is destructive by default, so it does not imply a
+            // durability barrier. Checkpoint creation syncs explicitly before
+            // stopping the guest.
             libc::reboot(libc::LINUX_REBOOT_CMD_POWER_OFF);
         }
     }
