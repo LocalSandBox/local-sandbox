@@ -241,6 +241,7 @@ function Invoke-FilteredUserProcess {
         [string] $WorkingDirectory,
         [string] $ProofPath,
         [string] $TaskSuffix,
+        [switch] $Elevated,
         [int] $TimeoutSeconds = 1800
     )
     if ($TaskSuffix -notmatch '^[a-z0-9][a-z0-9-]{0,31}$') {
@@ -281,10 +282,11 @@ function Invoke-FilteredUserProcess {
     $action = New-ScheduledTaskAction -Execute $env:ComSpec `
         -Argument ('/d /c call "{0}"' -f $batchPath)
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(10)
+    $runLevel = if ($Elevated) { 'Highest' } else { 'Limited' }
     $principal = New-ScheduledTaskPrincipal `
         -UserId $State.client_user_sid `
         -LogonType Interactive `
-        -RunLevel Limited
+        -RunLevel $runLevel
     $settings = New-ScheduledTaskSettingsSet `
         -ExecutionTimeLimit (New-TimeSpan -Seconds ($TimeoutSeconds + 60)) `
         -AllowStartIfOnBatteries `
@@ -299,7 +301,7 @@ function Invoke-FilteredUserProcess {
             [string]$State.client_user_identity,
             [string]$State.client_user_name
         )
-        if ([string]$registered.Principal.RunLevel -ne 'Limited' -or
+        if ([string]$registered.Principal.RunLevel -ne $runLevel -or
             [string]$registered.Principal.LogonType -notin @('Interactive', 'InteractiveToken') -or
             $registeredUserId -notin $expectedUserIds) {
             throw "Filtered client task principal mismatch: " +
@@ -348,24 +350,39 @@ function Invoke-FilteredUserProcess {
         $high = @($groups | Where-Object Sid -eq 'S-1-16-12288')
         $administrators = @($groups | Where-Object Sid -eq 'S-1-5-32-544')
         if ($users.Count -ne 1 -or $users[0].Sid -cne [string]$State.client_user_sid -or
-            $medium.Count -ne 1 -or $high.Count -ne 0 -or
-            $administrators.Count -ne 1 -or
+            $administrators.Count -ne 1) {
+            throw 'Interactive client task identity proof inputs are invalid.'
+        }
+        if ($Elevated) {
+            if ($medium.Count -ne 0 -or $high.Count -ne 1 -or
+                $administrators[0].Attributes -match '(?i)deny') {
+                throw 'Elevated maintenance task token proof inputs are invalid.'
+            }
+        }
+        elseif ($medium.Count -ne 1 -or $high.Count -ne 0 -or
             $administrators[0].Attributes -notmatch '(?i)deny') {
             throw 'Filtered client task token proof inputs are invalid.'
         }
+        $mode = if ($Elevated) { 'elevated-maintenance' } else { 'filtered-current-user' }
+        $integrityLevel = if ($Elevated) { 'high' } else { 'medium' }
+        $integrityRid = if ($Elevated) { 12288 } else { 8192 }
         $proof = [ordered]@{
             schema_version = 1
             status = 'passed'
-            mode = 'filtered-current-user'
-            source = 'interactive-limited-scheduled-task'
+            mode = $mode
+            source = if ($Elevated) {
+                'interactive-highest-scheduled-task'
+            } else { 'interactive-limited-scheduled-task' }
             user_name = [string]$users[0].UserName
             user_sid = [string]$users[0].Sid
-            integrity_level = 'medium'
-            integrity_rid = 8192
-            elevated = $false
-            administrator = $false
+            integrity_level = $integrityLevel
+            integrity_rid = $integrityRid
+            elevated = [bool]$Elevated
+            administrator = [bool]$Elevated
             administrator_group_attributes = [string]$administrators[0].Attributes
-            elevation_proof = 'limited-task-plus-medium-integrity'
+            elevation_proof = if ($Elevated) {
+                'highest-task-plus-high-integrity'
+            } else { 'limited-task-plus-medium-integrity' }
             process_exit_code = $processExitCode
             privilege_behavior_validated = $true
             separate_account_profile_validated = $false
@@ -546,15 +563,12 @@ function Invoke-ClientSmoke {
         )
     } else { @() }
     $configPath = Join-Path $clientData 'client-config.json'
-    $expectedUserName = if ($Maintenance) {
-        [Security.Principal.WindowsIdentity]::GetCurrent().Name.Split('\')[-1]
-    } else { [string]$State.client_user_name }
     $clientConfig = [ordered]@{
         bindingEntry = Join-Path $harnessRoot 'index.js'
         instanceId = "acceptance-$Suffix"
         mounts = $mountList
         resultPath = $resultPath
-        expectedUserName = $expectedUserName
+        expectedUserName = [string]$State.client_user_name
     }
     $secretValue = $null
     if ($Network) {
@@ -591,31 +605,15 @@ function Invoke-ClientSmoke {
     $smokeKind = if ($Maintenance) { 'maintenance' } else { 'filtered-token' }
     try {
         if ($Maintenance) {
-            $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-            $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-            if (-not $principal.IsInRole(
-                    [Security.Principal.WindowsBuiltInRole]::Administrator)) {
-                throw 'The maintenance client requires the elevated harness token.'
-            }
-            Push-Location $harnessRoot
-            try {
-                & $clientExecutable @clientArguments
-                $processExitCode = $LASTEXITCODE
-            }
-            finally { Pop-Location }
-            $tokenProof = [pscustomobject]@{
-                source = 'elevated-current-process'
-                mode = 'elevated-maintenance'
-                user_name = $identity.Name
-                user_sid = $identity.User.Value
-                integrity_level = 'high'
-                integrity_rid = 12288
-                elevated = $true
-                administrator = $true
-                process_exit_code = $processExitCode
-                privilege_behavior_validated = $true
-                separate_account_profile_validated = $false
-            }
+            $tokenProof = Invoke-FilteredUserProcess `
+                -State $State `
+                -Executable $clientExecutable `
+                -Arguments $clientArguments `
+                -WorkingDirectory $harnessRoot `
+                -ProofPath $tokenProofPath `
+                -TaskSuffix $Suffix `
+                -Elevated `
+                -TimeoutSeconds 1800
         }
         else {
             $tokenProof = Invoke-FilteredUserProcess `
