@@ -1,0 +1,49 @@
+scripts/windows-test-service-harness.ps1
+  s_e2b26e18c606d2::t_6d50e032a21900 453-459
+  s_e2b26e18c606d2::t_542f294c1ffd11 588,592
+scripts/windows-test-bootstrap.ps1
+  s_e2b26e18c606d2::t_6d50e032a21900 236-243
+scripts/package-windows-release-evidence.sh
+  s_e2b26e18c606d2::t_6b4b553d2cbfb2 53
+scripts/windows-test/test-release-evidence-bundle.sh
+  s_e2b26e18c606d2::t_4bbf64f15b2446 37-39
+  s_e2b26e18c606d2::t_6b4b553d2cbfb2 10-13,33-36
+scripts/extract-windows-release-evidence.sh
+  s_e2b26e18c606d2::t_4bbf64f15b2446 9,15-18
+scripts/git-common-objects-dir.sh
+  s_e2b26e18c606d2::t_dce62c1609155f 1-12
+fixtures/windows/guest/service-acceptance.mjs
+  s_e2b26e18c606d2::t_542f294c1ffd11 147
+scripts/validate-windows-release-commit.sh
+  s_e2b26e18c606d2::t_989c419a0d9563 1-37
+scripts/win-test
+  s_e2b26e18c606d2::t_dce62c1609155f 221,226
+scripts/win-release-accept
+  s_e2b26e18c606d2::t_989c419a0d9563 21-22,43-45,49-50
+  s_e2b26e18c606d2::t_b135890579ff06 52,169-176
+  s_e2b26e18c606d2::t_dc69fa179bd433 10-14
+  s_e2b26e18c606d2::t_6d50e032a21900 144-151,180-183
+  s_e2b26e18c606d2::t_521073a2bc5261 51
+scripts/windows-test/test-release-discovery.sh
+  s_e2b26e18c606d2::t_989c419a0d9563 42-44,46-84
+  s_e2b26e18c606d2::t_7e2d774f5ac9ba 45
+  s_e2b26e18c606d2::t_dce62c1609155f 85-92
+.github/workflows/ci.yml
+  s_e2b26e18c606d2::t_7a8a5578913844 29-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "e1ab7e0ce5e1e6588d60c8384bacd31bcec9a82c",
+  "prompts": {},
+  "sessions": {
+    "s_e2b26e18c606d2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fcb0f-2159-7d63-b187-e7bbd0205cf9",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
