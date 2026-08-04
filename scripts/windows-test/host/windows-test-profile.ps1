@@ -161,7 +161,11 @@ try {
             evidence = @($mapped | ForEach-Object name | Sort-Object -Unique)
         }
     }
-    $candidate = @(Get-WindowsTestReleaseArtifact -RunRoot $runRoot)
+    $expectedArtifactDigest = if ($artifactDigests.Count -eq 1) {
+        [string](@($artifactDigests)[0])
+    } else { $null }
+    $candidate = @(Get-WindowsTestReleaseArtifact -RunRoot $runRoot `
+        -ExpectedSha256 $expectedArtifactDigest)
     $releaseArtifact = if ($candidate.Count -eq 1) {
         [ordered]@{
             name = $candidate[0].Name

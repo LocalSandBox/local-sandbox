@@ -98,6 +98,15 @@ try {
         $selectedRelease[0].Name -cne (Split-Path -Leaf $candidateArchive)) {
         throw 'Candidate evidence did not disambiguate the release archive from its baseline.'
     }
+    Remove-Item -LiteralPath (Join-Path $testRoot 'evidence-release-candidate.json') -Force
+    $candidateDigest = (Get-FileHash -LiteralPath $candidateArchive `
+        -Algorithm SHA256).Hash.ToLowerInvariant()
+    $selectedByDigest = @(Get-WindowsTestReleaseArtifact -RunRoot $testRoot `
+        -ExpectedSha256 $candidateDigest)
+    if ($selectedByDigest.Count -ne 1 -or
+        $selectedByDigest[0].Name -cne (Split-Path -Leaf $candidateArchive)) {
+        throw 'Release binding did not disambiguate the candidate archive from its baseline.'
+    }
     Write-Output 'Validated shared Windows results, evidence fetching, and profile planning.'
 }
 finally { Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue }

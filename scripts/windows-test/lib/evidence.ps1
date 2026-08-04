@@ -83,7 +83,11 @@ function Get-WindowsTestArtifactKind {
 }
 
 function Get-WindowsTestReleaseArtifact {
-    param([Parameter(Mandatory = $true)][string] $RunRoot)
+    param(
+        [Parameter(Mandatory = $true)][string] $RunRoot,
+        [ValidatePattern('^[0-9a-f]{64}$')][string] $ExpectedSha256
+    )
+    $candidates = @()
     $candidateEvidencePath = Join-Path $RunRoot 'evidence-release-candidate.json'
     if (Test-Path -LiteralPath $candidateEvidencePath -PathType Leaf) {
         $candidateEvidence = Read-WindowsTestJson -Path $candidateEvidencePath `
@@ -93,12 +97,19 @@ function Get-WindowsTestReleaseArtifact {
             '^lsb-seawork-service-v[0-9A-Za-z.+-]+-windows-x86_64\.zip$') {
             throw 'Candidate evidence does not name a canonical service archive.'
         }
-        return @(Get-ChildItem -LiteralPath $RunRoot -File -ErrorAction SilentlyContinue |
+        $candidates = @(Get-ChildItem -LiteralPath $RunRoot -File -ErrorAction SilentlyContinue |
             Where-Object Name -CEQ $candidateName)
     }
-    return @(Get-ChildItem -LiteralPath $RunRoot -File `
-        -Filter 'lsb-seawork-service-v*-windows-x86_64.zip' `
-        -ErrorAction SilentlyContinue | Where-Object Name -NotMatch '-symbols\.zip$')
+    else {
+        $candidates = @(Get-ChildItem -LiteralPath $RunRoot -File `
+            -Filter 'lsb-seawork-service-v*-windows-x86_64.zip' `
+            -ErrorAction SilentlyContinue | Where-Object Name -NotMatch '-symbols\.zip$')
+    }
+    if ([string]::IsNullOrWhiteSpace($ExpectedSha256)) { return @($candidates) }
+    return @($candidates | Where-Object {
+        (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() `
+            -ceq $ExpectedSha256
+    })
 }
 
 function Write-WindowsTestFetchManifest {
