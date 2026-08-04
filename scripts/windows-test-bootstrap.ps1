@@ -233,6 +233,14 @@ try {
         -ReuseRunId $ReuseRunId
     $runnerExit = $LASTEXITCODE
     if ($runnerExit -ne 0) {
+        if ($Mode -eq 'Resume') {
+            $continuation.status = 'failed'
+            $continuation | Add-Member -NotePropertyName failed_utc `
+                -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
+            $continuation | Add-Member -NotePropertyName boot_id_after `
+                -NotePropertyValue (Get-BootId) -Force
+            Write-JsonAtomic -Path $continuationPath -Value $continuation
+        }
         exit $runnerExit
     }
 

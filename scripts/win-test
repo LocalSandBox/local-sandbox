@@ -218,13 +218,12 @@ verify_host() {
 }
 
 create_snapshot() {
-    local base_sha tree_sha message discovered_root git_dir base_objects
+    local base_sha tree_sha message discovered_root base_objects
     discovered_root="$(git -C "$repo_root" rev-parse --show-toplevel)"
     [[ "$discovered_root" == "$repo_root" ]] || fail "script directory is not inside the expected Git root: $repo_root"
     cd "$repo_root"
     base_sha="$(git rev-parse HEAD)"
-    git_dir="$(git rev-parse --absolute-git-dir)"
-    base_objects="$git_dir/objects"
+    base_objects="$("$script_dir/git-common-objects-dir.sh" "$repo_root")"
     snapshot_index="$(mktemp "${TMPDIR:-/tmp}/local-sandbox-win-test-index.XXXXXX")"
     snapshot_objects="$(mktemp -d "${TMPDIR:-/tmp}/local-sandbox-win-test-objects.XXXXXX")"
     rm -f "$snapshot_index"

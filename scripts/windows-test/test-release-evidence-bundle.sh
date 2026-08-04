@@ -7,6 +7,10 @@ trap 'rm -rf -- "$fixture"' EXIT
 source_dir="$fixture/source"
 mkdir -p "$source_dir"
 printf '%s\n' '{"schema_version":1,"status":"passed"}' > "$source_dir/evidence-core.redacted.json"
+if command -v xattr >/dev/null; then
+    xattr -w com.localsandbox.evidence-fixture present \
+        "$source_dir/evidence-core.redacted.json"
+fi
 sha="$(shasum -a 256 "$source_dir/evidence-core.redacted.json" | awk '{print $1}')"
 size="$(wc -c < "$source_dir/evidence-core.redacted.json" | tr -d ' ')"
 jq -n --arg sha "$sha" --argjson size "$size" '{
@@ -26,6 +30,13 @@ jq -n --arg sha "$sha" --argjson size "$size" '{
 
 "$repo_root/scripts/package-windows-release-evidence.sh" "$source_dir" "$fixture/evidence.tgz" >/dev/null
 [[ "$(tar -tzf "$fixture/evidence.tgz" | sort | tr '\n' ' ')" == './ ./acceptance-evidence-manifest.json ./evidence-core.redacted.json ' ]]
+if tar -tzf "$fixture/evidence.tgz" | grep -q '/\._'; then
+    echo 'evidence bundle contains macOS AppleDouble metadata' >&2
+    exit 1
+fi
+"$repo_root/scripts/extract-windows-release-evidence.sh" \
+    "$fixture/evidence.tgz" "$fixture/extracted"
+cmp "$source_dir/evidence-core.redacted.json" "$fixture/extracted/evidence-core.redacted.json"
 
 printf 'tamper\n' >> "$source_dir/evidence-core.redacted.json"
 if "$repo_root/scripts/package-windows-release-evidence.sh" "$source_dir" "$fixture/tampered.tgz" >/dev/null 2>&1; then

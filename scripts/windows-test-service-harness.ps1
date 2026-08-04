@@ -450,6 +450,13 @@ function Wait-ServiceState {
         }
         if ($State -ne 'Stopped' -and [string]$service.Status -eq 'Stopped') {
             $details = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+            # A delayed-auto service remains Stopped with ERROR_SERVICE_NEVER_STARTED
+            # while SCM's post-boot delay is still active. Keep waiting within the
+            # caller's existing bound so the test proves automatic startup.
+            if ([int]$details.ExitCode -eq 1077) {
+                Start-Sleep -Milliseconds 250
+                continue
+            }
             throw "Owned service stopped before reaching $State " +
                 "(Win32ExitCode=$($details.ExitCode), " +
                 "ServiceSpecificExitCode=$($details.ServiceSpecificExitCode))."
@@ -578,11 +585,11 @@ function Invoke-ClientSmoke {
         $clientConfig['scenario'] = 'network'
         $clientConfig['secretExpected'] = $secretValue
         $clientConfig['network'] = [ordered]@{
-            allow = @('example.com', 'registry.npmjs.org', 'httpbin.org')
+            allow = @('example.com', 'registry.npmjs.org', 'httpbingo.org')
             secrets = [ordered]@{
                 LSB_TEST_SECRET = [ordered]@{
                     value = $secretValue
-                    hosts = @('httpbin.org')
+                    hosts = @('httpbingo.org')
                 }
             }
         }

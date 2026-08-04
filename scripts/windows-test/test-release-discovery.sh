@@ -39,3 +39,54 @@ for mutation in '.service_evidence="skip"' '.release_sha=("f"*40)' '.baseline.as
         echo "invalid descriptor was accepted: $mutation" >&2; exit 1
     fi
 done
+
+git_root="$root/repository"
+mkdir -p "$git_root"
+git -C "$git_root" init -q -b main
+git -C "$git_root" config user.name fixture
+git -C "$git_root" config user.email fixture@example.invalid
+printf 'fixture\n' > "$git_root/README.md"
+git -C "$git_root" add README.md
+git -C "$git_root" commit -qm base
+dispatch_sha="$(git -C "$git_root" rev-parse HEAD)"
+
+mkdir -p "$git_root/bindings/nodejs/npm/win32-x64-msvc"
+printf '[workspace]\n' > "$git_root/Cargo.toml"
+printf 'lock\n' > "$git_root/Cargo.lock"
+printf '{"version":"1.2.3"}\n' > "$git_root/bindings/nodejs/npm/win32-x64-msvc/package.json"
+git -C "$git_root" add Cargo.toml Cargo.lock bindings
+git -C "$git_root" commit -qm 'chore(release): prepare v1.2.3'
+release_sha="$(git -C "$git_root" rev-parse HEAD)"
+validator="$repo_root/scripts/validate-windows-release-commit.sh"
+(cd "$git_root" && "$validator" "$dispatch_sha" "$release_sha" 1.2.3 refs/heads/main)
+(cd "$git_root" && "$validator" "$release_sha" "$release_sha" 1.2.3 refs/heads/main)
+
+git -C "$git_root" switch -q -c unexpected "$dispatch_sha"
+printf 'unexpected\n' > "$git_root/README.md"
+git -C "$git_root" add README.md
+git -C "$git_root" commit -qm 'chore(release): prepare v1.2.3'
+unexpected_sha="$(git -C "$git_root" rev-parse HEAD)"
+if (cd "$git_root" && "$validator" "$dispatch_sha" "$unexpected_sha" 1.2.3 refs/heads/unexpected) >/dev/null 2>&1; then
+    echo 'release commit with unexpected changes was accepted' >&2; exit 1
+fi
+
+git -C "$git_root" switch -q -c wrong-message "$dispatch_sha"
+printf '[workspace]\n' > "$git_root/Cargo.toml"
+git -C "$git_root" add Cargo.toml
+git -C "$git_root" commit -qm 'prepare release'
+wrong_message_sha="$(git -C "$git_root" rev-parse HEAD)"
+if (cd "$git_root" && "$validator" "$dispatch_sha" "$wrong_message_sha" 1.2.3 refs/heads/wrong-message) >/dev/null 2>&1; then
+    echo 'release commit with the wrong subject was accepted' >&2; exit 1
+fi
+
+if (cd "$git_root" && "$validator" "$dispatch_sha" "$unexpected_sha" 1.2.3 refs/heads/main) >/dev/null 2>&1; then
+    echo 'release commit outside the trusted branch was accepted' >&2; exit 1
+fi
+
+linked_worktree="$root/linked-worktree"
+git -C "$git_root" worktree add -q "$linked_worktree" main
+expected_objects="$(git -C "$git_root" rev-parse --path-format=absolute --git-common-dir)/objects"
+observed_objects="$("$repo_root/scripts/git-common-objects-dir.sh" "$linked_worktree")"
+[[ "$observed_objects" == "$expected_objects" ]] || {
+    echo 'linked worktree did not resolve the shared Git object directory' >&2; exit 1
+}

@@ -50,7 +50,7 @@ while IFS=$'\t' read -r name expected_sha expected_size; do
 done < <(jq -r '.files[] | [.name, .sha256, (.size | tostring)] | @tsv' "$manifest")
 
 mkdir -p -- "$(dirname "$output")"
-tar -czf "$output" -C "$stage" .
+COPYFILE_DISABLE=1 tar -czf "$output" -C "$stage" .
 size="$(wc -c < "$output" | tr -d ' ')"
 if (( size > 46080 )); then
     echo "compressed release evidence exceeds 45 KiB: $size bytes" >&2

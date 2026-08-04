@@ -6,14 +6,16 @@ bundle="$1" destination="$2"
 size="$(wc -c < "$bundle" | tr -d ' ')"
 (( size <= 46080 )) || { echo 'compressed evidence exceeds 45 KiB' >&2; exit 1; }
 count=0
-declare -A seen=()
+seen_names=''
 while IFS= read -r name; do
     ((count += 1))
     [[ "$name" == ./ || "$name" =~ ^\./(acceptance-evidence-manifest|profile-result|result-[a-z0-9-]+-(normal|beforereboot|afterreboot)|evidence-[a-z0-9._-]+\.redacted)\.json$ ]] || {
         echo "unsafe bundle path: $name" >&2; exit 1;
     }
-    [[ -z "${seen[$name]:-}" ]] || { echo "duplicate bundle path: $name" >&2; exit 1; }
-    seen[$name]=1
+    case $'\n'"$seen_names" in
+        *$'\n'"$name"$'\n'*) echo "duplicate bundle path: $name" >&2; exit 1 ;;
+    esac
+    seen_names+="$name"$'\n'
 done < <(tar -tzf "$bundle")
 (( count > 1 && count <= 258 )) || { echo 'evidence bundle entry count is invalid' >&2; exit 1; }
 if tar -tvzf "$bundle" | awk 'substr($1,1,1) != "-" && substr($1,1,1) != "d" { exit 1 }'; then :; else

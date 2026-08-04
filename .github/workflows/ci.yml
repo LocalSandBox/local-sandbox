@@ -26,6 +26,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo fmt --all -- --check
       - run: cargo run -p xtask -- release verify
+      - name: Validate Windows release orchestration
+        run: |
+          scripts/windows-test/test-release-discovery.sh
+          scripts/windows-test/test-release-evidence-bundle.sh
 
   rust-check:
     name: macOS Rust check

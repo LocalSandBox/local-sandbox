@@ -144,7 +144,7 @@ try {
       const secret = await sandbox.exec([
         '/bin/sh',
         '-c',
-        'curl -fsS --max-time 30 -H "X-LSB-Test: $LSB_TEST_SECRET" https://httpbin.org/anything',
+        'curl -fsS --max-time 30 -H "X-LSB-Test: $LSB_TEST_SECRET" https://httpbingo.org/anything',
       ])
       check(
         'scoped-secret-injection',

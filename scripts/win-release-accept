@@ -7,13 +7,19 @@ cd "$repo_root"
 fail() { echo "win-release-accept: $*" >&2; exit 1; }
 command -v gh >/dev/null || fail 'gh is required'
 command -v jq >/dev/null || fail 'jq is required'
-[[ -z "$(git status --porcelain)" ]] || fail 'repository must be clean'
+allow_dirty="${LSB_RELEASE_ACCEPT_ALLOW_DIRTY:-0}"
+[[ "$allow_dirty" == 0 || "$allow_dirty" == 1 ]] || \
+    fail 'LSB_RELEASE_ACCEPT_ALLOW_DIRTY must be 0 or 1'
+[[ "$allow_dirty" == 1 || -z "$(git status --porcelain)" ]] || \
+    fail 'repository must be clean (or set LSB_RELEASE_ACCEPT_ALLOW_DIRTY=1)'
 gh auth status >/dev/null 2>&1 || fail 'gh authentication is required'
 ssh -o BatchMode=yes -o ConnectTimeout=8 win-1 exit >/dev/null 2>&1 || \
     fail 'ssh win-1 is unavailable'
 
 default_branch="$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name)"
 owner_repo="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
+git fetch --quiet origin "$default_branch"
+trusted_default_ref="refs/remotes/origin/$default_branch"
 state_root="$repo_root/target/windows-release-accept"
 mkdir -p "$state_root"
 discovery="$(mktemp -d "${TMPDIR:-/tmp}/lsb-release-discovery.XXXXXX")"
@@ -34,8 +40,14 @@ while IFS=$'\t' read -r run_id status run_url head_sha; do
     fi
     descriptor="$candidate/acceptance-descriptor.json"
     [[ -f "$descriptor" ]] || continue
-    if ! jq -e --argjson run "$run_id" --arg sha "$head_sha" \
+    descriptor_sha="$(jq -r '.release_sha // empty' "$descriptor")"
+    version="$(jq -r '.version // empty' "$descriptor")"
+    if ! jq -e --argjson run "$run_id" --arg sha "$descriptor_sha" \
         -f "$repo_root/scripts/windows-release-descriptor.jq" "$descriptor" >/dev/null; then
+        continue
+    fi
+    if ! "$repo_root/scripts/validate-windows-release-commit.sh" \
+        "$head_sha" "$descriptor_sha" "$version" "$trusted_default_ref" >/dev/null 2>&1; then
         continue
     fi
     artifact_count="$(gh api "repos/$owner_repo/actions/runs/$run_id/artifacts" \
@@ -129,6 +141,14 @@ if [[ -n "$hardware_run_id" ]]; then
       .documents["result-release-service-core-update-reboot-beforereboot.json"] as $result |
       $result.base_commit_sha == $sha and $result.bindings.release_artifact_sha256 == $artifact
     ' <<< "$remote" >/dev/null || fail 'remote continuation does not match the release SHA and candidate tuple'
+    if [[ "$(jq -r '.documents["profile-result.json"].status // "none"' <<< "$remote")" == failed ]]; then
+        (cd "$worktree" && scripts/win-test reset) || true
+        if [[ -f "$hardware_log" ]]; then
+            mv "$hardware_log" "$attempt_root/hardware-failed-$(date -u '+%Y%m%dt%H%M%Sz').log"
+        fi
+        rm -f "$attempt_root/hardware-run-id"
+        fail 'saved Windows acceptance run failed; rerun to start a fresh hardware attempt'
+    fi
     continuation="$(jq -r '.documents["continuation.json"].status // "none"' <<< "$remote")"
     if [[ "$continuation" == awaiting_reboot ]]; then
         (cd "$worktree" && scripts/win-test resume "$hardware_run_id")
@@ -146,11 +166,21 @@ else
     hardware_status=${PIPESTATUS[0]}
     set -e
     hardware_run_id="$(sed -n 's/^Windows test run: //p' "$hardware_log" | tail -n 1)"
-    [[ "$hardware_run_id" =~ ^[a-z0-9][a-z0-9._-]{0,95}$ ]] || fail 'hardware run ID was not reported'
+    if [[ ! "$hardware_run_id" =~ ^[a-z0-9][a-z0-9._-]{0,95}$ ]]; then
+        if (( hardware_status != 0 )); then
+            failed_log="$attempt_root/hardware-failed-$(date -u '+%Y%m%dt%H%M%Sz').log"
+            mv "$hardware_log" "$failed_log"
+            fail "Windows acceptance did not start; preflight diagnostics: $failed_log"
+        fi
+        fail 'hardware run ID was not reported after successful acceptance startup'
+    fi
     printf '%s\n' "$hardware_run_id" > "$attempt_root/hardware-run-id"
     if (( hardware_status != 0 )); then
         remote="$(cd "$worktree" && scripts/win-test show "$hardware_run_id" 2>/dev/null || true)"
-        if [[ "$(jq -r '.documents["continuation.json"].status // "none"' <<< "${remote:-{}}")" == awaiting_reboot ]]; then
+        if [[ -z "$remote" ]]; then remote='{}'; fi
+        remote_profile="$(jq -r '.documents["profile-result.json"].status // "none"' <<< "$remote")"
+        continuation="$(jq -r '.documents["continuation.json"].status // "none"' <<< "$remote")"
+        if [[ "$remote_profile" != failed && "$continuation" == awaiting_reboot ]]; then
             fail "Windows reboot is pending; rerun just win-release-accept to resume $hardware_run_id"
         fi
         (cd "$worktree" && scripts/win-test reset) || true
