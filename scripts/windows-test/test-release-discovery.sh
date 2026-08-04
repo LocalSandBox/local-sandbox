@@ -23,7 +23,9 @@ jq -n '{
     service:{name:"lsb-seawork-service-v1.2.3-windows-x86_64.zip",sha256:("c"*64),size:1},
     updater:{name:"lsb-seawork-updater-v1.2.3-windows-x86_64.zip",sha256:("d"*64),size:1},
     updater_manifest:{name:"lsb-seawork-updater-v1.2.3-windows-x86_64-manifest.json",sha256:("e"*64),size:1}},
-  baseline:{mode:"release",release_id:1,tag:"v1.2.2",assets:[
+  baseline:{
+    mode:"release",release_id:1,tag:"v1.2.2",version:"1.2.2",
+    publisher:{subject:"CN=SeaWork",sha256:("b"*64)},assets:[
     {name:"lsb-seawork-service-v1.2.2-windows-x86_64.zip",sha256:("1"*64),size:1,api_url:"https://api.example/1"},
     {name:"lsb-seawork-updater-v1.2.2-windows-x86_64.zip",sha256:("2"*64),size:1,api_url:"https://api.example/2"},
     {name:"lsb-seawork-updater-v1.2.2-windows-x86_64-manifest.json",sha256:("3"*64),size:1,api_url:"https://api.example/3"}]}
