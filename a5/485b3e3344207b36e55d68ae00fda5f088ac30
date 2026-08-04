@@ -1,0 +1,24 @@
+scripts/windows-test/lib/evidence.ps1
+  s_be97528113af86::t_7d24e6f1e8754d 86-90,100,103-112
+scripts/windows-test/host/windows-test-profile.ps1
+  s_be97528113af86::t_4e7e3df6da7a1d 165
+  s_be97528113af86::t_7d24e6f1e8754d 164,166-168
+scripts/windows-test/test-contracts.ps1
+  s_be97528113af86::t_7d24e6f1e8754d 101-109
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "a5485b3e3344207b36e55d68ae00fda5f088ac30",
+  "prompts": {},
+  "sessions": {
+    "s_be97528113af86": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc8ca-d9dd-72a0-8144-f6f8a59bb3e4",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
