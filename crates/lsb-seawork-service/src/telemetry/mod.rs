@@ -118,16 +118,23 @@ pub(crate) enum TelemetryFailure {
     Hyperv,
     Dump,
     UpdateDelivery,
+    Breadcrumb,
+    FailureCapture,
+    SpanStart,
+    SpanFinish,
+    SpanData,
+    LifecycleObserver,
+    UnmatchedSpanCompletion,
 }
 
-static TELEMETRY_FAILURES: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
+static TELEMETRY_FAILURES: [AtomicU64; 19] = [const { AtomicU64::new(0) }; 19];
 
 pub(crate) fn record_failure(failure: TelemetryFailure) {
     TELEMETRY_FAILURES[failure as usize].fetch_add(1, Ordering::Relaxed);
 }
 
 pub(crate) fn failure_counter_context() -> serde_json::Value {
-    let values: [u64; 12] =
+    let values: [u64; 19] =
         std::array::from_fn(|index| TELEMETRY_FAILURES[index].load(Ordering::Relaxed));
     serde_json::json!({
         "initialization_failure": values[TelemetryFailure::Initialization as usize],
@@ -142,6 +149,13 @@ pub(crate) fn failure_counter_context() -> serde_json::Value {
         "hyperv_failure": values[TelemetryFailure::Hyperv as usize],
         "dump_failure": values[TelemetryFailure::Dump as usize],
         "update_delivery_failure": values[TelemetryFailure::UpdateDelivery as usize],
+        "breadcrumb_failure": values[TelemetryFailure::Breadcrumb as usize],
+        "failure_capture_failure": values[TelemetryFailure::FailureCapture as usize],
+        "span_start_failure": values[TelemetryFailure::SpanStart as usize],
+        "span_finish_failure": values[TelemetryFailure::SpanFinish as usize],
+        "span_data_failure": values[TelemetryFailure::SpanData as usize],
+        "lifecycle_observer_failure": values[TelemetryFailure::LifecycleObserver as usize],
+        "unmatched_span_completion": values[TelemetryFailure::UnmatchedSpanCompletion as usize],
     })
 }
 
@@ -443,11 +457,19 @@ impl Telemetry {
     }
 
     pub fn breadcrumb(&self, breadcrumb: Breadcrumb) {
-        let _ = self.adapter.breadcrumb(breadcrumb);
+        if self.adapter.breadcrumb(breadcrumb).is_err() {
+            record_failure(TelemetryFailure::Breadcrumb);
+        }
     }
 
     pub fn capture_failure(&self, event: FailureEvent) -> Option<String> {
-        self.adapter.capture_failure(event).ok().flatten()
+        match self.adapter.capture_failure(event) {
+            Ok(event_id) => event_id,
+            Err(()) => {
+                record_failure(TelemetryFailure::FailureCapture);
+                None
+            }
+        }
     }
 
     pub fn start_span(&self, span: SpanDescription) -> SpanGuard {
@@ -466,14 +488,17 @@ impl Telemetry {
     }
 
     fn start_root_span(&self, trace: TraceContext, span: SpanDescription) -> SpanGuard {
-        let span_id = valid_trace_context(&trace)
-            .then(|| {
-                self.adapter
-                    .start_span(None, Some(&trace), span)
-                    .ok()
-                    .flatten()
-            })
-            .flatten();
+        let span_id = if valid_trace_context(&trace) {
+            match self.adapter.start_span(None, Some(&trace), span) {
+                Ok(span_id) => span_id,
+                Err(()) => {
+                    record_failure(TelemetryFailure::SpanStart);
+                    None
+                }
+            }
+        } else {
+            None
+        };
         SpanGuard {
             adapter: self.adapter.clone(),
             span_id,
@@ -520,6 +545,14 @@ impl Telemetry {
         }
         false
     }
+
+    pub(crate) fn record_lifecycle_observer_failure(&self) {
+        record_failure(TelemetryFailure::LifecycleObserver);
+    }
+
+    pub(crate) fn record_unmatched_span_completion(&self) {
+        record_failure(TelemetryFailure::UnmatchedSpanCompletion);
+    }
 }
 
 pub struct SpanGuard {
@@ -537,10 +570,13 @@ pub(crate) struct SpanParent {
 impl SpanParent {
     pub(crate) fn start_child(&self, span: SpanDescription) -> SpanGuard {
         let span_id = self.span_id.and_then(|parent_id| {
-            self.adapter
-                .start_span(Some(parent_id), None, span)
-                .ok()
-                .flatten()
+            match self.adapter.start_span(Some(parent_id), None, span) {
+                Ok(span_id) => span_id,
+                Err(()) => {
+                    record_failure(TelemetryFailure::SpanStart);
+                    None
+                }
+            }
         });
         SpanGuard {
             adapter: self.adapter.clone(),
@@ -559,11 +595,13 @@ impl SpanGuard {
     }
 
     pub fn start_child(&self, span: SpanDescription) -> SpanGuard {
-        let span_id = self
-            .adapter
-            .start_span(self.span_id, None, span)
-            .ok()
-            .flatten();
+        let span_id = match self.adapter.start_span(self.span_id, None, span) {
+            Ok(span_id) => span_id,
+            Err(()) => {
+                record_failure(TelemetryFailure::SpanStart);
+                None
+            }
+        };
         SpanGuard {
             adapter: self.adapter.clone(),
             span_id,
@@ -577,14 +615,22 @@ impl SpanGuard {
 
     pub fn set_data(&self, key: &str, value: &str) {
         if let Some(span_id) = self.span_id {
-            let _ = self.adapter.set_span_data(span_id, key, value);
+            if self.adapter.set_span_data(span_id, key, value).is_err() {
+                record_failure(TelemetryFailure::SpanData);
+            }
         }
     }
 
     pub fn capture_failure(&self, event: FailureEvent) -> Option<String> {
-        self.span_id
-            .and_then(|span_id| self.adapter.capture_failure_for_span(span_id, event).ok())
-            .flatten()
+        self.span_id.and_then(|span_id| {
+            match self.adapter.capture_failure_for_span(span_id, event) {
+                Ok(event_id) => event_id,
+                Err(()) => {
+                    record_failure(TelemetryFailure::FailureCapture);
+                    None
+                }
+            }
+        })
     }
 
     pub fn finish(mut self, status: SpanStatus) -> Option<String> {
@@ -599,11 +645,16 @@ impl SpanGuard {
 
     fn finish_once(&mut self, timestamp_micros: Option<u64>) -> Option<String> {
         if let Some(span_id) = self.span_id.take() {
-            return self
+            return match self
                 .adapter
                 .finish_span(span_id, self.status, timestamp_micros)
-                .ok()
-                .flatten();
+            {
+                Ok(event_id) => event_id,
+                Err(()) => {
+                    record_failure(TelemetryFailure::SpanFinish);
+                    None
+                }
+            };
         }
         None
     }
@@ -1017,6 +1068,7 @@ mod tests {
 
     #[test]
     fn adapter_failures_are_fail_open() {
+        let before = failure_counter_context();
         let adapter = Arc::new(FakeAdapter::default());
         adapter.state.lock().unwrap().fail_calls = true;
         let telemetry = Telemetry::new(adapter);
@@ -1035,6 +1087,16 @@ mod tests {
             .start_span(SpanDescription::transaction(TRANSACTION_SERVICE_STARTUP))
             .finish(SpanStatus::Unavailable);
         telemetry.flush(Duration::ZERO);
+
+        let after = failure_counter_context();
+        for key in [
+            "breadcrumb_failure",
+            "failure_capture_failure",
+            "span_start_failure",
+            "flush_failure",
+        ] {
+            assert!(after[key].as_u64().unwrap() >= before[key].as_u64().unwrap() + 1);
+        }
     }
 
     #[test]

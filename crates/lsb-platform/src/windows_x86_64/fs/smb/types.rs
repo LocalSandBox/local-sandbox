@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::path::PathBuf;
@@ -88,12 +89,15 @@ impl WindowsSmbLifecycleConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowsSmbLifecyclePhase {
     AdminPreflight,
+    CredentialGeneration,
     PasswordGeneration,
     UserNameGeneration,
     ShareNameGeneration,
     UserCreate,
     UserDelete,
     AclGrant,
+    AclPlan,
+    AclVerify,
     AclRevoke,
     ShareCreate,
     ShareRemove,
@@ -110,12 +114,15 @@ impl WindowsSmbLifecyclePhase {
     pub fn label(self) -> &'static str {
         match self {
             Self::AdminPreflight => "admin preflight",
+            Self::CredentialGeneration => "credential generation",
             Self::PasswordGeneration => "password generation",
             Self::UserNameGeneration => "user name generation",
             Self::ShareNameGeneration => "share name generation",
             Self::UserCreate => "user creation",
             Self::UserDelete => "user deletion",
             Self::AclGrant => "NTFS ACL grant",
+            Self::AclPlan => "NTFS ACL planning",
+            Self::AclVerify => "NTFS ACL verification",
             Self::AclRevoke => "NTFS ACL revoke",
             Self::ShareCreate => "SMB share creation",
             Self::ShareRemove => "SMB share removal",
@@ -128,6 +135,24 @@ impl WindowsSmbLifecyclePhase {
             Self::SmbPolicyPreflight => "SMB policy preflight",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsSmbLifecycleState {
+    Started,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsSmbLifecycleEvent {
+    pub phase: WindowsSmbLifecyclePhase,
+    pub state: WindowsSmbLifecycleState,
+    pub succeeded: Option<bool>,
+    pub data: BTreeMap<String, String>,
+}
+
+pub trait WindowsSmbLifecycleObserver: fmt::Debug + Send + Sync {
+    fn record(&self, event: WindowsSmbLifecycleEvent);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

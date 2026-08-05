@@ -1,6 +1,8 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use lsb_proto::MountRequest;
 use serde::{Deserialize, Serialize};
@@ -15,7 +17,8 @@ use super::share::{
 };
 use super::types::{
     generate_smb_share_name, generate_smb_user_name, WindowsSmbCleanupFailure,
-    WindowsSmbLifecycleConfig, WindowsSmbLifecycleError, WindowsSmbLifecyclePhase,
+    WindowsSmbLifecycleConfig, WindowsSmbLifecycleError, WindowsSmbLifecycleEvent,
+    WindowsSmbLifecycleObserver, WindowsSmbLifecyclePhase, WindowsSmbLifecycleState,
     WINDOWS_SMB_GATEWAY_SERVER,
 };
 use super::user::{WindowsSmbUserAccount, WindowsSmbUserManager, WindowsSmbUserName};
@@ -72,6 +75,7 @@ pub struct WindowsSmbLifecycleManager<A, P, U, L, S> {
     users: U,
     acls: L,
     shares: S,
+    observer: Option<Arc<dyn WindowsSmbLifecycleObserver>>,
 }
 
 impl<A, P, U, L, S> WindowsSmbLifecycleManager<A, P, U, L, S> {
@@ -82,7 +86,74 @@ impl<A, P, U, L, S> WindowsSmbLifecycleManager<A, P, U, L, S> {
             users,
             acls,
             shares,
+            observer: None,
         }
+    }
+
+    pub fn with_observer(mut self, observer: Arc<dyn WindowsSmbLifecycleObserver>) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
+    fn phase(&self, phase: WindowsSmbLifecyclePhase) -> WindowsSmbPhaseGuard {
+        WindowsSmbPhaseGuard::start(self.observer.as_ref(), phase)
+    }
+}
+
+struct WindowsSmbPhaseGuard {
+    observer: Option<Arc<dyn WindowsSmbLifecycleObserver>>,
+    phase: WindowsSmbLifecyclePhase,
+    completed: bool,
+}
+
+impl WindowsSmbPhaseGuard {
+    fn start(
+        observer: Option<&Arc<dyn WindowsSmbLifecycleObserver>>,
+        phase: WindowsSmbLifecyclePhase,
+    ) -> Self {
+        let observer = observer.cloned();
+        if let Some(observer) = &observer {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                observer.record(WindowsSmbLifecycleEvent {
+                    phase,
+                    state: WindowsSmbLifecycleState::Started,
+                    succeeded: None,
+                    data: BTreeMap::new(),
+                });
+            }));
+        }
+        Self {
+            observer,
+            phase,
+            completed: false,
+        }
+    }
+
+    fn finish(mut self, succeeded: bool, data: BTreeMap<String, String>) {
+        self.complete(succeeded, data);
+    }
+
+    fn complete(&mut self, succeeded: bool, data: BTreeMap<String, String>) {
+        if self.completed {
+            return;
+        }
+        if let Some(observer) = &self.observer {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                observer.record(WindowsSmbLifecycleEvent {
+                    phase: self.phase,
+                    state: WindowsSmbLifecycleState::Completed,
+                    succeeded: Some(succeeded),
+                    data,
+                });
+            }));
+        }
+        self.completed = true;
+    }
+}
+
+impl Drop for WindowsSmbPhaseGuard {
+    fn drop(&mut self) {
+        self.complete(false, BTreeMap::new());
     }
 }
 
@@ -114,13 +185,31 @@ where
         config: &WindowsSmbLifecycleConfig,
         manifest_path: Option<&Path>,
     ) -> Result<WindowsSmbActiveResources, WindowsSmbLifecycleError> {
-        self.admin.ensure_elevated_admin()?;
-        self.admin
-            .ensure_windows_smb_policy_allows_generated_users()?;
-        self.admin.ensure_smb_loopback_available()?;
+        let admin_phase = self.phase(WindowsSmbLifecyclePhase::AdminPreflight);
+        let admin_result = self.admin.ensure_elevated_admin();
+        admin_phase.finish(admin_result.is_ok(), BTreeMap::new());
+        admin_result?;
 
-        let user_name = generate_smb_user_name(&mut self.passwords)?;
-        let password = self.passwords.generate_password()?;
+        let policy_phase = self.phase(WindowsSmbLifecyclePhase::SmbPolicyPreflight);
+        let policy_result = self
+            .admin
+            .ensure_windows_smb_policy_allows_generated_users();
+        policy_phase.finish(policy_result.is_ok(), BTreeMap::new());
+        policy_result?;
+
+        let loopback_phase = self.phase(WindowsSmbLifecyclePhase::SmbLoopbackPreflight);
+        let loopback_result = self.admin.ensure_smb_loopback_available();
+        loopback_phase.finish(loopback_result.is_ok(), BTreeMap::new());
+        loopback_result?;
+
+        let credential_phase = self.phase(WindowsSmbLifecyclePhase::CredentialGeneration);
+        let credentials = (|| {
+            let user_name = generate_smb_user_name(&mut self.passwords)?;
+            let password = self.passwords.generate_password()?;
+            Ok((user_name, password))
+        })();
+        credential_phase.finish(credentials.is_ok(), BTreeMap::new());
+        let (user_name, password) = credentials?;
         let mut journal = WindowsSmbCleanupManifest::new(
             config.instance_id.clone(),
             user_name.as_str().to_string(),
@@ -128,7 +217,10 @@ where
         if let Some(path) = manifest_path {
             write_windows_smb_cleanup_journal(path, &journal)?;
         }
-        let account = match self.users.create_user(&user_name, &password) {
+        let account_phase = self.phase(WindowsSmbLifecyclePhase::UserCreate);
+        let account_result = self.users.create_user(&user_name, &password);
+        account_phase.finish(account_result.is_ok(), BTreeMap::new());
+        let account = match account_result {
             Ok(account) => account,
             Err(error) => {
                 let failures = if let Some(path) = manifest_path {
@@ -159,6 +251,7 @@ where
         let mut shares = Vec::new();
         let mut intended_grants = Vec::with_capacity(config.mounts.len());
         let mut remaining_acl_entries = MAX_ACL_AGGREGATE_ENTRIES;
+        let acl_plan_phase = self.phase(WindowsSmbLifecyclePhase::AclPlan);
         for mount in &config.mounts {
             let request = WindowsSmbAclGrantRequest {
                 path: mount.source.clone(),
@@ -170,6 +263,13 @@ where
             let intended_grant = match self.acls.prepare_grant(&request) {
                 Ok(grant) => grant,
                 Err(error) => {
+                    acl_plan_phase.finish(
+                        false,
+                        BTreeMap::from([(
+                            "mount.count".to_string(),
+                            config.mounts.len().to_string(),
+                        )]),
+                    );
                     let failures = if let Some(path) = manifest_path {
                         match self.recover_cleanup_manifest(path) {
                             Ok(()) => Vec::new(),
@@ -182,6 +282,10 @@ where
                 }
             };
             if intended_grant.inspected_entries > remaining_acl_entries {
+                acl_plan_phase.finish(
+                    false,
+                    BTreeMap::from([("mount.count".to_string(), config.mounts.len().to_string())]),
+                );
                 let error = WindowsSmbLifecycleError::mount_limit_exceeded_at(
                     MAX_ACL_AGGREGATE_ENTRIES,
                     &intended_grant.path,
@@ -199,9 +303,25 @@ where
             remaining_acl_entries -= intended_grant.inspected_entries;
             intended_grants.push(intended_grant);
         }
+        let inspected_entries = intended_grants
+            .iter()
+            .map(|grant| grant.inspected_entries)
+            .sum::<usize>();
+        acl_plan_phase.finish(
+            true,
+            BTreeMap::from([
+                ("mount.count".to_string(), config.mounts.len().to_string()),
+                (
+                    "acl.inspected_entries".to_string(),
+                    inspected_entries.to_string(),
+                ),
+            ]),
+        );
 
         let mut mount_requests = Vec::new();
 
+        let acl_apply_phase = self.phase(WindowsSmbLifecyclePhase::AclGrant);
+        let intended_grant_count = intended_grants.len();
         for intended_grant in intended_grants {
             journal
                 .acl_grants
@@ -218,6 +338,13 @@ where
             let grant = match self.acls.grant_access(intended_grant) {
                 Ok(grant) => grant,
                 Err(error) => {
+                    acl_apply_phase.finish(
+                        false,
+                        BTreeMap::from([(
+                            "acl.grant_count".to_string(),
+                            acl_grants.len().to_string(),
+                        )]),
+                    );
                     let failures = if let Some(path) = manifest_path {
                         match self.recover_cleanup_manifest(path) {
                             Ok(()) => Vec::new(),
@@ -245,8 +372,21 @@ where
                 }
             }
         }
+        acl_apply_phase.finish(
+            true,
+            BTreeMap::from([(
+                "acl.grant_count".to_string(),
+                intended_grant_count.to_string(),
+            )]),
+        );
 
-        if let Err(error) = self.acls.verify_access(&account, &password, &acl_grants) {
+        let acl_verify_phase = self.phase(WindowsSmbLifecyclePhase::AclVerify);
+        let acl_verify_result = self.acls.verify_access(&account, &password, &acl_grants);
+        acl_verify_phase.finish(
+            acl_verify_result.is_ok(),
+            BTreeMap::from([("acl.grant_count".to_string(), acl_grants.len().to_string())]),
+        );
+        if let Err(error) = acl_verify_result {
             let failures = if let Some(path) = manifest_path {
                 match self.recover_cleanup_manifest(path) {
                     Ok(()) => Vec::new(),
@@ -258,11 +398,16 @@ where
             return Err(error.with_cleanup_failures(failures));
         }
 
+        let share_create_phase = self.phase(WindowsSmbLifecyclePhase::ShareCreate);
         for (index, mount) in config.mounts.iter().enumerate() {
             let share_name =
                 match generate_smb_share_name(&config.instance_id, index, &mut self.passwords) {
                     Ok(name) => name,
                     Err(error) => {
+                        share_create_phase.finish(
+                            false,
+                            BTreeMap::from([("share.count".to_string(), shares.len().to_string())]),
+                        );
                         let failures = if let Some(path) = manifest_path {
                             match self.recover_cleanup_manifest(path) {
                                 Ok(()) => Vec::new(),
@@ -297,6 +442,10 @@ where
             }) {
                 Ok(share) => share,
                 Err(error) => {
+                    share_create_phase.finish(
+                        false,
+                        BTreeMap::from([("share.count".to_string(), shares.len().to_string())]),
+                    );
                     let failures = if let Some(path) = manifest_path {
                         match self.recover_cleanup_manifest(path) {
                             Ok(()) => Vec::new(),
@@ -316,6 +465,10 @@ where
             ));
             shares.push(share);
         }
+        share_create_phase.finish(
+            true,
+            BTreeMap::from([("share.count".to_string(), shares.len().to_string())]),
+        );
 
         Ok(WindowsSmbActiveResources {
             account,
@@ -345,10 +498,22 @@ where
         &mut self,
         path: &Path,
     ) -> Result<(), WindowsSmbLifecycleError> {
-        let manifest = read_windows_smb_cleanup_manifest(path)?;
+        let read_phase = self.phase(WindowsSmbLifecyclePhase::CleanupManifest);
+        let manifest_result = read_windows_smb_cleanup_manifest(path);
+        read_phase.finish(
+            manifest_result.is_ok(),
+            BTreeMap::from([("manifest.operation".to_string(), "read".to_string())]),
+        );
+        let manifest = manifest_result?;
         let resources = manifest.into_active_resources()?;
         self.cleanup(resources)?;
-        remove_windows_smb_cleanup_manifest(path)
+        let remove_phase = self.phase(WindowsSmbLifecyclePhase::CleanupManifest);
+        let result = remove_windows_smb_cleanup_manifest(path);
+        remove_phase.finish(
+            result.is_ok(),
+            BTreeMap::from([("manifest.operation".to_string(), "remove".to_string())]),
+        );
+        result
     }
 
     fn cleanup_created(
@@ -359,6 +524,7 @@ where
     ) -> Vec<WindowsSmbCleanupFailure> {
         let mut failures = Vec::new();
 
+        let share_phase = self.phase(WindowsSmbLifecyclePhase::ShareRemove);
         for share in shares.iter().rev() {
             if let Err(error) = self.shares.remove_share(&share) {
                 failures.push(WindowsSmbCleanupFailure::at_path(
@@ -368,17 +534,35 @@ where
                 ));
             }
         }
+        share_phase.finish(
+            failures.is_empty(),
+            BTreeMap::from([
+                ("share.count".to_string(), shares.len().to_string()),
+                (
+                    "cleanup.failure_count".to_string(),
+                    failures.len().to_string(),
+                ),
+            ]),
+        );
         if !failures.is_empty() {
             return failures;
         }
 
         let mut account = account.clone();
+        let acl_phase = self.phase(WindowsSmbLifecyclePhase::AclRevoke);
         if !acl_grants.is_empty() {
             if let Err(error) = self.users.resolve_account_sid(&mut account) {
                 failures.push(WindowsSmbCleanupFailure::new(
                     WindowsSmbLifecyclePhase::AclRevoke,
                     error.to_string(),
                 ));
+                acl_phase.finish(
+                    false,
+                    BTreeMap::from([
+                        ("acl.grant_count".to_string(), acl_grants.len().to_string()),
+                        ("cleanup.failure_count".to_string(), "1".to_string()),
+                    ]),
+                );
                 return failures;
             }
             for grant in acl_grants.iter_mut() {
@@ -396,11 +580,24 @@ where
                 ));
             }
         }
+        acl_phase.finish(
+            failures.is_empty(),
+            BTreeMap::from([
+                ("acl.grant_count".to_string(), acl_grants.len().to_string()),
+                (
+                    "cleanup.failure_count".to_string(),
+                    failures.len().to_string(),
+                ),
+            ]),
+        );
         if !failures.is_empty() {
             return failures;
         }
 
-        if let Err(error) = self.users.delete_user(&account) {
+        let user_phase = self.phase(WindowsSmbLifecyclePhase::UserDelete);
+        let user_result = self.users.delete_user(&account);
+        user_phase.finish(user_result.is_ok(), BTreeMap::new());
+        if let Err(error) = user_result {
             failures.push(WindowsSmbCleanupFailure::new(
                 WindowsSmbLifecyclePhase::UserDelete,
                 error.to_string(),
@@ -961,6 +1158,7 @@ mod tests {
     use std::path::PathBuf;
     use std::rc::Rc;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
 
     use super::*;
     use crate::windows_x86_64::fs::smb::{
@@ -978,6 +1176,24 @@ mod tests {
 
         fn snapshot(&self) -> Vec<String> {
             self.0.borrow().clone()
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct LifecycleRecorder(Mutex<Vec<WindowsSmbLifecycleEvent>>);
+
+    impl WindowsSmbLifecycleObserver for LifecycleRecorder {
+        fn record(&self, event: WindowsSmbLifecycleEvent) {
+            self.0.lock().unwrap().push(event);
+        }
+    }
+
+    #[derive(Debug)]
+    struct PanickingLifecycleObserver;
+
+    impl WindowsSmbLifecycleObserver for PanickingLifecycleObserver {
+        fn record(&self, _event: WindowsSmbLifecycleEvent) {
+            panic!("telemetry observer failure");
         }
     }
 
@@ -1351,6 +1567,76 @@ mod tests {
                 "delete_user:lsb_000102030405",
             ]
         );
+    }
+
+    #[test]
+    fn lifecycle_observer_breaks_setup_and_cleanup_into_aggregate_phases() {
+        let recorder = Arc::new(LifecycleRecorder::default());
+        let mut manager = fake_manager(
+            EventLog::default(),
+            [
+                vec![0, 1, 2, 3, 4, 5],
+                vec![0xaa, 0xbb, 0xcc, 0xdd],
+                vec![0xee, 0xff, 0x10, 0x20],
+            ],
+        )
+        .with_observer(recorder.clone());
+
+        let resources = manager.prepare(&config()).expect("prepare succeeds");
+        manager.cleanup(resources).expect("cleanup succeeds");
+
+        let events = recorder.0.lock().unwrap();
+        let completed = events
+            .iter()
+            .filter(|event| event.state == WindowsSmbLifecycleState::Completed)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            completed
+                .iter()
+                .map(|event| event.phase)
+                .collect::<Vec<_>>(),
+            [
+                WindowsSmbLifecyclePhase::AdminPreflight,
+                WindowsSmbLifecyclePhase::SmbPolicyPreflight,
+                WindowsSmbLifecyclePhase::SmbLoopbackPreflight,
+                WindowsSmbLifecyclePhase::CredentialGeneration,
+                WindowsSmbLifecyclePhase::UserCreate,
+                WindowsSmbLifecyclePhase::AclPlan,
+                WindowsSmbLifecyclePhase::AclGrant,
+                WindowsSmbLifecyclePhase::AclVerify,
+                WindowsSmbLifecyclePhase::ShareCreate,
+                WindowsSmbLifecyclePhase::ShareRemove,
+                WindowsSmbLifecyclePhase::AclRevoke,
+                WindowsSmbLifecyclePhase::UserDelete,
+            ]
+        );
+        assert!(completed.iter().all(|event| event.succeeded == Some(true)));
+        let acl_plan = completed
+            .iter()
+            .find(|event| event.phase == WindowsSmbLifecyclePhase::AclPlan)
+            .unwrap();
+        assert_eq!(acl_plan.data["mount.count"], "2");
+        assert_eq!(acl_plan.data["acl.inspected_entries"], "2");
+    }
+
+    #[test]
+    fn lifecycle_observer_panics_fail_open() {
+        let mut manager = fake_manager(
+            EventLog::default(),
+            [
+                vec![0, 1, 2, 3, 4, 5],
+                vec![0xaa, 0xbb, 0xcc, 0xdd],
+                vec![0xee, 0xff, 0x10, 0x20],
+            ],
+        )
+        .with_observer(Arc::new(PanickingLifecycleObserver));
+
+        let resources = manager
+            .prepare(&config())
+            .expect("telemetry must not fail setup");
+        manager
+            .cleanup(resources)
+            .expect("telemetry must not fail cleanup");
     }
 
     #[test]

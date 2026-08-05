@@ -298,7 +298,18 @@ impl lsb_vm::SandboxLifecycleObserver for SandboxLifecycleTrace {
                     None,
                     false,
                 );
-                let Ok(parent) = self.parent.lock() else {
+                let parent = event
+                    .parent_phase
+                    .and_then(|parent_phase| {
+                        self.active.lock().ok().and_then(|active| {
+                            active
+                                .get(&(parent_phase, None))
+                                .map(crate::telemetry::SpanGuard::parent)
+                        })
+                    })
+                    .or_else(|| self.parent.lock().ok().map(|parent| parent.clone()));
+                let Some(parent) = parent else {
+                    self.telemetry.record_lifecycle_observer_failure();
                     return;
                 };
                 let mut span = crate::telemetry::SpanDescription::child(operation, description);
@@ -324,8 +335,11 @@ impl lsb_vm::SandboxLifecycleObserver for SandboxLifecycleTrace {
                         containment.attach_qemu_lifecycle(self.telemetry.clone(), guard.parent());
                     }
                 }
-                if let Ok(mut active) = self.active.lock() {
-                    active.insert(key, guard);
+                match self.active.lock() {
+                    Ok(mut active) => {
+                        active.insert(key, guard);
+                    }
+                    Err(_) => self.telemetry.record_lifecycle_observer_failure(),
                 }
             }
             lsb_vm::SandboxLifecycleState::Completed => {
@@ -346,15 +360,29 @@ impl lsb_vm::SandboxLifecycleObserver for SandboxLifecycleTrace {
                     } else {
                         crate::telemetry::SpanStatus::InternalError
                     });
+                } else {
+                    self.telemetry.record_unmatched_span_completion();
                 }
-                if event.succeeded == Some(false) {
+                if event.succeeded == Some(false) && should_capture_lifecycle_failure(event.phase) {
+                    let fail_open = event
+                        .data
+                        .get("fail_open")
+                        .is_some_and(|value| value == "true");
                     let mut failure = crate::telemetry::FailureEvent::new(
                         operation,
                         "SANDBOX_LIFECYCLE_PHASE_FAILED",
-                        crate::telemetry::Level::Error,
+                        if fail_open {
+                            crate::telemetry::Level::Warning
+                        } else {
+                            crate::telemetry::Level::Error
+                        },
                         format!("sandbox lifecycle phase {operation} failed"),
                     )
-                    .with_detailed_failure_kind("lifecycle_phase")
+                    .with_detailed_failure_kind(if fail_open {
+                        "fail_open_degradation"
+                    } else {
+                        "lifecycle_phase"
+                    })
                     .with_correlation_id(&self.correlation_id)
                     .with_resource_id(&self.resource_id)
                     .with_phase(operation);
@@ -368,11 +396,47 @@ impl lsb_vm::SandboxLifecycleObserver for SandboxLifecycleTrace {
                             }),
                         );
                     }
+                    if let Some(phase) = event.data.get("smb.failure.phase") {
+                        failure.contexts.insert(
+                            "smb_failure".to_string(),
+                            serde_json::json!({
+                                "phase": phase,
+                                "path": event.data.get("smb.failure.path"),
+                                "cleanup_failure_count": event.data.get("cleanup.failure_count"),
+                            }),
+                        );
+                    }
                     self.telemetry.capture_failure(failure);
                 }
             }
         }
     }
+}
+
+fn should_capture_lifecycle_failure(phase: lsb_vm::SandboxLifecyclePhase) -> bool {
+    use lsb_vm::SandboxLifecyclePhase as Phase;
+    !matches!(
+        phase,
+        Phase::SmbInstanceLock
+            | Phase::SmbMountRevalidate
+            | Phase::SmbStaleCleanup
+            | Phase::SmbAdminPreflight
+            | Phase::SmbPolicyPreflight
+            | Phase::SmbLoopbackPreflight
+            | Phase::SmbCredentialGeneration
+            | Phase::SmbAccountCreate
+            | Phase::SmbAclPlan
+            | Phase::SmbAclApply
+            | Phase::SmbAclVerify
+            | Phase::SmbShareCreate
+            | Phase::SmbMountRequestsPublish
+            | Phase::SmbMountRequestsRemove
+            | Phase::SmbShareRemove
+            | Phase::SmbAclRevoke
+            | Phase::SmbAccountDelete
+            | Phase::SmbManifestRemove
+            | Phase::SmbInstanceLockRelease
+    )
 }
 
 fn sandbox_lifecycle_description(
@@ -384,6 +448,25 @@ fn sandbox_lifecycle_description(
         Phase::CacheLookup => ("mount.cache_lookup", "select mount cache routes"),
         Phase::CacheConfiguration => ("mount.cache_configuration", "configure cache disks"),
         Phase::SmbSetup => ("mount.smb_setup", "prepare SMB mounts"),
+        Phase::SmbInstanceLock => ("smb.instance_lock", "acquire SMB instance lock"),
+        Phase::SmbMountRevalidate => ("smb.mount_revalidate", "revalidate SMB mount sources"),
+        Phase::SmbStaleCleanup => ("smb.stale_cleanup", "recover stale SMB resources"),
+        Phase::SmbAdminPreflight => ("smb.preflight.admin", "verify elevated SMB access"),
+        Phase::SmbPolicyPreflight => ("smb.preflight.policy", "verify SMB security policy"),
+        Phase::SmbLoopbackPreflight => ("smb.preflight.loopback", "verify SMB loopback support"),
+        Phase::SmbCredentialGeneration => (
+            "smb.credential_generation",
+            "generate ephemeral SMB credentials",
+        ),
+        Phase::SmbAccountCreate => ("smb.account_create", "create ephemeral SMB account"),
+        Phase::SmbAclPlan => ("smb.acl_plan", "inspect and plan SMB ACL grants"),
+        Phase::SmbAclApply => ("smb.acl_apply", "apply SMB ACL grants"),
+        Phase::SmbAclVerify => ("smb.acl_verify", "verify SMB ACL access"),
+        Phase::SmbShareCreate => ("smb.share_create", "create SMB shares"),
+        Phase::SmbMountRequestsPublish => (
+            "smb.mount_requests_publish",
+            "publish guest SMB mount requests",
+        ),
         Phase::VmBoot => ("vm.boot", "boot sandbox VM"),
         Phase::Transfer => ("mount.transfer", "transfer mount payload"),
         Phase::CachePrepare => ("mount.cache_prepare", "prepare mount cache"),
@@ -395,6 +478,16 @@ fn sandbox_lifecycle_description(
         Phase::CacheDiskDetach => ("cleanup.cache_disk_detach", "detach cache disks"),
         Phase::CacheFinalize => ("cleanup.cache_finalize", "finalize mount cache"),
         Phase::SmbTeardown => ("cleanup.smb_teardown", "tear down SMB mounts"),
+        Phase::SmbMountRequestsRemove => (
+            "smb.mount_requests_remove",
+            "remove guest SMB mount requests",
+        ),
+        Phase::SmbShareRemove => ("smb.share_remove", "remove SMB shares"),
+        Phase::SmbAclRevoke => ("smb.acl_revoke", "revoke SMB ACL grants"),
+        Phase::SmbAccountDelete => ("smb.account_delete", "delete ephemeral SMB account"),
+        Phase::SmbManifestRemove => ("smb.manifest_remove", "remove SMB cleanup manifest"),
+        Phase::SmbInstanceLockRelease => ("smb.instance_lock_release", "release SMB instance lock"),
+        Phase::SmbRollback => ("cleanup.smb_rollback", "roll back SMB startup resources"),
     }
 }
 

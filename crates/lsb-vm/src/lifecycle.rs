@@ -7,6 +7,19 @@ pub enum SandboxLifecyclePhase {
     CacheLookup,
     CacheConfiguration,
     SmbSetup,
+    SmbInstanceLock,
+    SmbMountRevalidate,
+    SmbStaleCleanup,
+    SmbAdminPreflight,
+    SmbPolicyPreflight,
+    SmbLoopbackPreflight,
+    SmbCredentialGeneration,
+    SmbAccountCreate,
+    SmbAclPlan,
+    SmbAclApply,
+    SmbAclVerify,
+    SmbShareCreate,
+    SmbMountRequestsPublish,
     VmBoot,
     Transfer,
     CachePrepare,
@@ -18,6 +31,13 @@ pub enum SandboxLifecyclePhase {
     CacheDiskDetach,
     CacheFinalize,
     SmbTeardown,
+    SmbMountRequestsRemove,
+    SmbShareRemove,
+    SmbAclRevoke,
+    SmbAccountDelete,
+    SmbManifestRemove,
+    SmbInstanceLockRelease,
+    SmbRollback,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +49,7 @@ pub enum SandboxLifecycleState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxLifecycleEvent {
     pub phase: SandboxLifecyclePhase,
+    pub parent_phase: Option<SandboxLifecyclePhase>,
     pub state: SandboxLifecycleState,
     pub succeeded: Option<bool>,
     pub data: BTreeMap<String, String>,
@@ -41,6 +62,7 @@ pub trait SandboxLifecycleObserver: std::fmt::Debug + Send + Sync {
 pub(crate) struct LifecyclePhaseGuard {
     observer: Option<Arc<dyn SandboxLifecycleObserver>>,
     phase: SandboxLifecyclePhase,
+    parent_phase: Option<SandboxLifecyclePhase>,
     completed: bool,
 }
 
@@ -50,10 +72,30 @@ impl LifecyclePhaseGuard {
         phase: SandboxLifecyclePhase,
         data: BTreeMap<String, String>,
     ) -> Self {
+        Self::start_with_parent(observer, phase, None, data)
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    pub(crate) fn start_child(
+        observer: Option<&Arc<dyn SandboxLifecycleObserver>>,
+        phase: SandboxLifecyclePhase,
+        parent_phase: SandboxLifecyclePhase,
+        data: BTreeMap<String, String>,
+    ) -> Self {
+        Self::start_with_parent(observer, phase, Some(parent_phase), data)
+    }
+
+    fn start_with_parent(
+        observer: Option<&Arc<dyn SandboxLifecycleObserver>>,
+        phase: SandboxLifecyclePhase,
+        parent_phase: Option<SandboxLifecyclePhase>,
+        data: BTreeMap<String, String>,
+    ) -> Self {
         let observer = observer.cloned();
         if let Some(observer) = &observer {
             observer.record(SandboxLifecycleEvent {
                 phase,
+                parent_phase,
                 state: SandboxLifecycleState::Started,
                 succeeded: None,
                 data,
@@ -62,6 +104,7 @@ impl LifecyclePhaseGuard {
         Self {
             observer,
             phase,
+            parent_phase,
             completed: false,
         }
     }
@@ -77,6 +120,7 @@ impl LifecyclePhaseGuard {
         if let Some(observer) = &self.observer {
             observer.record(SandboxLifecycleEvent {
                 phase: self.phase,
+                parent_phase: self.parent_phase,
                 state: SandboxLifecycleState::Completed,
                 succeeded: Some(succeeded),
                 data,

@@ -35,7 +35,9 @@ use lsb_platform::windows_x86_64::fs::smb::WindowsSmbLifecycleError;
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use lsb_platform::windows_x86_64::fs::smb::{
     windows_smb_cleanup_manifest_path, WindowsSmbActiveResources, WindowsSmbInstanceGuard,
-    WindowsSmbLifecycleConfig, WindowsSmbLifecycleManager, WindowsSmbMount,
+    WindowsSmbLifecycleConfig, WindowsSmbLifecycleEvent, WindowsSmbLifecycleManager,
+    WindowsSmbLifecycleObserver, WindowsSmbLifecyclePhase, WindowsSmbLifecycleState,
+    WindowsSmbMount,
 };
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use lsb_platform::windows_x86_64::fs::{
@@ -84,6 +86,8 @@ use lsb_proto::{VSOCK_PORT, VSOCK_PORT_FORWARD};
 
 use crate::lifecycle::{LifecyclePhaseGuard, SandboxLifecycleObserver, SandboxLifecyclePhase};
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use crate::lifecycle::{SandboxLifecycleEvent, SandboxLifecycleState};
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use crate::mount_metrics::{
     CacheDecision, DurationMetric, ErrorCategory, FailedPhase, FallbackReason, MountSourceSummary,
     TerminalOutcome, WindowsMountMetrics,
@@ -113,6 +117,84 @@ impl std::error::Error for UnsupportedWindowsRuntime {}
 #[cfg(not(target_os = "macos"))]
 fn unsupported_runtime(capability: &'static str, detail: &'static str) -> anyhow::Error {
     UnsupportedWindowsRuntime { capability, detail }.into()
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[derive(Debug)]
+struct WindowsSmbTraceAdapter {
+    observer: Option<Arc<dyn SandboxLifecycleObserver>>,
+    parent_phase: SandboxLifecyclePhase,
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+impl WindowsSmbTraceAdapter {
+    fn new(
+        observer: Option<Arc<dyn SandboxLifecycleObserver>>,
+        parent_phase: SandboxLifecyclePhase,
+    ) -> Self {
+        Self {
+            observer,
+            parent_phase,
+        }
+    }
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+impl WindowsSmbLifecycleObserver for WindowsSmbTraceAdapter {
+    fn record(&self, event: WindowsSmbLifecycleEvent) {
+        let Some(observer) = &self.observer else {
+            return;
+        };
+        observer.record(SandboxLifecycleEvent {
+            phase: map_windows_smb_phase(event.phase, self.parent_phase),
+            parent_phase: Some(self.parent_phase),
+            state: match event.state {
+                WindowsSmbLifecycleState::Started => SandboxLifecycleState::Started,
+                WindowsSmbLifecycleState::Completed => SandboxLifecycleState::Completed,
+            },
+            succeeded: event.succeeded,
+            data: event.data,
+        });
+    }
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn map_windows_smb_phase(
+    phase: WindowsSmbLifecyclePhase,
+    parent_phase: SandboxLifecyclePhase,
+) -> SandboxLifecyclePhase {
+    match phase {
+        WindowsSmbLifecyclePhase::AdminPreflight => SandboxLifecyclePhase::SmbAdminPreflight,
+        WindowsSmbLifecyclePhase::SmbPolicyPreflight => SandboxLifecyclePhase::SmbPolicyPreflight,
+        WindowsSmbLifecyclePhase::SmbLoopbackPreflight => {
+            SandboxLifecyclePhase::SmbLoopbackPreflight
+        }
+        WindowsSmbLifecyclePhase::CredentialGeneration
+        | WindowsSmbLifecyclePhase::PasswordGeneration
+        | WindowsSmbLifecyclePhase::UserNameGeneration
+        | WindowsSmbLifecyclePhase::ShareNameGeneration
+        | WindowsSmbLifecyclePhase::ComputerName
+        | WindowsSmbLifecyclePhase::UserNetworkLogonGrant
+        | WindowsSmbLifecyclePhase::UserNetworkLogonRevoke => {
+            SandboxLifecyclePhase::SmbCredentialGeneration
+        }
+        WindowsSmbLifecyclePhase::UserCreate => SandboxLifecyclePhase::SmbAccountCreate,
+        WindowsSmbLifecyclePhase::UserDelete => SandboxLifecyclePhase::SmbAccountDelete,
+        WindowsSmbLifecyclePhase::AclPlan => SandboxLifecyclePhase::SmbAclPlan,
+        WindowsSmbLifecyclePhase::AclGrant => SandboxLifecyclePhase::SmbAclApply,
+        WindowsSmbLifecyclePhase::AclVerify => SandboxLifecyclePhase::SmbAclVerify,
+        WindowsSmbLifecyclePhase::AclRevoke => SandboxLifecyclePhase::SmbAclRevoke,
+        WindowsSmbLifecyclePhase::ShareCreate => SandboxLifecyclePhase::SmbShareCreate,
+        WindowsSmbLifecyclePhase::ShareRemove => SandboxLifecyclePhase::SmbShareRemove,
+        WindowsSmbLifecyclePhase::CleanupManifest => {
+            if parent_phase == SandboxLifecyclePhase::SmbSetup {
+                SandboxLifecyclePhase::SmbStaleCleanup
+            } else {
+                SandboxLifecyclePhase::SmbManifestRemove
+            }
+        }
+        WindowsSmbLifecyclePhase::InstanceLock => SandboxLifecyclePhase::SmbInstanceLock,
+    }
 }
 
 // --- Mount types ---
@@ -1280,10 +1362,7 @@ impl Sandbox {
         let result = self
             .prepare_windows_smb_mounts()
             .context("Failed to prepare Windows SMB mounts");
-        phase.finish(
-            result.is_ok(),
-            std::collections::BTreeMap::from([("transport.type".to_string(), "smb".to_string())]),
-        );
+        phase.finish(result.is_ok(), windows_smb_setup_telemetry_data(&result));
         if result.is_err() {
             self.mount_metrics.finish_failure(
                 FailedPhase::Configuration,
@@ -1356,10 +1435,18 @@ impl Sandbox {
             let smb_sync_succeeded = self.sync_windows_smb_mounts_best_effort();
             smb_sync_phase.finish(
                 smb_sync_succeeded,
-                std::collections::BTreeMap::from([(
-                    "transport.type".to_string(),
-                    "smb".to_string(),
-                )]),
+                std::collections::BTreeMap::from([
+                    ("transport.type".to_string(), "smb".to_string()),
+                    (
+                        "outcome".to_string(),
+                        if smb_sync_succeeded {
+                            "ok".to_string()
+                        } else {
+                            "degraded".to_string()
+                        },
+                    ),
+                    ("fail_open".to_string(), "true".to_string()),
+                ]),
             );
             let vm_stop_phase = LifecyclePhaseGuard::start(
                 self.lifecycle_observer.as_ref(),
@@ -1409,8 +1496,21 @@ impl Sandbox {
                 SandboxLifecyclePhase::SmbTeardown,
                 std::collections::BTreeMap::new(),
             );
-            let cleanup_result = self.cleanup_windows_smb_mounts();
-            let cleanup_telemetry = windows_smb_cleanup_telemetry_data(&cleanup_result);
+            let cleanup_result =
+                self.cleanup_windows_smb_mounts(SandboxLifecyclePhase::SmbTeardown);
+            let mut cleanup_telemetry = windows_smb_cleanup_telemetry_data(&cleanup_result);
+            cleanup_telemetry.insert(
+                "cleanup.result".to_string(),
+                if cleanup_result.is_ok() {
+                    "complete".to_string()
+                } else {
+                    "partial".to_string()
+                },
+            );
+            cleanup_telemetry.insert(
+                "remaining_manifest".to_string(),
+                self.windows_smb_cleanup_manifest_path.is_file().to_string(),
+            );
             smb_teardown_phase.finish(cleanup_result.is_ok(), cleanup_telemetry);
             let result = match (stop_result, cleanup_result) {
                 (Ok(()), Ok(())) => Ok(()),
@@ -3008,27 +3108,66 @@ impl Sandbox {
                     self.windows_smb_cleanup_manifest_path.display()
                 )
             })?;
-        let guard = WindowsSmbInstanceGuard::acquire(instance_dir).with_context(|| {
+        let lock_phase = LifecyclePhaseGuard::start_child(
+            self.lifecycle_observer.as_ref(),
+            SandboxLifecyclePhase::SmbInstanceLock,
+            SandboxLifecyclePhase::SmbSetup,
+            std::collections::BTreeMap::new(),
+        );
+        let guard_result = WindowsSmbInstanceGuard::acquire(instance_dir).with_context(|| {
             format!(
                 "acquiring Windows SMB instance lock for '{}'",
                 instance_dir.display()
             )
-        })?;
+        });
+        lock_phase.finish(guard_result.is_ok(), std::collections::BTreeMap::new());
+        let guard = guard_result?;
 
+        let revalidate_phase = LifecyclePhaseGuard::start_child(
+            self.lifecycle_observer.as_ref(),
+            SandboxLifecyclePhase::SmbMountRevalidate,
+            SandboxLifecyclePhase::SmbSetup,
+            std::collections::BTreeMap::new(),
+        );
         let mut refreshed_mounts = Vec::with_capacity(mounts.len());
         for mount in &mounts {
-            let refreshed = replan_windows_smb_mount(mount).with_context(|| {
+            let refreshed_result = replan_windows_smb_mount(mount).with_context(|| {
                 format!(
                     "revalidating Windows SMB mount target '{}' source before sharing",
                     mount.target
                 )
-            })?;
+            });
+            let refreshed = match refreshed_result {
+                Ok(refreshed) => refreshed,
+                Err(error) => {
+                    revalidate_phase.finish(
+                        false,
+                        std::collections::BTreeMap::from([(
+                            "mount.count".to_string(),
+                            mounts.len().to_string(),
+                        )]),
+                    );
+                    return Err(error);
+                }
+            };
             refreshed_mounts.push(refreshed);
         }
+        revalidate_phase.finish(
+            true,
+            std::collections::BTreeMap::from([(
+                "mount.count".to_string(),
+                mounts.len().to_string(),
+            )]),
+        );
 
         let config =
             WindowsSmbLifecycleConfig::new(self.windows_smb_instance_id.clone(), refreshed_mounts);
-        let mut manager = WindowsSmbLifecycleManager::native();
+        let mut manager = WindowsSmbLifecycleManager::native().with_observer(Arc::new(
+            WindowsSmbTraceAdapter::new(
+                self.lifecycle_observer.clone(),
+                SandboxLifecyclePhase::SmbSetup,
+            ),
+        ));
 
         if self.windows_smb_cleanup_manifest_path.is_file() {
             manager
@@ -3044,6 +3183,13 @@ impl Sandbox {
         let mut resources = manager
             .prepare_with_cleanup_manifest(&config, &self.windows_smb_cleanup_manifest_path)?;
 
+        let publish_phase = LifecyclePhaseGuard::start_child(
+            self.lifecycle_observer.as_ref(),
+            SandboxLifecyclePhase::SmbMountRequestsPublish,
+            SandboxLifecyclePhase::SmbSetup,
+            std::collections::BTreeMap::new(),
+        );
+        let mount_request_count = resources.mount_requests().len();
         {
             let mut pending_mounts = self
                 .mounts
@@ -3061,13 +3207,31 @@ impl Sandbox {
             .windows_smb_instance_guard
             .lock()
             .map_err(|_| anyhow::anyhow!("Windows SMB instance lock poisoned"))? = Some(guard);
+        publish_phase.finish(
+            true,
+            std::collections::BTreeMap::from([(
+                "mount.count".to_string(),
+                mount_request_count.to_string(),
+            )]),
+        );
 
         Ok(())
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    fn cleanup_windows_smb_mounts(&self) -> Result<()> {
-        self.remove_windows_smb_mount_requests()?;
+    fn cleanup_windows_smb_mounts(&self, parent_phase: SandboxLifecyclePhase) -> Result<()> {
+        let remove_requests_phase = LifecyclePhaseGuard::start_child(
+            self.lifecycle_observer.as_ref(),
+            SandboxLifecyclePhase::SmbMountRequestsRemove,
+            parent_phase,
+            std::collections::BTreeMap::new(),
+        );
+        let remove_requests_result = self.remove_windows_smb_mount_requests();
+        remove_requests_phase.finish(
+            remove_requests_result.is_ok(),
+            std::collections::BTreeMap::new(),
+        );
+        remove_requests_result?;
 
         let resources = self
             .windows_smb_resources
@@ -3076,34 +3240,61 @@ impl Sandbox {
             .take();
         let Some(resources) = resources else {
             if self.windows_smb_cleanup_manifest_path.is_file() {
-                let mut manager = WindowsSmbLifecycleManager::native();
+                let mut manager = WindowsSmbLifecycleManager::native().with_observer(Arc::new(
+                    WindowsSmbTraceAdapter::new(self.lifecycle_observer.clone(), parent_phase),
+                ));
                 let cleanup_result =
                     manager.recover_cleanup_manifest(&self.windows_smb_cleanup_manifest_path);
-                self.release_windows_smb_instance_guard()?;
+                self.release_windows_smb_instance_guard(parent_phase)?;
                 cleanup_result?;
                 return Ok(());
             }
-            self.release_windows_smb_instance_guard()?;
+            self.release_windows_smb_instance_guard(parent_phase)?;
             return Ok(());
         };
 
-        let mut manager = WindowsSmbLifecycleManager::native();
+        let mut manager = WindowsSmbLifecycleManager::native().with_observer(Arc::new(
+            WindowsSmbTraceAdapter::new(self.lifecycle_observer.clone(), parent_phase),
+        ));
         let cleanup_result = if self.windows_smb_cleanup_manifest_path.is_file() {
             manager.recover_cleanup_manifest(&self.windows_smb_cleanup_manifest_path)
         } else {
             manager.cleanup(resources)
         };
         if let Err(error) = cleanup_result {
-            self.release_windows_smb_instance_guard()?;
+            self.release_windows_smb_instance_guard(parent_phase)?;
             return Err(error.into());
         }
-        self.release_windows_smb_instance_guard()?;
+        self.release_windows_smb_instance_guard(parent_phase)?;
         Ok(())
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     fn cleanup_windows_smb_mounts_best_effort(&self) {
-        if let Err(error) = self.cleanup_windows_smb_mounts() {
+        let rollback_phase = LifecyclePhaseGuard::start(
+            self.lifecycle_observer.as_ref(),
+            SandboxLifecyclePhase::SmbRollback,
+            std::collections::BTreeMap::from([(
+                "cleanup.trigger".to_string(),
+                "startup_failure".to_string(),
+            )]),
+        );
+        let result = self.cleanup_windows_smb_mounts(SandboxLifecyclePhase::SmbRollback);
+        let mut telemetry_data = windows_smb_cleanup_telemetry_data(&result);
+        telemetry_data.insert(
+            "cleanup.result".to_string(),
+            if result.is_ok() {
+                "complete".to_string()
+            } else {
+                "partial".to_string()
+            },
+        );
+        telemetry_data.insert(
+            "remaining_manifest".to_string(),
+            self.windows_smb_cleanup_manifest_path.is_file().to_string(),
+        );
+        rollback_phase.finish(result.is_ok(), telemetry_data);
+        if let Err(error) = result {
             tracing::debug!("Windows SMB mount cleanup failed: {}", error);
         }
     }
@@ -3119,13 +3310,23 @@ impl Sandbox {
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    fn release_windows_smb_instance_guard(&self) -> Result<()> {
-        let guard = self
+    fn release_windows_smb_instance_guard(
+        &self,
+        parent_phase: SandboxLifecyclePhase,
+    ) -> Result<()> {
+        let phase = LifecyclePhaseGuard::start_child(
+            self.lifecycle_observer.as_ref(),
+            SandboxLifecyclePhase::SmbInstanceLockRelease,
+            parent_phase,
+            std::collections::BTreeMap::new(),
+        );
+        let guard_result = self
             .windows_smb_instance_guard
             .lock()
             .map_err(|_| anyhow::anyhow!("Windows SMB instance lock poisoned"))?
             .take();
-        drop(guard);
+        drop(guard_result);
+        phase.finish(true, std::collections::BTreeMap::new());
         Ok(())
     }
 
@@ -4312,6 +4513,33 @@ fn windows_smb_cleanup_telemetry_data(
     data
 }
 
+#[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
+fn windows_smb_setup_telemetry_data(
+    result: &Result<()>,
+) -> std::collections::BTreeMap<String, String> {
+    let mut data =
+        std::collections::BTreeMap::from([("transport.type".to_string(), "smb".to_string())]);
+    let Err(error) = result else {
+        return data;
+    };
+    let Some(error) = error.downcast_ref::<WindowsSmbLifecycleError>() else {
+        return data;
+    };
+    if let Some(phase) = error.operation_phase() {
+        data.insert("smb.failure.phase".to_string(), phase.label().to_string());
+    }
+    if let Some(path) = error.operation_path() {
+        data.insert("smb.failure.path".to_string(), path.display().to_string());
+    }
+    if !error.cleanup_failures().is_empty() {
+        data.insert(
+            "cleanup.failure_count".to_string(),
+            error.cleanup_failures().len().to_string(),
+        );
+    }
+    data
+}
+
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 fn temp_sibling_path(destination: &Path, label: &str) -> Result<PathBuf> {
     let parent = destination.parent().ok_or_else(|| {
@@ -4818,6 +5046,31 @@ mod tests {
         assert_eq!(data["cleanup.failure_count"], "1");
         assert_eq!(data["cleanup.failure.phase"], "NTFS ACL revoke");
         assert_eq!(data["cleanup.failure.path"], path.display().to_string());
+    }
+
+    #[test]
+    fn windows_smb_setup_telemetry_records_failure_phase_path_and_rollback_count() {
+        use lsb_platform::windows_x86_64::fs::smb::{
+            WindowsSmbCleanupFailure, WindowsSmbLifecyclePhase,
+        };
+
+        let path = std::path::PathBuf::from(r"C:\Users\profile\workspace");
+        let error = WindowsSmbLifecycleError::operation_failed_at(
+            WindowsSmbLifecyclePhase::AclGrant,
+            path.clone(),
+            "access denied",
+        )
+        .with_cleanup_failures(vec![WindowsSmbCleanupFailure::at_path(
+            WindowsSmbLifecyclePhase::UserDelete,
+            path.clone(),
+            "account still active",
+        )]);
+        let result = Err(error.into());
+
+        let data = windows_smb_setup_telemetry_data(&result);
+        assert_eq!(data["smb.failure.phase"], "NTFS ACL grant");
+        assert_eq!(data["smb.failure.path"], path.display().to_string());
+        assert_eq!(data["cleanup.failure_count"], "1");
     }
 
     #[test]
