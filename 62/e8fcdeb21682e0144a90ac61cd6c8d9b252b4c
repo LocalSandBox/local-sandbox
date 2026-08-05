@@ -1,0 +1,77 @@
+crates/lsb-seawork-service/src/telemetry/mod.rs
+  s_de2675de39ebfa::t_41074d4ba9edb4 1226
+  s_de2675de39ebfa::t_a3916b92988fc1 924,976,1301-1308
+  s_de2675de39ebfa::t_dfd22032483a24 1268
+  s_de2675de39ebfa::t_61d037c857446b 1356,1358,1360
+crates/lsb-seawork-update/fixtures/protocol-1.1/transaction-terminal.json
+  s_de2675de39ebfa::t_6fbc350651a7ad 1-63
+docs/helper-wire-protocol-1.1.md
+  s_de2675de39ebfa::t_cb7d48cbbaeeea 1-41
+crates/lsb-seawork-update/src/lib.rs
+  s_de2675de39ebfa::t_166971506758e9 18
+  s_de2675de39ebfa::t_914a64e4a1385b 23-24
+crates/lsb-seawork-update/fixtures/protocol-1.1/transaction-active.json
+  s_de2675de39ebfa::t_6fbc350651a7ad 1-63
+crates/lsb-seawork-update/tests/helper_wire_compat.rs
+  s_de2675de39ebfa::t_dd417fbdb1fe26 149,152,243-255,262-267,277,283-287,289,296-301,307,321,332,338-340,346,348,376,391,401,408,415,421,427,434,448,462,473
+  s_de2675de39ebfa::t_28961773628f35 217-231
+  s_de2675de39ebfa::t_19c66fc14e5131 272,318,365,367,369,371,373,382,384,386,388
+  s_de2675de39ebfa::t_d3ca8fa269481e 1-23,54-60,71-148,150-151,153-175,178-191,213-216,232-242,256,268,278,290,302,308,322,333,349,377,392,402,409,416,492
+  s_de2675de39ebfa::t_ce4fc5f53ec829 341-345
+  s_de2675de39ebfa::t_da9884d5533e3d 24-53,61-70,176-177,192-212,257-261,269-271,273-276,279-282,288,291-295,303-306,309-317,319-320,323-331,334-337,347,350-364,366,368,370,372,374-375,378-381,383,385,387,389-390,393-400,403-407,410-414,417-420,422-426,428-433,435-447,449-461,463-472,474-491
+docs/seawork-service-release.md
+  s_de2675de39ebfa::t_cb7d48cbbaeeea 302-304
+crates/lsb-seawork-update/fixtures/protocol-1.1/preinstall-receipt.json
+  s_de2675de39ebfa::t_6fbc350651a7ad 1-68
+crates/lsb-seawork-update/src/attempt.rs
+  s_de2675de39ebfa::t_da9884d5533e3d 71-75,367-368,389-390
+  s_de2675de39ebfa::t_27721ad79aa9c3 217-218,370-374,392-396
+  s_de2675de39ebfa::t_a259b2074b37aa 375,397
+  s_de2675de39ebfa::t_166971506758e9 7,25-70,76-120,138-139,142-143,146-147,167-168,184,191-197,221-222,292-302,398-438,467,469,471,523-525
+crates/lsb-seawork-service/src/telemetry/update_trace.rs
+  s_de2675de39ebfa::t_da9884d5533e3d 93
+  s_de2675de39ebfa::t_61d037c857446b 89,137,200
+crates/lsb-seawork-update/fixtures/protocol-1.1/committed.json
+  s_de2675de39ebfa::t_6fbc350651a7ad 1-28
+crates/lsb-seawork-update/fixtures/protocol-1.1/preinstall-request.json
+  s_de2675de39ebfa::t_6fbc350651a7ad 1-65
+crates/lsb-seawork-update/fixtures/protocol-1.1/README.md
+  s_de2675de39ebfa::t_cb7d48cbbaeeea 1-6
+crates/lsb-seawork-service/src/telemetry/update_checkpoint.rs
+  s_de2675de39ebfa::t_a3916b92988fc1 172
+  s_de2675de39ebfa::t_61d037c857446b 3-5,24,89-92,95-98
+crates/lsb-seawork-update/fixtures/protocol-1.1/transaction-failure.json
+  s_de2675de39ebfa::t_6fbc350651a7ad 1-67
+crates/lsb-seawork-service/src/update/mod.rs
+  s_de2675de39ebfa::t_da9884d5533e3d 148,379,422-428,719-728
+  s_de2675de39ebfa::t_4a025ae40aebc1 464-469,477,482-483,501,517-519,526-531,533,540,548,553-559,562,579,584-586,618-620
+  s_de2675de39ebfa::t_94e25d6115f390 24,155
+  s_de2675de39ebfa::t_704d52d7b0c5a6 392-421,429-454
+  s_de2675de39ebfa::t_b9c9e0c8904f4d 2238,2240,2242
+  s_de2675de39ebfa::t_98ab77d196be05 698-701,715-718,730
+  s_de2675de39ebfa::t_863acfc5074444 2419,2475-2480,2562-2566,2583
+  s_de2675de39ebfa::t_8796f14818295d 2896-2922
+  s_de2675de39ebfa::t_f5401f5f2c5b37 242-247,263,302-309,315-317,324-329,335,347,353-354,357,361-371,373-378,380-386
+  s_de2675de39ebfa::t_61dc64a326249d 169-170,179-180
+  s_de2675de39ebfa::t_9fed0f65869c72 163,168,171,178,181,202-210
+  s_de2675de39ebfa::t_05871a6c388bd3 983-989,1463-1465,2259,2264,2270,2473,2481-2483
+  s_de2675de39ebfa::t_c3d2ad3c3eac88 2474
+.github/workflows/ci.yml
+  s_de2675de39ebfa::t_cb7d48cbbaeeea 116-117
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "62e8fcdeb21682e0144a90ac61cd6c8d9b252b4c",
+  "prompts": {},
+  "sessions": {
+    "s_de2675de39ebfa": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd324-c5df-7390-8ee7-93c2d30b8cb5",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
