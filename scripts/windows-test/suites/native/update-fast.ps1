@@ -45,6 +45,15 @@ Invoke-Native cargo @(
 
 Invoke-Native cargo @(
     'test',
+    '-p', 'lsb-seawork-service',
+    '--no-default-features',
+    'update::tests::telemetry_and_attempt_storage_failures_do_not_change_update_action_results',
+    '--',
+    '--exact'
+) 'update telemetry fail-open acceptance test'
+
+Invoke-Native cargo @(
+    'test',
     '-p', 'lsb-seawork-updater',
     '--locked',
     'windows::tests::manifest_sddl_and_delayed_start_round_trip_through_scm',

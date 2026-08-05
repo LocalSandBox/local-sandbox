@@ -1254,6 +1254,16 @@ mod tests {
                 "2026-07-22T12:01:00Z"
             });
             assert_eq!(state.spans[0].3.started_at_micros, expected_start);
+            assert_eq!(state.spans[0].3.data["user.id"], "host-01");
+            assert_eq!(
+                state.spans[0].3.data["update.attempt_id"],
+                "22222222222222222222222222222222"
+            );
+            assert_eq!(state.spans[0].3.data["update.channel"], "stable");
+            assert_eq!(
+                state.spans[0].3.data["update.total_duration_ms"],
+                if outcome.is_some() { "60000" } else { "0" }
+            );
             assert_eq!(state.finished.last().unwrap().2, expected_end);
             drop(state);
             journal.mark_reported(receipt).unwrap();

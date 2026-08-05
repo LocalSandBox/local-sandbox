@@ -2560,4 +2560,43 @@ mod tests {
         status.etag = Some("x".repeat(513));
         assert!(status.validate().is_err());
     }
+
+    #[test]
+    fn telemetry_and_attempt_storage_failures_do_not_change_update_action_results() {
+        let root = std::env::temp_dir().join(format!(
+            "update-telemetry-fail-open-{}",
+            random_id().unwrap()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let paths = ServicePaths::for_test(root.clone());
+        paths.prepare().unwrap();
+        let attempt_dir = paths.updates.current_attempt.parent().unwrap();
+        std::fs::remove_dir(attempt_dir).unwrap();
+        std::fs::write(attempt_dir, b"block telemetry state writes").unwrap();
+
+        let mut recorder = AttemptRecorder::start(
+            &paths,
+            Telemetry::disabled(),
+            Some("host-01".to_string()),
+            ReleaseChannel::Stable,
+            0,
+        )
+        .unwrap();
+        let committed = recorder
+            .record("update.download", UpdateActor::Service, || {
+                Ok::<_, anyhow::Error>(42)
+            })
+            .unwrap();
+        assert_eq!(committed, 42);
+
+        let original = recorder
+            .record("update.verification", UpdateActor::Service, || {
+                Err::<(), _>(anyhow::anyhow!("original verification failure"))
+            })
+            .unwrap_err();
+        assert_eq!(original.to_string(), "original verification failure");
+
+        std::fs::remove_file(attempt_dir).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
