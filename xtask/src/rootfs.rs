@@ -103,7 +103,7 @@ chroot /mnt/rootfs apt-get update -qq
 chroot /mnt/rootfs apt-get install -y -qq --no-install-recommends \
     ca-certificates curl git iproute2 \
     openssh-client jq less procps ripgrep rsync xz-utils libgomp1 libatomic1 \
-    python3 python3-venv ffmpeg cifs-utils e2fsprogs > /dev/null 2>&1
+    python3 python3-venv cifs-utils e2fsprogs > /dev/null 2>&1
 test -x /mnt/rootfs/usr/bin/rg
 test -x /mnt/rootfs/sbin/mount.cifs || test -x /mnt/rootfs/usr/sbin/mount.cifs
 test -x /mnt/rootfs/sbin/mkfs.ext4 || test -x /mnt/rootfs/usr/sbin/mkfs.ext4
@@ -736,13 +736,6 @@ mod tests {
         for script in [macos_rootfs_docker_script(), linux_rootfs_script()] {
             assert!(script.contains("ripgrep"));
             assert!(script.contains("/usr/bin/rg"));
-        }
-    }
-
-    #[test]
-    fn rootfs_scripts_install_ffmpeg() {
-        for script in [macos_rootfs_docker_script(), linux_rootfs_script()] {
-            assert!(script.contains("ffmpeg"));
         }
     }
 
