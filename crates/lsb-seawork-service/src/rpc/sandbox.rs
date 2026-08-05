@@ -28,6 +28,7 @@ use crate::telemetry::{
 
 const DEFAULT_SMB_PRUNE_SUBTREES: &[&str] = &["node_modules", ".seawork"];
 
+#[allow(clippy::too_many_arguments)]
 pub async fn update_network_interception(
     sessions: SessionManager,
     session_id: ResourceHandle,
