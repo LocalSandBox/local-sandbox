@@ -21,7 +21,7 @@ use lsb_seawork_update::{
     ReleaseChannel, ReleaseResponseStatus, ReleaseSelector, TransactionEnvelope, TransactionPhase,
     UpdateActor, UpdateAttempt, UpdateAttemptEnvelope, UpdateAttemptOutcome,
     UpdateCheckpointBoundary, UpdateFailureBoundary, UpdateTransaction, UpdateTransition,
-    UpdateTransitionOutcome,
+    UpdateTransitionOutcome, UpdateTransitionTelemetry,
 };
 use lsb_service_proto::{UpdateCheckCategory, UpdatePhase, UpdateRetryState, SUPPORTED};
 use serde::{Deserialize, Serialize};
@@ -129,24 +129,6 @@ pub fn recovery_journal_requires_quarantine(path: &Path) -> bool {
     }
 }
 
-pub fn report_terminal_journal(path: &Path, telemetry: &Telemetry) {
-    let Ok(mut journal) = protected_load_json::<TransactionEnvelope>(path) else {
-        return;
-    };
-    if journal.validate().is_err()
-        || !journal.transaction.phase.is_terminal()
-        || journal.transaction.reported_event_id.is_some()
-    {
-        return;
-    }
-    let Some(event_id) = reconstruct_update(telemetry, &journal, None, None) else {
-        return;
-    };
-    if journal.mark_reported(event_id).is_ok() {
-        persist_telemetry_receipt(path, &journal);
-    }
-}
-
 pub fn report_update_telemetry(
     paths: &ServicePaths,
     telemetry: &Telemetry,
@@ -163,33 +145,40 @@ pub fn report_update_telemetry(
             replay_attempt_path(&path, telemetry, hostname, channel);
         }
         replay_transaction_path(
+            paths,
             &paths.updates.current_transaction,
             telemetry,
             hostname,
             channel,
         );
         for path in durable_json_files(&paths.updates.history) {
-            replay_transaction_path(&path, telemetry, hostname, channel);
+            replay_transaction_path(paths, &path, telemetry, hostname, channel);
         }
         prune_reported_attempts(&paths.updates.attempt_history);
-        prune_reported_transactions(&paths.updates.history);
-    } else {
-        report_terminal_journal(&paths.updates.current_transaction, telemetry);
     }
 }
 
 pub fn last_update_snapshot(paths: &ServicePaths) -> Option<lsb_seawork_update::UpdateSnapshot> {
     let mut snapshots = Vec::new();
+    let mut transaction_attempt_ids = Vec::new();
     if let Ok(attempt) =
         protected_load_json::<UpdateAttemptEnvelope>(&paths.updates.current_attempt)
     {
         if attempt.validate().is_ok() {
+            if let Some(transaction_id) = &attempt.attempt.transaction_id {
+                transaction_attempt_ids
+                    .push((transaction_id.clone(), attempt.attempt.attempt_id.clone()));
+            }
             snapshots.push(attempt.attempt.snapshot());
         }
     }
     for path in durable_json_files(&paths.updates.attempt_history) {
         if let Ok(attempt) = protected_load_json::<UpdateAttemptEnvelope>(&path) {
             if attempt.validate().is_ok() {
+                if let Some(transaction_id) = &attempt.attempt.transaction_id {
+                    transaction_attempt_ids
+                        .push((transaction_id.clone(), attempt.attempt.attempt_id.clone()));
+                }
                 snapshots.push(attempt.attempt.snapshot());
             }
         }
@@ -210,7 +199,15 @@ pub fn last_update_snapshot(paths: &ServicePaths) -> Option<lsb_seawork_update::
                     ),
                     phase: transition.map(|item| item.phase.clone()),
                     outcome: transition.and_then(|item| item.outcome),
-                    attempt_id: transaction.transaction.attempt_id().to_string(),
+                    attempt_id: transaction_attempt_ids
+                        .iter()
+                        .find(|(transaction_id, _)| {
+                            transaction_id == &transaction.transaction.transaction_id
+                        })
+                        .map_or_else(
+                            || transaction.transaction.update_id.clone(),
+                            |(_, attempt_id)| attempt_id.clone(),
+                        ),
                     retry_count: transaction.transaction.attempt_count,
                     last_transition_utc: transition.map(|item| {
                         item.completed_utc
@@ -242,7 +239,12 @@ fn replay_attempt_path(path: &Path, telemetry: &Telemetry, hostname: &str, chann
             UpdateCheckpointBoundary::Completed,
         ] {
             let transition = &envelope.attempt.timeline[index];
-            if checkpoint_is_reported(transition, boundary) {
+            let transition_telemetry = envelope.attempt.timeline_telemetry.get(index);
+            if transition_telemetry
+                .is_some_and(|metadata| metadata.checkpoint_reported(transition, boundary))
+                || boundary == UpdateCheckpointBoundary::Completed
+                    && transition.completed_utc.is_none()
+            {
                 continue;
             }
             let run_id = telemetry.run_id();
@@ -258,6 +260,7 @@ fn replay_attempt_path(path: &Path, telemetry: &Telemetry, hostname: &str, chann
                 run_id: run_id.as_deref(),
                 retry_count: envelope.attempt.retry_count,
                 transition,
+                transition_telemetry,
                 boundary,
             };
             let Some(event_id) = emit_update_checkpoint(telemetry, &checkpoint) else {
@@ -296,26 +299,40 @@ fn replay_attempt_trace(
     }
 }
 
-fn replay_transaction_path(path: &Path, telemetry: &Telemetry, hostname: &str, channel: &str) {
-    let Ok(mut envelope) = protected_load_json::<TransactionEnvelope>(path) else {
+fn replay_transaction_path(
+    paths: &ServicePaths,
+    path: &Path,
+    telemetry: &Telemetry,
+    hostname: &str,
+    channel: &str,
+) {
+    let Ok(envelope) = protected_load_json::<TransactionEnvelope>(path) else {
         return;
     };
     if envelope.validate().is_err() {
         return;
     }
+    let Some((attempt_path, mut attempt)) = transaction_attempt(paths, &envelope, channel) else {
+        return;
+    };
     for index in 0..envelope.transaction.timeline.len() {
         for boundary in [
             UpdateCheckpointBoundary::Started,
             UpdateCheckpointBoundary::Completed,
         ] {
             let transition = &envelope.transaction.timeline[index];
-            if checkpoint_is_reported(transition, boundary) {
+            let transition_telemetry = attempt.attempt.transaction_telemetry.get(index);
+            if transition_telemetry
+                .is_some_and(|metadata| metadata.checkpoint_reported(transition, boundary))
+                || boundary == UpdateCheckpointBoundary::Completed
+                    && transition.completed_utc.is_none()
+            {
                 continue;
             }
             let run_id = telemetry.run_id();
             let checkpoint = UpdateCheckpoint {
                 hostname,
-                attempt_id: envelope.transaction.attempt_id(),
+                attempt_id: &attempt.attempt.attempt_id,
                 transaction_id: Some(&envelope.transaction.transaction_id),
                 source_version: &envelope.transaction.old_bundle_identity.version,
                 target_version: Some(&envelope.transaction.target_bundle_identity.version),
@@ -327,30 +344,112 @@ fn replay_transaction_path(path: &Path, telemetry: &Telemetry, hostname: &str, c
                 run_id: run_id.as_deref(),
                 retry_count: envelope.transaction.attempt_count,
                 transition,
+                transition_telemetry,
                 boundary,
             };
             let Some(event_id) = emit_update_checkpoint(telemetry, &checkpoint) else {
                 continue;
             };
-            if envelope
-                .mark_checkpoint_reported(index, boundary, event_id)
+            if attempt
+                .mark_transaction_checkpoint_reported(index, transition, boundary, event_id)
                 .is_ok()
             {
-                persist_telemetry_receipt(path, &envelope);
+                persist_telemetry_receipt(&attempt_path, &attempt);
             }
         }
     }
-    replay_transaction_failures(path, &mut envelope, telemetry, hostname, channel);
-    if envelope.transaction.phase.is_terminal() && envelope.transaction.reported_event_id.is_none()
+    replay_transaction_failures(
+        &attempt_path,
+        &mut attempt,
+        &envelope,
+        telemetry,
+        hostname,
+        channel,
+    );
+    if envelope.transaction.phase.is_terminal()
+        && envelope.transaction.reported_event_id.is_none()
+        && attempt.attempt.transaction_trace_event_id.is_none()
     {
-        if let Some(event_id) =
-            reconstruct_update(telemetry, &envelope, Some(hostname), Some(channel))
-        {
-            if envelope.mark_reported(event_id).is_ok() {
-                persist_telemetry_receipt(path, &envelope);
+        if let Some(event_id) = reconstruct_update(
+            telemetry,
+            &envelope,
+            &attempt.attempt.attempt_id,
+            Some(hostname),
+            Some(channel),
+        ) {
+            if attempt
+                .attempt
+                .mark_transaction_trace_reported(event_id)
+                .is_ok()
+                && attempt.refresh().is_ok()
+            {
+                persist_telemetry_receipt(&attempt_path, &attempt);
             }
         }
     }
+}
+
+fn transaction_attempt(
+    paths: &ServicePaths,
+    transaction: &TransactionEnvelope,
+    channel: &str,
+) -> Option<(PathBuf, UpdateAttemptEnvelope)> {
+    let mut candidates = vec![paths.updates.current_attempt.clone()];
+    candidates.extend(durable_json_files(&paths.updates.attempt_history));
+    for path in candidates {
+        let Ok(attempt) = protected_load_json::<UpdateAttemptEnvelope>(&path) else {
+            continue;
+        };
+        if attempt.validate().is_ok()
+            && attempt.attempt.transaction_id.as_deref()
+                == Some(&transaction.transaction.transaction_id)
+        {
+            return Some((path, attempt));
+        }
+    }
+
+    // Transactions created before the service-private attempt store existed use update_id as the
+    // correlation identifier. Seed delivery state without changing the helper-owned journal.
+    let attempt = UpdateAttempt {
+        attempt_id: transaction.transaction.update_id.clone(),
+        created_utc: transaction.transaction.created_utc.clone(),
+        source_version: transaction.transaction.old_bundle_identity.version.clone(),
+        channel: if channel == "prerelease" {
+            ReleaseChannel::Prerelease
+        } else {
+            ReleaseChannel::Stable
+        },
+        target_version: Some(
+            transaction
+                .transaction
+                .target_bundle_identity
+                .version
+                .clone(),
+        ),
+        target_archive_sha256: Some(
+            transaction
+                .transaction
+                .target_bundle_identity
+                .archive_sha256
+                .clone(),
+        ),
+        retry_count: transaction.transaction.attempt_count,
+        outcome: UpdateAttemptOutcome::Active,
+        failure_code: None,
+        timeline: Vec::new(),
+        timeline_telemetry: Vec::new(),
+        transaction_id: Some(transaction.transaction.transaction_id.clone()),
+        transaction_telemetry: Vec::new(),
+        terminal_trace_event_id: None,
+        transaction_trace_event_id: None,
+    };
+    let envelope = UpdateAttemptEnvelope::new(attempt).ok()?;
+    let path = paths
+        .updates
+        .attempt_history
+        .join(format!("{}.json", envelope.attempt.attempt_id));
+    persist_telemetry_receipt(&path, &envelope);
+    Some((path, envelope))
 }
 
 fn replay_attempt_failures(
@@ -362,6 +461,12 @@ fn replay_attempt_failures(
 ) {
     for index in 0..envelope.attempt.timeline.len() {
         let transition = envelope.attempt.timeline[index].clone();
+        let transition_telemetry = envelope
+            .attempt
+            .timeline_telemetry
+            .get(index)
+            .cloned()
+            .unwrap_or_default();
         if transition.outcome != Some(UpdateTransitionOutcome::Failed) {
             continue;
         }
@@ -369,13 +474,13 @@ fn replay_attempt_failures(
             (
                 UpdateFailureBoundary::FirstError,
                 "first_error",
-                transition.first_error_event_id.is_none(),
+                transition_telemetry.first_error_event_id.is_none(),
             ),
             (
                 UpdateFailureBoundary::RetryExhausted,
                 "retry_exhausted",
-                transition.retry_attempt == Some(10)
-                    && transition.retry_exhausted_event_id.is_none(),
+                transition_telemetry.retry_attempt == Some(10)
+                    && transition_telemetry.retry_exhausted_event_id.is_none(),
             ),
         ];
         for (receipt_boundary, boundary, pending) in boundaries {
@@ -393,6 +498,7 @@ fn replay_attempt_failures(
                 envelope.attempt.retry_count,
                 &envelope.attempt.timeline,
                 &transition,
+                Some(&transition_telemetry),
                 boundary,
             ) else {
                 continue;
@@ -408,23 +514,30 @@ fn replay_attempt_failures(
 }
 
 fn replay_transaction_failures(
-    path: &Path,
-    envelope: &mut TransactionEnvelope,
+    attempt_path: &Path,
+    attempt: &mut UpdateAttemptEnvelope,
+    envelope: &TransactionEnvelope,
     telemetry: &Telemetry,
     hostname: &str,
     channel: &str,
 ) {
     for index in 0..envelope.transaction.timeline.len() {
         let transition = envelope.transaction.timeline[index].clone();
+        let transition_telemetry = attempt
+            .attempt
+            .transaction_telemetry
+            .get(index)
+            .cloned()
+            .unwrap_or_default();
         if transition.outcome != Some(UpdateTransitionOutcome::Failed)
-            || transition.first_error_event_id.is_some()
+            || transition_telemetry.first_error_event_id.is_some()
         {
             continue;
         }
         let Some(event_id) = emit_persisted_update_failure(
             telemetry,
             hostname,
-            envelope.transaction.attempt_id(),
+            &attempt.attempt.attempt_id,
             Some(&envelope.transaction.transaction_id),
             &envelope.transaction.old_bundle_identity.version,
             Some(&envelope.transaction.target_bundle_identity.version),
@@ -432,15 +545,21 @@ fn replay_transaction_failures(
             envelope.transaction.attempt_count,
             &envelope.transaction.timeline,
             &transition,
+            Some(&transition_telemetry),
             "first_error",
         ) else {
             continue;
         };
-        if envelope
-            .mark_failure_reported(index, UpdateFailureBoundary::FirstError, event_id)
+        if attempt
+            .mark_transaction_failure_reported(
+                index,
+                &transition,
+                UpdateFailureBoundary::FirstError,
+                event_id,
+            )
             .is_ok()
         {
-            persist_telemetry_receipt(path, envelope);
+            persist_telemetry_receipt(attempt_path, attempt);
         }
     }
 }
@@ -457,11 +576,14 @@ fn emit_persisted_update_failure(
     retry_count: u8,
     timeline: &[UpdateTransition],
     transition: &UpdateTransition,
+    transition_telemetry: Option<&UpdateTransitionTelemetry>,
     boundary: &'static str,
 ) -> Option<String> {
     let phase = stable_phase(&transition.phase);
     let code = stable_failure_code(transition.failure_code.as_deref());
-    let retryable = transition.retryable.unwrap_or(false);
+    let retryable = transition_telemetry
+        .and_then(|metadata| metadata.retryable)
+        .unwrap_or(false);
     let mut event = FailureEvent::new(
         "service.update",
         code,
@@ -493,7 +615,9 @@ fn emit_persisted_update_failure(
             "failure_code": code,
             "failure_boundary": boundary,
             "retryable": retryable,
-            "retry_attempt": transition.retry_attempt.unwrap_or(retry_count),
+            "retry_attempt": transition_telemetry
+                .and_then(|metadata| metadata.retry_attempt)
+                .unwrap_or(retry_count),
             "timeline": timeline,
         }),
     );
@@ -542,18 +666,6 @@ fn stable_failure_code(code: Option<&str>) -> &'static str {
     }
 }
 
-fn checkpoint_is_reported(
-    transition: &UpdateTransition,
-    boundary: UpdateCheckpointBoundary,
-) -> bool {
-    match boundary {
-        UpdateCheckpointBoundary::Started => transition.started_event_id.is_some(),
-        UpdateCheckpointBoundary::Completed => {
-            transition.completed_utc.is_none() || transition.completed_event_id.is_some()
-        }
-    }
-}
-
 fn durable_json_files(directory: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(directory) else {
         return Vec::new();
@@ -583,7 +695,10 @@ fn prune_reported_attempts(directory: &Path) {
             let envelope = protected_load_json::<UpdateAttemptEnvelope>(&path).ok()?;
             if envelope.validate().is_err()
                 || envelope.attempt.outcome == UpdateAttemptOutcome::Active
-                || !timeline_fully_reported(&envelope.attempt.timeline)
+                || !timeline_fully_reported(
+                    &envelope.attempt.timeline,
+                    &envelope.attempt.timeline_telemetry,
+                )
                 || envelope.attempt.terminal_trace_event_id.is_none()
             {
                 return None;
@@ -597,35 +712,22 @@ fn prune_reported_attempts(directory: &Path) {
     }
 }
 
-fn prune_reported_transactions(directory: &Path) {
-    let mut reported = durable_json_files(directory)
-        .into_iter()
-        .filter_map(|path| {
-            let envelope = protected_load_json::<TransactionEnvelope>(&path).ok()?;
-            if envelope.validate().is_err()
-                || envelope.transaction.reported_event_id.is_none()
-                || !timeline_fully_reported(&envelope.transaction.timeline)
-            {
-                return None;
-            }
-            Some((envelope.transaction.created_utc, path))
+fn timeline_fully_reported(
+    timeline: &[UpdateTransition],
+    telemetry: &[UpdateTransitionTelemetry],
+) -> bool {
+    timeline
+        .iter()
+        .zip(telemetry)
+        .all(|(transition, metadata)| {
+            metadata.started_event_id.is_some()
+                && (transition.completed_utc.is_none() || metadata.completed_event_id.is_some())
+                && (transition.outcome != Some(UpdateTransitionOutcome::Failed)
+                    || metadata.first_error_event_id.is_some())
+                && (metadata.retry_attempt != Some(10)
+                    || metadata.retry_exhausted_event_id.is_some())
         })
-        .collect::<Vec<_>>();
-    reported.sort_by(|left, right| right.0.cmp(&left.0));
-    for (_, path) in reported.into_iter().skip(RETAIN_REPORTED_UPDATES) {
-        let _ = remove_file_if_exists(&path);
-    }
-}
-
-fn timeline_fully_reported(timeline: &[UpdateTransition]) -> bool {
-    timeline.iter().all(|transition| {
-        transition.started_event_id.is_some()
-            && (transition.completed_utc.is_none() || transition.completed_event_id.is_some())
-            && (transition.outcome != Some(UpdateTransitionOutcome::Failed)
-                || transition.first_error_event_id.is_some())
-            && (transition.retry_attempt != Some(10)
-                || transition.retry_exhausted_event_id.is_some())
-    })
+        && timeline.len() == telemetry.len()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -878,19 +980,13 @@ impl Coordinator {
                 Err(error) => return Err(error).context("load protected preinstall request"),
             };
         request.validate()?;
-        let mut attempt = request
-            .request
-            .attempt_id
-            .as_deref()
-            .and_then(|attempt_id| {
-                AttemptRecorder::resume(
-                    &self.paths,
-                    self.context.telemetry(),
-                    self.machine_name.clone(),
-                    self.channel,
-                    attempt_id,
-                )
-            });
+        let mut attempt = AttemptRecorder::resume_transaction(
+            &self.paths,
+            self.context.telemetry(),
+            self.machine_name.clone(),
+            self.channel,
+            &request.request.request_id,
+        );
         match protected_load_json::<PreinstallReceiptEnvelope>(
             &self.paths.updates.preinstall_receipt,
         ) {
@@ -1022,12 +1118,6 @@ impl Coordinator {
                     )),
                     outcome: Some(UpdateTransitionOutcome::Succeeded),
                     failure_code: None,
-                    retryable: None,
-                    retry_attempt: None,
-                    started_event_id: None,
-                    completed_event_id: None,
-                    first_error_event_id: None,
-                    retry_exhausted_event_id: None,
                 });
                 timeline
             },
@@ -1079,7 +1169,6 @@ impl Coordinator {
             let transaction = TransactionEnvelope::new(UpdateTransaction {
                 transaction_id: request.request.request_id.clone(),
                 update_id: id,
-                attempt_id: request.request.attempt_id.clone(),
                 phase: TransactionPhase::FinalPathVerified,
                 created_utc: now_utc()?,
                 old_bundle_identity: request.request.old_bundle_identity.clone(),
@@ -1362,9 +1451,6 @@ impl Coordinator {
         let helper_protocol = verify_helper(&helper, required_helper_protocol)?;
         let request = PreinstallRequestEnvelope::new(PreinstallRequest {
             request_id: transaction_id,
-            attempt_id: attempt
-                .as_ref()
-                .map(|attempt| attempt.envelope.attempt.attempt_id.clone()),
             created_utc: now_utc()?,
             candidate: candidate.clone(),
             old_bundle_identity: committed.committed.current,
@@ -1374,6 +1460,9 @@ impl Coordinator {
             helper_protocol,
             timeline,
         })?;
+        if let Some(attempt) = attempt.as_mut() {
+            attempt.bind_transaction(&request.request.request_id);
+        }
         create_json(&self.paths.updates.preinstall_request, &request)
             .context("persist protected preinstall request")?;
         let mut preinstall_timeline = request.request.timeline.clone();
@@ -2146,8 +2235,11 @@ impl AttemptRecorder {
             outcome: UpdateAttemptOutcome::Active,
             failure_code: None,
             timeline: Vec::new(),
+            timeline_telemetry: Vec::new(),
             transaction_id: None,
+            transaction_telemetry: Vec::new(),
             terminal_trace_event_id: None,
+            transaction_trace_event_id: None,
         };
         let recorder = Self {
             envelope: UpdateAttemptEnvelope::new(attempt)?,
@@ -2164,18 +2256,18 @@ impl AttemptRecorder {
         Ok(recorder)
     }
 
-    fn resume(
+    fn resume_transaction(
         paths: &ServicePaths,
         telemetry: Telemetry,
         hostname: Option<String>,
         channel: ReleaseChannel,
-        attempt_id: &str,
+        transaction_id: &str,
     ) -> Option<Self> {
         let envelope =
             protected_load_json::<UpdateAttemptEnvelope>(&paths.updates.current_attempt).ok()?;
         if envelope.validate().is_err()
             || envelope.attempt.outcome != UpdateAttemptOutcome::Active
-            || envelope.attempt.attempt_id != attempt_id
+            || envelope.attempt.transaction_id.as_deref() != Some(transaction_id)
         {
             return None;
         }
@@ -2324,7 +2416,7 @@ impl AttemptRecorder {
             .is_ok()
         {
             if result.is_err() {
-                if let Some(transition) = self.envelope.attempt.timeline.last_mut() {
+                if let Some(transition) = self.envelope.attempt.timeline_telemetry.last_mut() {
                     transition.retryable =
                         Some(matches!(phase, "update.discovery" | "update.download"));
                     transition.retry_attempt = Some(
@@ -2378,11 +2470,20 @@ impl AttemptRecorder {
     }
 
     fn handoff(&mut self, transaction_id: &str) {
+        self.bind_transaction(transaction_id);
+        self.replay();
+        let destination = self
+            .history_path
+            .join(format!("{}.json", self.envelope.attempt.attempt_id));
+        if archive_file(&self.current_path, &destination).is_err() {
+            crate::telemetry::record_failure(crate::telemetry::TelemetryFailure::UpdateDelivery);
+        }
+    }
+
+    fn bind_transaction(&mut self, transaction_id: &str) {
         self.envelope.attempt.transaction_id = Some(transaction_id.to_string());
         let _ = self.envelope.refresh();
         self.persist();
-        self.replay();
-        let _ = remove_file_if_exists(&self.current_path);
     }
 
     fn persist(&self) {
@@ -2458,13 +2559,11 @@ impl AttemptRecorder {
                 UpdateCheckpointBoundary::Completed,
             ] {
                 let transition = &self.envelope.attempt.timeline[index];
-                let already_reported = match boundary {
-                    UpdateCheckpointBoundary::Started => transition.started_event_id.is_some(),
-                    UpdateCheckpointBoundary::Completed => {
-                        transition.completed_utc.is_none()
-                            || transition.completed_event_id.is_some()
-                    }
-                };
+                let transition_telemetry = self.envelope.attempt.timeline_telemetry.get(index);
+                let already_reported = transition_telemetry
+                    .is_some_and(|metadata| metadata.checkpoint_reported(transition, boundary))
+                    || boundary == UpdateCheckpointBoundary::Completed
+                        && transition.completed_utc.is_none();
                 if already_reported {
                     continue;
                 }
@@ -2481,6 +2580,7 @@ impl AttemptRecorder {
                     run_id: run_id.as_deref(),
                     retry_count: self.envelope.attempt.retry_count,
                     transition,
+                    transition_telemetry,
                     boundary,
                 };
                 let Some(event_id) = emit_update_checkpoint(&self.telemetry, &checkpoint) else {
@@ -2582,12 +2682,6 @@ fn completed_update_transition(
             UpdateTransitionOutcome::Failed
         }),
         failure_code: (!succeeded).then(|| "UPDATE_OPERATION_FAILED".to_string()),
-        retryable: None,
-        retry_attempt: None,
-        started_event_id: None,
-        completed_event_id: None,
-        first_error_event_id: None,
-        retry_exhausted_event_id: None,
     })
 }
 
@@ -2797,6 +2891,33 @@ mod tests {
         assert_eq!(original.to_string(), "original verification failure");
 
         std::fs::remove_file(attempt_dir).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn telemetry_replay_does_not_rewrite_helper_owned_transactions() {
+        let root = std::env::temp_dir().join(format!(
+            "update-telemetry-read-only-helper-journal-{}",
+            random_id().unwrap()
+        ));
+        let paths = ServicePaths::for_test(root.clone());
+        paths.prepare().unwrap();
+        let fixture = include_bytes!(
+            "../../../lsb-seawork-update/fixtures/protocol-1.1/transaction-terminal.json"
+        );
+        std::fs::write(&paths.updates.current_transaction, fixture).unwrap();
+
+        report_update_telemetry(
+            &paths,
+            &Telemetry::disabled(),
+            Some("host-01"),
+            ReleaseChannel::Stable,
+        );
+
+        assert_eq!(
+            std::fs::read(&paths.updates.current_transaction).unwrap(),
+            fixture
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }

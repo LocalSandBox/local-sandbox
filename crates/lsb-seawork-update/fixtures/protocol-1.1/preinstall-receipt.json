@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "checksum_sha256": "69e1c96ed49deef61edc523cbcf9fa249c4b00c476cf7bf8d961ff3295a482bf",
+  "receipt": {
+    "request": {
+      "request_id": "11111111111111111111111111111111",
+      "created_utc": "2026-07-31T08:00:00Z",
+      "candidate": {
+        "release_id": 700,
+        "version": "0.7.0",
+        "prerelease": false,
+        "asset_name": "lsb-seawork-service-v0.7.0-windows-x86_64.zip",
+        "asset_url": "https://github.com/LocalSandBox/local-sandbox/releases/download/v0.7.0/lsb-seawork-service-v0.7.0-windows-x86_64.zip",
+        "asset_size": 12345,
+        "archive_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "old_bundle_identity": {
+        "version": "0.6.0",
+        "bundle_manifest_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "archive_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "protocol": {
+          "major": 1,
+          "min_minor": 0,
+          "max_minor": 6
+        },
+        "ledger": {
+          "reader_min_schema": 1,
+          "reader_max_schema": 1,
+          "writer_schema": 1
+        },
+        "service_configuration_revision": 3
+      },
+      "target_bundle_identity": {
+        "version": "0.7.0",
+        "bundle_manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "archive_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "protocol": {
+          "major": 1,
+          "min_minor": 0,
+          "max_minor": 6
+        },
+        "ledger": {
+          "reader_min_schema": 1,
+          "reader_max_schema": 1,
+          "writer_schema": 1
+        },
+        "service_configuration_revision": 3
+      },
+      "staged_root": "C:\\ProgramData\\LocalSandbox\\SeaWork\\updates\\staging\\11111111111111111111111111111111\\LocalSandbox",
+      "final_version_root": "C:\\Program Files\\SeaWork\\LocalSandbox\\versions\\0.7.0",
+      "helper_protocol": {
+        "major": 1,
+        "minor": 1
+      },
+      "timeline": [
+        {
+          "phase": "update.preinstall",
+          "actor": "updater",
+          "started_utc": "2026-07-31T08:01:00Z",
+          "completed_utc": "2026-07-31T08:01:02Z",
+          "duration_ms": 2000,
+          "outcome": "succeeded"
+        }
+      ]
+    },
+    "completed_utc": "2026-07-31T08:01:03Z"
+  }
+}

@@ -1,6 +1,8 @@
 use sha2::{Digest, Sha256};
 
-use lsb_seawork_update::{UpdateCheckpointBoundary, UpdateTransition, UpdateTransitionOutcome};
+use lsb_seawork_update::{
+    UpdateCheckpointBoundary, UpdateTransition, UpdateTransitionOutcome, UpdateTransitionTelemetry,
+};
 
 use super::{
     update_trace::timestamp_micros, SpanDescription, SpanStatus, Telemetry,
@@ -19,6 +21,7 @@ pub(crate) struct UpdateCheckpoint<'a> {
     pub run_id: Option<&'a str>,
     pub retry_count: u8,
     pub transition: &'a UpdateTransition,
+    pub transition_telemetry: Option<&'a UpdateTransitionTelemetry>,
     pub boundary: UpdateCheckpointBoundary,
 }
 
@@ -83,10 +86,16 @@ pub(crate) fn emit_update_checkpoint(
             .with_tag("update.failure_code", code)
             .with_data("update.failure_code", code);
     }
-    if let Some(retryable) = checkpoint.transition.retryable {
+    if let Some(retryable) = checkpoint
+        .transition_telemetry
+        .and_then(|metadata| metadata.retryable)
+    {
         description = description.with_data("update.retryable", retryable.to_string());
     }
-    if let Some(attempt) = checkpoint.transition.retry_attempt {
+    if let Some(attempt) = checkpoint
+        .transition_telemetry
+        .and_then(|metadata| metadata.retry_attempt)
+    {
         description = description.with_data("update.retry_attempt", attempt.to_string());
     }
     telemetry
@@ -160,6 +169,7 @@ mod tests {
             run_id: Some("run-01"),
             retry_count: 0,
             transition: &transition,
+            transition_telemetry: None,
             boundary: UpdateCheckpointBoundary::Started,
         };
         let started = checkpoint_identity(&checkpoint);

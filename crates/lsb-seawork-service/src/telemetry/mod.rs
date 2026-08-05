@@ -921,6 +921,7 @@ mod tests {
             run_id: Some("run-01"),
             retry_count: 2,
             transition: &transition,
+            transition_telemetry: None,
             boundary: UpdateCheckpointBoundary::Completed,
         };
 
@@ -972,6 +973,7 @@ mod tests {
             run_id: None,
             retry_count: 0,
             transition: &transition,
+            transition_telemetry: None,
             boundary: UpdateCheckpointBoundary::Started,
         };
 
@@ -1221,7 +1223,7 @@ mod tests {
     }
 
     #[test]
-    fn successful_failed_interrupted_and_rolled_back_journals_replay_once() {
+    fn successful_failed_interrupted_and_rolled_back_journals_reconstruct() {
         use lsb_seawork_update::{
             HelperProtocol, TransactionEnvelope, TransactionPhase, UpdateActor, UpdateFailureCode,
             UpdateFailureStep, UpdateTransaction, UpdateTransition, UpdateTransitionOutcome,
@@ -1263,10 +1265,9 @@ mod tests {
                 phase,
                 TransactionPhase::Quarantined | TransactionPhase::RollbackComplete
             );
-            let mut journal = TransactionEnvelope::new(UpdateTransaction {
+            let journal = TransactionEnvelope::new(UpdateTransaction {
                 transaction_id: "1".repeat(32),
                 update_id: "2".repeat(32),
-                attempt_id: Some("3".repeat(32)),
                 phase,
                 created_utc: "2026-07-22T12:00:00Z".to_string(),
                 old_bundle_identity: identity("0.5.0", 'a'),
@@ -1291,20 +1292,20 @@ mod tests {
                     outcome,
                     failure_code: (outcome == Some(UpdateTransitionOutcome::Failed))
                         .then(|| "UPDATE_OPERATION_FAILED".to_string()),
-                    retryable: None,
-                    retry_attempt: None,
-                    started_event_id: None,
-                    completed_event_id: None,
-                    first_error_event_id: None,
-                    retry_exhausted_event_id: None,
                 }],
                 reported_event_id: None,
             })
             .unwrap();
             let adapter = Arc::new(FakeAdapter::default());
             let telemetry = Telemetry::new(adapter.clone());
-            let receipt =
-                reconstruct_update(&telemetry, &journal, Some("host-01"), Some("stable")).unwrap();
+            let receipt = reconstruct_update(
+                &telemetry,
+                &journal,
+                &"3".repeat(32),
+                Some("host-01"),
+                Some("stable"),
+            )
+            .unwrap();
             assert_eq!(receipt.len(), 32);
             let state = adapter.state.lock().unwrap();
             assert_eq!(state.spans.len(), 2);
@@ -1331,8 +1332,6 @@ mod tests {
             );
             assert_eq!(state.finished.last().unwrap().2, expected_end);
             drop(state);
-            journal.mark_reported(receipt).unwrap();
-            assert_eq!(reconstruct_update(&telemetry, &journal, None, None), None);
         }
     }
 
@@ -1354,8 +1353,11 @@ mod tests {
             outcome: UpdateAttemptOutcome::Active,
             failure_code: None,
             timeline: Vec::new(),
+            timeline_telemetry: Vec::new(),
             transaction_id: None,
+            transaction_telemetry: Vec::new(),
             terminal_trace_event_id: None,
+            transaction_trace_event_id: None,
         };
         attempt
             .begin_transition(

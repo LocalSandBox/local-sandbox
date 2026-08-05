@@ -299,6 +299,9 @@ Publisher rotation is an overlap, not an in-place pin bypass:
 - CI tests, strict release Clippy, PowerShell parsing, deterministic archive test,
   installed bundle verification, dependency gate, SignTool PE/catalog trust and
   membership checks, checksums, and attestations pass.
+- The required `helper_wire_compat` release check passes in both directions
+  against the immutable protocol 1.1 fixtures. Protocol 1.1 is frozen for this
+  release; fixture changes require an explicit helper protocol migration.
 - The production certificate chain and RFC 3161 timestamp verify on a clean
   Windows 11 x64 machine; publisher subject/thumbprint match repository config.
 - SeaWork pins the archive/package tuple, rejects malicious ZIP structures, and

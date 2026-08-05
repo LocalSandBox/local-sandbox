@@ -587,7 +587,6 @@ mod tests {
         let mut envelope = TransactionEnvelope::new(UpdateTransaction {
             transaction_id: "1".repeat(32),
             update_id: "2".repeat(32),
-            attempt_id: None,
             phase: TransactionPhase::Prepared,
             created_utc: "2026-07-22T12:00:00Z".to_string(),
             old_bundle_identity: identity("0.5.0-rc.1", 'a'),

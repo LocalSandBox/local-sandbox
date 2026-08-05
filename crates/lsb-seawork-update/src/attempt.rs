@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::journal::MAX_TIMELINE_ENTRIES;
 use crate::{
     is_lower_hex, sha256_json, validate_id, validate_utc, ReleaseChannel, UpdateActor,
-    UpdateFailureBoundary, UpdateTransition, UpdateTransitionOutcome, UPDATE_STATE_SCHEMA_VERSION,
+    UpdateTransition, UpdateTransitionOutcome, UPDATE_STATE_SCHEMA_VERSION,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,6 +20,102 @@ pub enum UpdateAttemptOutcome {
 pub enum UpdateCheckpointBoundary {
     Started,
     Completed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateFailureBoundary {
+    FirstError,
+    RetryExhausted,
+}
+
+/// Service-owned telemetry metadata for a transition. This type must never be embedded in a
+/// helper-facing protocol 1.1 document.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateTransitionTelemetry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retryable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_attempt: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_error_event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_exhausted_event_id: Option<String>,
+}
+
+impl UpdateTransitionTelemetry {
+    fn validate(&self) -> Result<()> {
+        if self.retry_attempt.is_some() != self.retryable.is_some()
+            || self
+                .retry_attempt
+                .is_some_and(|attempt| attempt == 0 || attempt > 10)
+            || [
+                &self.started_event_id,
+                &self.completed_event_id,
+                &self.first_error_event_id,
+                &self.retry_exhausted_event_id,
+            ]
+            .into_iter()
+            .flatten()
+            .any(|event_id| !is_lower_hex(event_id, 32))
+        {
+            bail!("update transition telemetry is invalid");
+        }
+        Ok(())
+    }
+
+    pub fn checkpoint_reported(
+        &self,
+        transition: &UpdateTransition,
+        boundary: UpdateCheckpointBoundary,
+    ) -> bool {
+        match boundary {
+            UpdateCheckpointBoundary::Started => self.started_event_id.is_some(),
+            UpdateCheckpointBoundary::Completed => {
+                transition.completed_utc.is_none() || self.completed_event_id.is_some()
+            }
+        }
+    }
+
+    fn mark_checkpoint_reported(
+        &mut self,
+        transition: &UpdateTransition,
+        boundary: UpdateCheckpointBoundary,
+        event_id: String,
+    ) -> Result<()> {
+        validate_id(&event_id)?;
+        match boundary {
+            UpdateCheckpointBoundary::Started => self.started_event_id = Some(event_id),
+            UpdateCheckpointBoundary::Completed if transition.outcome.is_some() => {
+                self.completed_event_id = Some(event_id);
+            }
+            UpdateCheckpointBoundary::Completed => {
+                bail!("incomplete checkpoint cannot have a completion receipt");
+            }
+        }
+        self.validate()
+    }
+
+    fn mark_failure_reported(
+        &mut self,
+        transition: &UpdateTransition,
+        boundary: UpdateFailureBoundary,
+        event_id: String,
+    ) -> Result<()> {
+        validate_id(&event_id)?;
+        if transition.outcome != Some(UpdateTransitionOutcome::Failed) {
+            bail!("only a failed transition can have a failure receipt");
+        }
+        match boundary {
+            UpdateFailureBoundary::FirstError => self.first_error_event_id = Some(event_id),
+            UpdateFailureBoundary::RetryExhausted => self.retry_exhausted_event_id = Some(event_id),
+        }
+        self.validate()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,10 +135,16 @@ pub struct UpdateAttempt {
     pub failure_code: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub timeline: Vec<UpdateTransition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub timeline_telemetry: Vec<UpdateTransitionTelemetry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transaction_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transaction_telemetry: Vec<UpdateTransitionTelemetry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_trace_event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transaction_trace_event_id: Option<String>,
 }
 
 impl UpdateAttempt {
@@ -62,6 +164,8 @@ impl UpdateAttempt {
                 .is_some_and(|digest| !is_lower_hex(digest, 64))
             || self.retry_count > 10
             || self.timeline.len() > MAX_TIMELINE_ENTRIES
+            || self.timeline_telemetry.len() > self.timeline.len()
+            || self.transaction_telemetry.len() > MAX_TIMELINE_ENTRIES
             || self
                 .failure_code
                 .as_ref()
@@ -77,11 +181,19 @@ impl UpdateAttempt {
                 .is_some_and(|id| validate_id(id).is_err())
             || (self.terminal_trace_event_id.is_some()
                 && (self.outcome == UpdateAttemptOutcome::Active || self.transaction_id.is_some()))
+            || self.transaction_trace_event_id.is_some() && self.transaction_id.is_none()
         {
             bail!("update attempt metadata is invalid");
         }
         for transition in &self.timeline {
             transition.validate()?;
+        }
+        for telemetry in self
+            .timeline_telemetry
+            .iter()
+            .chain(&self.transaction_telemetry)
+        {
+            telemetry.validate()?;
         }
         Ok(())
     }
@@ -102,8 +214,12 @@ impl UpdateAttempt {
         {
             bail!("update attempt cannot begin another transition");
         }
+        self.timeline_telemetry
+            .resize(self.timeline.len(), UpdateTransitionTelemetry::default());
         let transition = UpdateTransition::started(phase, actor, started_utc)?;
         self.timeline.push(transition);
+        self.timeline_telemetry
+            .push(UpdateTransitionTelemetry::default());
         Ok(())
     }
 
@@ -173,6 +289,17 @@ impl UpdateAttempt {
         self.terminal_trace_event_id = Some(event_id);
         self.validate()
     }
+
+    pub fn mark_transaction_trace_reported(&mut self, event_id: impl Into<String>) -> Result<()> {
+        self.validate()?;
+        if self.transaction_id.is_none() || self.transaction_trace_event_id.is_some() {
+            bail!("update transaction trace cannot be acknowledged");
+        }
+        let event_id = event_id.into();
+        validate_id(&event_id)?;
+        self.transaction_trace_event_id = Some(event_id);
+        self.validate()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,9 +364,15 @@ impl UpdateAttemptEnvelope {
         let transition = self
             .attempt
             .timeline
-            .get_mut(index)
+            .get(index)
+            .cloned()
             .ok_or_else(|| anyhow::anyhow!("update checkpoint index is invalid"))?;
-        transition.mark_reported(boundary, event_id)?;
+        self.attempt.timeline_telemetry.resize(
+            self.attempt.timeline.len(),
+            UpdateTransitionTelemetry::default(),
+        );
+        let telemetry = &mut self.attempt.timeline_telemetry[index];
+        telemetry.mark_checkpoint_reported(&transition, boundary, event_id.into())?;
         self.refresh()
     }
 
@@ -253,9 +386,56 @@ impl UpdateAttemptEnvelope {
         let transition = self
             .attempt
             .timeline
-            .get_mut(index)
+            .get(index)
+            .cloned()
             .ok_or_else(|| anyhow::anyhow!("update failure index is invalid"))?;
-        transition.mark_failure_reported(boundary, event_id)?;
+        self.attempt.timeline_telemetry.resize(
+            self.attempt.timeline.len(),
+            UpdateTransitionTelemetry::default(),
+        );
+        let telemetry = &mut self.attempt.timeline_telemetry[index];
+        telemetry.mark_failure_reported(&transition, boundary, event_id.into())?;
+        self.refresh()
+    }
+
+    pub fn transaction_telemetry_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<&mut UpdateTransitionTelemetry> {
+        if index >= MAX_TIMELINE_ENTRIES {
+            bail!("update transaction telemetry index is invalid");
+        }
+        while self.attempt.transaction_telemetry.len() <= index {
+            self.attempt
+                .transaction_telemetry
+                .push(UpdateTransitionTelemetry::default());
+        }
+        Ok(&mut self.attempt.transaction_telemetry[index])
+    }
+
+    pub fn mark_transaction_checkpoint_reported(
+        &mut self,
+        index: usize,
+        transition: &UpdateTransition,
+        boundary: UpdateCheckpointBoundary,
+        event_id: impl Into<String>,
+    ) -> Result<()> {
+        self.validate()?;
+        self.transaction_telemetry_mut(index)?
+            .mark_checkpoint_reported(transition, boundary, event_id.into())?;
+        self.refresh()
+    }
+
+    pub fn mark_transaction_failure_reported(
+        &mut self,
+        index: usize,
+        transition: &UpdateTransition,
+        boundary: UpdateFailureBoundary,
+        event_id: impl Into<String>,
+    ) -> Result<()> {
+        self.validate()?;
+        self.transaction_telemetry_mut(index)?
+            .mark_failure_reported(transition, boundary, event_id.into())?;
         self.refresh()
     }
 }
@@ -284,8 +464,11 @@ mod tests {
             outcome: UpdateAttemptOutcome::Active,
             failure_code: None,
             timeline: Vec::new(),
+            timeline_telemetry: Vec::new(),
             transaction_id: None,
+            transaction_telemetry: Vec::new(),
             terminal_trace_event_id: None,
+            transaction_trace_event_id: None,
         }
     }
 
@@ -337,7 +520,9 @@ mod tests {
             .unwrap();
         assert_ne!(envelope.checksum_sha256, before);
         assert_eq!(
-            envelope.attempt.timeline[0].started_event_id.as_deref(),
+            envelope.attempt.timeline_telemetry[0]
+                .started_event_id
+                .as_deref(),
             Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
         );
         assert!(envelope.validate().is_ok());

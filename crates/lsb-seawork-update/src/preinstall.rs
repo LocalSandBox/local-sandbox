@@ -12,8 +12,6 @@ use crate::{
 #[serde(deny_unknown_fields)]
 pub struct PreinstallRequest {
     pub request_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attempt_id: Option<String>,
     pub created_utc: String,
     pub candidate: ReleaseCandidate,
     pub old_bundle_identity: BundleIdentity,
@@ -28,9 +26,6 @@ pub struct PreinstallRequest {
 impl PreinstallRequest {
     pub fn validate(&self) -> Result<()> {
         validate_id(&self.request_id)?;
-        if let Some(attempt_id) = &self.attempt_id {
-            validate_id(attempt_id)?;
-        }
         validate_utc(&self.created_utc)?;
         self.candidate.validate()?;
         self.old_bundle_identity
@@ -172,7 +167,6 @@ mod tests {
         let target = identity("0.5.0-rc.5", 'b');
         PreinstallRequest {
             request_id: "1".repeat(32),
-            attempt_id: None,
             created_utc: "2026-07-24T08:00:00Z".to_string(),
             candidate: ReleaseCandidate {
                 release_id: 1,

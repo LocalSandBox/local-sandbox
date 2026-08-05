@@ -113,6 +113,8 @@ jobs:
           cargo test -p lsb-platform --locked managed_qemu
           cargo test -p lsb-sdk --locked host_tools
           cargo test -p lsb-store --locked qemu_img_discovery
+      - name: Helper protocol 1.1 wire compatibility gate
+        run: cargo test -p lsb-seawork-update --locked --test helper_wire_compat
       - name: Cargo unit tests
         run: cargo test --workspace --locked
       - name: Strict SeaWork release lint

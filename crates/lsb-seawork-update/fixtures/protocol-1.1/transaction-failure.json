@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "checksum_sha256": "c4c4fda846c7b7cf0c4d139c7ad459d716364d02105713cfc22cc682de9d98ed",
+  "transaction": {
+    "transaction_id": "11111111111111111111111111111111",
+    "update_id": "22222222222222222222222222222222",
+    "phase": "rollback_complete",
+    "created_utc": "2026-07-31T08:00:00Z",
+    "old_bundle_identity": {
+      "version": "0.6.0",
+      "bundle_manifest_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "archive_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "protocol": {
+        "major": 1,
+        "min_minor": 0,
+        "max_minor": 6
+      },
+      "ledger": {
+        "reader_min_schema": 1,
+        "reader_max_schema": 1,
+        "writer_schema": 1
+      },
+      "service_configuration_revision": 3
+    },
+    "target_bundle_identity": {
+      "version": "0.7.0",
+      "bundle_manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "archive_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "protocol": {
+        "major": 1,
+        "min_minor": 0,
+        "max_minor": 6
+      },
+      "ledger": {
+        "reader_min_schema": 1,
+        "reader_max_schema": 1,
+        "writer_schema": 1
+      },
+      "service_configuration_revision": 3
+    },
+    "old_image_path": "C:\\Program Files\\SeaWork\\LocalSandbox\\versions\\0.6.0\\bin\\localsandbox-seawork-service.exe",
+    "target_image_path": "C:\\Program Files\\SeaWork\\LocalSandbox\\versions\\0.7.0\\bin\\localsandbox-seawork-service.exe",
+    "old_event_message_path": "C:\\Program Files\\SeaWork\\LocalSandbox\\versions\\0.6.0\\bin\\localsandbox-seawork-service.exe",
+    "target_event_message_path": "C:\\Program Files\\SeaWork\\LocalSandbox\\versions\\0.7.0\\bin\\localsandbox-seawork-service.exe",
+    "staged_root": "C:\\ProgramData\\LocalSandbox\\SeaWork\\updates\\staging\\11111111111111111111111111111111\\LocalSandbox",
+    "final_version_root": "C:\\Program Files\\SeaWork\\LocalSandbox\\versions\\0.7.0",
+    "helper_protocol": {
+      "major": 1,
+      "minor": 1
+    },
+    "attempt_count": 1,
+    "last_error_category": "network",
+    "last_failure_step": "target_connect",
+    "last_failure_code": "target_connect_timeout",
+    "timeline": [
+      {
+        "phase": "update.target_start",
+        "actor": "updater",
+        "started_utc": "2026-07-31T08:01:00Z",
+        "completed_utc": "2026-07-31T08:01:02Z",
+        "duration_ms": 2000,
+        "outcome": "failed",
+        "failure_code": "TARGET_CONNECT_TIMEOUT"
+      }
+    ]
+  }
+}

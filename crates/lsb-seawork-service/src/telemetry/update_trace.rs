@@ -86,13 +86,11 @@ pub(crate) fn reconstruct_attempt(
 pub(crate) fn reconstruct_update(
     telemetry: &Telemetry,
     journal: &TransactionEnvelope,
+    attempt_id: &str,
     hostname: Option<&str>,
     channel: Option<&str>,
 ) -> Option<String> {
-    if journal.validate().is_err()
-        || !journal.transaction.phase.is_terminal()
-        || journal.transaction.reported_event_id.is_some()
-    {
+    if journal.validate().is_err() || !journal.transaction.phase.is_terminal() {
         return None;
     }
     let trace = fresh_trace_context();
@@ -136,7 +134,7 @@ pub(crate) fn reconstruct_update(
             &journal.transaction.target_bundle_identity.version,
         )
         .with_data("result", result)
-        .with_data("update.attempt_id", journal.transaction.attempt_id())
+        .with_data("update.attempt_id", attempt_id)
         .with_data("update.transaction_id", &journal.transaction.transaction_id);
     description = description
         .with_data(
@@ -199,7 +197,7 @@ pub(crate) fn reconstruct_update(
             "update".to_string(),
             serde_json::json!({
                 "hostname": hostname,
-                "attempt_id": journal.transaction.attempt_id(),
+                "attempt_id": attempt_id,
                 "transaction_id": journal.transaction.transaction_id,
                 "source_version": journal.transaction.old_bundle_identity.version,
                 "target_version": journal.transaction.target_bundle_identity.version,

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "checksum_sha256": "2af87b769959b4f12e2a81f190d02d1ed2598a4358a1030d2c2c53a8eb552d96",
+  "committed": {
+    "current": {
+      "version": "0.6.0",
+      "bundle_manifest_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "archive_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "protocol": {
+        "major": 1,
+        "min_minor": 0,
+        "max_minor": 6
+      },
+      "ledger": {
+        "reader_min_schema": 1,
+        "reader_max_schema": 1,
+        "writer_schema": 1
+      },
+      "service_configuration_revision": 3
+    },
+    "highest_committed_version": "0.6.0",
+    "helper_protocol": {
+      "major": 1,
+      "minor": 1
+    },
+    "last_completed_transaction_id": "00000000000000000000000000000000"
+  }
+}
