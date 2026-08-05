@@ -214,7 +214,11 @@ install_uv() {
     tar -xzf "${uv_tmp}/${uv_archive}" -C "${uv_tmp}"
     install -m 0755 "${uv_tmp}/${uv_dist}/uv" "${install_rootfs_dir}/usr/local/bin/uv"
     install -m 0755 "${uv_tmp}/${uv_dist}/uvx" "${install_rootfs_dir}/usr/local/bin/uvx"
-    chroot "${install_rootfs_dir}" /usr/local/bin/uv --version | grep -Fx "uv ${UV_VERSION}" > /dev/null
+    uv_version_output="$(chroot "${install_rootfs_dir}" /usr/local/bin/uv --version)"
+    case "${uv_version_output}" in
+        "uv ${UV_VERSION}"|"uv ${UV_VERSION} "*) ;;
+        *) echo "unexpected uv version: ${uv_version_output}" >&2; exit 1 ;;
+    esac
     chroot "${install_rootfs_dir}" /usr/local/bin/uvx --version > /dev/null
 }
 
@@ -770,6 +774,8 @@ mod tests {
                 "test -x \"${install_rootfs_dir}/tmp/lsb-python-venv-smoke/bin/python\""
             ));
             assert!(script.contains("/usr/local/bin/uv --version"));
+            assert!(script.contains("\"uv ${UV_VERSION}\"|\"uv ${UV_VERSION} \"*"));
+            assert!(!script.contains("grep -Fx \"uv ${UV_VERSION}\""));
             assert!(script.contains("/usr/local/bin/uvx --version"));
         }
     }
