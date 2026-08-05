@@ -1,0 +1,22 @@
+crates/lsb-seawork-update/src/policy.rs
+  s_a428deb232a8c5::t_a0234d7efab05e 537
+  s_a428deb232a8c5::t_612fba2e4d545e 13,529-536,538-541,545,549-550
+docs/seawork-test-release-handoff.md
+  s_a428deb232a8c5::t_612fba2e4d545e 916
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "eb4c49380fd4050d0e28dcc8798a9ac502388221",
+  "prompts": {},
+  "sessions": {
+    "s_a428deb232a8c5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd0fc-1b1d-73e3-abc4-d08eee143fdd",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
