@@ -1,0 +1,32 @@
+scripts/windows-test/test-contracts.ps1
+  s_8a6d3397fb66ac::t_5bf77bf8722b53 91-96
+  s_8a6d3397fb66ac::t_6cf80e15107259 87-90
+scripts/windows-test-service-harness.ps1
+  s_8a6d3397fb66ac::t_5bf77bf8722b53 19-20,953-956,958-962
+scripts/windows-test/suites/release/release-service-core-update-reboot.ps1
+  s_8a6d3397fb66ac::t_5bf77bf8722b53 246
+scripts/win-release-accept
+  s_8a6d3397fb66ac::t_3b58aafcfb4f23 149-152,154-156
+  s_8a6d3397fb66ac::t_657853bf5b8df5 168,192-193,198-202,204-205,214-215,221-229,235,282-283
+  s_8a6d3397fb66ac::t_937789f4c5a684 194-197
+  s_8a6d3397fb66ac::t_1bf54d54929da5 72-87,89-94,148,157-163,167,169-191,206,254-261,284-288
+  s_8a6d3397fb66ac::t_ebf2cdaf105619 88,153
+  s_8a6d3397fb66ac::t_e628083d7c30f3 203
+  s_8a6d3397fb66ac::t_75ea10b8964fe8 207
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "76aff1b073aaa140554a35364ed58a78f7f5c9d0",
+  "prompts": {},
+  "sessions": {
+    "s_8a6d3397fb66ac": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd279-3dba-72d1-b9e7-ff2e1d78c84f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
