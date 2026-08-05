@@ -1,0 +1,26 @@
+crates/lsb-seawork-service/src/session/manager.rs
+  s_d1cc24fbfe19e5::t_2541ec6ed305f6 1635-1636,1642-1643,1648
+  s_d1cc24fbfe19e5::t_373237339cf864 80,86,88
+  s_d1cc24fbfe19e5::t_1fc850ab586f6b 1625-1634,1637-1641,1644-1647,1649-1655
+  s_d1cc24fbfe19e5::t_19d9c19441616f 239
+  s_d1cc24fbfe19e5::t_06de1668ff018d 240-248,250-255,257-260,262,267-284,290,292-296,298-307,316,318
+  s_d1cc24fbfe19e5::t_f4b56149149541 5-7,79,81-85,87,89-90,285-289,391-392
+  s_d1cc24fbfe19e5::t_c2d482c6d32797 261,263-266,308-314,317
+  s_d1cc24fbfe19e5::t_6e64718515462a 1624
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "5e0b93bdef7bbf0345c134f1e22143cec802d792",
+  "prompts": {},
+  "sessions": {
+    "s_d1cc24fbfe19e5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd18e-6bdd-71d2-95d4-b0af52a6d53d",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
