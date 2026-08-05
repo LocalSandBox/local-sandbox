@@ -193,13 +193,19 @@ pub(crate) fn reconstruct_update(
             "update.target_version",
             &journal.transaction.target_bundle_identity.version,
         )
+        .with_tag("update.channel", channel.unwrap_or("unknown"))
         .with_tag("trace.id", &trace.trace_id);
         event.contexts.insert(
             "update".to_string(),
             serde_json::json!({
+                "hostname": hostname,
+                "attempt_id": journal.transaction.attempt_id(),
                 "transaction_id": journal.transaction.transaction_id,
                 "source_version": journal.transaction.old_bundle_identity.version,
                 "target_version": journal.transaction.target_bundle_identity.version,
+                "target_archive_sha256": journal.transaction.target_bundle_identity.archive_sha256,
+                "channel": channel,
+                "retry_attempt": journal.transaction.attempt_count,
                 "failure_phase": journal.transaction.last_failure_step,
                 "failure_code": journal.transaction.last_failure_code.map(|code| code.stable_code()),
                 "trace_id": trace.trace_id,

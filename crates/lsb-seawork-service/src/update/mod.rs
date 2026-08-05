@@ -1215,25 +1215,30 @@ impl Coordinator {
         if self.stop.load(Ordering::Acquire) {
             bail!("service shutdown cancelled update check");
         }
-        prune_staging_root(&self.paths.updates.staging)?;
-        self.set_phase(UpdatePhase::UpdateChecking, None)?;
-        let committed: CommittedStateEnvelope = protected_load_json(&self.paths.updates.committed)
-            .context("automatic activation requires valid committed state")?;
-        committed.validate()?;
-        self.context
-            .set_committed_identity(committed.committed.current.clone());
         let mut timeline = Vec::new();
-        let ReleasePages {
-            pages,
-            etag,
-            not_modified,
-        } = record_rollout_action(
+        let (committed, releases) = record_rollout_action(
             attempt,
             &mut timeline,
             "update.discovery",
             UpdateActor::Service,
-            || self.http.release_pages(self.current_etag().as_deref()),
+            || {
+                prune_staging_root(&self.paths.updates.staging)?;
+                self.set_phase(UpdatePhase::UpdateChecking, None)?;
+                let committed: CommittedStateEnvelope =
+                    protected_load_json(&self.paths.updates.committed)
+                        .context("automatic activation requires valid committed state")?;
+                committed.validate()?;
+                self.context
+                    .set_committed_identity(committed.committed.current.clone());
+                let releases = self.http.release_pages(self.current_etag().as_deref())?;
+                Ok::<_, anyhow::Error>((committed, releases))
+            },
         )?;
+        let ReleasePages {
+            pages,
+            etag,
+            not_modified,
+        } = releases;
         let candidate = record_rollout_action(
             attempt,
             &mut timeline,
