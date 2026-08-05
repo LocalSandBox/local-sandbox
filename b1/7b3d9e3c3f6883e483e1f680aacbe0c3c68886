@@ -1,0 +1,19 @@
+crates/lsb-seawork-service/src/rpc/sandbox.rs
+  s_26cfd0b2b1e782::t_aa255e01cbc318 31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "b17b3d9e3c3f6883e483e1f680aacbe0c3c68886",
+  "prompts": {},
+  "sessions": {
+    "s_26cfd0b2b1e782": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd1ad-d0fa-78b0-8902-c7e3791210bf",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
