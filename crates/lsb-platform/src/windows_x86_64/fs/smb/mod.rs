@@ -7,6 +7,16 @@ mod share;
 mod types;
 mod user;
 
+#[cfg(all(test, windows))]
+static NATIVE_ACL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(all(test, windows))]
+pub(crate) fn lock_native_acl_tests() -> std::sync::MutexGuard<'static, ()> {
+    NATIVE_ACL_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(windows)]
 pub use acl::NativeWindowsSmbAclManager;
 pub use acl::{WindowsSmbAclGrant, WindowsSmbAclGrantRequest, WindowsSmbAclManager};

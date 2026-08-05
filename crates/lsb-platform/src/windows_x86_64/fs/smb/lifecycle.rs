@@ -1948,6 +1948,8 @@ mod tests {
     fn windows_smb_sid_recovery_after_account_deletion_and_manager_restart() {
         use std::process::Command;
 
+        let _guard = crate::windows_x86_64::fs::smb::lock_native_acl_tests();
+
         fn powershell(script: &str) -> String {
             let output = Command::new("pwsh.exe")
                 .args(["-NoProfile", "-NonInteractive", "-Command", script])

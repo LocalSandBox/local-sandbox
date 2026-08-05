@@ -1015,6 +1015,7 @@ mod tests {
 
     #[test]
     fn windows_smb_protected_acl() {
+        let _guard = crate::windows_x86_64::fs::smb::lock_native_acl_tests();
         let fixture = std::env::temp_dir().join(format!(
             "lsb-windows-smb-protected-acl-{}",
             std::process::id()
