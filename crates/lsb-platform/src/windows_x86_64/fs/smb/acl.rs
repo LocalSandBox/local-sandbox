@@ -517,7 +517,8 @@ fn inspect_tree_with_cancel_check(
             return Err(WindowsSmbLifecycleError::mount_invalid(
                 &path,
                 "path exceeds the Windows path limit",
-            ));
+            )
+            .into());
         }
         let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
             WindowsSmbLifecycleError::mount_invalid(
@@ -529,7 +530,8 @@ fn inspect_tree_with_cancel_check(
             return Err(WindowsSmbLifecycleError::mount_invalid(
                 &path,
                 "reparse-point descendants are not supported",
-            ));
+            )
+            .into());
         }
         let is_dir = metadata.is_dir();
         entries += 1;
@@ -537,7 +539,8 @@ fn inspect_tree_with_cancel_check(
             return Err(WindowsSmbLifecycleError::mount_limit_exceeded_at(
                 MAX_ACL_AGGREGATE_ENTRIES,
                 &path,
-            ));
+            )
+            .into());
         }
         if is_dir {
             let children = std::fs::read_dir(&path).map_err(|error| {
