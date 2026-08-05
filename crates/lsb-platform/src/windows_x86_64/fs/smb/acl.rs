@@ -994,6 +994,7 @@ fn ntfs_access_mask(access: WindowsSmbAccess) -> u32 {
 #[cfg(all(test, windows))]
 mod tests {
     use std::process::Command;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::windows_x86_64::fs::smb::{
@@ -1063,6 +1064,43 @@ mod tests {
                 )
             })
         }));
+        let _ = std::fs::remove_dir_all(fixture);
+    }
+
+    #[derive(Debug)]
+    struct InspectionCancelled;
+
+    impl std::fmt::Display for InspectionCancelled {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("inspection cancelled")
+        }
+    }
+
+    impl std::error::Error for InspectionCancelled {}
+
+    #[test]
+    fn large_read_only_tree_inspection_checks_cancellation_between_entries() {
+        let fixture = std::env::temp_dir().join(format!(
+            "lsb-windows-smb-cancel-plan-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&fixture);
+        std::fs::create_dir_all(&fixture).unwrap();
+        for index in 0..128 {
+            std::fs::write(fixture.join(format!("entry-{index:03}")), b"data").unwrap();
+        }
+        let checks = AtomicUsize::new(0);
+        let error =
+            inspect_tree_with_cancel_check(&fixture, &[], MAX_ACL_AGGREGATE_ENTRIES, &|| {
+                if checks.fetch_add(1, Ordering::SeqCst) == 20 {
+                    Err(InspectionCancelled.into())
+                } else {
+                    Ok(())
+                }
+            })
+            .expect_err("inspection should stop at the requested safe boundary");
+        assert!(error.downcast_ref::<InspectionCancelled>().is_some());
+        assert_eq!(checks.load(Ordering::SeqCst), 21);
         let _ = std::fs::remove_dir_all(fixture);
     }
 

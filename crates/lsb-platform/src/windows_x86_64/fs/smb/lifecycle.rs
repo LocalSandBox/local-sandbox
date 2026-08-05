@@ -1309,7 +1309,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::rc::Rc;
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     use super::*;
@@ -1546,6 +1546,30 @@ mod tests {
         fail_create_index: Option<usize>,
         fail_remove: bool,
         creates: usize,
+    }
+
+    struct CancellingAcls {
+        log: EventLog,
+        cancelled: Arc<AtomicBool>,
+    }
+
+    impl WindowsSmbAclManager for CancellingAcls {
+        fn grant_access(
+            &mut self,
+            grant: WindowsSmbAclGrant,
+        ) -> Result<WindowsSmbAclGrant, WindowsSmbLifecycleError> {
+            self.log.push("grant_acl:completed");
+            self.cancelled.store(true, Ordering::SeqCst);
+            Ok(grant)
+        }
+
+        fn revoke_access(
+            &mut self,
+            _grant: &WindowsSmbAclGrant,
+        ) -> Result<(), WindowsSmbLifecycleError> {
+            self.log.push("revoke_acl:completed");
+            Ok(())
+        }
     }
 
     impl WindowsSmbShareManager for FakeShares {
@@ -2660,5 +2684,71 @@ mod tests {
             observed_success,
             "test schedule must cover every cancellation check"
         );
+    }
+
+    #[test]
+    fn cancellation_during_mutation_waits_for_completion_then_runs_uncancelled_cleanup() {
+        let root = temp_dir("cancel-during-mutation");
+        let manifest = root.join(WINDOWS_SMB_CLEANUP_MANIFEST_FILE);
+        let log = EventLog::default();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut manager = WindowsSmbLifecycleManager::new(
+            FakeAdmin {
+                log: log.clone(),
+                elevated: true,
+            },
+            FakePasswords::new(
+                log.clone(),
+                [
+                    vec![0, 1, 2, 3, 4, 5],
+                    vec![0xaa, 0xbb, 0xcc, 0xdd],
+                    vec![0xee, 0xff, 0x10, 0x20],
+                ],
+            ),
+            FakeUsers {
+                log: log.clone(),
+                create_fail: false,
+                delete_fail: false,
+            },
+            CancellingAcls {
+                log: log.clone(),
+                cancelled: cancelled.clone(),
+            },
+            FakeShares {
+                log: log.clone(),
+                fail_create_index: None,
+                fail_remove: false,
+                creates: 0,
+            },
+        );
+        let error = manager
+            .prepare_with_cleanup_manifest_and_cancel_check(&config(), &manifest, &|| {
+                if cancelled.load(Ordering::SeqCst) {
+                    Err(TestCancellation.into())
+                } else {
+                    Ok(())
+                }
+            })
+            .expect_err("cancellation raised during the ACL call should win after journaling");
+
+        assert!(error
+            .chain()
+            .any(|cause| cause.downcast_ref::<TestCancellation>().is_some()));
+        let events = log.snapshot();
+        let grant = events
+            .iter()
+            .position(|event| event == "grant_acl:completed")
+            .expect("in-progress mutation should complete");
+        let revoke = events
+            .iter()
+            .position(|event| event == "revoke_acl:completed")
+            .expect("cleanup must ignore request cancellation");
+        assert!(grant < revoke);
+        assert!(events.iter().any(|event| event.starts_with("delete_user:")));
+        assert!(!events
+            .iter()
+            .any(|event| event.starts_with("create_share:")));
+        assert!(!manifest.exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 }
