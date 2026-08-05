@@ -2,6 +2,9 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use anyhow::{bail, Context, Result};
 use lsb_service_proto::SelectedMount;
 
@@ -73,6 +76,18 @@ struct SandboxSlot {
 struct TestResource {
     value: String,
     _active_use: ActiveUseLease,
+    #[cfg(test)]
+    cancellation_at_drop: Option<(CancellationToken, Arc<AtomicBool>, Arc<AtomicBool>)>,
+}
+
+#[cfg(test)]
+impl Drop for TestResource {
+    fn drop(&mut self) {
+        if let Some((cancellation, dropped, observed)) = &self.cancellation_at_drop {
+            observed.store(cancellation.is_cancelled(), Ordering::Release);
+            dropped.store(true, Ordering::Release);
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -221,53 +236,86 @@ impl SessionManager {
     }
 
     pub fn close(&self, session_id: ResourceHandle, identity: &ClientIdentityKey) -> Result<bool> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
-        let Some(session) = state.sessions.get(&session_id) else {
-            return Ok(false);
+        let mut session = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
+            let Some(session) = state.sessions.get(&session_id) else {
+                return Ok(false);
+            };
+            if &session.identity != identity {
+                return Ok(false);
+            }
+            let now = Instant::now();
+            for record in state.start_replays.values_mut() {
+                if record.session_id == session_id {
+                    record.state = StartReplayState::Retired;
+                    record.updated_at = now;
+                }
+            }
+            let session = state
+                .sessions
+                .remove(&session_id)
+                .context("session disappeared")?;
+            let sandbox_handles = session.test_resources.keys().copied().collect::<Vec<_>>();
+            #[cfg(windows)]
+            let sandbox_handles = sandbox_handles
+                .into_iter()
+                .chain(session.sandboxes.keys().copied())
+                .collect::<Vec<_>>();
+            for handle in sandbox_handles {
+                state.quotas.release_sandbox(session_id, handle, identity);
+            }
+            #[cfg(windows)]
+            for process in session.processes.values() {
+                state
+                    .quotas
+                    .release_process(process.resource().sandbox_id, identity);
+            }
+            #[cfg(windows)]
+            for watch in session.watches.values() {
+                state
+                    .quotas
+                    .release_watch(watch.resource().sandbox_id, identity);
+            }
+            state.quotas.release_connection(identity);
+            session
         };
-        if &session.identity != identity {
-            return Ok(false);
+
+        // Release connection-owned resources before broadcasting session
+        // cancellation. Managed VMs need to retain a live guest while their
+        // bounded stop path flushes mounts.
+        session.test_resources.clear();
+
+        #[cfg(windows)]
+        {
+            for process in session.processes.values() {
+                if let Some(controller) = process.controller() {
+                    let _ = controller.kill();
+                }
+            }
+            for watch in session.watches.values() {
+                if let Some(controller) = watch.controller() {
+                    controller.stop();
+                }
+            }
+            for slot in session.sandboxes.values_mut() {
+                if let Some(vm) = slot.vm.take() {
+                    let _ = vm.stop(crate::ipc::connection::DEFAULT_STOP_DEADLINE, None);
+                }
+            }
+
+            // A managed VM observes this token and begins its own cleanup.
+            // Cancel it only after every VM owned by the detached session has
+            // been stopped; otherwise dropping the session can terminate QEMU
+            // while that cleanup is still trying to flush SMB mounts through
+            // the guest control channel.
+            session.cancellation.cancel();
         }
+
+        #[cfg(not(windows))]
         session.cancellation.cancel();
-        let now = Instant::now();
-        for record in state.start_replays.values_mut() {
-            if record.session_id == session_id {
-                record.state = StartReplayState::Retired;
-                record.updated_at = now;
-            }
-        }
-        let session = state
-            .sessions
-            .remove(&session_id)
-            .context("session disappeared")?;
-        let mut sandbox_handles = session.test_resources.keys().copied().collect::<Vec<_>>();
-        #[cfg(windows)]
-        sandbox_handles.extend(session.sandboxes.keys().copied());
-        for handle in sandbox_handles {
-            state.quotas.release_sandbox(session_id, handle, identity);
-        }
-        #[cfg(windows)]
-        for process in session.processes.values() {
-            state
-                .quotas
-                .release_process(process.resource().sandbox_id, identity);
-            if let Some(controller) = process.controller() {
-                let _ = controller.kill();
-            }
-        }
-        #[cfg(windows)]
-        for watch in session.watches.values() {
-            state
-                .quotas
-                .release_watch(watch.resource().sandbox_id, identity);
-            if let Some(controller) = watch.controller() {
-                controller.stop();
-            }
-        }
-        state.quotas.release_connection(identity);
         Ok(true)
     }
 
@@ -340,6 +388,8 @@ impl SessionManager {
             TestResource {
                 value,
                 _active_use: active_use,
+                #[cfg(test)]
+                cancellation_at_drop: None,
             },
         );
         Ok(handle)
@@ -1569,6 +1619,38 @@ mod tests {
         assert!(manager.close(session, &identity).unwrap());
         assert!(cancellation.is_cancelled());
         assert_eq!(manager.counts(), (0, 0));
+    }
+
+    #[test]
+    fn disconnect_releases_resources_before_cancelling_the_session() {
+        let manager = SessionManager::new(QuotaLimits::default());
+        let identity = ClientIdentityKey::for_test("user", "logon", 1);
+        let session = manager.open(identity.clone()).unwrap();
+        let resource = manager
+            .create_test_resource(session, &identity, "resource".to_string())
+            .unwrap();
+        let cancellation = manager.cancellation(session, &identity).unwrap();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let cancellation_observed_at_drop = Arc::new(AtomicBool::new(true));
+        let mut state = manager.state.lock().unwrap();
+        let resource = state
+            .sessions
+            .get_mut(&session)
+            .unwrap()
+            .test_resources
+            .get_mut(&resource)
+            .unwrap();
+        resource.cancellation_at_drop = Some((
+            cancellation.clone(),
+            dropped.clone(),
+            cancellation_observed_at_drop.clone(),
+        ));
+        drop(state);
+
+        assert!(manager.close(session, &identity).unwrap());
+        assert!(dropped.load(Ordering::Acquire));
+        assert!(!cancellation_observed_at_drop.load(Ordering::Acquire));
+        assert!(cancellation.is_cancelled());
     }
 
     #[test]
