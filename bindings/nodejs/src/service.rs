@@ -544,6 +544,10 @@ fn service_feature_names(bits: u64) -> Vec<String> {
       lsb_service_proto::FEATURE_MOUNT_SUBTREE_PRUNING,
       "mount-subtree-pruning",
     ),
+    (
+      lsb_service_proto::FEATURE_NETWORK_LIVE_UPDATE,
+      "network-live-update",
+    ),
   ]
   .into_iter()
   .filter(|(feature, _)| bits & feature != 0)
@@ -745,6 +749,36 @@ pub struct SeaWorkSandbox {
 
 #[napi]
 impl SeaWorkSandbox {
+  #[napi]
+  pub async fn update_network_interception(
+    &self,
+    update: crate::types::NetworkInterceptionUpdate,
+  ) -> Result<()> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+      let network = map_service_network(NetworkConfig {
+        allow: None,
+        exposeHost: None,
+        secrets: update.secrets,
+        httpsInterception: update.httpsInterception,
+      })?;
+      return self
+        .client
+        .update_sandbox_network_interception(
+          &self.sandbox,
+          network.secrets,
+          network.https_interception.unwrap_or_default(),
+        )
+        .await
+        .map_err(service_error);
+    }
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    {
+      let _ = update;
+      Err(unsupported_platform_error())
+    }
+  }
+
   #[napi(getter)]
   pub fn id(&self) -> Result<String> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]

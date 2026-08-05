@@ -362,6 +362,14 @@ impl Request {
                 }
             }
             RequestOp::StopSandbox { sandbox_id } => validate_resource_id(sandbox_id)?,
+            RequestOp::UpdateSandboxNetworkInterception {
+                sandbox_id,
+                secrets,
+                https_interception,
+            } => {
+                validate_resource_id(sandbox_id)?;
+                validate_interception_update(secrets, https_interception)?;
+            }
             RequestOp::Exec {
                 sandbox_id,
                 command,
@@ -511,6 +519,13 @@ pub enum RequestOp {
     },
     StopSandbox {
         sandbox_id: String,
+    },
+    UpdateSandboxNetworkInterception {
+        sandbox_id: String,
+        #[serde(default)]
+        secrets: BTreeMap<String, ServiceSecretSpec>,
+        #[serde(default)]
+        https_interception: ServiceHttpsInterceptionSpec,
     },
     Exec {
         sandbox_id: String,
@@ -918,6 +933,35 @@ fn validate_host_scope(scope: &ServiceHostScope) -> Result<(), ProtocolError> {
     Ok(())
 }
 
+fn validate_interception_update(
+    secrets: &BTreeMap<String, ServiceSecretSpec>,
+    interception: &ServiceHttpsInterceptionSpec,
+) -> Result<(), ProtocolError> {
+    if secrets.len() > 64 || interception.request_headers.len() > 64 {
+        return Err(ProtocolError::InvalidJson);
+    }
+    for (name, secret) in secrets {
+        validate_string(name)?;
+        validate_string(&secret.value)?;
+        if !valid_environment_name(name)
+            || secret.value.is_empty()
+            || secret.hosts.is_empty()
+            || secret.hosts.len() > 64
+        {
+            return Err(ProtocolError::InvalidJson);
+        }
+        for host in &secret.hosts {
+            validate_string(host)?;
+        }
+    }
+    for header in &interception.request_headers {
+        validate_string(&header.name)?;
+        validate_string(&header.value)?;
+        validate_host_scope(&header.hosts)?;
+    }
+    Ok(())
+}
+
 fn validate_legacy_start_hint(value: &str) -> Result<(), ProtocolError> {
     validate_string(value)?;
     if value.is_empty()
@@ -1205,7 +1249,8 @@ mod tests {
         };
         assert_eq!(
             network.required_feature_bits(),
-            crate::CLIENT_FEATURE_BITS & !crate::FEATURE_MOUNT_SUBTREE_PRUNING
+            crate::CLIENT_FEATURE_BITS
+                & !(crate::FEATURE_MOUNT_SUBTREE_PRUNING | crate::FEATURE_NETWORK_LIVE_UPDATE)
         );
         let request = Request {
             deadline_ms: None,
@@ -1225,6 +1270,45 @@ mod tests {
         assert!(!debug.contains("never-log-secret"));
         assert!(!debug.contains("never-log-header"));
         assert!(debug.contains("<redacted>"));
+
+        let live_update: Request = parse_control(
+            br#"{"op":{"type":"update_sandbox_network_interception","sandbox_id":"0123456789abcdef0123456789abcdef"}}"#,
+        )
+        .unwrap();
+        live_update.validate().unwrap();
+        match live_update.op {
+            RequestOp::UpdateSandboxNetworkInterception {
+                secrets,
+                https_interception,
+                ..
+            } => {
+                assert!(secrets.is_empty());
+                assert!(!https_interception.enabled);
+                assert!(https_interception.request_headers.is_empty());
+            }
+            _ => panic!("wrong operation"),
+        }
+
+        let live_update_with_secret = Request {
+            deadline_ms: Some(1_000),
+            op: RequestOp::UpdateSandboxNetworkInterception {
+                sandbox_id: "0123456789abcdef0123456789abcdef".into(),
+                secrets: BTreeMap::from([(
+                    "TOKEN".into(),
+                    ServiceSecretSpec {
+                        value: "replacement-secret".into(),
+                        hosts: vec!["api.example.test".into()],
+                    },
+                )]),
+                https_interception: ServiceHttpsInterceptionSpec::default(),
+            },
+        };
+        live_update_with_secret.validate().unwrap();
+        assert!(!format!("{live_update_with_secret:?}").contains("replacement-secret"));
+        let encoded = serde_json::to_string(&live_update_with_secret).unwrap();
+        assert!(!encoded.contains("allowed_hosts"));
+        assert!(!encoded.contains("expose_host"));
+        assert!(!encoded.contains("upstream_proxy"));
 
         let duplicate_exposed_guest = br#"{"op":{"type":"start_sandbox","cpus":2,"memory_mib":2048,"disk_mib":4096,"mounts":[],"ports":[],"network":{"expose_host":[{"host_port":3000,"guest_port":8080},{"host_port":3001,"guest_port":8080}]}}}"#;
         let duplicate_exposed_guest: Request = parse_control(duplicate_exposed_guest).unwrap();

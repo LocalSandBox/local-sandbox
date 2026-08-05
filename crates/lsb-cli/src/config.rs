@@ -266,12 +266,12 @@ mod tests {
     }
 
     #[test]
-    fn invalid_https_interception_fails_proxy_conversion() {
+    fn empty_https_interception_is_valid_but_header_injection_is_not() {
         let empty: LsbConfig = serde_json::from_str(
             r#"{"network":{"https_interception":{"enabled":true,"request_headers":[]}}}"#,
         )
         .unwrap();
-        assert!(empty.to_proxy_config().is_err());
+        assert!(empty.to_proxy_config().is_ok());
 
         let injection: LsbConfig = serde_json::from_str(
             r#"{"network":{"https_interception":{"enabled":true,"request_headers":[{"name":"User-Agent","value":"safe\r\nX-Bad: yes"}]}}}"#,

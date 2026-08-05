@@ -7,9 +7,9 @@ use napi::bindgen_prelude::Either;
 #[cfg(lsb_nodejs_supported)]
 use crate::types::{
   DirEntry, ExecResult, ExposeHostConfig, HostScopeConfig, HttpsInterceptionConfig, MountConfig,
-  PortMappingConfig, RequestHeaderConfig, SandboxAssetPaths, SandboxFixResult, SandboxInitOptions,
-  SandboxInitProgress, SandboxInitProgressPhase, SandboxInitResult, SecretConfig, StartOptions,
-  StatResult,
+  NetworkInterceptionUpdate, PortMappingConfig, RequestHeaderConfig, SandboxAssetPaths,
+  SandboxFixResult, SandboxInitOptions, SandboxInitProgress, SandboxInitProgressPhase,
+  SandboxInitResult, SecretConfig, StartOptions, StatResult,
 };
 
 // Conversion layer between JS options and the Rust SDK. Keeping validation here
@@ -27,6 +27,27 @@ pub(crate) fn build_command_argv(
     ],
     Either::B(argv) => argv,
   }
+}
+
+#[cfg(lsb_nodejs_supported)]
+pub(crate) fn build_interception_policy(
+  update: NetworkInterceptionUpdate,
+) -> anyhow::Result<lsb_sdk::InterceptionPolicy> {
+  let policy = lsb_sdk::InterceptionPolicy {
+    secrets: update
+      .secrets
+      .unwrap_or_default()
+      .into_iter()
+      .map(|(name, secret)| Ok((name, parse_secret(secret)?)))
+      .collect::<anyhow::Result<HashMap<_, _>>>()?,
+    https_interception: update
+      .httpsInterception
+      .map(parse_https_interception)
+      .transpose()?
+      .unwrap_or_default(),
+  };
+  policy.validate()?;
+  Ok(policy)
 }
 
 #[cfg(lsb_nodejs_supported)]

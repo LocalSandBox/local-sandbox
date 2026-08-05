@@ -20,6 +20,8 @@ export declare class ByteStream implements AsyncIterable<Uint8Array> {
  * Usage: `const sandbox = await Sandbox.start(); await sandbox.stop()`
  */
 export declare class Sandbox {
+  /** Replace all live network secrets and HTTPS request-header rules. */
+  updateNetworkInterception(update: NetworkInterceptionUpdate): Promise<void>
   /**
    * Boot a new sandbox VM.
    *
@@ -145,6 +147,7 @@ export declare class SeaWorkProcess {
 }
 
 export declare class SeaWorkSandbox {
+  updateNetworkInterception(update: NetworkInterceptionUpdate): Promise<void>
   get id(): string
   exec(command: string | Array<string>, opts?: SeaWorkExecOptions | undefined | null): Promise<ExecResult>
   beginExec(command: string | Array<string>, opts?: SeaWorkExecOptions | undefined | null): Promise<SeaWorkExecOperation>
@@ -341,6 +344,12 @@ export interface NetworkConfig {
   /** Secrets injected by the proxy for allowed hosts. */
   secrets?: Record<string, SecretConfig>
   /** HTTPS request interception and header mutation. */
+  httpsInterception?: HttpsInterceptionConfig
+}
+
+/** Complete replacement for the live secret and HTTPS interception policy. */
+export interface NetworkInterceptionUpdate {
+  secrets?: Record<string, SecretConfig>
   httpsInterception?: HttpsInterceptionConfig
 }
 

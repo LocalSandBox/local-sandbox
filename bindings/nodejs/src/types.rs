@@ -67,6 +67,14 @@ pub struct NetworkConfig {
   pub httpsInterception: Option<HttpsInterceptionConfig>,
 }
 
+/// Complete replacement for the live secret and HTTPS interception policy.
+#[allow(non_snake_case)]
+#[napi(object)]
+pub struct NetworkInterceptionUpdate {
+  pub secrets: Option<HashMap<String, SecretConfig>>,
+  pub httpsInterception: Option<HttpsInterceptionConfig>,
+}
+
 /// Host-to-guest TCP port forwarding rule.
 #[allow(non_snake_case)]
 #[napi(object)]

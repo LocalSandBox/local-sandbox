@@ -19,12 +19,15 @@ use windows_sys::Win32::Security::Cryptography::{
 };
 use zeroize::Zeroize;
 
-use crate::config::{ProxyConfig, RequestHeaderRule, UpstreamProxyConfig, SMB_MOUNT_PORT};
+use crate::config::{
+    InterceptionPolicy, ProxyConfig, RequestHeaderRule, UpstreamProxyConfig, SMB_MOUNT_PORT,
+};
 use crate::dns::{self, SharedDnsCache};
 use crate::policy::is_allowed_destination;
 use crate::stack::{ConnectionId, StackCommand, StackEvent, TcpConnection};
 use crate::stream::ChannelStream;
 use crate::tls::CertificateAuthority;
+use crate::ProxyControlRequest;
 
 /// The async proxy engine.
 ///
@@ -37,19 +40,27 @@ use crate::tls::CertificateAuthority;
 pub struct ProxyEngine {
     config: Arc<ProxyConfig>,
     event_rx: mpsc::UnboundedReceiver<StackEvent>,
+    control_rx: mpsc::UnboundedReceiver<ProxyControlRequest>,
     cmd_tx: mpsc::UnboundedSender<StackCommand>,
-    connections: HashMap<ConnectionId, mpsc::UnboundedSender<Vec<u8>>>,
+    connections: HashMap<ConnectionId, ActiveConnection>,
     dns_cache: SharedDnsCache,
     placeholders: Arc<HashMap<String, String>>,
+    interception: Arc<InterceptionPolicy>,
     ca: Arc<tokio::sync::Mutex<CertificateAuthority>>,
     upstream_ssl: SslConnector,
 }
 
+struct ActiveConnection {
+    data: mpsc::UnboundedSender<Vec<u8>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
 impl ProxyEngine {
     pub fn new(
-        config: ProxyConfig,
+        mut config: ProxyConfig,
         event_rx: mpsc::UnboundedReceiver<StackEvent>,
         cmd_tx: mpsc::UnboundedSender<StackCommand>,
+        control_rx: mpsc::UnboundedReceiver<ProxyControlRequest>,
         ca: CertificateAuthority,
         placeholders: HashMap<String, String>,
     ) -> anyhow::Result<Self> {
@@ -60,13 +71,19 @@ impl ProxyEngine {
         configure_upstream_tls_roots(&mut builder, &config.product_ca_bundle_pem)?;
         let upstream_ssl = builder.build();
 
+        let interception = Arc::new(InterceptionPolicy {
+            secrets: std::mem::take(&mut config.secrets),
+            https_interception: std::mem::take(&mut config.https_interception),
+        });
         Ok(ProxyEngine {
             config: Arc::new(config),
             event_rx,
+            control_rx,
             cmd_tx,
             connections: HashMap::new(),
             dns_cache: dns::new_shared_dns_cache(),
             placeholders: Arc::new(placeholders),
+            interception,
             ca: Arc::new(tokio::sync::Mutex::new(ca)),
             upstream_ssl,
         })
@@ -75,20 +92,34 @@ impl ProxyEngine {
     /// Run the proxy event loop.
     pub async fn run(&mut self) {
         info!("proxy engine started");
-        while let Some(event) = self.event_rx.recv().await {
+        loop {
+            let event = tokio::select! {
+                biased;
+                control = self.control_rx.recv() => {
+                    let Some(control) = control else { break };
+                    self.handle_control(control).await;
+                    continue;
+                }
+                event = self.event_rx.recv() => event,
+            };
+            let Some(event) = event else { break };
             match event {
                 StackEvent::NewConnection(conn) => {
                     self.handle_new_connection(conn);
                 }
                 StackEvent::Data { id, payload } => {
-                    if let Some(tx) = self.connections.get(&id) {
-                        if tx.send(payload).is_err() {
-                            self.connections.remove(&id);
+                    if let Some(connection) = self.connections.get(&id) {
+                        if connection.data.send(payload).is_err() {
+                            if let Some(connection) = self.connections.remove(&id) {
+                                connection.task.abort();
+                            }
                         }
                     }
                 }
                 StackEvent::Closed { id } => {
-                    self.connections.remove(&id);
+                    if let Some(connection) = self.connections.remove(&id) {
+                        connection.task.abort();
+                    }
                 }
                 StackEvent::DnsQuery { src, payload } => {
                     let cmd_tx = self.cmd_tx.clone();
@@ -102,24 +133,95 @@ impl ProxyEngine {
         }
     }
 
+    async fn handle_control(&mut self, request: ProxyControlRequest) {
+        match request {
+            ProxyControlRequest::ReplaceInterceptionPolicy {
+                policy,
+                placeholders,
+                reply,
+            } => {
+                let result = self.replace_interception_policy(policy, placeholders).await;
+                let _ = reply.send(result);
+            }
+        }
+    }
+
+    async fn replace_interception_policy(
+        &mut self,
+        policy: InterceptionPolicy,
+        restored_placeholders: Option<HashMap<String, String>>,
+    ) -> anyhow::Result<HashMap<String, String>> {
+        policy.validate()?;
+        if !self.config.permits_network_policy() {
+            anyhow::bail!("sandbox networking is not enabled");
+        }
+        let placeholders = if let Some(placeholders) = restored_placeholders {
+            let expected = policy
+                .secrets
+                .keys()
+                .collect::<std::collections::HashSet<_>>();
+            let actual = placeholders
+                .keys()
+                .collect::<std::collections::HashSet<_>>();
+            if actual != expected {
+                anyhow::bail!("restored placeholders do not match interception policy secrets");
+            }
+            placeholders
+        } else {
+            let mut placeholders = HashMap::with_capacity(policy.secrets.len());
+            for name in policy.secrets.keys() {
+                placeholders.insert(
+                    name.clone(),
+                    self.placeholders
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(crate::generate_placeholder),
+                );
+            }
+            placeholders
+        };
+
+        // The event loop is paused while all connections that captured the old
+        // generation are synchronously aborted by the network stack.
+        let mut closures = Vec::with_capacity(self.connections.len());
+        for (id, connection) in self.connections.drain() {
+            connection.task.abort();
+            let (reply, closed) = tokio::sync::oneshot::channel();
+            self.cmd_tx
+                .send(StackCommand::Abort { id, reply })
+                .map_err(|_| anyhow::anyhow!("proxy network stack exited"))?;
+            closures.push(closed);
+        }
+        for closed in closures {
+            closed
+                .await
+                .map_err(|_| anyhow::anyhow!("proxy network stack dropped connection close"))?;
+        }
+        // Publish policy and placeholders together before accepting another
+        // event, so no connection can observe a mixed generation.
+        self.interception = Arc::new(policy);
+        self.placeholders = Arc::new(placeholders.clone());
+        Ok(placeholders)
+    }
+
     fn handle_new_connection(&mut self, conn: TcpConnection) {
         let (data_tx, data_rx) = mpsc::unbounded_channel();
-        self.connections.insert(conn.id, data_tx);
-
         let cmd_tx = self.cmd_tx.clone();
         let config = self.config.clone();
         let dns_cache = self.dns_cache.clone();
         let ca = self.ca.clone();
         let placeholders = self.placeholders.clone();
+        let interception = self.interception.clone();
         let upstream_ssl = self.upstream_ssl.clone();
 
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             if let Err(e) = handle_connection(
                 conn.id,
                 conn.dst,
                 data_rx,
                 cmd_tx,
                 &config,
+                &interception,
                 &dns_cache,
                 ca,
                 &placeholders,
@@ -130,6 +232,13 @@ impl ProxyEngine {
                 debug!("connection to {} ended: {e}", conn.dst);
             }
         });
+        self.connections.insert(
+            conn.id,
+            ActiveConnection {
+                data: data_tx,
+                task,
+            },
+        );
     }
 }
 
@@ -484,6 +593,7 @@ async fn handle_connection(
     mut data_rx: mpsc::UnboundedReceiver<Vec<u8>>,
     cmd_tx: mpsc::UnboundedSender<StackCommand>,
     config: &ProxyConfig,
+    interception: &InterceptionPolicy,
     dns_cache: &SharedDnsCache,
     ca: Arc<tokio::sync::Mutex<CertificateAuthority>>,
     placeholders: &HashMap<String, String>,
@@ -542,8 +652,8 @@ async fn handle_connection(
         enforce_connection_policy(config, dns_cache, sni.as_deref(), dst, "TLS")?;
 
         if let Some(domain) = sni {
-            let substitutions = config.secrets_for_domain(&domain, placeholders);
-            let header_rules = config.active_header_rules_for_domain(&domain);
+            let substitutions = interception.secrets_for_domain(&domain, placeholders);
+            let header_rules = interception.active_header_rules_for_domain(&domain);
             if !substitutions.is_empty() || !header_rules.is_empty() {
                 debug!("MITM: {domain}");
                 return handle_mitm(
@@ -705,6 +815,7 @@ async fn handle_mitm(
     upstream_proxy: Option<UpstreamProxyConfig>,
     upstream_ssl: SslConnector,
 ) -> anyhow::Result<()> {
+    let substitutions = zeroize::Zeroizing::new(substitutions);
     debug!(
         "MITM {domain}: starting interception for {dst} with {} secret placeholder(s) and {} header rule(s)",
         substitutions.len(),
@@ -1048,6 +1159,54 @@ mod tests {
             assert!(request.len() <= 16 * 1024);
         }
         request
+    }
+
+    #[tokio::test]
+    async fn policy_replacement_aborts_active_connections_before_returning() {
+        let (_event_tx, event_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
+        let (_control_tx, control_rx) = mpsc::unbounded_channel();
+        let mut engine = ProxyEngine::new(
+            allowed_config("example.test"),
+            event_rx,
+            cmd_tx,
+            control_rx,
+            CertificateAuthority::new().unwrap(),
+            HashMap::new(),
+        )
+        .unwrap();
+
+        let id = ConnectionId::for_test();
+        let (data, _data_rx) = mpsc::unbounded_channel();
+        let (task_guard, task_aborted) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let _task_guard = task_guard;
+            std::future::pending::<()>().await;
+        });
+        engine
+            .connections
+            .insert(id, ActiveConnection { data, task });
+
+        let stack = tokio::spawn(async move {
+            match cmd_rx.recv().await.unwrap() {
+                StackCommand::Abort { id: aborted, reply } => {
+                    assert_eq!(aborted, id);
+                    reply.send(()).unwrap();
+                }
+                _ => panic!("replacement must immediately abort the active connection"),
+            }
+        });
+
+        engine
+            .replace_interception_policy(InterceptionPolicy::default(), None)
+            .await
+            .unwrap();
+        assert!(engine.connections.is_empty());
+        assert!(
+            task_aborted.await.is_err(),
+            "connection task was not aborted"
+        );
+        stack.await.unwrap();
     }
 
     #[tokio::test]

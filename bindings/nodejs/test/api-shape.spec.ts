@@ -97,6 +97,8 @@ test('SeaWork service declarations expose only remote sandbox inputs', (t) => {
   t.regex(declarations, /prepareUninstall\(\): Promise<SeaWorkUninstallPreparation>/)
   t.regex(declarations, /start\(opts\?: SeaWorkStartOptions[^)]*\): Promise<SeaWorkSandbox>/)
   t.regex(declarations, /export declare class SeaWorkSandbox/)
+  t.regex(declarations, /updateNetworkInterception\(update: NetworkInterceptionUpdate\): Promise<void>/)
+  t.regex(declarations, /export interface NetworkInterceptionUpdate/)
   t.regex(declarations, /readFile\(path: string\): Promise<Buffer>/)
   t.regex(declarations, /writeFile\(path: string, content: string \| Uint8Array\): Promise<void>/)
   t.regex(

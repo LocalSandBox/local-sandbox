@@ -92,6 +92,72 @@ pub struct ProxyConfig {
     pub expose_host: Vec<ExposeHostMapping>,
 }
 
+/// Live-mutable request interception state. Values are redacted from debug
+/// output and zeroized by their owning secret/header types when replaced.
+#[derive(Clone, Default)]
+pub struct InterceptionPolicy {
+    pub secrets: HashMap<String, SecretConfig>,
+    pub https_interception: HttpsInterceptionConfig,
+}
+
+impl fmt::Debug for InterceptionPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InterceptionPolicy")
+            .field("secrets", &self.secrets)
+            .field("https_interception", &self.https_interception)
+            .finish()
+    }
+}
+
+impl InterceptionPolicy {
+    pub fn validate(&self) -> Result<()> {
+        ProxyConfig {
+            secrets: self.secrets.clone(),
+            https_interception: self.https_interception.clone(),
+            ..Default::default()
+        }
+        .validate()
+    }
+
+    pub fn requires_guest_ca(&self) -> bool {
+        !self.secrets.is_empty()
+            || (self.https_interception.enabled
+                && !self.https_interception.request_headers.is_empty())
+    }
+
+    pub fn secrets_for_domain(
+        &self,
+        domain: &str,
+        placeholders: &HashMap<String, String>,
+    ) -> Vec<(String, String)> {
+        let mut result = Vec::new();
+        for (name, secret) in &self.secrets {
+            if secret
+                .hosts
+                .iter()
+                .any(|pattern| domain_matches(pattern, domain))
+            {
+                if let Some(placeholder) = placeholders.get(name) {
+                    result.push((placeholder.clone(), secret.value.clone()));
+                }
+            }
+        }
+        result
+    }
+
+    pub fn active_header_rules_for_domain(&self, domain: &str) -> Vec<RequestHeaderRule> {
+        if !self.https_interception.enabled {
+            return Vec::new();
+        }
+        self.https_interception
+            .request_headers
+            .iter()
+            .filter(|rule| rule.hosts.applies_to(domain))
+            .cloned()
+            .collect()
+    }
+}
+
 impl fmt::Debug for ProxyConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ProxyConfig")
@@ -248,6 +314,12 @@ pub struct NetworkConfig {
 }
 
 impl ProxyConfig {
+    pub fn interception_policy(&self) -> InterceptionPolicy {
+        InterceptionPolicy {
+            secrets: self.secrets.clone(),
+            https_interception: self.https_interception.clone(),
+        }
+    }
     /// Validate request-interception configuration before starting a VM.
     pub fn validate(&self) -> Result<()> {
         validate_host_patterns(&self.network.allow)?;
@@ -269,9 +341,6 @@ impl ProxyConfig {
             validate_host_patterns(&secret.hosts)?;
         }
         let rules = &self.https_interception.request_headers;
-        if self.https_interception.enabled && rules.is_empty() {
-            bail!("HTTPS interception is enabled but no request header rules are configured");
-        }
         if rules.len() > MAX_REQUEST_HEADER_RULES {
             bail!("too many HTTPS request header rules (maximum {MAX_REQUEST_HEADER_RULES})");
         }
@@ -738,20 +807,21 @@ mod tests {
     }
 
     #[test]
-    fn interception_defaults_off_and_requires_rules_when_enabled() {
+    fn interception_defaults_off_and_allows_an_empty_enabled_policy() {
         let default = ProxyConfig::default();
         assert!(!default.https_interception.enabled);
         assert!(!default.requires_guest_ca());
         default.validate().unwrap();
 
-        let invalid = ProxyConfig {
+        let empty_enabled = ProxyConfig {
             https_interception: HttpsInterceptionConfig {
                 enabled: true,
                 request_headers: Vec::new(),
             },
             ..Default::default()
         };
-        assert!(invalid.validate().is_err());
+        empty_enabled.validate().unwrap();
+        assert!(!empty_enabled.requires_guest_ca());
 
         let disabled_with_rule = ProxyConfig {
             https_interception: HttpsInterceptionConfig {

@@ -9,7 +9,8 @@ use lsb_service_proto::{
     decode_stream_payload, parse_control, BundleIdentity, Cancel, Correlation, ErrorEnvelope,
     Event, FrameHeader, FrameKind, Health, Hello, HelloReply, HexU64, ProtocolVersion, Request,
     RequestOp, Response, ResponseValue, ServiceInfo, UpdateStatus, WindowUpdate,
-    CLIENT_FEATURE_BITS, CONTROLLED_UPDATE_MIN_MINOR, CURRENT, SUPPORTED,
+    CLIENT_FEATURE_BITS, CONTROLLED_UPDATE_MIN_MINOR, CURRENT, FEATURE_NETWORK_LIVE_UPDATE,
+    NETWORK_LIVE_UPDATE_MIN_MINOR, SUPPORTED,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::windows::named_pipe::NamedPipeClient;
@@ -329,6 +330,30 @@ impl ServiceClient {
             _ => Err(ClientError::Protocol(
                 "StopSandbox returned a mismatched result".to_string(),
             )),
+        }
+    }
+
+    pub async fn update_sandbox_network_interception(
+        &self,
+        sandbox: &RemoteSandbox,
+        secrets: BTreeMap<String, lsb_service_proto::ServiceSecretSpec>,
+        https_interception: lsb_service_proto::ServiceHttpsInterceptionSpec,
+    ) -> Result<(), ClientError> {
+        if self.core.protocol.minor < NETWORK_LIVE_UPDATE_MIN_MINOR
+            || self.core.feature_bits & FEATURE_NETWORK_LIVE_UPDATE == 0
+        {
+            return Err(ClientError::IncompatibleProtocol);
+        }
+        match self
+            .request(RequestOp::UpdateSandboxNetworkInterception {
+                sandbox_id: sandbox.sandbox_id.clone(),
+                secrets,
+                https_interception,
+            })
+            .await?
+        {
+            ResponseValue::Empty {} => Ok(()),
+            _ => Err(mismatched("UpdateSandboxNetworkInterception")),
         }
     }
 

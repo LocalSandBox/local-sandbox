@@ -35,9 +35,10 @@ pub use service::{
 pub use streams::{ByteStream, WatchStream};
 pub use types::{
   CopyOptions, DirEntry, ExecOptions, ExecResult, ExposeHostConfig, FileChangeEvent, MkdirOptions,
-  MountConfig, NetworkConfig, PortMappingConfig, RemoveOptions, SandboxAssetPaths,
-  SandboxFixResult, SandboxInitOptions, SandboxInitProgress, SandboxInitProgressPhase,
-  SandboxInitResult, SecretConfig, SpawnOptions, StartOptions, StatResult, WatchOptions,
+  MountConfig, NetworkConfig, NetworkInterceptionUpdate, PortMappingConfig, RemoveOptions,
+  SandboxAssetPaths, SandboxFixResult, SandboxInitOptions, SandboxInitProgress,
+  SandboxInitProgressPhase, SandboxInitResult, SecretConfig, SpawnOptions, StartOptions,
+  StatResult, WatchOptions,
 };
 
 /// Download or verify sandbox runtime assets such as kernel, rootfs, and initramfs.

@@ -16,7 +16,8 @@ mod stream;
 mod tls;
 
 pub use config::{
-    HostScope, HttpsInterceptionConfig, ProxyConfig, RequestHeaderRule, UpstreamProxyConfig,
+    HostScope, HttpsInterceptionConfig, InterceptionPolicy, ProxyConfig, RequestHeaderRule,
+    UpstreamProxyConfig,
 };
 
 #[cfg(any(unix, windows))]
@@ -131,6 +132,9 @@ pub struct ProxyHandle {
     stack_thread: Option<ManagedThread>,
     #[cfg(any(unix, windows))]
     runtime_thread: Option<ManagedThread>,
+    #[cfg(any(unix, windows))]
+    control_tx: mpsc::UnboundedSender<ProxyControlRequest>,
+    interception_policy: InterceptionPolicy,
     /// Placeholder tokens generated for secrets. Key = env var name, Value = placeholder.
     pub placeholders: std::collections::HashMap<String, String>,
     /// CA certificate in PEM format (for injecting into guest trust store).
@@ -141,6 +145,51 @@ pub struct ProxyHandle {
 
 #[cfg(any(unix, windows))]
 impl ProxyHandle {
+    /// Atomically replace all secrets and HTTPS request-header rules. Existing
+    /// names retain their placeholders; new names receive new placeholders.
+    pub fn replace_interception_policy(
+        &mut self,
+        policy: InterceptionPolicy,
+    ) -> anyhow::Result<std::collections::HashMap<String, String>> {
+        policy.validate()?;
+        let requires_guest_ca = policy.requires_guest_ca();
+        let committed_policy = policy.clone();
+        let previous_policy = self.interception_policy.clone();
+        let previous_placeholders = self.placeholders.clone();
+        let (reply_tx, reply_rx) = std_mpsc::sync_channel(1);
+        self.control_tx
+            .send(ProxyControlRequest::ReplaceInterceptionPolicy {
+                policy,
+                placeholders: None,
+                reply: reply_tx,
+            })
+            .map_err(|_| anyhow::anyhow!("proxy engine exited"))?;
+        let placeholders = match reply_rx.recv_timeout(PROXY_SHUTDOWN_TIMEOUT) {
+            Ok(result) => result?,
+            Err(_) => {
+                let (rollback_tx, rollback_rx) = std_mpsc::sync_channel(1);
+                self.control_tx
+                    .send(ProxyControlRequest::ReplaceInterceptionPolicy {
+                        policy: previous_policy.clone(),
+                        placeholders: Some(previous_placeholders),
+                        reply: rollback_tx,
+                    })
+                    .map_err(|_| anyhow::anyhow!("proxy engine exited during policy rollback"))?;
+                let rolled_back = rollback_rx
+                    .recv_timeout(PROXY_SHUTDOWN_TIMEOUT)
+                    .map_err(|_| anyhow::anyhow!("proxy policy rollback timed out"))??;
+                self.placeholders = rolled_back;
+                return Err(anyhow::anyhow!(
+                    "timed out replacing proxy interception policy; old policy restored"
+                ));
+            }
+        };
+        self.placeholders = placeholders.clone();
+        self.requires_guest_ca = requires_guest_ca;
+        self.interception_policy = committed_policy;
+        Ok(placeholders)
+    }
+
     pub fn shutdown(mut self) -> anyhow::Result<()> {
         self.shutdown_inner(PROXY_SHUTDOWN_TIMEOUT)
     }
@@ -166,6 +215,17 @@ impl ProxyHandle {
             Ok(())
         }
     }
+}
+
+#[cfg(any(unix, windows))]
+pub(crate) enum ProxyControlRequest {
+    ReplaceInterceptionPolicy {
+        policy: InterceptionPolicy,
+        /// Exact placeholders to restore after an uncertain timed-out update.
+        /// Normal replacements derive a new map while preserving retained names.
+        placeholders: Option<HashMap<String, String>>,
+        reply: std_mpsc::SyncSender<anyhow::Result<HashMap<String, String>>>,
+    },
 }
 
 #[cfg(any(unix, windows))]
@@ -301,6 +361,7 @@ pub fn start_link(
 ) -> anyhow::Result<ProxyHandle> {
     config.validate()?;
     let requires_guest_ca = config.requires_guest_ca();
+    let interception_policy = config.interception_policy();
     // Install rustls crypto provider (process-wide, idempotent)
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
@@ -315,10 +376,18 @@ pub fn start_link(
 
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+    let (control_tx, control_rx) = mpsc::unbounded_channel();
 
     let proxy_config = config;
     let proxy_placeholders = placeholders.clone();
-    let mut engine = ProxyEngine::new(proxy_config, event_rx, cmd_tx, ca, proxy_placeholders)?;
+    let mut engine = ProxyEngine::new(
+        proxy_config,
+        event_rx,
+        cmd_tx,
+        control_rx,
+        ca,
+        proxy_placeholders,
+    )?;
     let shutdown = Arc::new(AtomicBool::new(false));
     let mut stack_thread = spawn_stack_thread(attachment, event_tx, cmd_rx, shutdown.clone())?;
     let runtime_thread = match spawn_managed_thread("lsb-proxy", move || {
@@ -346,6 +415,8 @@ pub fn start_link(
         shutdown,
         stack_thread: Some(stack_thread),
         runtime_thread: Some(runtime_thread),
+        control_tx,
+        interception_policy,
         placeholders,
         ca_cert_pem,
         requires_guest_ca,
@@ -466,6 +537,59 @@ mod lifecycle_tests {
             }
         }
 
+        #[cfg(windows)]
+        drop(vm);
+    }
+
+    #[test]
+    fn live_policy_replacement_preserves_adds_and_removes_placeholders() {
+        use crate::config::SecretConfig;
+
+        let ProxyLink { vm, host } = create_proxy_link().expect("proxy link");
+        let mut initial = ProxyConfig::default();
+        initial.secrets.insert(
+            "KEEP".into(),
+            SecretConfig {
+                value: "old".into(),
+                hosts: vec!["example.test".into()],
+            },
+        );
+        let mut handle = start_link(host, initial).expect("proxy should start");
+        let keep = handle.placeholders["KEEP"].clone();
+        let replacement = InterceptionPolicy {
+            secrets: HashMap::from([
+                (
+                    "KEEP".into(),
+                    SecretConfig {
+                        value: "new".into(),
+                        hosts: vec!["example.test".into()],
+                    },
+                ),
+                (
+                    "ADD".into(),
+                    SecretConfig {
+                        value: "added".into(),
+                        hosts: vec!["example.test".into()],
+                    },
+                ),
+            ]),
+            ..Default::default()
+        };
+        let placeholders = handle
+            .replace_interception_policy(replacement)
+            .expect("replacement should succeed");
+        assert_eq!(placeholders["KEEP"], keep);
+        assert!(placeholders.contains_key("ADD"));
+        assert!(handle
+            .replace_interception_policy(InterceptionPolicy::default())
+            .expect("empty replacement should succeed")
+            .is_empty());
+        handle.shutdown().expect("proxy shutdown");
+
+        #[cfg(unix)]
+        if let VmNetworkAttachment::FileDescriptor(fd) = vm {
+            unsafe { libc::close(fd) };
+        }
         #[cfg(windows)]
         drop(vm);
     }

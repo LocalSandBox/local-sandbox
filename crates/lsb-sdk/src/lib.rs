@@ -14,8 +14,8 @@ mod watch;
 pub use lsb_platform::AssetPaths;
 pub use lsb_proto::{DirEntry, PortMapping, ReadDirResponse, StatResponse};
 pub use lsb_proxy::config::{
-    ExposeHostMapping, HostScope, HttpsInterceptionConfig, NetworkConfig, ProxyConfig,
-    RequestHeaderRule, SecretConfig,
+    ExposeHostMapping, HostScope, HttpsInterceptionConfig, InterceptionPolicy, NetworkConfig,
+    ProxyConfig, RequestHeaderRule, SecretConfig,
 };
 pub use lsb_vm::{default_data_dir, MountConfig};
 

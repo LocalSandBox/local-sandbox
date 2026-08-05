@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 #[cfg(lsb_nodejs_supported)]
 use crate::config::{
-  build_command_argv, build_sandbox_config, command_options, map_dir_entry, map_exec_result,
-  map_stat_result,
+  build_command_argv, build_interception_policy, build_sandbox_config, command_options,
+  map_dir_entry, map_exec_result, map_stat_result,
 };
 #[cfg(lsb_nodejs_supported)]
 use crate::error::to_napi_error;
@@ -16,8 +16,8 @@ use crate::error::unsupported_platform_error;
 use crate::process::SpawnedProcess;
 use crate::streams::WatchStream;
 use crate::types::{
-  CopyOptions, DirEntry, ExecOptions, ExecResult, MkdirOptions, RemoveOptions, SpawnOptions,
-  StartOptions, StatResult, WatchOptions,
+  CopyOptions, DirEntry, ExecOptions, ExecResult, MkdirOptions, NetworkInterceptionUpdate,
+  RemoveOptions, SpawnOptions, StartOptions, StatResult, WatchOptions,
 };
 
 // Public Sandbox class exposed to Node. Methods intentionally delegate to
@@ -33,6 +33,25 @@ pub struct Sandbox {
 
 #[napi]
 impl Sandbox {
+  /// Replace all live network secrets and HTTPS request-header rules.
+  #[napi]
+  pub async fn update_network_interception(&self, update: NetworkInterceptionUpdate) -> Result<()> {
+    #[cfg(lsb_nodejs_supported)]
+    {
+      let policy = build_interception_policy(update).map_err(to_napi_error)?;
+      return self
+        .inner
+        .update_network_interception(policy)
+        .await
+        .map_err(to_napi_error);
+    }
+    #[cfg(not(lsb_nodejs_supported))]
+    {
+      let _ = update;
+      Err(unsupported_platform_error())
+    }
+  }
+
   /// Boot a new sandbox VM.
   ///
   /// Usage: `const sandbox = await Sandbox.start({ cpus: 2, mounts: [{ type: 'overlay', hostPath: '.', guestPath: '/workspace' }] })`

@@ -36,6 +36,10 @@ use crate::{ReadDirResponse, StatResponse};
 static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 enum SandboxCmd {
+    ReplaceNetworkInterception {
+        policy: lsb_proxy::InterceptionPolicy,
+        reply: oneshot::Sender<Result<()>>,
+    },
     Exec {
         argv: Vec<String>,
         cwd: Option<String>,
@@ -202,6 +206,22 @@ impl AsyncSandbox {
     pub async fn exec(&self, argv: &[&str]) -> Result<ExecResult> {
         self.exec_with_options(argv, CommandOptions::default())
             .await
+    }
+
+    /// Completely replace the live secret and HTTPS-header interception policy.
+    pub async fn update_network_interception(
+        &self,
+        policy: lsb_proxy::InterceptionPolicy,
+    ) -> Result<()> {
+        policy.validate()?;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SandboxCmd::ReplaceNetworkInterception {
+                policy,
+                reply: reply_tx,
+            })
+            .map_err(|_| anyhow::anyhow!("VM thread exited"))?;
+        reply_rx.await?
     }
 
     /// Execute a command with cwd and environment overrides.
@@ -710,17 +730,15 @@ fn boot_vm(config: SandboxConfig) -> Result<BootedVm> {
     };
 
     if let Some(ref handle) = proxy_handle {
-        if handle.requires_guest_ca {
-            sandbox.write_file(
-                "/usr/local/share/ca-certificates/lsb-proxy.crt",
-                &handle.ca_cert_pem,
-            )?;
-            sandbox.exec(
-                &["update-ca-certificates", "--fresh"],
-                &mut std::io::sink(),
-                &mut std::io::sink(),
-            )?;
-        }
+        sandbox.write_file(
+            "/usr/local/share/ca-certificates/lsb-proxy.crt",
+            &handle.ca_cert_pem,
+        )?;
+        sandbox.exec(
+            &["update-ca-certificates", "--fresh"],
+            &mut std::io::sink(),
+            &mut std::io::sink(),
+        )?;
     }
 
     info!("VM ready");
@@ -1262,7 +1280,7 @@ fn run_vm_loop(
         lsb_store::WindowsCheckpointSource,
     >,
     cmd_rx: std::sync::mpsc::Receiver<SandboxCmd>,
-    proxy_handle: Option<lsb_proxy::ProxyHandle>,
+    mut proxy_handle: Option<lsb_proxy::ProxyHandle>,
     _fwd_handle: Option<lsb_vm::PortForwardHandle>,
     nbd_handle: Option<lsb_store::NbdHandle>,
 ) {
@@ -1270,23 +1288,28 @@ fn run_vm_loop(
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     let _ = virtual_size_bytes;
 
-    let env: HashMap<String, String> = proxy_handle
+    let mut env: HashMap<String, String> = proxy_handle
         .as_ref()
         .map(|h| h.placeholders.clone())
         .unwrap_or_default();
-    let remove_ephemeral_ca_before_checkpoint = proxy_handle
-        .as_ref()
-        .is_some_and(|handle| handle.requires_guest_ca);
+    let remove_ephemeral_ca_before_checkpoint = proxy_handle.is_some();
     let proxy_ca_pem = proxy_handle
         .as_ref()
-        .and_then(|handle| handle.requires_guest_ca.then(|| handle.ca_cert_pem.clone()));
+        .map(|handle| handle.ca_cert_pem.clone());
 
-    let _proxy = proxy_handle;
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     let mut vm_running = true;
 
     while let Ok(cmd) = cmd_rx.recv() {
         match cmd {
+            SandboxCmd::ReplaceNetworkInterception { policy, reply } => {
+                let result = proxy_handle
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("sandbox networking is not enabled"))
+                    .and_then(|proxy| proxy.replace_interception_policy(policy))
+                    .map(|placeholders| env = placeholders);
+                let _ = reply.send(result);
+            }
             SandboxCmd::Exec {
                 argv,
                 cwd,
@@ -1523,7 +1546,11 @@ mod tests {
             allow_net: false,
             https_interception: lsb_proxy::HttpsInterceptionConfig {
                 enabled: true,
-                request_headers: Vec::new(),
+                request_headers: vec![lsb_proxy::RequestHeaderRule {
+                    name: "Authorization".into(),
+                    value: "safe\r\nInjected: no".into(),
+                    hosts: lsb_proxy::HostScope::default(),
+                }],
             },
             ..Default::default()
         };

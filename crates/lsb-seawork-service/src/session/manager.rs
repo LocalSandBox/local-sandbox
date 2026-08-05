@@ -834,6 +834,41 @@ impl SessionManager {
     }
 
     #[cfg(windows)]
+    pub fn update_managed_vm_network_interception(
+        &self,
+        session_id: ResourceHandle,
+        identity: &ClientIdentityKey,
+        handle: ResourceHandle,
+        policy: lsb_proxy::InterceptionPolicy,
+        timeout: Duration,
+        cancellation: CancellationToken,
+    ) -> Result<Option<()>> {
+        let controller = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("session manager poisoned"))?;
+            let Some(session) = state.sessions.get(&session_id) else {
+                return Ok(None);
+            };
+            if &session.identity != identity {
+                return Ok(None);
+            }
+            match session
+                .sandboxes
+                .get(&handle)
+                .and_then(|slot| slot.vm.as_ref())
+            {
+                Some(vm) => vm.controller(),
+                None => return Ok(None),
+            }
+        };
+        controller
+            .update_network_interception(policy, timeout, cancellation)
+            .map(Some)
+    }
+
+    #[cfg(windows)]
     pub fn file_managed_vm(
         &self,
         session_id: ResourceHandle,

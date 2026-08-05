@@ -3,6 +3,42 @@ use std::collections::HashMap;
 use anyhow::Result;
 use lsb_service_proto::ServiceNetworkSpec;
 
+pub fn build_interception_policy(
+    mut secrets: std::collections::BTreeMap<String, lsb_service_proto::ServiceSecretSpec>,
+    mut https_interception: lsb_service_proto::ServiceHttpsInterceptionSpec,
+) -> Result<lsb_proxy::InterceptionPolicy> {
+    let policy = lsb_proxy::InterceptionPolicy {
+        secrets: std::mem::take(&mut secrets)
+            .into_iter()
+            .map(|(name, mut secret)| {
+                (
+                    name,
+                    lsb_proxy::config::SecretConfig {
+                        value: std::mem::take(&mut secret.value),
+                        hosts: std::mem::take(&mut secret.hosts),
+                    },
+                )
+            })
+            .collect(),
+        https_interception: lsb_proxy::HttpsInterceptionConfig {
+            enabled: https_interception.enabled,
+            request_headers: std::mem::take(&mut https_interception.request_headers)
+                .into_iter()
+                .map(|mut header| lsb_proxy::RequestHeaderRule {
+                    name: std::mem::take(&mut header.name),
+                    value: std::mem::take(&mut header.value),
+                    hosts: lsb_proxy::HostScope {
+                        allow: header.hosts.allow.take(),
+                        deny: header.hosts.deny.take(),
+                    },
+                })
+                .collect(),
+        },
+    };
+    policy.validate()?;
+    Ok(policy)
+}
+
 pub fn build_proxy_config(
     mut policy: ServiceNetworkSpec,
     protected_allow: Vec<String>,

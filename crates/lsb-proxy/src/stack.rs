@@ -36,6 +36,17 @@ pub struct TcpConnection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConnectionId(SocketHandle);
 
+#[cfg(test)]
+impl ConnectionId {
+    pub(crate) fn for_test() -> Self {
+        let rx = tcp::SocketBuffer::new(vec![0; 1]);
+        let tx = tcp::SocketBuffer::new(vec![0; 1]);
+        let socket = tcp::Socket::new(rx, tx);
+        let mut sockets = SocketSet::new(vec![]);
+        Self(sockets.add(socket))
+    }
+}
+
 /// Events from the network stack to the proxy engine.
 pub enum StackEvent {
     /// A new TCP connection was established from the guest.
@@ -54,6 +65,11 @@ pub enum StackCommand {
     Send { id: ConnectionId, payload: Vec<u8> },
     /// Close a connection from the host side.
     Close { id: ConnectionId },
+    /// Immediately abort a connection, discarding queued output.
+    Abort {
+        id: ConnectionId,
+        reply: tokio::sync::oneshot::Sender<()>,
+    },
     /// Send a DNS response back to the guest.
     DnsResponse { dst: IpEndpoint, payload: Vec<u8> },
 }
@@ -239,6 +255,15 @@ where
                     } else {
                         self.closing.insert(id.0);
                     }
+                }
+                StackCommand::Abort { id, reply } => {
+                    if self.connections.remove(&id.0).is_some() {
+                        self.sockets.get_mut::<TcpSocket>(id.0).abort();
+                        self.sockets.remove(id.0);
+                    }
+                    self.pending_send.remove(&id.0);
+                    self.closing.remove(&id.0);
+                    let _ = reply.send(());
                 }
                 StackCommand::DnsResponse { dst, payload } => {
                     let socket = self.sockets.get_mut::<UdpSocket>(self.dns_handle);

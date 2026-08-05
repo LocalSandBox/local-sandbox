@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use lsb_service_proto::{
-    ErrorCode, ResponseValue, SelectedMount, ServiceMountSpec, ServiceNetworkSpec, ServicePortSpec,
+    ErrorCode, ResponseValue, SelectedMount, ServiceHttpsInterceptionSpec, ServiceMountSpec,
+    ServiceNetworkSpec, ServicePortSpec, ServiceSecretSpec,
 };
 use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 
@@ -16,8 +17,8 @@ use crate::ledger::schema::ResourceRecord;
 use crate::resource::transaction::ResourceTransaction;
 use crate::resource::vm::{ManagedVmMountSpec, ManagedVmSpec};
 use crate::session::{
-    CancellationToken, ClientIdentityKey, QuotaError, ResourceHandle, SandboxResources,
-    SessionManager, StartReplayDecision,
+    CancellationError, CancellationReason, CancellationToken, ClientIdentityKey, QuotaError,
+    ResourceHandle, SandboxResources, SessionManager, StartReplayDecision,
 };
 use crate::telemetry::{
     Breadcrumb, FailureEvent, Level, SpanDescription, SpanStatus, Telemetry,
@@ -25,6 +26,46 @@ use crate::telemetry::{
 };
 
 const DEFAULT_SMB_PRUNE_SUBTREES: &[&str] = &["node_modules", ".seawork"];
+
+pub async fn update_network_interception(
+    sessions: SessionManager,
+    session_id: ResourceHandle,
+    identity: ClientIdentityKey,
+    sandbox_id: String,
+    secrets: std::collections::BTreeMap<String, ServiceSecretSpec>,
+    https_interception: ServiceHttpsInterceptionSpec,
+    deadline_ms: Option<u32>,
+    cancellation: CancellationToken,
+) -> Result<ResponseValue, ErrorCode> {
+    let handle = ResourceHandle::parse(&sandbox_id).map_err(|_| ErrorCode::InvalidRequest)?;
+    let policy = crate::network_policy::build_interception_policy(secrets, https_interception)
+        .map_err(|_| ErrorCode::InvalidRequest)?;
+    let timeout = Duration::from_millis(u64::from(deadline_ms.unwrap_or(30_000)));
+    tokio::task::spawn_blocking(move || {
+        sessions
+            .update_managed_vm_network_interception(
+                session_id,
+                &identity,
+                handle,
+                policy,
+                timeout,
+                cancellation,
+            )
+            .map_err(|error| {
+                if let Some(cancellation) = error.downcast_ref::<CancellationError>() {
+                    return match cancellation.reason() {
+                        CancellationReason::Cancelled => ErrorCode::Cancelled,
+                        CancellationReason::DeadlineExceeded => ErrorCode::DeadlineExceeded,
+                    };
+                }
+                ErrorCode::ServiceUnavailable
+            })?
+            .map(|()| ResponseValue::Empty {})
+            .ok_or(ErrorCode::ResourceNotFound)
+    })
+    .await
+    .map_err(|_| ErrorCode::InternalError)?
+}
 
 #[allow(clippy::too_many_arguments)]
 pub async fn start(

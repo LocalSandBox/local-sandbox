@@ -52,7 +52,8 @@ const OUTPUT_BACKPRESSURE_TIMEOUT: Duration = Duration::from_secs(30);
 const SERVICE_FEATURE_BITS: u64 = FEATURE_NETWORK_EGRESS
     | FEATURE_NETWORK_SECRETS
     | FEATURE_HTTPS_INTERCEPTION
-    | lsb_service_proto::FEATURE_MOUNT_SUBTREE_PRUNING;
+    | lsb_service_proto::FEATURE_MOUNT_SUBTREE_PRUNING
+    | lsb_service_proto::FEATURE_NETWORK_LIVE_UPDATE;
 #[cfg(test)]
 static TEST_HEALTH_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 #[cfg(test)]
@@ -1294,6 +1295,20 @@ where
                 continue;
             }
         }
+        if matches!(
+            request.op,
+            RequestOp::UpdateSandboxNetworkInterception { .. }
+        ) && !supports_network_live_update(selected, selected_feature_bits)
+        {
+            write_error(
+                writer,
+                selected,
+                frame.header.correlation,
+                ErrorCode::IncompatibleProtocol,
+            )
+            .await?;
+            continue;
+        }
         if is_controlled_update(&request.op) && selected.minor < CONTROLLED_UPDATE_MIN_MINOR {
             write_error(
                 writer,
@@ -1427,6 +1442,14 @@ where
             request_permit,
         ));
     }
+}
+
+fn supports_network_live_update(
+    protocol: lsb_service_proto::ProtocolVersion,
+    selected_feature_bits: u64,
+) -> bool {
+    protocol.minor >= lsb_service_proto::NETWORK_LIVE_UPDATE_MIN_MINOR
+        && selected_feature_bits & lsb_service_proto::FEATURE_NETWORK_LIVE_UPDATE != 0
 }
 
 async fn wait_for_process_exit(process: Option<OwnedHandle>) -> Result<()> {
@@ -1667,6 +1690,20 @@ async fn dispatch_request(
             identity.clone(),
             sandbox_id,
             deadline_ms,
+        )),
+        RequestOp::UpdateSandboxNetworkInterception {
+            sandbox_id,
+            secrets,
+            https_interception,
+        } => rpc_value!(rpc::sandbox::update_network_interception(
+            context.sessions.clone(),
+            session_id,
+            identity.clone(),
+            sandbox_id,
+            secrets,
+            https_interception,
+            deadline_ms,
+            request_cancellation.clone(),
         )),
         RequestOp::Exec {
             sandbox_id,
@@ -3237,4 +3274,21 @@ fn mount_subtree_pruning_feature_is_advertised() {
         SERVICE_FEATURE_BITS & lsb_service_proto::FEATURE_MOUNT_SUBTREE_PRUNING,
         0
     );
+}
+
+#[test]
+fn network_live_update_feature_is_advertised() {
+    assert_ne!(
+        SERVICE_FEATURE_BITS & lsb_service_proto::FEATURE_NETWORK_LIVE_UPDATE,
+        0
+    );
+    assert!(!supports_network_live_update(
+        lsb_service_proto::ProtocolVersion { major: 1, minor: 6 },
+        lsb_service_proto::FEATURE_NETWORK_LIVE_UPDATE,
+    ));
+    assert!(!supports_network_live_update(lsb_service_proto::CURRENT, 0,));
+    assert!(supports_network_live_update(
+        lsb_service_proto::CURRENT,
+        lsb_service_proto::FEATURE_NETWORK_LIVE_UPDATE,
+    ));
 }

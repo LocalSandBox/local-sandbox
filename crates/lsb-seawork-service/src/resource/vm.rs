@@ -61,6 +61,11 @@ enum Command {
         OperationContext,
         mpsc::SyncSender<Result<ManagedFileResult>>,
     ),
+    UpdateNetworkInterception(
+        lsb_proxy::InterceptionPolicy,
+        OperationContext,
+        mpsc::SyncSender<Result<()>>,
+    ),
 }
 
 #[derive(Clone)]
@@ -595,6 +600,24 @@ fn enforce_stop_deadline(
 }
 
 impl ManagedVmController {
+    pub fn update_network_interception(
+        &self,
+        policy: lsb_proxy::InterceptionPolicy,
+        timeout: Duration,
+        cancellation: CancellationToken,
+    ) -> Result<()> {
+        let (reply, response) = mpsc::sync_channel(1);
+        let operation = OperationContext::new(cancellation, timeout);
+        self.commands
+            .try_send(Command::UpdateNetworkInterception(
+                policy,
+                operation.clone(),
+                reply,
+            ))
+            .map_err(|_| anyhow::anyhow!("managed VM command queue is unavailable"))?;
+        wait_response(response, &operation, "network interception update")
+    }
+
     pub fn exec(
         &self,
         spec: ManagedExecSpec,
@@ -761,7 +784,7 @@ fn run(
         &trace_parent,
         lifecycle_observer.clone(),
     );
-    let Ok((sandbox, proxy_handle)) = result else {
+    let Ok((sandbox, mut proxy_handle)) = result else {
         if let Err(error) = &result {
             capture_vm_failure(&telemetry, &engine, &spec, error, "boot");
         }
@@ -787,7 +810,7 @@ fn run(
         let _ = ready.send(result.map(|_| ()));
         return;
     };
-    let proxy_env = proxy_handle
+    let mut proxy_env = proxy_handle
         .as_ref()
         .map(|handle| handle.placeholders.clone())
         .unwrap_or_default();
@@ -900,6 +923,17 @@ fn run(
                 let result = operation
                     .check()
                     .and_then(|()| exec(&sandbox, spec, &operation));
+                let _ = reply.send(result);
+            }
+            Ok(Command::UpdateNetworkInterception(policy, operation, reply)) => {
+                let result = operation.begin_commit().and_then(|()| {
+                    let proxy = proxy_handle
+                        .as_mut()
+                        .context("sandbox networking is not enabled")?;
+                    let placeholders = proxy.replace_interception_policy(policy)?;
+                    proxy_env = placeholders;
+                    Ok(())
+                });
                 let _ = reply.send(result);
             }
             Ok(Command::Spawn(spec, operation, reply)) => {
@@ -1691,21 +1725,19 @@ fn build_and_start(
     });
     start_result?;
     if let Some(handle) = &proxy_handle {
-        if handle.requires_guest_ca {
-            let proxy_ca_span = trace_parent.start_child(crate::telemetry::SpanDescription::child(
-                "sandbox.proxy_ca_install",
-                "install guest proxy CA",
-            ));
-            let install_result = install_proxy_ca(&sandbox, &handle.ca_cert_pem);
-            proxy_ca_span.finish(if install_result.is_ok() {
-                crate::telemetry::SpanStatus::Ok
-            } else {
-                crate::telemetry::SpanStatus::InternalError
-            });
-            if let Err(error) = install_result {
-                let _ = sandbox.stop();
-                return Err(error);
-            }
+        let proxy_ca_span = trace_parent.start_child(crate::telemetry::SpanDescription::child(
+            "sandbox.proxy_ca_install",
+            "install guest proxy CA",
+        ));
+        let install_result = install_proxy_ca(&sandbox, &handle.ca_cert_pem);
+        proxy_ca_span.finish(if install_result.is_ok() {
+            crate::telemetry::SpanStatus::Ok
+        } else {
+            crate::telemetry::SpanStatus::InternalError
+        });
+        if let Err(error) = install_result {
+            let _ = sandbox.stop();
+            return Err(error);
         }
     }
     Ok((sandbox, proxy_handle))

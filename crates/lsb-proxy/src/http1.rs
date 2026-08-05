@@ -6,6 +6,7 @@ use tokio::io::{
     AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
 };
 use tokio::sync::Notify;
+use zeroize::Zeroizing;
 
 use crate::config::RequestHeaderRule;
 use crate::policy::normalize_domain;
@@ -69,7 +70,7 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let patterns = substitution_bytes(policy.substitutions)?;
+    let patterns = Zeroizing::new(substitution_bytes(policy.substitutions)?);
     let mut reader = BufReader::new(reader);
     let mut stats = TransformStats::default();
 
