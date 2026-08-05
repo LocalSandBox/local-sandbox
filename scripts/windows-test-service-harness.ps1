@@ -578,12 +578,22 @@ function Invoke-ClientSmoke {
         expectedUserName = [string]$State.client_user_name
     }
     $secretValue = $null
+    $rotatedSecretValue = $null
+    $headerValue = $null
     if ($Network) {
         $secretValue = [Convert]::ToHexString(
             [Security.Cryptography.RandomNumberGenerator]::GetBytes(32)
         ).ToLowerInvariant()
+        $rotatedSecretValue = [Convert]::ToHexString(
+            [Security.Cryptography.RandomNumberGenerator]::GetBytes(32)
+        ).ToLowerInvariant()
+        $headerValue = [Convert]::ToHexString(
+            [Security.Cryptography.RandomNumberGenerator]::GetBytes(32)
+        ).ToLowerInvariant()
         $clientConfig['scenario'] = 'network'
         $clientConfig['secretExpected'] = $secretValue
+        $clientConfig['secretRotatedExpected'] = $rotatedSecretValue
+        $clientConfig['headerExpected'] = $headerValue
         $clientConfig['network'] = [ordered]@{
             allow = @('example.com', 'registry.npmjs.org', 'httpbingo.org')
             secrets = [ordered]@{
@@ -689,11 +699,24 @@ function Invoke-ClientSmoke {
         })
         if ($Network) {
             $observedChecks = @($result.checks | ForEach-Object { [string]$_.name })
-            if ('scoped-secret-injection' -cnotin $observedChecks) {
-                throw 'The network smoke did not prove scoped secret injection.'
+            foreach ($requiredCheck in @(
+                'scoped-secret-injection',
+                'live-network-interception-rotate',
+                'live-network-interception-clear'
+            )) {
+                if ($requiredCheck -cnotin $observedChecks) {
+                    throw "The network smoke did not prove $requiredCheck."
+                }
             }
             Assert-SecretAbsentFromLogs $State $secretValue
-            $result.checks += [pscustomobject]@{ name = 'scoped-secret-redacted'; passed = $true }
+            Assert-SecretAbsentFromLogs $State $rotatedSecretValue
+            Assert-SecretAbsentFromLogs $State $headerValue
+            $result.checks += [pscustomobject]@{
+                name = 'scoped-secret-redacted'; passed = $true
+            }
+            $result.checks += [pscustomobject]@{
+                name = 'network-interception-values-redacted'; passed = $true
+            }
         }
         if ($Sequential -and [int]$result.effects -ne 10) {
             throw 'The sequential smoke did not complete ten effects.'
@@ -730,6 +753,8 @@ function Invoke-ClientSmoke {
     finally {
         Remove-Item -LiteralPath $configPath -Force -ErrorAction SilentlyContinue
         $secretValue = $null
+        $rotatedSecretValue = $null
+        $headerValue = $null
     }
 }
 

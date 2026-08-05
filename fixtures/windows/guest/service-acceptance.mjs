@@ -153,6 +153,49 @@ try {
           secret.stdout.includes(config.secretExpected),
       )
 
+      failedStage = 'live-network-interception-rotate'
+      await sandbox.updateNetworkInterception({
+        secrets: {
+          LSB_TEST_SECRET: {
+            value: config.secretRotatedExpected,
+            hosts: ['httpbingo.org'],
+          },
+        },
+        httpsInterception: {
+          enabled: true,
+          requestHeaders: [
+            {
+              name: 'X-LSB-Live-Update',
+              value: config.headerExpected,
+              hosts: { allow: ['httpbingo.org'] },
+            },
+          ],
+        },
+      })
+      const rotated = await sandbox.exec([
+        '/bin/sh',
+        '-c',
+        'curl -fsS --max-time 30 -H "X-LSB-Test: $LSB_TEST_SECRET" https://httpbingo.org/anything',
+      ])
+      check(
+        'live-network-interception-rotate',
+        rotated.exitCode === 0 &&
+          typeof config.secretRotatedExpected === 'string' &&
+          typeof config.headerExpected === 'string' &&
+          rotated.stdout.includes(config.secretRotatedExpected) &&
+          rotated.stdout.includes(config.headerExpected) &&
+          !rotated.stdout.includes(config.secretExpected),
+      )
+
+      failedStage = 'live-network-interception-clear'
+      await sandbox.updateNetworkInterception({})
+      const cleared = await sandbox.exec([
+        '/bin/sh',
+        '-c',
+        'test -z "${LSB_TEST_SECRET+x}"',
+      ])
+      check('live-network-interception-clear', cleared.exitCode === 0)
+
       failedStage = 'private-target-denial'
       const denied = await sandbox.exec([
         '/bin/sh',
