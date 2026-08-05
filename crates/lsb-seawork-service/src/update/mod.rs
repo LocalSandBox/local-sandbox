@@ -481,6 +481,10 @@ impl Coordinator {
             )),
             outcome: Some(UpdateTransitionOutcome::Succeeded),
             failure_code: None,
+            retryable: None,
+            retry_attempt: None,
+            started_event_id: None,
+            completed_event_id: None,
         });
         self.wait_for_helper_stopped()?;
         self.set_phase(
@@ -1522,6 +1526,10 @@ fn completed_update_transition(
             UpdateTransitionOutcome::Failed
         }),
         failure_code: (!succeeded).then(|| "UPDATE_OPERATION_FAILED".to_string()),
+        retryable: None,
+        retry_attempt: None,
+        started_event_id: None,
+        completed_event_id: None,
     })
 }
 

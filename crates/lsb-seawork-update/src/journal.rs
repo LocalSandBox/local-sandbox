@@ -38,9 +38,77 @@ pub struct UpdateTransition {
     pub outcome: Option<UpdateTransitionOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retryable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_attempt: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_event_id: Option<String>,
 }
 
 impl UpdateTransition {
+    pub fn started(
+        phase: impl Into<String>,
+        actor: UpdateActor,
+        started_utc: impl Into<String>,
+    ) -> Result<Self> {
+        let transition = Self {
+            phase: phase.into(),
+            actor,
+            started_utc: started_utc.into(),
+            completed_utc: None,
+            duration_ms: None,
+            outcome: None,
+            failure_code: None,
+            retryable: None,
+            retry_attempt: None,
+            started_event_id: None,
+            completed_event_id: None,
+        };
+        transition.validate()?;
+        Ok(transition)
+    }
+
+    pub fn complete(
+        &mut self,
+        completed_utc: impl Into<String>,
+        duration_ms: u64,
+        outcome: UpdateTransitionOutcome,
+        failure_code: Option<String>,
+    ) -> Result<()> {
+        if self.completed_utc.is_some() {
+            bail!("update timeline transition is already complete");
+        }
+        self.completed_utc = Some(completed_utc.into());
+        self.duration_ms = Some(duration_ms);
+        self.outcome = Some(outcome);
+        self.failure_code = failure_code;
+        self.validate()
+    }
+
+    pub fn mark_reported(
+        &mut self,
+        boundary: crate::UpdateCheckpointBoundary,
+        event_id: impl Into<String>,
+    ) -> Result<()> {
+        let event_id = event_id.into();
+        if !is_lower_hex(&event_id, 32) {
+            bail!("checkpoint Sentry event id is invalid");
+        }
+        match boundary {
+            crate::UpdateCheckpointBoundary::Started => self.started_event_id = Some(event_id),
+            crate::UpdateCheckpointBoundary::Completed if self.outcome.is_some() => {
+                self.completed_event_id = Some(event_id)
+            }
+            crate::UpdateCheckpointBoundary::Completed => {
+                bail!("incomplete checkpoint cannot have a completion receipt")
+            }
+        }
+        self.validate()
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         if self.phase.is_empty()
             || self.phase.len() > 64
@@ -57,6 +125,18 @@ impl UpdateTransition {
         if self.completed_utc.is_some() != self.duration_ms.is_some()
             || self.completed_utc.is_some() != self.outcome.is_some()
             || self.outcome != Some(UpdateTransitionOutcome::Failed) && self.failure_code.is_some()
+            || self.retry_attempt.is_some() != self.retryable.is_some()
+            || self
+                .retry_attempt
+                .is_some_and(|attempt| attempt == 0 || attempt > 10)
+            || self
+                .started_event_id
+                .as_ref()
+                .is_some_and(|event_id| !is_lower_hex(event_id, 32))
+            || self
+                .completed_event_id
+                .as_ref()
+                .is_some_and(|event_id| self.completed_utc.is_none() || !is_lower_hex(event_id, 32))
             || self
                 .failure_code
                 .as_ref()
@@ -359,16 +439,7 @@ impl TransactionEnvelope {
         if self.transaction.timeline.len() >= MAX_TIMELINE_ENTRIES {
             bail!("update transition timeline is full");
         }
-        let transition = UpdateTransition {
-            phase: phase.into(),
-            actor,
-            started_utc: started_utc.into(),
-            completed_utc: None,
-            duration_ms: None,
-            outcome: None,
-            failure_code: None,
-        };
-        transition.validate()?;
+        let transition = UpdateTransition::started(phase, actor, started_utc)?;
         self.transaction.timeline.push(transition);
         self.checksum_sha256 = sha256_json(&self.transaction)?;
         Ok(())
@@ -387,10 +458,7 @@ impl TransactionEnvelope {
             .last_mut()
             .filter(|transition| transition.completed_utc.is_none())
             .ok_or_else(|| anyhow::anyhow!("update timeline has no active transition"))?;
-        transition.completed_utc = Some(completed_utc.into());
-        transition.duration_ms = Some(duration_ms);
-        transition.outcome = Some(outcome);
-        transition.validate()?;
+        transition.complete(completed_utc, duration_ms, outcome, None)?;
         self.checksum_sha256 = sha256_json(&self.transaction)?;
         Ok(())
     }

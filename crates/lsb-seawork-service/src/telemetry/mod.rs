@@ -1112,6 +1112,10 @@ mod tests {
                     outcome,
                     failure_code: (outcome == Some(UpdateTransitionOutcome::Failed))
                         .then(|| "UPDATE_OPERATION_FAILED".to_string()),
+                    retryable: None,
+                    retry_attempt: None,
+                    started_event_id: None,
+                    completed_event_id: None,
                 }],
                 reported_event_id: None,
             })

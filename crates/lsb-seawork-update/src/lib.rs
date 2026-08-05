@@ -1,4 +1,5 @@
 mod archive;
+mod attempt;
 mod committed;
 mod discovery;
 mod journal;
@@ -12,6 +13,10 @@ mod termination;
 mod windows_trust;
 
 pub use archive::{extract_zip_archive, ArchiveExtraction};
+pub use attempt::{
+    UpdateAttempt, UpdateAttemptEnvelope, UpdateAttemptOutcome, UpdateCheckpointBoundary,
+    UpdateSnapshot,
+};
 pub use committed::{CommittedState, CommittedStateEnvelope, FailedTargetState};
 pub use discovery::{ReleaseCandidate, ReleaseChannel, ReleaseSelector};
 pub use journal::{
