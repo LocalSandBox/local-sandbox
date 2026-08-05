@@ -81,8 +81,8 @@ after="$evidence_dir/result-release-service-core-update-reboot-afterreboot.json"
 core="$evidence_dir/evidence-release-core-update.redacted.json"
 service_core="$evidence_dir/evidence-service-core.redacted.json"
 post="$evidence_dir/evidence-post-reboot.redacted.json"
-cleanup="$evidence_dir/evidence-release-final-cleanup.redacted.json"
-for path in "$before" "$after" "$core" "$service_core" "$post" "$cleanup"; do
+retained="$evidence_dir/evidence-release-installation-retained.redacted.json"
+for path in "$before" "$after" "$core" "$service_core" "$post" "$retained"; do
     [[ -f "$path" ]] || { echo "required evidence is missing: $(basename "$path")" >&2; exit 1; }
 done
 before_boot="$(jq -er '.boot_id | select(test("^[0-9]{1,32}$"))' "$before")"
@@ -106,5 +106,5 @@ jq -e \
   ' "$core" >/dev/null || { echo 'update activation evidence is invalid' >&2; exit 1; }
 jq -e '.status == "passed" and .scope == "core" and .mount_free and .seawork_mounts and .managed_network and .candidate_manual_no_candidate and .wrong_publisher_rejected' "$service_core" >/dev/null
 jq -e '.status == "passed" and .post_reboot == true' "$post" >/dev/null
-jq -e '.status == "passed" and .final_cleanup and .service_removed and .updater_removed and .product_roots_removed' "$cleanup" >/dev/null
+jq -e '.status == "passed" and .installation_retained and .service_installed and .updater_installed and .product_roots_retained' "$retained" >/dev/null
 echo 'release-core-update-validated'

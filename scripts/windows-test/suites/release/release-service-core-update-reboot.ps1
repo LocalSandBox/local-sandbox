@@ -345,39 +345,38 @@ $smokeError = $null
 $additionalFailures = [Collections.Generic.List[string]]::new()
 try {
     & $harness -Mode SmokeInstalled -Scope Core -RunRoot $RunRoot -SnapshotSha $SnapshotSha
+    $mainService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+    $updaterService = Get-Service -Name $updaterServiceName -ErrorAction SilentlyContinue
+    $stateRoot = Join-Path $env:ProgramData 'LocalSandbox\SeaWork'
+    $productRoot = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) `
+        'SeaWork\LocalSandbox'
+    if ($null -eq $mainService -or $null -eq $updaterService -or
+        -not (Test-Path -LiteralPath $stateRoot -PathType Container) -or
+        -not (Test-Path -LiteralPath $productRoot -PathType Container)) {
+        throw 'Accepted release installation was not retained on the test machine.'
+    }
+    [ordered]@{
+        schema_version = 1; status = 'passed'; installation_retained = $true
+        service_installed = $true; updater_installed = $true; product_roots_retained = $true
+    } | ConvertTo-Json | Set-Content -LiteralPath `
+        (Join-Path $RunRoot 'evidence-release-installation-retained.json') -Encoding utf8NoBOM
 }
 catch { $smokeError = $_ }
 finally {
-    if (Test-Path -LiteralPath $installedStatePath) {
-        if ($null -ne $smokeError) {
-            try {
-                & $harness -Mode CaptureFailureDiagnostics -RunRoot $RunRoot `
-                    -SnapshotSha $SnapshotSha
-            }
-            catch { $additionalFailures.Add("diagnostic capture failed: $_") }
+    if ($null -ne $smokeError -and (Test-Path -LiteralPath $installedStatePath)) {
+        try {
+            & $harness -Mode CaptureFailureDiagnostics -RunRoot $RunRoot `
+                -SnapshotSha $SnapshotSha
         }
+        catch { $additionalFailures.Add("diagnostic capture failed: $_") }
         try { & $harness -Mode Uninstall -RunRoot $RunRoot -SnapshotSha $SnapshotSha }
         catch { $additionalFailures.Add("owned cleanup failed: $_") }
     }
 }
 if ($null -ne $smokeError) {
     if ($additionalFailures.Count -gt 0) {
-        throw "Post-reboot core smoke failed: $smokeError; additional failures: $($additionalFailures -join '; ')"
+        throw "Post-reboot release acceptance failed: $smokeError; additional failures: $($additionalFailures -join '; ')"
     }
     throw $smokeError
 }
 if ($additionalFailures.Count -gt 0) { throw ($additionalFailures -join '; ') }
-$mainRemaining = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-$updaterRemaining = Get-Service -Name $updaterServiceName -ErrorAction SilentlyContinue
-$stateRemaining = Test-Path -LiteralPath (Join-Path $env:ProgramData 'LocalSandbox\SeaWork')
-$productRemaining = Test-Path -LiteralPath (Join-Path `
-    ([Environment]::GetFolderPath('ProgramFiles')) 'SeaWork\LocalSandbox')
-if ($null -ne $mainRemaining -or $null -ne $updaterRemaining -or
-    $stateRemaining -or $productRemaining) {
-    throw 'Final release cleanup left a production service or product root behind.'
-}
-[ordered]@{
-    schema_version = 1; status = 'passed'; final_cleanup = $true
-    service_removed = $true; updater_removed = $true; product_roots_removed = $true
-} | ConvertTo-Json | Set-Content -LiteralPath `
-    (Join-Path $RunRoot 'evidence-release-final-cleanup.json') -Encoding utf8NoBOM

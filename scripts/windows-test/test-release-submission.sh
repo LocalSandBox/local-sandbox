@@ -59,8 +59,8 @@ jq -n --arg baseline_service "$baseline_service_sha" --arg candidate_service "$c
 jq -n '{status:"passed",scope:"core",mount_free:true,seawork_mounts:true,managed_network:true,candidate_manual_no_candidate:true,wrong_publisher_rejected:true}' \
   > "$evidence/evidence-service-core.redacted.json"
 jq -n '{status:"passed",post_reboot:true}' > "$evidence/evidence-post-reboot.redacted.json"
-jq -n '{status:"passed",final_cleanup:true,service_removed:true,updater_removed:true,product_roots_removed:true}' \
-  > "$evidence/evidence-release-final-cleanup.redacted.json"
+jq -n '{status:"passed",installation_retained:true,service_installed:true,updater_installed:true,product_roots_retained:true}' \
+  > "$evidence/evidence-release-installation-retained.redacted.json"
 jq -n '{boot_id:"100"}' > "$evidence/result-release-service-core-update-reboot-beforereboot.json"
 jq -n '{boot_id:"101"}' > "$evidence/result-release-service-core-update-reboot-afterreboot.json"
 files="$(for path in "$evidence"/*.json; do record "$path"; done | jq -s .)"

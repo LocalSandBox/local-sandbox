@@ -94,6 +94,11 @@ try {
         $releaseRebootSource -match "'initialize-baseline'") {
         throw 'Release reboot suite does not delegate baseline initialization to the install harness.'
     }
+    if ($releaseRebootSource -notmatch
+            '\$null\s+-ne\s+\$smokeError\s+-and\s+\(Test-Path[^\r\n]+\$installedStatePath' -or
+        $releaseRebootSource -notmatch 'evidence-release-installation-retained\.json') {
+        throw 'Release reboot suite does not retain a successful accepted installation.'
+    }
     $candidateArchive = Join-Path $testRoot `
         'lsb-seawork-service-v2.0.0-windows-x86_64.zip'
     $baselineArchive = Join-Path $testRoot `
