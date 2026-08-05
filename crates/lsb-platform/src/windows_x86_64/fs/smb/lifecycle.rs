@@ -20,7 +20,7 @@ use super::user::{WindowsSmbUserAccount, WindowsSmbUserManager, WindowsSmbUserNa
 
 pub const WINDOWS_SMB_CLEANUP_MANIFEST_FILE: &str = "windows-smb-cleanup.json";
 pub const WINDOWS_SMB_INSTANCE_LOCK_FILE: &str = "windows-smb-active.lock";
-const WINDOWS_SMB_CLEANUP_SCHEMA_VERSION: u32 = 2;
+const WINDOWS_SMB_CLEANUP_SCHEMA_VERSION: u32 = 3;
 
 #[cfg(windows)]
 pub struct WindowsSmbInstanceGuard {
@@ -467,6 +467,8 @@ pub struct WindowsSmbCleanupAccount {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WindowsSmbCleanupAclGrant {
     pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub traverse_paths: Vec<PathBuf>,
     #[serde(default)]
     pub principal: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -480,6 +482,7 @@ impl WindowsSmbCleanupAclGrant {
     fn from_grant(grant: &WindowsSmbAclGrant) -> Self {
         Self {
             path: grant.path.clone(),
+            traverse_paths: grant.traverse_paths.clone(),
             principal: grant.principal.clone(),
             sid: Some(grant.sid.clone()),
             access: grant.access,
@@ -544,7 +547,7 @@ impl WindowsSmbCleanupManifest {
     }
 
     fn into_active_resources(self) -> Result<WindowsSmbActiveResources, WindowsSmbLifecycleError> {
-        if self.schema_version != 1 && self.schema_version != WINDOWS_SMB_CLEANUP_SCHEMA_VERSION {
+        if !(1..=WINDOWS_SMB_CLEANUP_SCHEMA_VERSION).contains(&self.schema_version) {
             return Err(WindowsSmbLifecycleError::operation_failed(
                 WindowsSmbLifecyclePhase::CleanupManifest,
                 format!(
@@ -570,6 +573,7 @@ impl WindowsSmbCleanupManifest {
                 .into_iter()
                 .map(|grant| WindowsSmbAclGrant {
                     path: grant.path,
+                    traverse_paths: grant.traverse_paths,
                     principal: grant.principal,
                     sid: grant.sid.unwrap_or_default(),
                     access: grant.access,
@@ -1299,9 +1303,10 @@ mod tests {
                 vec![0xee, 0xff, 0x10, 0x20],
             ],
         );
-        let resources = prepare_manager
+        let mut resources = prepare_manager
             .prepare(&config())
             .expect("prepare succeeds");
+        resources.acl_grants[0].traverse_paths = vec![PathBuf::from("/"), PathBuf::from("/host")];
         let root = temp_dir("cleanup-manifest");
         std::fs::create_dir_all(&root).expect("manifest dir");
         let manifest_path = windows_smb_cleanup_manifest_path(&root);
@@ -1318,10 +1323,14 @@ mod tests {
 
         let manifest =
             read_windows_smb_cleanup_manifest(&manifest_path).expect("manifest should parse");
-        assert_eq!(manifest.schema_version, 2);
+        assert_eq!(manifest.schema_version, 3);
         assert_eq!(
             manifest.account.sid.as_deref(),
             Some("S-1-5-21-1000-1001-1002-1003")
+        );
+        assert_eq!(
+            manifest.acl_grants[0].traverse_paths,
+            [PathBuf::from("/"), PathBuf::from("/host")]
         );
         assert_eq!(manifest.shares.len(), 2);
 
@@ -1463,6 +1472,7 @@ mod tests {
             read_windows_smb_cleanup_manifest(&manifest_path).expect("schema 1 should parse");
         assert_eq!(manifest.schema_version, 1);
         assert!(manifest.account.sid.is_none());
+        assert!(manifest.acl_grants[0].traverse_paths.is_empty());
 
         let log = EventLog::default();
         let mut manager = fake_manager(log.clone(), Vec::<Vec<u8>>::new());
@@ -1493,7 +1503,7 @@ mod tests {
             .expect_err("ACL grant should fail");
 
         let manifest = read_windows_smb_cleanup_manifest(&manifest_path).expect("journal retained");
-        assert_eq!(manifest.schema_version, 2);
+        assert_eq!(manifest.schema_version, 3);
         assert_eq!(
             manifest.account.sid.as_deref(),
             Some("S-1-5-21-1000-1001-1002-1003")

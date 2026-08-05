@@ -19,10 +19,14 @@ pub struct WindowsSmbAclPlanEntry {
 }
 
 /// A recoverable ACL operation. `path` is the mount root; cleanup deliberately
-/// sweeps it so grants remain removable after descendants are renamed.
+/// sweeps it so grants remain removable after descendants are renamed. Ancestor
+/// traverse grants are journaled separately because they are outside that tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsSmbAclGrant {
     pub path: PathBuf,
+    /// Ancestors that receive a non-inheriting traverse-only ACE for the
+    /// generated SID. Stored explicitly so crash recovery can remove them.
+    pub traverse_paths: Vec<PathBuf>,
     pub principal: String,
     pub sid: String,
     pub access: WindowsSmbAccess,
@@ -37,6 +41,7 @@ pub trait WindowsSmbAclManager {
     ) -> Result<WindowsSmbAclGrant, WindowsSmbLifecycleError> {
         Ok(WindowsSmbAclGrant {
             path: request.path.clone(),
+            traverse_paths: Vec::new(),
             principal: request.account.principal.clone(),
             sid: request.account.sid.clone(),
             access: request.access,
@@ -85,6 +90,12 @@ impl WindowsSmbAclManager for NativeWindowsSmbAclManager {
         )?;
         Ok(WindowsSmbAclGrant {
             path: request.path.clone(),
+            traverse_paths: request
+                .path
+                .ancestors()
+                .skip(1)
+                .map(std::path::Path::to_path_buf)
+                .collect(),
             principal: request.account.principal.clone(),
             sid: request.account.sid.clone(),
             access: request.access,
@@ -97,6 +108,14 @@ impl WindowsSmbAclManager for NativeWindowsSmbAclManager {
         &mut self,
         mut grant: WindowsSmbAclGrant,
     ) -> Result<WindowsSmbAclGrant, WindowsSmbLifecycleError> {
+        for path in grant.traverse_paths.iter().rev() {
+            apply_traverse_acl_change(
+                path,
+                &grant.sid,
+                windows_sys::Win32::Security::Authorization::GRANT_ACCESS,
+                WindowsSmbLifecyclePhase::AclGrant,
+            )?;
+        }
         for entry in &grant.planned_entries {
             apply_acl_change(
                 &entry.path,
@@ -117,7 +136,7 @@ impl WindowsSmbAclManager for NativeWindowsSmbAclManager {
     ) -> Result<(), WindowsSmbLifecycleError> {
         let entries = match enumerate_tree(&grant.path, &[], WindowsSmbLifecyclePhase::AclRevoke) {
             Ok(entries) => entries,
-            Err(_error) if !grant.path.exists() => return Ok(()),
+            Err(_error) if !grant.path.exists() => Vec::new(),
             Err(error) => return Err(error),
         };
         for entry in entries.iter().rev() {
@@ -142,8 +161,31 @@ impl WindowsSmbAclManager for NativeWindowsSmbAclManager {
                 ));
             }
         }
+        for path in &grant.traverse_paths {
+            if !path.exists() {
+                continue;
+            }
+            apply_traverse_acl_change(
+                path,
+                &grant.sid,
+                windows_sys::Win32::Security::Authorization::REVOKE_ACCESS,
+                WindowsSmbLifecyclePhase::AclRevoke,
+            )?;
+            if contains_explicit_sid(path, &grant.sid)? {
+                return Err(WindowsSmbLifecycleError::operation_failed(
+                    WindowsSmbLifecyclePhase::AclRevoke,
+                    format!(
+                        "explicit ancestor traverse ACE for generated SID {} remains on '{}'",
+                        grant.sid,
+                        path.display()
+                    ),
+                ));
+            }
+        }
         if let Some(control) = grant.original_dacl_control {
-            restore_security_descriptor_control(&grant.path, control)?;
+            if grant.path.exists() {
+                restore_security_descriptor_control(&grant.path, control)?;
+            }
         }
         Ok(())
     }
@@ -491,6 +533,44 @@ fn apply_acl_change(
     is_dir: bool,
     phase: WindowsSmbLifecyclePhase,
 ) -> Result<(), WindowsSmbLifecycleError> {
+    use windows_sys::Win32::Security::{NO_INHERITANCE, SUB_CONTAINERS_AND_OBJECTS_INHERIT};
+
+    apply_acl_entry_change(
+        path,
+        sid_string,
+        ntfs_access_mask(access),
+        mode,
+        if is_dir {
+            SUB_CONTAINERS_AND_OBJECTS_INHERIT
+        } else {
+            NO_INHERITANCE
+        },
+        phase,
+    )
+}
+
+#[cfg(windows)]
+fn apply_traverse_acl_change(
+    path: &std::path::Path,
+    sid_string: &str,
+    mode: windows_sys::Win32::Security::Authorization::ACCESS_MODE,
+    phase: WindowsSmbLifecyclePhase,
+) -> Result<(), WindowsSmbLifecycleError> {
+    use windows_sys::Win32::Security::NO_INHERITANCE;
+    use windows_sys::Win32::Storage::FileSystem::FILE_TRAVERSE;
+
+    apply_acl_entry_change(path, sid_string, FILE_TRAVERSE, mode, NO_INHERITANCE, phase)
+}
+
+#[cfg(windows)]
+fn apply_acl_entry_change(
+    path: &std::path::Path,
+    sid_string: &str,
+    access_mask: u32,
+    mode: windows_sys::Win32::Security::Authorization::ACCESS_MODE,
+    inheritance: u32,
+    phase: WindowsSmbLifecyclePhase,
+) -> Result<(), WindowsSmbLifecycleError> {
     use std::ptr;
     use windows_sys::Win32::Foundation::{GetLastError, LocalFree};
     use windows_sys::Win32::Security::Authorization::{
@@ -498,9 +578,7 @@ fn apply_acl_change(
         EXPLICIT_ACCESS_W, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN,
         TRUSTEE_W,
     };
-    use windows_sys::Win32::Security::{
-        DACL_SECURITY_INFORMATION, NO_INHERITANCE, SUB_CONTAINERS_AND_OBJECTS_INHERIT,
-    };
+    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
 
     let mut path_w = super::user::wide_null(&path.display().to_string());
     let sid_w = super::user::wide_null(sid_string);
@@ -547,13 +625,9 @@ fn apply_acl_change(
         ptstrName: sid.cast(),
     };
     let mut entry = EXPLICIT_ACCESS_W {
-        grfAccessPermissions: ntfs_access_mask(access),
+        grfAccessPermissions: access_mask,
         grfAccessMode: mode,
-        grfInheritance: if is_dir {
-            SUB_CONTAINERS_AND_OBJECTS_INHERIT
-        } else {
-            NO_INHERITANCE
-        },
+        grfInheritance: inheritance,
         Trustee: trustee,
     };
     let mut new_acl = ptr::null_mut();
@@ -788,6 +862,10 @@ mod tests {
             quoted(&protected)
         ));
         let before = [
+            powershell(&format!(
+                "(Get-Acl -LiteralPath '{}').Sddl",
+                quoted(&fixture)
+            )),
             powershell(&format!("(Get-Acl -LiteralPath '{}').Sddl", quoted(&root))),
             powershell(&format!(
                 "(Get-Acl -LiteralPath '{}').Sddl",
@@ -811,6 +889,10 @@ mod tests {
             prune_subtrees: Vec::new(),
         };
         let plan = acls.prepare_grant(&request).expect("prepare ACL plan");
+        assert!(
+            plan.traverse_paths.contains(&fixture),
+            "protected mount ancestor must be included in the recoverable ACL plan"
+        );
         let grant = acls
             .grant_access(plan)
             .expect("grant across protected boundary");
@@ -820,6 +902,10 @@ mod tests {
         users.delete_user(&account).expect("delete temporary user");
 
         let after = [
+            powershell(&format!(
+                "(Get-Acl -LiteralPath '{}').Sddl",
+                quoted(&fixture)
+            )),
             powershell(&format!("(Get-Acl -LiteralPath '{}').Sddl", quoted(&root))),
             powershell(&format!(
                 "(Get-Acl -LiteralPath '{}').Sddl",
@@ -827,7 +913,10 @@ mod tests {
             )),
             powershell(&format!("(Get-Acl -LiteralPath '{}').Sddl", quoted(&skill))),
         ];
-        assert_eq!(after, before, "root, protected child, and file SDDL");
+        assert_eq!(
+            after, before,
+            "ancestor, root, protected child, and file SDDL"
+        );
         let _ = std::fs::remove_dir_all(fixture);
     }
 }
