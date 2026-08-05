@@ -10,7 +10,7 @@ use time::OffsetDateTime;
 
 use crate::{FailedTargetState, ReleaseCandidate, ReleaseChannel};
 
-const FAILED_TARGET_COOLDOWN_SECONDS: i64 = 24 * 60 * 60;
+const FAILED_TARGET_COOLDOWN_SECONDS: i64 = 3 * 60 * 60;
 const MAX_HELPER_VERSION_OUTPUT_BYTES: usize = 4 * 1024;
 const MAX_RELEASE_PAGES: usize = 10;
 const RELEASES_PER_PAGE: usize = 50;
@@ -519,7 +519,6 @@ mod tests {
     #[test]
     fn failed_digest_cooldown_and_suppression_survive_restart_state() {
         let release = candidate("0.5.1", false, 'b');
-        let now = OffsetDateTime::parse("2026-07-23T11:00:00Z", &Rfc3339).unwrap();
         let mut failed = FailedTargetState {
             target_version: release.version.clone(),
             archive_sha256: release.archive_sha256.clone(),
@@ -527,18 +526,28 @@ mod tests {
             last_rollback_utc: "2026-07-22T12:00:00Z".to_string(),
             suppressed: false,
         };
-        assert!(matches!(
-            failed_target_decision(&release, &failed, now).unwrap(),
-            FailedTargetDecision::Cooldown { .. }
-        ));
+        let before_cooldown_expires =
+            OffsetDateTime::parse("2026-07-22T14:59:59Z", &Rfc3339).unwrap();
+        assert_eq!(
+            failed_target_decision(&release, &failed, before_cooldown_expires).unwrap(),
+            FailedTargetDecision::Cooldown {
+                retry_after_utc: "2026-07-22T15:00:00Z".to_string()
+            }
+        );
+        let cooldown_expired = OffsetDateTime::parse("2026-07-22T15:00:00Z", &Rfc3339).unwrap();
+        assert_eq!(
+            failed_target_decision(&release, &failed, cooldown_expired).unwrap(),
+            FailedTargetDecision::Allowed
+        );
         failed.rollback_count = 3;
         failed.suppressed = true;
         assert_eq!(
-            failed_target_decision(&release, &failed, now).unwrap(),
+            failed_target_decision(&release, &failed, cooldown_expired).unwrap(),
             FailedTargetDecision::Suppressed
         );
         assert_eq!(
-            failed_target_decision(&candidate("0.5.2", false, 'c'), &failed, now).unwrap(),
+            failed_target_decision(&candidate("0.5.2", false, 'c'), &failed, cooldown_expired)
+                .unwrap(),
             FailedTargetDecision::Allowed
         );
     }

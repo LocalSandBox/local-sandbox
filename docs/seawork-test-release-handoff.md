@@ -913,7 +913,7 @@ health/maintenance-only in recovery quarantine. The service may validate and sta
 preinstalled helper but never creates, deletes, or reconfigures either SCM entry.
 
 After an activation-health rollback, `failed-target.json` prevents retry of the exact
-archive digest for at least 24 hours. Three such failures suppress that digest across
+archive digest for 3 hours. Three such failures suppress that digest across
 service restarts until a greater release appears or SeaWork repair explicitly clears
 the valid bounded record. Repair must not delete corrupt or contradictory protected
 state merely to reopen admissions.
