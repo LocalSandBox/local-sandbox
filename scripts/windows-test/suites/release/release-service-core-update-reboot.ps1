@@ -331,23 +331,50 @@ if ($Phase -eq 'BeforeReboot') {
     }
     catch {
         $failure = $_
+        $additionalFailures = [Collections.Generic.List[string]]::new()
         if (Test-Path -LiteralPath $installedStatePath) {
+            try {
+                & $harness -Mode CaptureFailureDiagnostics -RunRoot $RunRoot `
+                    -SnapshotSha $SnapshotSha
+            }
+            catch { $additionalFailures.Add("diagnostic capture failed: $_") }
             try { & $harness -Mode Uninstall -RunRoot $RunRoot -SnapshotSha $SnapshotSha }
-            catch { throw "Core update failed: $failure; cleanup also failed: $_" }
+            catch { $additionalFailures.Add("owned cleanup failed: $_") }
+        }
+        if ($additionalFailures.Count -gt 0) {
+            throw "Core update failed: $failure; additional failures: $($additionalFailures -join '; ')"
         }
         throw $failure
     }
     exit 0
 }
 
+$smokeError = $null
+$additionalFailures = [Collections.Generic.List[string]]::new()
 try {
     & $harness -Mode SmokeInstalled -Scope Core -RunRoot $RunRoot -SnapshotSha $SnapshotSha
 }
+catch { $smokeError = $_ }
 finally {
     if (Test-Path -LiteralPath $installedStatePath) {
-        & $harness -Mode Uninstall -RunRoot $RunRoot -SnapshotSha $SnapshotSha
+        if ($null -ne $smokeError) {
+            try {
+                & $harness -Mode CaptureFailureDiagnostics -RunRoot $RunRoot `
+                    -SnapshotSha $SnapshotSha
+            }
+            catch { $additionalFailures.Add("diagnostic capture failed: $_") }
+        }
+        try { & $harness -Mode Uninstall -RunRoot $RunRoot -SnapshotSha $SnapshotSha }
+        catch { $additionalFailures.Add("owned cleanup failed: $_") }
     }
 }
+if ($null -ne $smokeError) {
+    if ($additionalFailures.Count -gt 0) {
+        throw "Post-reboot core smoke failed: $smokeError; additional failures: $($additionalFailures -join '; ')"
+    }
+    throw $smokeError
+}
+if ($additionalFailures.Count -gt 0) { throw ($additionalFailures -join '; ') }
 $mainRemaining = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 $updaterRemaining = Get-Service -Name $updaterServiceName -ErrorAction SilentlyContinue
 $stateRemaining = Test-Path -LiteralPath (Join-Path $env:ProgramData 'LocalSandbox\SeaWork')

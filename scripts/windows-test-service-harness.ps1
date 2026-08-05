@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('InstallAndSmoke', 'InstallOnly', 'SmokeCore', 'SmokeInstalled', 'Uninstall')]
+    [ValidateSet('InstallAndSmoke', 'InstallOnly', 'SmokeCore', 'SmokeInstalled', 'CaptureFailureDiagnostics', 'Uninstall')]
     [string] $Mode,
 
     [Parameter(Mandatory = $true)]
@@ -30,6 +30,8 @@ $owner = 'local-sandbox-agent-install-smoke'
 $installStatePath = Join-Path $RunRoot 'installed-service-state.json'
 $clientSigningHarnessSddl = 'O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)'
 $postRebootServiceWaitSeconds = 300
+$failureDiagnostics = Join-Path $PSScriptRoot 'windows-test\lib\failure-diagnostics.ps1'
+. $failureDiagnostics
 
 function Invoke-Native {
     param([string] $Executable, [string[]] $Arguments, [string] $Label)
@@ -1098,6 +1100,28 @@ function Smoke-Installed {
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $RunRoot 'evidence-post-reboot.json') -Encoding utf8NoBOM
 }
 
+function Capture-FailureDiagnostics {
+    $state = Read-InstallState
+    Assert-OwnerMarker $state.install_marker 'install-root'
+    Assert-OwnerMarker (Join-Path $state.state_root '.local-sandbox-agent-state.json') 'state-root'
+    $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" `
+        -ErrorAction SilentlyContinue
+    if ($null -ne $service) {
+        if (-not $service.PathName.Contains(
+            [string]$state.service_binary, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Refusing to capture diagnostics from a service not owned by this run.'
+        }
+        $serviceProcessId = [uint32]$service.ProcessId
+        if ((Get-Service -Name $serviceName).Status -ne 'Stopped') {
+            Stop-OwnedService 120
+        }
+        Wait-OwnedProcessExit $serviceProcessId ([string]$state.service_binary) 60
+    }
+    New-FailureDiagnosticArchive `
+        -StateRoot ([string]$state.state_root) `
+        -DestinationRoot (Join-Path $RunRoot 'failure-diagnostics')
+}
+
 function Uninstall-Owned {
     $state = Read-InstallState
     if ($null -ne $state.PSObject.Properties['updater_service_binary']) {
@@ -1167,6 +1191,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         'InstallOnly' { Install-And-Smoke }
         'SmokeCore' { Smoke-Core }
         'SmokeInstalled' { Smoke-Installed }
+        'CaptureFailureDiagnostics' { Capture-FailureDiagnostics }
         'Uninstall' { Uninstall-Owned }
     }
 }

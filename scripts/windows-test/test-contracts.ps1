@@ -5,6 +5,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'lib\common.ps1')
 . (Join-Path $PSScriptRoot 'lib\evidence.ps1')
+. (Join-Path $PSScriptRoot 'lib\failure-diagnostics.ps1')
 
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) "windows-test-contract-$([Guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $testRoot | Out-Null
@@ -106,6 +107,72 @@ try {
     if ($selectedByDigest.Count -ne 1 -or
         $selectedByDigest[0].Name -cne (Split-Path -Leaf $candidateArchive)) {
         throw 'Release binding did not disambiguate the candidate archive from its baseline.'
+    }
+
+    $failureRun = Join-Path $testRoot 'forced-smoke-failure'
+    $failureState = Join-Path $failureRun 'state-root'
+    $failureInstall = Join-Path $failureRun 'install-root'
+    $failureService = Join-Path $failureRun 'owned-service.registered'
+    $failureArchive = Join-Path $failureRun 'failure-diagnostics'
+    New-Item -ItemType Directory -Path `
+        (Join-Path $failureState 'logs'),
+        (Join-Path $failureState 'runtime\telemetry\incidents\incident-1'),
+        (Join-Path $failureState 'config'),
+        $failureInstall | Out-Null
+    Set-Content -LiteralPath (Join-Path $failureState 'logs\service.jsonl') `
+        -Value '{"operation":"sandbox.start","code":"INTERNAL_ERROR"}' -Encoding utf8NoBOM
+    Set-Content -LiteralPath `
+        (Join-Path $failureState 'runtime\telemetry\incidents\incident-1\incident.json') `
+        -Value '{"stable_error_code":"INTERNAL_ERROR"}' -Encoding utf8NoBOM
+    Set-Content -LiteralPath (Join-Path $failureState 'config\service.json') `
+        -Value '{"credential":"must-not-copy"}' -Encoding utf8NoBOM
+    Set-Content -LiteralPath (Join-Path $failureState 'rootfs.ext4') `
+        -Value 'disk-must-not-copy' -Encoding utf8NoBOM
+    Set-Content -LiteralPath $failureService -Value 'owned' -Encoding utf8NoBOM
+    [IO.File]::WriteAllBytes(
+        (Join-Path $failureState 'logs\bounded.log'),
+        [byte[]]::new($script:FailureDiagnosticMaxFileBytes + 4096)
+    )
+    $forcedFailure = $null
+    try { throw 'forced installed-service smoke failure' }
+    catch {
+        $forcedFailure = $_
+        New-FailureDiagnosticArchive -StateRoot $failureState `
+            -DestinationRoot $failureArchive
+    }
+    finally {
+        Remove-Item -LiteralPath $failureService -Force
+        Remove-Item -LiteralPath $failureInstall, $failureState -Recurse -Force
+    }
+    if ($null -eq $forcedFailure -or -not (Test-Path -LiteralPath $failureArchive) -or
+        (Test-Path -LiteralPath $failureService) -or (Test-Path -LiteralPath $failureInstall) -or
+        (Test-Path -LiteralPath $failureState)) {
+        throw 'Forced-smoke diagnostic retention did not survive owned cleanup.'
+    }
+    $failureManifest = Get-Content -LiteralPath (Join-Path $failureArchive 'manifest.json') `
+        -Raw | ConvertFrom-Json
+    if (@($failureManifest.files).Count -ne 3 -or
+        $failureManifest.total_bytes -gt $failureManifest.bounds.max_total_bytes -or
+        @($failureManifest.files | Where-Object truncated).Count -ne 1 -or
+        @($failureManifest.files | Where-Object {
+            $_.size -gt $failureManifest.bounds.max_file_bytes
+        }).Count -ne 0 -or
+        (@($failureManifest.files.source_path) -join "`n") -match `
+            '(?i)(config|credential|rootfs|\.ext4)') {
+        throw 'Failure diagnostic allowlist or bounds were not enforced.'
+    }
+    foreach ($record in @($failureManifest.files)) {
+        $retained = Join-Path $failureArchive ([string]$record.path)
+        if ((Get-Item -LiteralPath $retained).Length -ne [long]$record.size -or
+            (Get-FileHash -LiteralPath $retained -Algorithm SHA256).Hash.ToLowerInvariant() `
+                -cne [string]$record.sha256) {
+            throw 'Failure diagnostic manifest hash or size does not match retained evidence.'
+        }
+    }
+    $successRun = Join-Path $testRoot 'successful-smoke'
+    New-Item -ItemType Directory -Path $successRun | Out-Null
+    if (Test-Path -LiteralPath (Join-Path $successRun 'failure-diagnostics')) {
+        throw 'Successful smoke unexpectedly created a failure diagnostic archive.'
     }
     Write-Output 'Validated shared Windows results, evidence fetching, and profile planning.'
 }

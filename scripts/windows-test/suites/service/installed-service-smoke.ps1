@@ -121,6 +121,8 @@ else {
 }
 $collector = $null
 $captureRoot = Join-Path $RunRoot 'raw-service-heartbeats'
+$smokeError = $null
+$cleanupErrors = [Collections.Generic.List[string]]::new()
 try {
     $candidateEvidence = Get-Content -LiteralPath `
         (Join-Path $RunRoot 'evidence-release-candidate.json') -Raw | ConvertFrom-Json
@@ -141,17 +143,38 @@ try {
         -ExpectedNativeTag ([string]$candidateEvidence.sentry.native_tag) `
         -ExpectedNativeCommit ([string]$candidateEvidence.sentry.native_commit)
 }
+catch {
+    $smokeError = $_
+}
 finally {
     if (Test-Path -LiteralPath (Join-Path $RunRoot 'installed-service-state.json')) {
-        & $harness -Mode Uninstall -RunRoot $RunRoot -SnapshotSha $SnapshotSha
-        [ordered]@{ schema_version = 1; status = 'passed'; owned_resources_removed = $true } |
-            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $RunRoot 'evidence-uninstall.json') -Encoding utf8NoBOM
+        if ($null -ne $smokeError) {
+            try {
+                & $harness -Mode CaptureFailureDiagnostics -RunRoot $RunRoot `
+                    -SnapshotSha $SnapshotSha
+            }
+            catch { $cleanupErrors.Add("diagnostic capture failed: $_") }
+        }
+        try {
+            & $harness -Mode Uninstall -RunRoot $RunRoot -SnapshotSha $SnapshotSha
+            [ordered]@{ schema_version = 1; status = 'passed'; owned_resources_removed = $true } |
+                ConvertTo-Json | Set-Content -LiteralPath `
+                    (Join-Path $RunRoot 'evidence-uninstall.json') -Encoding utf8NoBOM
+        }
+        catch { $cleanupErrors.Add("owned cleanup failed: $_") }
     }
     if ($null -ne $collector) {
         Stop-Job -Job $collector -ErrorAction SilentlyContinue
         Remove-Job -Job $collector -Force -ErrorAction SilentlyContinue
     }
 }
+if ($null -ne $smokeError) {
+    if ($cleanupErrors.Count -gt 0) {
+        throw "Installed-service smoke failed: $smokeError; additional failures: $($cleanupErrors -join '; ')"
+    }
+    throw $smokeError
+}
+if ($cleanupErrors.Count -gt 0) { throw ($cleanupErrors -join '; ') }
 
 $manifestPath = Join-Path $RunRoot 'fetch-manifest.json'
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json

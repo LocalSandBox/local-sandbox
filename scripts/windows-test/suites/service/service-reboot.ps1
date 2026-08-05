@@ -35,7 +35,13 @@ if ($Phase -eq 'BeforeReboot') {
     }
     catch {
         $installError = $_
+        $additionalFailures = [Collections.Generic.List[string]]::new()
         if (Test-Path -LiteralPath (Join-Path $RunRoot 'installed-service-state.json')) {
+            try {
+                & $harness -Mode CaptureFailureDiagnostics -RunRoot $RunRoot `
+                    -SnapshotSha $SnapshotSha
+            }
+            catch { $additionalFailures.Add("diagnostic capture failed: $_") }
             try {
                 & $harness -Mode Uninstall -RunRoot $RunRoot -SnapshotSha $SnapshotSha
                 [ordered]@{
@@ -46,23 +52,45 @@ if ($Phase -eq 'BeforeReboot') {
                 } | ConvertTo-Json | Set-Content -LiteralPath `
                     (Join-Path $RunRoot 'evidence-uninstall.json') -Encoding utf8NoBOM
             }
-            catch {
-                throw "Pre-reboot validation failed: $installError; owned cleanup also failed: $_"
-            }
+            catch { $additionalFailures.Add("owned cleanup failed: $_") }
+        }
+        if ($additionalFailures.Count -gt 0) {
+            throw "Pre-reboot validation failed: $installError; additional failures: $($additionalFailures -join '; ')"
         }
         throw $installError
     }
     exit 0
 }
 
+$smokeError = $null
+$additionalFailures = [Collections.Generic.List[string]]::new()
 try {
     & $harness -Mode SmokeInstalled -RunRoot $RunRoot -SnapshotSha $SnapshotSha
 }
+catch { $smokeError = $_ }
 finally {
-    & $harness -Mode Uninstall -RunRoot $RunRoot -SnapshotSha $SnapshotSha
-    [ordered]@{ schema_version = 1; status = 'passed'; owned_resources_removed = $true } |
-        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $RunRoot 'evidence-uninstall.json') -Encoding utf8NoBOM
+    if ($null -ne $smokeError) {
+        try {
+            & $harness -Mode CaptureFailureDiagnostics -RunRoot $RunRoot `
+                -SnapshotSha $SnapshotSha
+        }
+        catch { $additionalFailures.Add("diagnostic capture failed: $_") }
+    }
+    try {
+        & $harness -Mode Uninstall -RunRoot $RunRoot -SnapshotSha $SnapshotSha
+        [ordered]@{ schema_version = 1; status = 'passed'; owned_resources_removed = $true } |
+            ConvertTo-Json | Set-Content -LiteralPath `
+                (Join-Path $RunRoot 'evidence-uninstall.json') -Encoding utf8NoBOM
+    }
+    catch { $additionalFailures.Add("owned cleanup failed: $_") }
 }
+if ($null -ne $smokeError) {
+    if ($additionalFailures.Count -gt 0) {
+        throw "Post-reboot smoke failed: $smokeError; additional failures: $($additionalFailures -join '; ')"
+    }
+    throw $smokeError
+}
+if ($additionalFailures.Count -gt 0) { throw ($additionalFailures -join '; ') }
 $manifestPath = Join-Path $RunRoot 'fetch-manifest.json'
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 foreach ($name in @(
