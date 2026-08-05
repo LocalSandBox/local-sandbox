@@ -1,0 +1,37 @@
+crates/lsb-platform/src/windows_x86_64/fs/smb/acl.rs
+  s_62f6dbacabedd3::t_a231fcefe60b67 125,135-142
+  s_62f6dbacabedd3::t_c0a8dcfb1d859f 500
+  s_62f6dbacabedd3::t_6512c91ffdfb36 1000,1003,1007,1088,1096-1097
+  s_62f6dbacabedd3::t_02bc771d41e6ab 1100,1102
+  s_62f6dbacabedd3::t_be8156ce3d7f66 13-15,24-27,41-44,60-61,83,99,102,118-119,164-177,455,458,460,465,496-497,530
+  s_62f6dbacabedd3::t_2704f7afbf8368 85,577,582
+  s_62f6dbacabedd3::t_98e3d13eff84b5 34-35,1008-1017
+crates/lsb-platform/src/windows_x86_64/fs/smb/lifecycle.rs
+  s_62f6dbacabedd3::t_4c77c1a33bb973 2071
+  s_62f6dbacabedd3::t_9e91db74787ded 1357-1365,1369-1378
+  s_62f6dbacabedd3::t_abfe1f72a88b0f 9,1366-1368
+  s_62f6dbacabedd3::t_c0a8dcfb1d859f 187
+  s_62f6dbacabedd3::t_01bbd8fb1b2ebc 8,10,25,160-161,168,184-186,188-194,196-205,508-515,528,621-622
+  s_62f6dbacabedd3::t_9a28f9d6b09532 1445
+  s_62f6dbacabedd3::t_92da59b559c806 1512,1998,2035
+  s_62f6dbacabedd3::t_d34bcc539a6c1f 1121,1125-1141,1242
+  s_62f6dbacabedd3::t_d622546de941bc 1412,1425,1570,1601
+  s_62f6dbacabedd3::t_2e2adfc2a4c5d7 195
+  s_62f6dbacabedd3::t_e271dbd1726233 1356
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "8b999f39ec907efbe47da7d7e67be671573e9e0c",
+  "prompts": {},
+  "sessions": {
+    "s_62f6dbacabedd3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd166-9fe1-7783-babb-981907a4d7c2",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
