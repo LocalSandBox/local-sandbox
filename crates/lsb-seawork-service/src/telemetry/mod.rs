@@ -43,7 +43,7 @@ pub const TRANSACTION_SERVICE_UPDATE: &str = "service.update";
 pub const TRANSACTION_SERVICE_UPDATE_CHECKPOINT: &str = "service.update.checkpoint";
 
 pub(crate) use update_checkpoint::{emit_update_checkpoint, UpdateCheckpoint};
-pub(crate) use update_trace::reconstruct_update;
+pub(crate) use update_trace::{reconstruct_attempt, reconstruct_update};
 
 #[cfg(windows)]
 static EXIT_EVIDENCE_RUNTIME_ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -1272,5 +1272,60 @@ mod tests {
             journal.mark_reported(receipt).unwrap();
             assert_eq!(reconstruct_update(&telemetry, &journal, None, None), None);
         }
+    }
+
+    #[test]
+    fn terminal_attempt_without_handoff_reconstructs_once() {
+        use lsb_seawork_update::{
+            ReleaseChannel, UpdateActor, UpdateAttempt, UpdateAttemptOutcome,
+            UpdateTransitionOutcome,
+        };
+
+        let mut attempt = UpdateAttempt {
+            attempt_id: "a".repeat(32),
+            created_utc: "2026-08-05T01:02:03Z".to_string(),
+            source_version: "0.6.0".to_string(),
+            channel: ReleaseChannel::Stable,
+            target_version: None,
+            target_archive_sha256: None,
+            retry_count: 0,
+            outcome: UpdateAttemptOutcome::Active,
+            failure_code: None,
+            timeline: Vec::new(),
+            transaction_id: None,
+            terminal_trace_event_id: None,
+        };
+        attempt
+            .begin_transition(
+                "update.discovery",
+                UpdateActor::Service,
+                "2026-08-05T01:02:03Z",
+            )
+            .unwrap();
+        attempt
+            .complete_transition(
+                "2026-08-05T01:02:04Z",
+                1_000,
+                UpdateTransitionOutcome::Succeeded,
+                None,
+            )
+            .unwrap();
+        attempt
+            .finish(UpdateAttemptOutcome::Succeeded, None)
+            .unwrap();
+
+        let adapter = Arc::new(FakeAdapter::default());
+        let telemetry = Telemetry::new(adapter.clone());
+        let receipt = reconstruct_attempt(&telemetry, &attempt, "host-01", "stable").unwrap();
+        assert_eq!(receipt.len(), 32);
+        let state = adapter.state.lock().unwrap();
+        assert_eq!(state.spans.len(), 2);
+        assert_eq!(state.spans[0].3.sampled, Some(true));
+        assert_eq!(state.spans[0].3.data["user.id"], "host-01");
+        assert_eq!(state.spans[0].3.data["update.total_duration_ms"], "1000");
+        drop(state);
+
+        attempt.mark_terminal_trace_reported(receipt).unwrap();
+        assert!(reconstruct_attempt(&telemetry, &attempt, "host-01", "stable").is_none());
     }
 }

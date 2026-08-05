@@ -41,6 +41,8 @@ pub struct UpdateAttempt {
     pub timeline: Vec<UpdateTransition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transaction_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_trace_event_id: Option<String>,
 }
 
 impl UpdateAttempt {
@@ -67,6 +69,10 @@ impl UpdateAttempt {
             || self.failure_code.is_some() != (self.outcome == UpdateAttemptOutcome::Failed)
             || self
                 .transaction_id
+                .as_ref()
+                .is_some_and(|id| validate_id(id).is_err())
+            || self
+                .terminal_trace_event_id
                 .as_ref()
                 .is_some_and(|id| validate_id(id).is_err())
         {
@@ -153,6 +159,17 @@ impl UpdateAttempt {
                     .unwrap_or_else(|| item.started_utc.clone())
             }),
         }
+    }
+
+    pub fn mark_terminal_trace_reported(&mut self, event_id: impl Into<String>) -> Result<()> {
+        self.validate()?;
+        if self.outcome == UpdateAttemptOutcome::Active || self.terminal_trace_event_id.is_some() {
+            bail!("update attempt terminal trace cannot be acknowledged");
+        }
+        let event_id = event_id.into();
+        validate_id(&event_id)?;
+        self.terminal_trace_event_id = Some(event_id);
+        self.validate()
     }
 }
 
@@ -266,6 +283,7 @@ mod tests {
             failure_code: None,
             timeline: Vec::new(),
             transaction_id: None,
+            terminal_trace_event_id: None,
         }
     }
 
@@ -336,5 +354,20 @@ mod tests {
         assert!(attempt
             .finish(UpdateAttemptOutcome::Suppressed, None)
             .is_err());
+    }
+
+    #[test]
+    fn terminal_trace_receipt_is_single_assignment() {
+        let mut attempt = attempt();
+        attempt
+            .finish(UpdateAttemptOutcome::Succeeded, None)
+            .unwrap();
+        attempt
+            .mark_terminal_trace_reported("b".repeat(32))
+            .unwrap();
+        assert!(attempt
+            .mark_terminal_trace_reported("c".repeat(32))
+            .is_err());
+        assert!(attempt.validate().is_ok());
     }
 }

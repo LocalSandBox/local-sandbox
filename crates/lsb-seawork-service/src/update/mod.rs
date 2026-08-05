@@ -33,7 +33,8 @@ use crate::logging::ServiceLogger;
 use crate::paths::ServicePaths;
 use crate::pipe::HealthContext;
 use crate::telemetry::{
-    emit_update_checkpoint, reconstruct_update, FailureEvent, Level, Telemetry, UpdateCheckpoint,
+    emit_update_checkpoint, reconstruct_attempt, reconstruct_update, FailureEvent, Level,
+    Telemetry, UpdateCheckpoint,
 };
 use crate::{PIPE_NAME, PIPE_SDDL, SERVICE_NAME};
 
@@ -271,6 +272,28 @@ fn replay_attempt_path(path: &Path, telemetry: &Telemetry, hostname: &str, chann
         }
     }
     replay_attempt_failures(path, &mut envelope, telemetry, hostname, channel);
+    replay_attempt_trace(path, &mut envelope, telemetry, hostname, channel);
+}
+
+fn replay_attempt_trace(
+    path: &Path,
+    envelope: &mut UpdateAttemptEnvelope,
+    telemetry: &Telemetry,
+    hostname: &str,
+    channel: &str,
+) {
+    let Some(event_id) = reconstruct_attempt(telemetry, &envelope.attempt, hostname, channel)
+    else {
+        return;
+    };
+    if envelope
+        .attempt
+        .mark_terminal_trace_reported(event_id)
+        .is_ok()
+        && envelope.refresh().is_ok()
+    {
+        persist_telemetry_receipt(path, envelope);
+    }
 }
 
 fn replay_transaction_path(path: &Path, telemetry: &Telemetry, hostname: &str, channel: &str) {
@@ -561,6 +584,7 @@ fn prune_reported_attempts(directory: &Path) {
             if envelope.validate().is_err()
                 || envelope.attempt.outcome == UpdateAttemptOutcome::Active
                 || !timeline_fully_reported(&envelope.attempt.timeline)
+                || envelope.attempt.terminal_trace_event_id.is_none()
             {
                 return None;
             }
@@ -2118,6 +2142,7 @@ impl AttemptRecorder {
             failure_code: None,
             timeline: Vec::new(),
             transaction_id: None,
+            terminal_trace_event_id: None,
         };
         let recorder = Self {
             envelope: UpdateAttemptEnvelope::new(attempt)?,
@@ -2463,6 +2488,22 @@ impl AttemptRecorder {
                 {
                     self.persist();
                 }
+            }
+        }
+        if let Some(event_id) = reconstruct_attempt(
+            &self.telemetry,
+            &self.envelope.attempt,
+            hostname,
+            self.channel,
+        ) {
+            if self
+                .envelope
+                .attempt
+                .mark_terminal_trace_reported(event_id)
+                .is_ok()
+                && self.envelope.refresh().is_ok()
+            {
+                self.persist();
             }
         }
     }

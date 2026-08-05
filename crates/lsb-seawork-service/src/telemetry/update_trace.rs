@@ -1,11 +1,87 @@
 use lsb_seawork_update::{
-    TransactionEnvelope, TransactionPhase, UpdateTransition, UpdateTransitionOutcome,
+    TransactionEnvelope, TransactionPhase, UpdateAttempt, UpdateAttemptOutcome, UpdateTransition,
+    UpdateTransitionOutcome,
 };
 
 use super::{
     fresh_trace_context, FailureEvent, Level, SpanDescription, SpanStatus, Telemetry,
     TRANSACTION_SERVICE_UPDATE,
 };
+
+pub(crate) fn reconstruct_attempt(
+    telemetry: &Telemetry,
+    attempt: &UpdateAttempt,
+    hostname: &str,
+    channel: &str,
+) -> Option<String> {
+    if attempt.validate().is_err()
+        || attempt.outcome == UpdateAttemptOutcome::Active
+        || attempt.terminal_trace_event_id.is_some()
+        || attempt.transaction_id.is_some()
+    {
+        return None;
+    }
+    let start = attempt
+        .timeline
+        .first()
+        .and_then(|transition| timestamp_micros(&transition.started_utc))
+        .or_else(|| timestamp_micros(&attempt.created_utc))?;
+    let end = attempt
+        .timeline
+        .iter()
+        .rev()
+        .find_map(|transition| {
+            transition
+                .completed_utc
+                .as_deref()
+                .and_then(timestamp_micros)
+                .or_else(|| timestamp_micros(&transition.started_utc))
+        })
+        .unwrap_or(start)
+        .max(start);
+    let (result, status) = match attempt.outcome {
+        UpdateAttemptOutcome::Succeeded => ("succeeded", SpanStatus::Ok),
+        UpdateAttemptOutcome::Failed => ("failed", SpanStatus::InternalError),
+        UpdateAttemptOutcome::Suppressed => ("suppressed", SpanStatus::Cancelled),
+        UpdateAttemptOutcome::Active => return None,
+    };
+    let mut description = SpanDescription::transaction(TRANSACTION_SERVICE_UPDATE)
+        .always_sampled()
+        .started_at(start)
+        .with_tag("update.source_version", &attempt.source_version)
+        .with_tag("update.result", result)
+        .with_tag("update.channel", channel)
+        .with_data("user.id", hostname)
+        .with_data("update.attempt_id", &attempt.attempt_id)
+        .with_data("update.source_version", &attempt.source_version)
+        .with_data("update.result", result)
+        .with_data("update.channel", channel)
+        .with_data(
+            "update.total_duration_ms",
+            end.saturating_sub(start).saturating_div(1_000).to_string(),
+        );
+    if let Some(target) = attempt.target_version.as_deref() {
+        description = description
+            .with_tag("update.target_version", target)
+            .with_data("update.target_version", target);
+    }
+    if let Some(digest) = attempt.target_archive_sha256.as_deref() {
+        description = description.with_data("update.target_archive_sha256", digest);
+    }
+    if let Some(code) = attempt.failure_code.as_deref() {
+        description = description
+            .with_tag("update.failure_code", code)
+            .with_data("update.failure_code", code);
+    }
+    if let Some(run_id) = telemetry.run_id() {
+        description = description.with_data("run_id", run_id);
+    }
+    let root = telemetry.start_span(description);
+    for transition in &attempt.timeline {
+        emit_transition(&root, transition, end);
+    }
+    root.finish_at(status, end)
+}
 
 pub(crate) fn reconstruct_update(
     telemetry: &Telemetry,
