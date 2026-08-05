@@ -1340,6 +1340,35 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[derive(Debug, Default)]
+    struct TimedLifecycleRecorder(Mutex<Vec<(WindowsSmbLifecyclePhase, std::time::Instant)>>);
+
+    #[cfg(windows)]
+    impl WindowsSmbLifecycleObserver for TimedLifecycleRecorder {
+        fn record(&self, event: WindowsSmbLifecycleEvent) {
+            let mut active = self.0.lock().unwrap();
+            match event.state {
+                WindowsSmbLifecycleState::Started => {
+                    active.push((event.phase, std::time::Instant::now()));
+                }
+                WindowsSmbLifecycleState::Completed => {
+                    let index = active
+                        .iter()
+                        .rposition(|(phase, _)| *phase == event.phase)
+                        .expect("completed SMB phase must have a matching start");
+                    let (_, started) = active.remove(index);
+                    eprintln!(
+                        "SMB_PHASE_TIMING phase={} elapsed_ms={} succeeded={}",
+                        event.phase.label(),
+                        started.elapsed().as_millis(),
+                        event.succeeded.unwrap_or(false),
+                    );
+                }
+            }
+        }
+    }
+
     #[derive(Debug)]
     struct PanickingLifecycleObserver;
 
@@ -2117,6 +2146,54 @@ mod tests {
             .iter()
             .any(|event| event.starts_with("delete_user:")));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "mutates local users, filesystem ACLs, and SMB shares"]
+    fn windows_smb_native_lifecycle_reports_phase_timings() {
+        let _guard = crate::windows_x86_64::fs::smb::lock_native_acl_tests();
+        let root = temp_dir("native-phase-timings");
+        let instance = root.join("instance");
+        let workspace = root.join("workspace");
+        let output = workspace.join("output");
+        let skills = root.join("skills");
+        let uploads = root.join("uploads");
+        for path in [&instance, &output, &skills, &uploads] {
+            std::fs::create_dir_all(path).expect("create native timing fixture directory");
+        }
+
+        let config = WindowsSmbLifecycleConfig::new(
+            format!("native-phase-timings-{}", std::process::id()),
+            vec![
+                WindowsSmbMount::read_only(&workspace, "/workspace"),
+                WindowsSmbMount::read_write(&output, "/workspace/output"),
+                WindowsSmbMount::read_only(&skills, "/skills"),
+                WindowsSmbMount::read_only(&uploads, "/uploaded_files"),
+            ],
+        );
+        let observer = Arc::new(TimedLifecycleRecorder::default());
+        let mut manager = WindowsSmbLifecycleManager::native().with_observer(observer);
+        let manifest_path = windows_smb_cleanup_manifest_path(&instance);
+        let prepare_started = std::time::Instant::now();
+        let resources = manager
+            .prepare_with_cleanup_manifest(&config, &manifest_path)
+            .expect("prepare native SMB timing resources");
+        eprintln!(
+            "SMB_TOTAL_TIMING operation=prepare elapsed_ms={}",
+            prepare_started.elapsed().as_millis()
+        );
+        let cleanup_started = std::time::Instant::now();
+        manager
+            .cleanup(resources)
+            .expect("clean native SMB timing resources");
+        eprintln!(
+            "SMB_TOTAL_TIMING operation=cleanup elapsed_ms={}",
+            cleanup_started.elapsed().as_millis()
+        );
+        remove_windows_smb_cleanup_manifest(&manifest_path)
+            .expect("remove native timing cleanup manifest");
+        std::fs::remove_dir_all(root).expect("remove native timing fixture");
     }
 
     #[cfg(windows)]

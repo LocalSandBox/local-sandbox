@@ -796,7 +796,13 @@ fn apply_acl_entry_change(
         EXPLICIT_ACCESS_W, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN,
         TRUSTEE_W,
     };
-    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+    use windows_sys::Win32::Security::{
+        GetSecurityDescriptorControl, InitializeSecurityDescriptor, SetFileSecurityW,
+        SetSecurityDescriptorControl, SetSecurityDescriptorDacl, DACL_SECURITY_INFORMATION,
+        NO_INHERITANCE, PROTECTED_DACL_SECURITY_INFORMATION, SECURITY_DESCRIPTOR,
+        SE_DACL_PROTECTED, UNPROTECTED_DACL_SECURITY_INFORMATION,
+    };
+    use windows_sys::Win32::System::SystemServices::SECURITY_DESCRIPTOR_REVISION;
 
     let mut path_w = super::user::wide_null(&path.display().to_string());
     let sid_w = super::user::wide_null(sid_string);
@@ -851,16 +857,72 @@ fn apply_acl_entry_change(
     let mut new_acl = ptr::null_mut();
     let status = unsafe { SetEntriesInAclW(1, &mut entry, old_dacl, &mut new_acl) };
     if status == 0 {
-        let set_status = unsafe {
-            SetNamedSecurityInfoW(
-                path_w.as_mut_ptr(),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                new_acl,
-                ptr::null_mut(),
-            )
+        let set_status = if inheritance == NO_INHERITANCE {
+            // SetNamedSecurityInfoW imposes the current inheritance model on the
+            // entire subtree even when the new ACE itself is non-inheriting. A
+            // traverse-only grant on a broad ancestor such as the volume root
+            // must update exactly that directory instead of walking the volume.
+            let mut exact_descriptor = SECURITY_DESCRIPTOR::default();
+            let mut original_control = 0;
+            let mut original_revision = 0;
+            let control_read = unsafe {
+                GetSecurityDescriptorControl(
+                    security_descriptor,
+                    &mut original_control,
+                    &mut original_revision,
+                )
+            };
+            let initialized = unsafe {
+                InitializeSecurityDescriptor(
+                    (&raw mut exact_descriptor).cast(),
+                    SECURITY_DESCRIPTOR_REVISION,
+                )
+            };
+            let dacl_set = initialized != 0
+                && unsafe {
+                    SetSecurityDescriptorDacl((&raw mut exact_descriptor).cast(), 1, new_acl, 0)
+                } != 0;
+            let control_interest = SE_DACL_PROTECTED;
+            let restored_control = original_control & SE_DACL_PROTECTED;
+            let control_set = dacl_set
+                && control_read != 0
+                && unsafe {
+                    SetSecurityDescriptorControl(
+                        (&raw mut exact_descriptor).cast(),
+                        control_interest,
+                        restored_control,
+                    )
+                } != 0;
+            if control_set
+                && unsafe {
+                    SetFileSecurityW(
+                        path_w.as_ptr(),
+                        DACL_SECURITY_INFORMATION
+                            | if original_control & SE_DACL_PROTECTED != 0 {
+                                PROTECTED_DACL_SECURITY_INFORMATION
+                            } else {
+                                UNPROTECTED_DACL_SECURITY_INFORMATION
+                            },
+                        (&raw mut exact_descriptor).cast(),
+                    )
+                } != 0
+            {
+                0
+            } else {
+                unsafe { GetLastError() }
+            }
+        } else {
+            unsafe {
+                SetNamedSecurityInfoW(
+                    path_w.as_mut_ptr(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    new_acl,
+                    ptr::null_mut(),
+                )
+            }
         };
         unsafe {
             LocalFree(new_acl.cast());
@@ -873,7 +935,7 @@ fn apply_acl_entry_change(
         return Err(WindowsSmbLifecycleError::operation_failed(
             phase,
             format!(
-                "SetNamedSecurityInfoW failed for '{}' with win32 error {set_status}",
+                "setting DACL failed for '{}' with win32 error {set_status}",
                 path.display()
             ),
         ));
@@ -1186,9 +1248,19 @@ mod tests {
             )),
             powershell(&format!("(Get-Acl -LiteralPath '{}').Sddl", quoted(&skill))),
         ];
+        // SetFileSecurityW intentionally avoids propagating an ancestor update
+        // into its subtree. Windows may clear the ancestor's informational AI
+        // control flag when an explicit ACE is added, but the DACL itself and
+        // its protected/unprotected state must be restored exactly.
         assert_eq!(
-            after, before,
-            "ancestor, root, protected child, and file SDDL"
+            after[0].replacen("D:AI", "D:", 1),
+            before[0].replacen("D:AI", "D:", 1),
+            "ancestor SDDL except for the normalized auto-inherited marker"
+        );
+        assert_eq!(
+            after[1..],
+            before[1..],
+            "root, protected child, and file SDDL"
         );
         let _ = std::fs::remove_dir_all(fixture);
     }
