@@ -1,0 +1,36 @@
+crates/lsb-seawork-update/src/preinstall.rs
+  s_51057d2a3b2166::t_30da44361e0d07 15-16,31-33,175
+crates/lsb-seawork-updater/src/recovery.rs
+  s_51057d2a3b2166::t_25c726a152e830 590
+xtask/src/seawork_seed_update.rs
+  s_51057d2a3b2166::t_25c726a152e830 192
+crates/lsb-seawork-updater/src/windows.rs
+  s_51057d2a3b2166::t_25c726a152e830 1936
+crates/lsb-seawork-service/src/telemetry/update_trace.rs
+  s_51057d2a3b2166::t_b09814f90087d5 63
+crates/lsb-seawork-service/src/update/mod.rs
+  s_51057d2a3b2166::t_b09814f90087d5 212,295,404
+  s_51057d2a3b2166::t_25c726a152e830 1004,1272-1274
+crates/lsb-seawork-service/src/telemetry/mod.rs
+  s_51057d2a3b2166::t_b09814f90087d5 1261
+  s_51057d2a3b2166::t_25c726a152e830 1205
+crates/lsb-seawork-update/src/journal.rs
+  s_51057d2a3b2166::t_b09814f90087d5 351-354
+  s_51057d2a3b2166::t_30da44361e0d07 324-325,358-360,594
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "ce246f0a15a3019695250d628c4e72559f12baf0",
+  "prompts": {},
+  "sessions": {
+    "s_51057d2a3b2166": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd0ca-b9bd-71c3-8516-363b93919fda",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
