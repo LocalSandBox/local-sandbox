@@ -222,7 +222,7 @@ verify_python() {
     install_rootfs_dir="$1"
     test -x "${install_rootfs_dir}/usr/bin/python3"
     chroot "${install_rootfs_dir}" /usr/bin/python3 -m venv /tmp/lsb-python-venv-smoke
-    test -x "${install_rootfs_dir}/tmp/lsb-python-venv-smoke/bin/python"
+    chroot "${install_rootfs_dir}" /tmp/lsb-python-venv-smoke/bin/python --version > /dev/null
     rm -rf "${install_rootfs_dir}/tmp/lsb-python-venv-smoke"
 }
 
@@ -763,6 +763,12 @@ mod tests {
         for script in [macos_rootfs_docker_script(), linux_rootfs_script()] {
             assert!(script.contains("python3 python3-venv"));
             assert!(script.contains("/usr/bin/python3 -m venv"));
+            assert!(script.contains(
+                "chroot \"${install_rootfs_dir}\" /tmp/lsb-python-venv-smoke/bin/python --version"
+            ));
+            assert!(!script.contains(
+                "test -x \"${install_rootfs_dir}/tmp/lsb-python-venv-smoke/bin/python\""
+            ));
             assert!(script.contains("/usr/local/bin/uv --version"));
             assert!(script.contains("/usr/local/bin/uvx --version"));
         }
