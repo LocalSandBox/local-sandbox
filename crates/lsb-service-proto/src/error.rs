@@ -136,7 +136,7 @@ impl ErrorEnvelope {
     ) -> Self {
         assert!(matches!(
             code,
-            ErrorCode::MountInvalid | ErrorCode::MountLimitExceeded
+            ErrorCode::MountUnavailable | ErrorCode::MountInvalid | ErrorCode::MountLimitExceeded
         ));
         Self {
             code,

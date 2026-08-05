@@ -132,10 +132,9 @@ pub async fn start(
         prepare_parent,
     )
     .await;
-    prepare_span.finish(if result.is_ok() {
-        SpanStatus::Ok
-    } else {
-        SpanStatus::InternalError
+    prepare_span.finish(match &result {
+        Ok(_) => SpanStatus::Ok,
+        Err(error) => operation_span_status(error.code()),
     });
     telemetry.breadcrumb(
         Breadcrumb::lifecycle("request", "completed")
@@ -297,20 +296,18 @@ async fn start_inner(
                     &identity,
                     client_instance_id.as_deref(),
                 );
-                let cancelled = error.to_string().contains("cancelled");
-                if !cancelled {
+                let classified = classify_start_error(&error);
+                if !matches!(
+                    classified.code(),
+                    ErrorCode::Cancelled | ErrorCode::DeadlineExceeded
+                ) {
                     telemetry.capture_failure(prepare_instance_failure_event(
                         &error,
                         &correlation_id,
                         sandbox_id,
                     ));
                 }
-                return Err(if cancelled {
-                    ErrorCode::Cancelled
-                } else {
-                    ErrorCode::InternalError
-                }
-                .into());
+                return Err(classified);
             }
         };
         let started = sessions.start_reserved_managed_vm(
@@ -359,8 +356,7 @@ async fn start_inner(
                 if error.downcast_ref::<QuotaError>().is_some() {
                     Err(ErrorCode::QuotaExceeded.into())
                 } else {
-                    Err(classify_mount_start_error(&error)
-                        .unwrap_or_else(|| ErrorCode::ServiceUnavailable.into()))
+                    Err(classify_start_error(&error))
                 }
             }
         }
@@ -598,12 +594,29 @@ fn response_sandbox_id(response: &ResponseValue) -> Option<&str> {
     }
 }
 
-fn classify_mount_start_error(error: &anyhow::Error) -> Option<RpcError> {
-    for cause in error.chain() {
-        if let Some(error) =
-            cause.downcast_ref::<lsb_platform::windows_x86_64::fs::smb::WindowsSmbLifecycleError>()
-        {
-            match error {
+fn classify_start_error(error: &anyhow::Error) -> RpcError {
+    let mut errors = vec![error];
+    if let Some(smb_error) = lsb_vm::concurrent_windows_smb_startup_error(error) {
+        errors.push(smb_error);
+    }
+
+    for error in &errors {
+        for cause in error.chain() {
+            if let Some(cancellation) = cause.downcast_ref::<CancellationError>() {
+                return match cancellation.reason() {
+                    CancellationReason::Cancelled => ErrorCode::Cancelled.into(),
+                    CancellationReason::DeadlineExceeded => ErrorCode::DeadlineExceeded.into(),
+                };
+            }
+        }
+    }
+
+    for error in &errors {
+        for cause in error.chain() {
+            if let Some(error) = cause
+                .downcast_ref::<lsb_platform::windows_x86_64::fs::smb::WindowsSmbLifecycleError>(
+            ) {
+                match error {
                 lsb_platform::windows_x86_64::fs::smb::WindowsSmbLifecycleError::MountLimitExceeded {
                     limit,
                     path,
@@ -618,43 +631,90 @@ fn classify_mount_start_error(error: &anyhow::Error) -> Option<RpcError> {
                         .as_ref()
                         .map(|path| format!(" while inspecting '{}'", path.display()))
                         .unwrap_or_default();
-                    return Some(RpcError::mount(
+                    return RpcError::mount(
                         ErrorCode::MountLimitExceeded,
                         format!(
                             "The mounted directories contain more than {limit} non-pruned files/directories in aggregate{location}. Reduce the mounted trees or add subtree exclusions."
                         ),
-                    ));
+                    );
                 }
                 lsb_platform::windows_x86_64::fs::smb::WindowsSmbLifecycleError::MountInvalid {
                     path,
                     detail,
                     ..
                 } => {
-                    return Some(RpcError::mount(
+                    return RpcError::mount(
                         ErrorCode::MountInvalid,
                         format!(
                             "The mount tree is invalid at '{}': {}",
                             path.display(),
                             detail
                         ),
-                    ));
+                    );
                 }
                 _ => {}
             }
-        }
-        if let Some(error) = cause.downcast_ref::<lsb_platform::windows_x86_64::fs::CopyPathError>()
-        {
-            return Some(RpcError::mount(
-                ErrorCode::MountInvalid,
-                format!(
-                    "The mount tree is invalid at '{}': {}",
-                    error.path(),
-                    error.reason()
-                ),
-            ));
+            }
+            if let Some(error) =
+                cause.downcast_ref::<lsb_platform::windows_x86_64::fs::CopyPathError>()
+            {
+                return RpcError::mount(
+                    ErrorCode::MountInvalid,
+                    format!(
+                        "The mount tree is invalid at '{}': {}",
+                        error.path(),
+                        error.reason()
+                    ),
+                );
+            }
         }
     }
-    None
+
+    for error in &errors {
+        for cause in error.chain() {
+            let Some(error) = cause
+                .downcast_ref::<lsb_platform::windows_x86_64::fs::smb::WindowsSmbLifecycleError>()
+            else {
+                continue;
+            };
+            use lsb_platform::windows_x86_64::fs::smb::{
+                WindowsSmbLifecycleError as SmbError, WindowsSmbLifecyclePhase as Phase,
+            };
+            let expected_unavailable = match error {
+                SmbError::NotElevated => true,
+                SmbError::OperationFailed { phase, .. } => matches!(
+                    phase,
+                    Phase::AdminPreflight
+                        | Phase::SmbPolicyPreflight
+                        | Phase::SmbLoopbackPreflight
+                        | Phase::UserCreate
+                        | Phase::AclPlan
+                        | Phase::AclGrant
+                        | Phase::AclVerify
+                        | Phase::ShareCreate
+                ),
+                _ => false,
+            };
+            if expected_unavailable {
+                let phase = error
+                    .operation_phase()
+                    .map(|phase| phase.label())
+                    .unwrap_or("SMB preparation");
+                let location = error
+                    .operation_path()
+                    .map(|path| format!(" at '{}'", path.display()))
+                    .unwrap_or_default();
+                return RpcError::mount(
+                    ErrorCode::MountUnavailable,
+                    format!(
+                        "The Windows SMB mount is unavailable during {phase}{location}. Verify Administrator access, local SMB policy, account rights, and share availability."
+                    ),
+                );
+            }
+        }
+    }
+
+    ErrorCode::InternalError.into()
 }
 
 trait OperationErrorCode {
@@ -688,16 +748,7 @@ fn finish_operation<E: OperationErrorCode>(
         }
         Err(error) => {
             let code = error.operation_error_code();
-            let status = match code {
-                ErrorCode::Cancelled => SpanStatus::Cancelled,
-                ErrorCode::InvalidRequest
-                | ErrorCode::MountInvalid
-                | ErrorCode::MountLimitExceeded => SpanStatus::InvalidArgument,
-                ErrorCode::ServiceUnavailable
-                | ErrorCode::BundleInvalid
-                | ErrorCode::ServiceDraining => SpanStatus::Unavailable,
-                _ => SpanStatus::InternalError,
-            };
+            let status = operation_span_status(code);
             let mut event = FailureEvent::new(
                 operation,
                 stable_error_code,
@@ -724,6 +775,20 @@ fn finish_operation<E: OperationErrorCode>(
             }
             span.finish(status);
         }
+    }
+}
+
+fn operation_span_status(code: ErrorCode) -> SpanStatus {
+    match code {
+        ErrorCode::Cancelled | ErrorCode::DeadlineExceeded => SpanStatus::Cancelled,
+        ErrorCode::InvalidRequest | ErrorCode::MountInvalid | ErrorCode::MountLimitExceeded => {
+            SpanStatus::InvalidArgument
+        }
+        ErrorCode::ServiceUnavailable
+        | ErrorCode::MountUnavailable
+        | ErrorCode::BundleInvalid
+        | ErrorCode::ServiceDraining => SpanStatus::Unavailable,
+        _ => SpanStatus::InternalError,
     }
 }
 
@@ -883,7 +948,7 @@ mod tests {
             ),
         )
         .context("Failed to prepare Windows SMB mounts");
-        let classified = classify_mount_start_error(&invalid).expect("classified mount error");
+        let classified = classify_start_error(&invalid);
         assert_eq!(classified.code(), ErrorCode::MountInvalid);
         assert!(classified
             .mount_message()
@@ -896,13 +961,132 @@ mod tests {
                 r"C:\Users\alice\work\large-tree",
             ),
         );
-        let classified = classify_mount_start_error(&limit).expect("classified limit error");
+        let classified = classify_start_error(&limit);
         assert_eq!(classified.code(), ErrorCode::MountLimitExceeded);
         assert!(classified.mount_message().unwrap().contains("10,000"));
         assert!(classified
             .mount_message()
             .unwrap()
             .contains(r"C:\Users\alice\work\large-tree"));
+    }
+
+    #[test]
+    fn startup_error_classification_follows_stable_precedence() {
+        use lsb_platform::windows_x86_64::fs::smb::{
+            WindowsSmbCleanupFailure, WindowsSmbLifecycleError as SmbError,
+            WindowsSmbLifecyclePhase as Phase,
+        };
+
+        let cancelled = CancellationToken::default();
+        cancelled.cancel();
+        assert_eq!(
+            classify_start_error(&cancelled.check().unwrap_err()).code(),
+            ErrorCode::Cancelled
+        );
+        let expired = CancellationToken::default();
+        expired.expire();
+        assert_eq!(
+            classify_start_error(&expired.check().unwrap_err()).code(),
+            ErrorCode::DeadlineExceeded
+        );
+
+        let expected_phases = [
+            Phase::AdminPreflight,
+            Phase::SmbPolicyPreflight,
+            Phase::SmbLoopbackPreflight,
+            Phase::UserCreate,
+            Phase::AclPlan,
+            Phase::AclGrant,
+            Phase::AclVerify,
+            Phase::ShareCreate,
+        ];
+        assert_eq!(
+            classify_start_error(&anyhow::Error::new(SmbError::NotElevated)).code(),
+            ErrorCode::MountUnavailable
+        );
+        for phase in expected_phases {
+            let error = anyhow::Error::new(SmbError::operation_failed_at(
+                phase,
+                r"C:\Users\alice\work",
+                "expected availability failure",
+            ));
+            let classified = classify_start_error(&error);
+            assert_eq!(classified.code(), ErrorCode::MountUnavailable, "{phase:?}");
+            assert!(classified.mount_message().unwrap().contains(phase.label()));
+        }
+
+        let variants = [
+            (
+                anyhow::Error::new(SmbError::mount_invalid("bad", "invalid")),
+                ErrorCode::MountInvalid,
+            ),
+            (
+                anyhow::Error::new(SmbError::mount_limit_exceeded(10_000)),
+                ErrorCode::MountLimitExceeded,
+            ),
+            (
+                anyhow::Error::new(SmbError::operation_failed(
+                    Phase::CleanupManifest,
+                    "manifest corrupt",
+                )),
+                ErrorCode::InternalError,
+            ),
+            (
+                anyhow::Error::new(
+                    SmbError::operation_failed(Phase::AclGrant, "grant failed")
+                        .with_cleanup_failures(vec![WindowsSmbCleanupFailure::new(
+                            Phase::AclRevoke,
+                            "rollback failed",
+                        )]),
+                ),
+                ErrorCode::InternalError,
+            ),
+            (
+                anyhow::Error::new(SmbError::CleanupFailed {
+                    failures: vec![WindowsSmbCleanupFailure::new(
+                        Phase::ShareRemove,
+                        "rollback failed",
+                    )],
+                }),
+                ErrorCode::InternalError,
+            ),
+            (
+                anyhow::Error::new(SmbError::InvalidUserName {
+                    reason: "generated invalid user".to_string(),
+                }),
+                ErrorCode::InternalError,
+            ),
+            (
+                anyhow::Error::new(SmbError::InvalidShareName {
+                    reason: "generated invalid share".to_string(),
+                }),
+                ErrorCode::InternalError,
+            ),
+        ];
+        for (error, expected) in variants {
+            assert_eq!(classify_start_error(&error).code(), expected, "{error:#}");
+        }
+
+        let combined = lsb_vm::combine_concurrent_windows_startup_errors(
+            anyhow::anyhow!("guest boot failed"),
+            anyhow::Error::new(SmbError::operation_failed(
+                Phase::SmbPolicyPreflight,
+                "policy unavailable",
+            )),
+        );
+        assert_eq!(
+            classify_start_error(&combined).code(),
+            ErrorCode::MountUnavailable
+        );
+
+        let combined_cancelled = lsb_vm::combine_concurrent_windows_startup_errors(
+            cancelled.check().unwrap_err(),
+            anyhow::Error::new(SmbError::mount_invalid("bad", "invalid")),
+        );
+        assert_eq!(
+            classify_start_error(&combined_cancelled).code(),
+            ErrorCode::Cancelled
+        );
     }
     use crate::paths::ServicePaths;
 

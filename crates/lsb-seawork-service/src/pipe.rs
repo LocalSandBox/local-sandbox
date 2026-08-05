@@ -2462,6 +2462,25 @@ mod tests {
     }
 
     #[test]
+    fn mount_unavailable_envelope_preserves_stable_code_and_correlation_id() {
+        let correlation = Correlation {
+            high: 0x0123_4567_89ab_cdef,
+            low: 0xfedc_ba98_7654_3210,
+        };
+        let envelope = rpc_error_envelope(
+            lsb_service_proto::CURRENT,
+            correlation,
+            rpc::RpcError::mount(
+                ErrorCode::MountUnavailable,
+                "The Windows SMB mount is unavailable during SMB policy preflight.",
+            ),
+        );
+        assert_eq!(envelope.code, ErrorCode::MountUnavailable);
+        assert_eq!(envelope.correlation_id, "0123456789abcdeffedcba9876543210");
+        assert!(!envelope.retryable);
+    }
+
+    #[test]
     fn stale_coordinator_maintenance_phase_does_not_override_idle_maintenance() {
         let mut status = UpdateStatus {
             phase: UpdatePhase::UpdateIdle,

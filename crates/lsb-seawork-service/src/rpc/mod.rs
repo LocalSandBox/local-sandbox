@@ -13,7 +13,8 @@ impl RpcError {
     pub(crate) fn mount(code: lsb_service_proto::ErrorCode, message: impl Into<String>) -> Self {
         debug_assert!(matches!(
             code,
-            lsb_service_proto::ErrorCode::MountInvalid
+            lsb_service_proto::ErrorCode::MountUnavailable
+                | lsb_service_proto::ErrorCode::MountInvalid
                 | lsb_service_proto::ErrorCode::MountLimitExceeded
         ));
         Self {

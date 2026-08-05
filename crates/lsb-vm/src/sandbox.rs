@@ -1080,6 +1080,50 @@ struct StartupBranchResults {
     guest_pipeline: Result<()>,
 }
 
+#[derive(Debug)]
+struct ConcurrentStartupError {
+    guest_pipeline: anyhow::Error,
+    smb_setup: anyhow::Error,
+}
+
+impl std::fmt::Display for ConcurrentStartupError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "guest startup pipeline failed; additionally SMB preparation failed: {:#}",
+            self.smb_setup
+        )
+    }
+}
+
+impl std::error::Error for ConcurrentStartupError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.guest_pipeline.as_ref())
+    }
+}
+
+/// Returns the SMB-side error when both concurrent Windows startup branches failed.
+/// This preserves typed SMB and cancellation causes without changing the guest error's
+/// role as the primary source.
+pub fn concurrent_windows_smb_startup_error(error: &anyhow::Error) -> Option<&anyhow::Error> {
+    error.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<ConcurrentStartupError>()
+            .map(|combined| &combined.smb_setup)
+    })
+}
+
+#[doc(hidden)]
+pub fn combine_concurrent_windows_startup_errors(
+    guest_pipeline: anyhow::Error,
+    smb_setup: anyhow::Error,
+) -> anyhow::Error {
+    anyhow::Error::new(ConcurrentStartupError {
+        guest_pipeline,
+        smb_setup,
+    })
+}
+
 #[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
 impl StartupBranchResults {
     fn into_result(self) -> Result<()> {
@@ -1087,9 +1131,9 @@ impl StartupBranchResults {
             (Ok(()), Ok(())) => Ok(()),
             (Err(error), Ok(())) => Err(error),
             (Ok(()), Err(error)) => Err(error),
-            (Err(smb_error), Err(guest_error)) => Err(guest_error).context(format!(
-                "guest startup pipeline failed; additionally SMB preparation failed: {smb_error:#}"
-            )),
+            (Err(smb_setup), Err(guest_pipeline)) => Err(
+                combine_concurrent_windows_startup_errors(guest_pipeline, smb_setup),
+            ),
         }
     }
 
@@ -5111,6 +5155,31 @@ mod tests {
             },
         );
         results.into_result().unwrap();
+    }
+
+    #[test]
+    fn concurrent_startup_preserves_typed_guest_and_smb_errors() {
+        use lsb_platform::windows_x86_64::fs::smb::WindowsSmbLifecyclePhase;
+
+        let smb = WindowsSmbLifecycleError::operation_failed(
+            WindowsSmbLifecyclePhase::SmbPolicyPreflight,
+            "policy unavailable",
+        );
+        let error = StartupBranchResults {
+            smb_setup: Err(smb.clone().into()),
+            guest_pipeline: Err(std::io::Error::other("guest failed").into()),
+        }
+        .into_result()
+        .unwrap_err();
+
+        assert!(error
+            .chain()
+            .any(|cause| cause.downcast_ref::<std::io::Error>().is_some()));
+        assert_eq!(
+            concurrent_windows_smb_startup_error(&error)
+                .and_then(|error| error.downcast_ref::<WindowsSmbLifecycleError>()),
+            Some(&smb)
+        );
     }
 
     #[test]
