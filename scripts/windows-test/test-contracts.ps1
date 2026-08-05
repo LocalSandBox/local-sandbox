@@ -84,6 +84,16 @@ try {
     if ($diagnosticsPlan[-1] -cne "qemu-sentry-acceptance`tnone") {
         throw 'Optional diagnostics suite is absent from the catalog-derived plan.'
     }
+    $serviceHarnessSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot `
+        '..\windows-test-service-harness.ps1') -Raw
+    $releaseRebootSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot `
+        'suites\release\release-service-core-update-reboot.ps1') -Raw
+    if ($serviceHarnessSource -notmatch '\[string\]\s+\$InstallArchivePath' -or
+        $releaseRebootSource -notmatch
+            '-InstallArchivePath\s+\$baselineService\.FullName' -or
+        $releaseRebootSource -match "'initialize-baseline'") {
+        throw 'Release reboot suite does not delegate baseline initialization to the install harness.'
+    }
     $candidateArchive = Join-Path $testRoot `
         'lsb-seawork-service-v2.0.0-windows-x86_64.zip'
     $baselineArchive = Join-Path $testRoot `

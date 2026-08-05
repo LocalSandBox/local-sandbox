@@ -16,6 +16,8 @@ param(
 
     [string] $InstallBundleRoot = '',
 
+    [string] $InstallArchivePath = '',
+
     [string] $InstallEvidencePath = '',
 
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$')]
@@ -948,11 +950,16 @@ function Install-And-Smoke {
         maintenance_roots = @(Join-Path $programFiles 'SeaWork')
         egress_allow = @(); upstream_proxy = $null; ports_enabled = $false
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $stateRoot 'config\service.json') -Encoding utf8NoBOM
-    $serviceArchive = [IO.Path]::GetFullPath((Join-Path $RunRoot `
-        "release-work\out\lsb-seawork-service-v$version-windows-x86_64.zip"))
+    $expectedArchiveName = "lsb-seawork-service-v$version-windows-x86_64.zip"
+    $serviceArchive = if ([string]::IsNullOrWhiteSpace($InstallArchivePath)) {
+        [IO.Path]::GetFullPath((Join-Path $RunRoot "release-work\out\$expectedArchiveName"))
+    } else { [IO.Path]::GetFullPath($InstallArchivePath) }
     if (-not $serviceArchive.StartsWith($expectedRunPrefix, [StringComparison]::OrdinalIgnoreCase) -or
-        -not (Test-Path -LiteralPath $serviceArchive -PathType Leaf)) {
-        throw 'The baseline service archive is missing or outside the run root.'
+        -not (Test-Path -LiteralPath $serviceArchive -PathType Leaf) -or
+        (Split-Path -Leaf $serviceArchive) -cne $expectedArchiveName -or
+        ((Get-Item -LiteralPath $serviceArchive -Force).Attributes -band
+            [IO.FileAttributes]::ReparsePoint)) {
+        throw 'The install service archive is missing, invalid, or outside the run root.'
     }
     $updatesRoot = Join-Path $stateRoot 'updates'
     New-Item -ItemType Directory -Path $updatesRoot | Out-Null

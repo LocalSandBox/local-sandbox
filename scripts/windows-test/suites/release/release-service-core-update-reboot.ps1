@@ -243,20 +243,12 @@ if ($Phase -eq 'BeforeReboot') {
 
         & $harness -Mode InstallOnly -Scope Core -RunRoot $RunRoot `
             -SnapshotSha $SnapshotSha -InstallBundleRoot $baselineBundle `
+            -InstallArchivePath $baselineService.FullName `
             -InstallEvidencePath $baselineEvidencePath
         $installedUpdater = [string](@(Install-UpdaterService `
             $baselineUpdaterTuple.binary.FullName)[-1])
         $installState = Get-Content -LiteralPath $installedStatePath -Raw | ConvertFrom-Json
         $committedPath = Join-Path ([string]$installState.state_root) 'updates\committed.json'
-        $baselineInstalledBundle = Join-Path ([string]$installState.install_root) `
-            "versions\$baselineVersion"
-        $initialId = ('0' * 24) + $SnapshotSha.Substring(0, 8)
-        Invoke-SeedUtility @(
-            'initialize-baseline', '--archive', $baselineService.FullName,
-            '--bundle', $baselineInstalledBundle, '--committed', $committedPath,
-            '--publisher-subject', $publisherSubject, '--publisher-sha256', $publisherSha256,
-            '--transaction-id', $initialId
-        ) 'baseline committed-state initialization'
         Restart-Service -Name $serviceName
         (Get-Service -Name $serviceName).WaitForStatus('Running', [TimeSpan]::FromMinutes(2))
 

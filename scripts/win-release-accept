@@ -69,6 +69,29 @@ release_sha="$(jq -r .release_sha "$descriptor_source")"
 version="$(jq -r .version "$descriptor_source")"
 echo "Qualifying v$version from $release_url"
 
+harness_retry=0
+harness_overlay_paths=(
+    scripts/windows-test-service-harness.ps1
+    scripts/windows-test/suites/release/release-service-core-update-reboot.ps1
+    scripts/windows-test/test-contracts.ps1
+)
+if [[ "$allow_dirty" == 1 && -n "$(git status --porcelain --untracked-files=all)" ]]; then
+    [[ "$(git rev-parse HEAD)" == "$release_sha" ]] || \
+        fail 'harness retry requires the current HEAD to equal the descriptor release SHA'
+    while IFS= read -r entry; do
+        [[ -n "$entry" ]] || continue
+        status="${entry:0:2}"
+        path="${entry:3}"
+        [[ "$status" != *R* && "$status" != *C* ]] || \
+            fail 'harness retry does not accept renamed or copied paths'
+        case "$path" in
+            scripts/win-release-accept|scripts/windows-test-service-harness.ps1|scripts/windows-test/suites/release/release-service-core-update-reboot.ps1|scripts/windows-test/test-contracts.ps1) ;;
+            *) fail "dirty path is outside the harness-retry allowlist: $path" ;;
+        esac
+    done < <(git status --porcelain --untracked-files=all)
+    harness_retry=1
+fi
+
 attempt_root="$state_root/$release_run_id"
 mkdir -p "$attempt_root"
 descriptor="$attempt_root/acceptance-descriptor.json"
@@ -122,8 +145,65 @@ if [[ ! -d "$worktree/.git" && ! -f "$worktree/.git" ]]; then
 fi
 [[ "$(git -C "$worktree" rev-parse HEAD)" == "$release_sha" ]] || \
     fail 'isolated worktree does not match the descriptor release SHA'
+if (( harness_retry == 1 )); then
+    while IFS= read -r entry; do
+        [[ -n "$entry" ]] || continue
+        path="${entry:3}"
+        case "$path" in
+            scripts/windows-test-service-harness.ps1|scripts/windows-test/suites/release/release-service-core-update-reboot.ps1|scripts/windows-test/test-contracts.ps1) ;;
+            *) fail "isolated release worktree has unrelated dirtiness: $path" ;;
+        esac
+    done < <(git -C "$worktree" status --porcelain --untracked-files=all)
+    for path in "${harness_overlay_paths[@]}"; do
+        [[ -f "$repo_root/$path" && ! -L "$repo_root/$path" ]] || \
+            fail "harness retry source is not a regular file: $path"
+        cp "$repo_root/$path" "$worktree/$path"
+    done
+    echo 'Applying bounded dirty harness overlay to the release snapshot.'
+fi
 service_name="$(jq -r .candidate.service.name "$descriptor")"
 service_path="$(find "$candidate_dir" -type f -name "$service_name" -print -quit)"
+
+retry_source_run_id=''
+recovered_hardware_run_id=''
+retry_source_file="$attempt_root/retry-source-run-id"
+if (( harness_retry == 1 )); then
+    if [[ -f "$retry_source_file" ]]; then
+        retry_source_run_id="$(tr -d '\r\n' < "$retry_source_file")"
+    else
+        failed_logs=("$attempt_root"/hardware-failed-*.log)
+        for (( index=${#failed_logs[@]} - 1; index >= 0; index-- )); do
+            [[ -f "${failed_logs[index]}" ]] || continue
+            retry_source_run_id="$(sed -n 's/^Windows test run: //p' \
+                "${failed_logs[index]}" | tail -n 1)"
+            [[ -n "$retry_source_run_id" ]] && break
+        done
+    fi
+    [[ "$retry_source_run_id" =~ ^[a-z0-9][a-z0-9._-]{0,95}$ ]] || \
+        fail 'no valid failed Windows run is available for harness retry'
+    retry_remote="$(cd "$worktree" && scripts/win-test show "$retry_source_run_id")"
+    candidate_sha="$(jq -r .candidate.service.sha256 "$descriptor")"
+    jq -e --arg sha "$release_sha" --arg artifact "$candidate_sha" '
+      .documents["result-release-artifact-import-normal.json"] as $result |
+      $result.status == "passed" and $result.base_commit_sha == $sha and
+      $result.bindings.release_artifact_sha256 == $artifact
+    ' <<< "$retry_remote" >/dev/null || \
+        fail 'failed Windows run does not contain a reusable descriptor-bound candidate'
+    retry_profile="$(jq -r '.documents["profile-result.json"].status // "none"' \
+        <<< "$retry_remote")"
+    retry_before="$(jq -r \
+        '.documents["result-release-service-core-update-reboot-beforereboot.json"].status // "none"' \
+        <<< "$retry_remote")"
+    if [[ "$retry_profile" != failed && "$retry_before" != failed ]]; then
+        recovered_hardware_run_id="$retry_source_run_id"
+        retry_source_run_id=''
+        echo "Recovering in-flight Windows run $recovered_hardware_run_id."
+    fi
+    if [[ -n "$retry_source_run_id" ]]; then
+        printf '%s\n' "$retry_source_run_id" > "$retry_source_file"
+        echo "Reusing candidate from failed Windows run $retry_source_run_id."
+    fi
+fi
 
 hardware_log="$attempt_root/hardware.log"
 hardware_run_id=''
@@ -131,17 +211,28 @@ if [[ -f "$attempt_root/hardware-run-id" ]]; then
     hardware_run_id="$(tr -d '\r\n' < "$attempt_root/hardware-run-id")"
 elif [[ -f "$hardware_log" ]]; then
     hardware_run_id="$(sed -n 's/^Windows test run: //p' "$hardware_log" | tail -n 1)"
+elif [[ -n "$recovered_hardware_run_id" ]]; then
+    hardware_run_id="$recovered_hardware_run_id"
 fi
 if [[ -n "$hardware_run_id" ]]; then
     [[ "$hardware_run_id" =~ ^[a-z0-9][a-z0-9._-]{0,95}$ ]] || fail 'saved hardware run ID is invalid'
     printf '%s\n' "$hardware_run_id" > "$attempt_root/hardware-run-id"
     remote="$(cd "$worktree" && scripts/win-test show "$hardware_run_id")"
+    remote_profile="$(jq -r '.documents["profile-result.json"].status // "none"' <<< "$remote")"
+    continuation="$(jq -r '.documents["continuation.json"].status // "none"' <<< "$remote")"
+    before_status="$(jq -r \
+        '.documents["result-release-service-core-update-reboot-beforereboot.json"].status // "none"' \
+        <<< "$remote")"
+    if [[ "$remote_profile" != failed && "$continuation" == none && \
+        "$before_status" == none ]]; then
+        fail "Windows run $hardware_run_id is still executing after the SSH transport disconnected; rerun this command to recheck it"
+    fi
     candidate_sha="$(jq -r .candidate.service.sha256 "$descriptor")"
     jq -e --arg sha "$release_sha" --arg artifact "$candidate_sha" '
       .documents["result-release-service-core-update-reboot-beforereboot.json"] as $result |
       $result.base_commit_sha == $sha and $result.bindings.release_artifact_sha256 == $artifact
     ' <<< "$remote" >/dev/null || fail 'remote continuation does not match the release SHA and candidate tuple'
-    if [[ "$(jq -r '.documents["profile-result.json"].status // "none"' <<< "$remote")" == failed ]]; then
+    if [[ "$remote_profile" == failed ]]; then
         (cd "$worktree" && scripts/win-test reset) || true
         if [[ -f "$hardware_log" ]]; then
             mv "$hardware_log" "$attempt_root/hardware-failed-$(date -u '+%Y%m%dt%H%M%Sz').log"
@@ -149,7 +240,6 @@ if [[ -n "$hardware_run_id" ]]; then
         rm -f "$attempt_root/hardware-run-id"
         fail 'saved Windows acceptance run failed; rerun to start a fresh hardware attempt'
     fi
-    continuation="$(jq -r '.documents["continuation.json"].status // "none"' <<< "$remote")"
     if [[ "$continuation" == awaiting_reboot ]]; then
         (cd "$worktree" && scripts/win-test resume "$hardware_run_id")
     elif [[ "$continuation" != completed ]]; then
@@ -161,8 +251,14 @@ if [[ -n "$hardware_run_id" ]]; then
     fi
 else
     set +e
-    (cd "$worktree" && scripts/win-test accept release --artifact "$service_path" \
-        --baseline-dir "$baseline_dir") 2>&1 | tee "$hardware_log"
+    if [[ -n "$retry_source_run_id" ]]; then
+        (cd "$worktree" && scripts/win-test accept release \
+            --reuse-candidate "$retry_source_run_id" --baseline-dir "$baseline_dir") \
+            2>&1 | tee "$hardware_log"
+    else
+        (cd "$worktree" && scripts/win-test accept release --artifact "$service_path" \
+            --baseline-dir "$baseline_dir") 2>&1 | tee "$hardware_log"
+    fi
     hardware_status=${PIPESTATUS[0]}
     set -e
     hardware_run_id="$(sed -n 's/^Windows test run: //p' "$hardware_log" | tail -n 1)"
@@ -182,6 +278,13 @@ else
         continuation="$(jq -r '.documents["continuation.json"].status // "none"' <<< "$remote")"
         if [[ "$remote_profile" != failed && "$continuation" == awaiting_reboot ]]; then
             fail "Windows reboot is pending; rerun just win-release-accept to resume $hardware_run_id"
+        fi
+        if [[ "$remote_profile" != failed && "$continuation" == none ]]; then
+            fail "SSH transport disconnected while Windows run $hardware_run_id remained active; rerun just win-release-accept to reattach"
+        fi
+        if jq -e '.documents["result-release-artifact-import-normal.json"].status == "passed"' \
+            <<< "$remote" >/dev/null 2>&1; then
+            printf '%s\n' "$hardware_run_id" > "$retry_source_file"
         fi
         (cd "$worktree" && scripts/win-test reset) || true
         mv "$hardware_log" "$attempt_root/hardware-failed-$(date -u '+%Y%m%dt%H%M%Sz').log"
