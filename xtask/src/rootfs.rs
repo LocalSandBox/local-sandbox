@@ -19,6 +19,11 @@ const DEFAULT_BUN_AARCH64_SHA256: &str =
     "a27ffb63a8310375836e0d6f668ae17fa8d8d18b88c37c821c65331973a19a3b";
 const DEFAULT_BUN_X64_BASELINE_SHA256: &str =
     "a063908ae08b7852ca10939bbdc6ceed3ddabce8fb9402dce83d65d73b36e6c7";
+const DEFAULT_UV_VERSION: &str = "0.11.32";
+const DEFAULT_UV_AARCH64_SHA256: &str =
+    "4d4fa08d95b06642e5800df6a22bd71455f23f988269e18da2847971d8c0bf31";
+const DEFAULT_UV_X64_SHA256: &str =
+    "aab924fd522efd06f1c5f3b93a243864fc453132c94b2dc49f1371b528a4b967";
 const DEFAULT_TSX_VERSION: &str = "4.23.5";
 const DEFAULT_TYPESCRIPT_VERSION: &str = "6.0.3";
 const DEFAULT_XLSX_VERSION: &str = "0.18.5";
@@ -98,7 +103,7 @@ chroot /mnt/rootfs apt-get update -qq
 chroot /mnt/rootfs apt-get install -y -qq --no-install-recommends \
     ca-certificates curl git iproute2 \
     openssh-client jq less procps ripgrep rsync xz-utils libgomp1 libatomic1 \
-    cifs-utils e2fsprogs > /dev/null 2>&1
+    python3 python3-venv ffmpeg cifs-utils e2fsprogs > /dev/null 2>&1
 test -x /mnt/rootfs/usr/bin/rg
 test -x /mnt/rootfs/sbin/mount.cifs || test -x /mnt/rootfs/usr/sbin/mount.cifs
 test -x /mnt/rootfs/sbin/mkfs.ext4 || test -x /mnt/rootfs/usr/sbin/mkfs.ext4
@@ -182,6 +187,43 @@ install_bun() {
     ln -sf /root/.bun/bin/bun "${install_rootfs_dir}/usr/bin/bun"
     ln -sf /root/.bun/bin/bunx "${install_rootfs_dir}/usr/bin/bunx"
     chroot "${install_rootfs_dir}" /usr/bin/bun --version | grep -Fx "${BUN_VERSION}" > /dev/null
+}
+
+install_uv() {
+    install_rootfs_dir="$1"
+    case "${DEBOOTSTRAP_ARCH}" in
+        amd64)
+            uv_arch="x86_64"
+            uv_sha256="${UV_X64_SHA256}"
+            ;;
+        arm64)
+            uv_arch="aarch64"
+            uv_sha256="${UV_AARCH64_SHA256}"
+            ;;
+        *) echo "unsupported uv architecture: ${DEBOOTSTRAP_ARCH}" >&2; exit 1 ;;
+    esac
+
+    echo "==> Installing uv ${UV_VERSION}..."
+    uv_dist="uv-${uv_arch}-unknown-linux-gnu"
+    uv_archive="${uv_dist}.tar.gz"
+    uv_tmp="$(mktemp -d)"
+    track_toolchain_tmp_dir "${uv_tmp}"
+    uv_url="https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${uv_archive}"
+    curl -fsSLo "${uv_tmp}/${uv_archive}" "${uv_url}"
+    printf '%s  %s\n' "${uv_sha256}" "${uv_tmp}/${uv_archive}" | sha256sum -c -
+    tar -xzf "${uv_tmp}/${uv_archive}" -C "${uv_tmp}"
+    install -m 0755 "${uv_tmp}/${uv_dist}/uv" "${install_rootfs_dir}/usr/local/bin/uv"
+    install -m 0755 "${uv_tmp}/${uv_dist}/uvx" "${install_rootfs_dir}/usr/local/bin/uvx"
+    chroot "${install_rootfs_dir}" /usr/local/bin/uv --version | grep -Fx "uv ${UV_VERSION}" > /dev/null
+    chroot "${install_rootfs_dir}" /usr/local/bin/uvx --version > /dev/null
+}
+
+verify_python() {
+    install_rootfs_dir="$1"
+    test -x "${install_rootfs_dir}/usr/bin/python3"
+    chroot "${install_rootfs_dir}" /usr/bin/python3 -m venv /tmp/lsb-python-venv-smoke
+    test -x "${install_rootfs_dir}/tmp/lsb-python-venv-smoke/bin/python"
+    rm -rf "${install_rootfs_dir}/tmp/lsb-python-venv-smoke"
 }
 
 configure_javascript_environment() {
@@ -306,8 +348,10 @@ install_rootfs_toolchains() {
     mkdir -p "${install_rootfs_dir}/proc"
     mount -t proc proc "${install_rootfs_dir}/proc"
     TOOLCHAIN_PROC_MOUNT="${install_rootfs_dir}/proc"
+    verify_python "${install_rootfs_dir}"
     install_nodejs "${install_rootfs_dir}"
     install_bun "${install_rootfs_dir}"
+    install_uv "${install_rootfs_dir}"
     configure_javascript_environment "${install_rootfs_dir}"
     install_bundled_node_tools "${install_rootfs_dir}"
     cleanup_package_manager_state "${install_rootfs_dir}"
@@ -370,7 +414,7 @@ chroot "$MOUNT_DIR" apt-get update -qq
 chroot "$MOUNT_DIR" apt-get install -y -qq --no-install-recommends \
     ca-certificates curl git iproute2 \
     openssh-client jq less procps ripgrep rsync xz-utils libgomp1 libatomic1 \
-    ffmpeg cifs-utils e2fsprogs > /dev/null 2>&1
+    python3 python3-venv ffmpeg cifs-utils e2fsprogs > /dev/null 2>&1
 test -x "$MOUNT_DIR/usr/bin/rg"
 test -x "$MOUNT_DIR/sbin/mount.cifs" || test -x "$MOUNT_DIR/usr/sbin/mount.cifs"
 test -x "$MOUNT_DIR/sbin/mkfs.ext4" || test -x "$MOUNT_DIR/usr/sbin/mkfs.ext4"
@@ -427,12 +471,15 @@ fn should_use_docker_rootfs() -> bool {
         .unwrap_or_else(is_macos)
 }
 
-fn rootfs_toolchain_versions() -> [(&'static str, &'static str); 16] {
+fn rootfs_toolchain_versions() -> [(&'static str, &'static str); 19] {
     [
         ("NODE_VERSION", DEFAULT_NODE_VERSION),
         ("BUN_VERSION", DEFAULT_BUN_VERSION),
         ("BUN_AARCH64_SHA256", DEFAULT_BUN_AARCH64_SHA256),
         ("BUN_X64_BASELINE_SHA256", DEFAULT_BUN_X64_BASELINE_SHA256),
+        ("UV_VERSION", DEFAULT_UV_VERSION),
+        ("UV_AARCH64_SHA256", DEFAULT_UV_AARCH64_SHA256),
+        ("UV_X64_SHA256", DEFAULT_UV_X64_SHA256),
         ("TSX_VERSION", DEFAULT_TSX_VERSION),
         ("TYPESCRIPT_VERSION", DEFAULT_TYPESCRIPT_VERSION),
         ("XLSX_VERSION", DEFAULT_XLSX_VERSION),
@@ -693,7 +740,14 @@ mod tests {
     }
 
     #[test]
-    fn rootfs_toolchains_are_pinned_and_bun_is_digest_verified() {
+    fn rootfs_scripts_install_ffmpeg() {
+        for script in [macos_rootfs_docker_script(), linux_rootfs_script()] {
+            assert!(script.contains("ffmpeg"));
+        }
+    }
+
+    #[test]
+    fn rootfs_toolchains_are_pinned_and_downloads_are_digest_verified() {
         let script = macos_rootfs_docker_script();
 
         for (name, version) in rootfs_toolchain_versions() {
@@ -701,11 +755,24 @@ mod tests {
         }
         assert!(script.contains("bun-linux-aarch64.zip"));
         assert!(script.contains("bun-linux-x64-baseline.zip"));
+        assert!(script.contains("uv_arch=\"aarch64\""));
+        assert!(script.contains("uv_arch=\"x86_64\""));
+        assert!(script.contains("uv_dist=\"uv-${uv_arch}-unknown-linux-gnu\""));
         assert!(script.contains("sha256sum -c -"));
         assert!(script.contains("trustedDependencies"));
         assert!(script.contains("BUN_INSTALL_CACHE_DIR=/tmp/bun-install-cache"));
         assert!(script.contains("Bun smoke test failed"));
         assert!(script.contains("/usr/bin/npm install -g"));
+    }
+
+    #[test]
+    fn rootfs_scripts_install_and_check_python_tooling() {
+        for script in [macos_rootfs_docker_script(), linux_rootfs_script()] {
+            assert!(script.contains("python3 python3-venv"));
+            assert!(script.contains("/usr/bin/python3 -m venv"));
+            assert!(script.contains("/usr/local/bin/uv --version"));
+            assert!(script.contains("/usr/local/bin/uvx --version"));
+        }
     }
 
     #[test]

@@ -34,6 +34,9 @@ const versions = {
   npm: run('npm', ['--version']),
   bun: run('bun', ['--version']),
   ripgrep: run('rg', ['--version']).split('\n')[0],
+  python: run('python3', ['--version']),
+  uv: run('uv', ['--version']),
+  uvx: run('uvx', ['--version']),
   tsx: run('tsx', ['--version']),
   typescript: run('tsc', ['--version']),
 }

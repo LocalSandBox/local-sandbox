@@ -104,11 +104,14 @@ lsb run --allow-net --allow-host api.openai.com --allow-host registry.npmjs.org
 lsb run --cpus 4 --memory 4096 --disk-size 8192 -- make -j4
 ```
 
-### JavaScript and office tooling
+### JavaScript, Python, and office tooling
 
 Published VM images provide Bun as the default JavaScript package manager and
 runtime, with Node.js 24, npm, and npx retained for compatibility. The image also
-preinstalls the pinned spreadsheet, document, email, Workspace, Atlassian, and
+provides Python 3 with `venv`, plus pinned `uv` and `uvx` for Python project,
+dependency, and tool management. The image does not preinstall Python development
+tools such as Ruff; use `uvx` for one-off tools or declare them in a project.
+It also preinstalls the pinned spreadsheet, document, email, Workspace, Atlassian, and
 OpenAPI tools used by common agent tasks. Global Node modules are importable through
 `NODE_PATH=/usr/local/lib/node_modules`.
 
@@ -117,6 +120,10 @@ script is incompatible, use `node`, `npm`, or `npx`. Install one-off dependencie
 globally or below `/tmp/task-tools`; do not create `node_modules`, `bun.lock`, or
 `package-lock.json` beside mounted user inputs and deliverables unless the task
 explicitly requires project-local dependency state.
+
+Use `python3` for dependency-free scripts, `uv run` for project or script
+dependencies, and `uvx` for isolated command-line tools. Keep Debian's system
+Python environment unchanged rather than using `uv pip install --system`.
 
 The office-image validation workload measures end-to-end startup and mount time,
 guest disk writes, and artifact generation while checking Bun/npm installs, global

@@ -60,7 +60,10 @@ $stopwatch.Stop()
 if ($exitCode -ne 0) { throw "office rootfs smoke failed with exit code $exitCode" }
 $guest = ($output -join "`n") | ConvertFrom-Json
 if ($guest.status -ne 'passed' -or $guest.architecture -ne 'x64' -or
-    $guest.versions.bun -notmatch '^1\.' -or $guest.versions.node -notmatch '^v24\.') {
+    $guest.versions.bun -notmatch '^1\.' -or $guest.versions.node -notmatch '^v24\.' -or
+    $guest.versions.python -notmatch '^Python 3\.' -or
+    $guest.versions.uv -notmatch '^uv 0\.11\.32$' -or
+    $guest.versions.uvx -notmatch '^uvx 0\.11\.32$') {
     throw 'office rootfs smoke returned invalid runtime evidence.'
 }
 if (-not (Test-Path -LiteralPath $metricsPath -PathType Leaf)) {
