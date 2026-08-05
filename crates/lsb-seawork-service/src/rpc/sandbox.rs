@@ -276,7 +276,7 @@ async fn start_inner(
             &identity,
             sandbox_id,
             PrepareInstanceOptions {
-                correlation_id,
+                correlation_id: correlation_id.clone(),
                 cpus,
                 memory_mib,
                 disk_mib,
@@ -296,7 +296,15 @@ async fn start_inner(
                     &identity,
                     client_instance_id.as_deref(),
                 );
-                return Err(if error.to_string().contains("cancelled") {
+                let cancelled = error.to_string().contains("cancelled");
+                if !cancelled {
+                    telemetry.capture_failure(prepare_instance_failure_event(
+                        &error,
+                        &correlation_id,
+                        sandbox_id,
+                    ));
+                }
+                return Err(if cancelled {
                     ErrorCode::Cancelled
                 } else {
                     ErrorCode::InternalError
@@ -727,6 +735,23 @@ struct PrepareInstanceOptions {
     proxy_config: Option<lsb_proxy::ProxyConfig>,
 }
 
+fn prepare_instance_failure_event(
+    error: &anyhow::Error,
+    correlation_id: &str,
+    sandbox_id: ResourceHandle,
+) -> FailureEvent {
+    FailureEvent::new(
+        "sandbox.prepare_instance",
+        "SANDBOX_PREPARE_FAILED",
+        Level::Error,
+        crate::telemetry::format_error_chain(error),
+    )
+    .with_detailed_failure_kind("instance_preparation")
+    .with_correlation_id(correlation_id)
+    .with_resource_id(sandbox_id.to_string())
+    .with_phase("prepare")
+}
+
 fn prepare_instance(
     engine: &ServiceEngineConfig,
     identity: &ClientIdentityKey,
@@ -902,6 +927,26 @@ mod tests {
         assert!(copy_with_cancellation(&source, &destination, &cancellation).is_err());
         assert_eq!(std::fs::metadata(&destination).unwrap().len(), 0);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preparation_failure_event_preserves_the_original_error_chain() {
+        let sandbox_id = ResourceHandle::random().unwrap();
+        let error = anyhow::anyhow!("rootfs source missing").context("copy protected base rootfs");
+
+        let event = prepare_instance_failure_event(&error, "correlation", sandbox_id);
+        let expected_resource_id = sandbox_id.to_string();
+
+        assert_eq!(event.operation, "sandbox.prepare_instance");
+        assert_eq!(event.stable_error_code, "SANDBOX_PREPARE_FAILED");
+        assert_eq!(event.detailed_failure_kind, "instance_preparation");
+        assert_eq!(event.correlation_id.as_deref(), Some("correlation"));
+        assert_eq!(
+            event.resource_id.as_deref(),
+            Some(expected_resource_id.as_str())
+        );
+        assert!(event.summary.contains("copy protected base rootfs"));
+        assert!(event.summary.contains("rootfs source missing"));
     }
 
     #[test]
