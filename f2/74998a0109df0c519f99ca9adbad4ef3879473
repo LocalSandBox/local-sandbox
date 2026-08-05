@@ -1,0 +1,19 @@
+xtask/src/rootfs.rs
+  s_c1748e2b5f8ffc::t_04e8e3039d4261 106
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "f274998a0109df0c519f99ca9adbad4ef3879473",
+  "prompts": {},
+  "sessions": {
+    "s_c1748e2b5f8ffc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd207-2e40-7581-874f-674c8345cd20",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
