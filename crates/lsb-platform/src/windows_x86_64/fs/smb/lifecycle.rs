@@ -27,6 +27,20 @@ pub const WINDOWS_SMB_CLEANUP_MANIFEST_FILE: &str = "windows-smb-cleanup.json";
 pub const WINDOWS_SMB_INSTANCE_LOCK_FILE: &str = "windows-smb-active.lock";
 const WINDOWS_SMB_CLEANUP_SCHEMA_VERSION: u32 = 5;
 
+fn cancellation_with_cleanup_context(
+    cancelled: anyhow::Error,
+    failures: &[WindowsSmbCleanupFailure],
+) -> anyhow::Error {
+    if failures.is_empty() {
+        cancelled
+    } else {
+        cancelled.context(format!(
+            "Windows SMB cancellation cleanup had {} failure(s)",
+            failures.len()
+        ))
+    }
+}
+
 #[cfg(windows)]
 pub struct WindowsSmbInstanceGuard {
     path: PathBuf,
@@ -169,7 +183,12 @@ where
         &mut self,
         config: &WindowsSmbLifecycleConfig,
     ) -> Result<WindowsSmbActiveResources, WindowsSmbLifecycleError> {
-        self.prepare_internal(config, None)
+        self.prepare_internal(config, None, &|| Ok(()))
+            .map_err(|error| {
+                error
+                    .downcast::<WindowsSmbLifecycleError>()
+                    .expect("non-cancellable SMB preparation only returns lifecycle errors")
+            })
     }
 
     pub fn prepare_with_cleanup_manifest(
@@ -177,19 +196,36 @@ where
         config: &WindowsSmbLifecycleConfig,
         manifest_path: &Path,
     ) -> Result<WindowsSmbActiveResources, WindowsSmbLifecycleError> {
-        self.prepare_internal(config, Some(manifest_path))
+        self.prepare_internal(config, Some(manifest_path), &|| Ok(()))
+            .map_err(|error| {
+                error
+                    .downcast::<WindowsSmbLifecycleError>()
+                    .expect("non-cancellable SMB preparation only returns lifecycle errors")
+            })
+    }
+
+    pub fn prepare_with_cleanup_manifest_and_cancel_check(
+        &mut self,
+        config: &WindowsSmbLifecycleConfig,
+        manifest_path: &Path,
+        cancel_check: &dyn Fn() -> anyhow::Result<()>,
+    ) -> anyhow::Result<WindowsSmbActiveResources> {
+        self.prepare_internal(config, Some(manifest_path), cancel_check)
     }
 
     fn prepare_internal(
         &mut self,
         config: &WindowsSmbLifecycleConfig,
         manifest_path: Option<&Path>,
-    ) -> Result<WindowsSmbActiveResources, WindowsSmbLifecycleError> {
+        cancel_check: &dyn Fn() -> anyhow::Result<()>,
+    ) -> anyhow::Result<WindowsSmbActiveResources> {
+        cancel_check()?;
         let admin_phase = self.phase(WindowsSmbLifecyclePhase::AdminPreflight);
         let admin_result = self.admin.ensure_elevated_admin();
         admin_phase.finish(admin_result.is_ok(), BTreeMap::new());
         admin_result?;
 
+        cancel_check()?;
         let policy_phase = self.phase(WindowsSmbLifecyclePhase::SmbPolicyPreflight);
         let policy_result = self
             .admin
@@ -197,13 +233,15 @@ where
         policy_phase.finish(policy_result.is_ok(), BTreeMap::new());
         policy_result?;
 
+        cancel_check()?;
         let loopback_phase = self.phase(WindowsSmbLifecyclePhase::SmbLoopbackPreflight);
         let loopback_result = self.admin.ensure_smb_loopback_available();
         loopback_phase.finish(loopback_result.is_ok(), BTreeMap::new());
         loopback_result?;
 
+        cancel_check()?;
         let credential_phase = self.phase(WindowsSmbLifecyclePhase::CredentialGeneration);
-        let credentials = (|| {
+        let credentials: Result<_, WindowsSmbLifecycleError> = (|| {
             let user_name = generate_smb_user_name(&mut self.passwords)?;
             let password = self.passwords.generate_password()?;
             Ok((user_name, password))
@@ -216,6 +254,17 @@ where
         );
         if let Some(path) = manifest_path {
             write_windows_smb_cleanup_journal(path, &journal)?;
+        }
+        if let Err(cancelled) = cancel_check() {
+            if let Some(path) = manifest_path {
+                return match remove_windows_smb_cleanup_manifest(path) {
+                    Ok(()) => Err(cancelled),
+                    Err(cleanup) => Err(cancelled.context(format!(
+                        "removing unused Windows SMB cleanup manifest failed: {cleanup}"
+                    ))),
+                };
+            }
+            return Err(cancelled);
         }
         let account_phase = self.phase(WindowsSmbLifecyclePhase::UserCreate);
         let account_result = self.users.create_user(&user_name, &password);
@@ -231,7 +280,7 @@ where
                 } else {
                     Vec::new()
                 };
-                return Err(error.with_cleanup_failures(failures));
+                return Err(error.with_cleanup_failures(failures).into());
             }
         };
         journal.account.domain = account.domain.clone();
@@ -243,8 +292,20 @@ where
                     Ok(()) => Vec::new(),
                     Err(cleanup) => cleanup.cleanup_failures().to_vec(),
                 };
-                return Err(error.with_cleanup_failures(failures));
+                return Err(error.with_cleanup_failures(failures).into());
             }
+        }
+
+        if let Err(cancelled) = cancel_check() {
+            let failures = if let Some(path) = manifest_path {
+                match self.recover_cleanup_manifest(path) {
+                    Ok(()) => Vec::new(),
+                    Err(cleanup) => cleanup.cleanup_failures().to_vec(),
+                }
+            } else {
+                self.cleanup_created(&account, &mut Vec::new(), &mut Vec::new())
+            };
+            return Err(cancellation_with_cleanup_context(cancelled, &failures));
         }
 
         let mut acl_grants = Vec::new();
@@ -253,6 +314,18 @@ where
         let mut remaining_acl_entries = MAX_ACL_AGGREGATE_ENTRIES;
         let acl_plan_phase = self.phase(WindowsSmbLifecyclePhase::AclPlan);
         for mount in &config.mounts {
+            if let Err(cancelled) = cancel_check() {
+                acl_plan_phase.finish(false, BTreeMap::new());
+                let failures = if let Some(path) = manifest_path {
+                    match self.recover_cleanup_manifest(path) {
+                        Ok(()) => Vec::new(),
+                        Err(cleanup) => cleanup.cleanup_failures().to_vec(),
+                    }
+                } else {
+                    self.cleanup_created(&account, &mut shares, &mut acl_grants)
+                };
+                return Err(cancellation_with_cleanup_context(cancelled, &failures));
+            }
             let request = WindowsSmbAclGrantRequest {
                 path: mount.source.clone(),
                 account: account.clone(),
@@ -260,7 +333,10 @@ where
                 prune_subtrees: mount.prune_subtrees.clone(),
                 entry_limit: remaining_acl_entries,
             };
-            let intended_grant = match self.acls.prepare_grant(&request) {
+            let intended_grant = match self
+                .acls
+                .prepare_grant_with_cancel_check(&request, cancel_check)
+            {
                 Ok(grant) => grant,
                 Err(error) => {
                     acl_plan_phase.finish(
@@ -278,7 +354,12 @@ where
                     } else {
                         self.cleanup_created(&account, &mut shares, &mut acl_grants)
                     };
-                    return Err(error.with_cleanup_failures(failures));
+                    return match error.downcast::<WindowsSmbLifecycleError>() {
+                        Ok(error) => Err(error.with_cleanup_failures(failures).into()),
+                        Err(cancelled) => {
+                            Err(cancellation_with_cleanup_context(cancelled, &failures))
+                        }
+                    };
                 }
             };
             if intended_grant.inspected_entries > remaining_acl_entries {
@@ -298,7 +379,7 @@ where
                 } else {
                     self.cleanup_created(&account, &mut shares, &mut acl_grants)
                 };
-                return Err(error.with_cleanup_failures(failures));
+                return Err(error.with_cleanup_failures(failures).into());
             }
             remaining_acl_entries -= intended_grant.inspected_entries;
             intended_grants.push(intended_grant);
@@ -332,8 +413,20 @@ where
                         Ok(()) => Vec::new(),
                         Err(cleanup) => cleanup.cleanup_failures().to_vec(),
                     };
-                    return Err(error.with_cleanup_failures(failures));
+                    return Err(error.with_cleanup_failures(failures).into());
                 }
+            }
+            if let Err(cancelled) = cancel_check() {
+                acl_apply_phase.finish(false, BTreeMap::new());
+                let failures = if let Some(path) = manifest_path {
+                    match self.recover_cleanup_manifest(path) {
+                        Ok(()) => Vec::new(),
+                        Err(cleanup) => cleanup.cleanup_failures().to_vec(),
+                    }
+                } else {
+                    self.cleanup_created(&account, &mut shares, &mut acl_grants)
+                };
+                return Err(cancellation_with_cleanup_context(cancelled, &failures));
             }
             let grant = match self.acls.grant_access(intended_grant) {
                 Ok(grant) => grant,
@@ -353,7 +446,7 @@ where
                     } else {
                         self.cleanup_created(&account, &mut shares, &mut acl_grants)
                     };
-                    return Err(error.with_cleanup_failures(failures));
+                    return Err(error.with_cleanup_failures(failures).into());
                 }
             };
             acl_grants.push(grant);
@@ -368,8 +461,20 @@ where
                         Ok(()) => Vec::new(),
                         Err(cleanup) => cleanup.cleanup_failures().to_vec(),
                     };
-                    return Err(error.with_cleanup_failures(failures));
+                    return Err(error.with_cleanup_failures(failures).into());
                 }
+            }
+            if let Err(cancelled) = cancel_check() {
+                acl_apply_phase.finish(false, BTreeMap::new());
+                let failures = if let Some(path) = manifest_path {
+                    match self.recover_cleanup_manifest(path) {
+                        Ok(()) => Vec::new(),
+                        Err(cleanup) => cleanup.cleanup_failures().to_vec(),
+                    }
+                } else {
+                    self.cleanup_created(&account, &mut shares, &mut acl_grants)
+                };
+                return Err(cancellation_with_cleanup_context(cancelled, &failures));
             }
         }
         acl_apply_phase.finish(
@@ -380,6 +485,17 @@ where
             )]),
         );
 
+        if let Err(cancelled) = cancel_check() {
+            let failures = if let Some(path) = manifest_path {
+                match self.recover_cleanup_manifest(path) {
+                    Ok(()) => Vec::new(),
+                    Err(cleanup) => cleanup.cleanup_failures().to_vec(),
+                }
+            } else {
+                self.cleanup_created(&account, &mut shares, &mut acl_grants)
+            };
+            return Err(cancellation_with_cleanup_context(cancelled, &failures));
+        }
         let acl_verify_phase = self.phase(WindowsSmbLifecyclePhase::AclVerify);
         let acl_verify_result = self.acls.verify_access(&account, &password, &acl_grants);
         acl_verify_phase.finish(
@@ -395,7 +511,19 @@ where
             } else {
                 self.cleanup_created(&account, &mut shares, &mut acl_grants)
             };
-            return Err(error.with_cleanup_failures(failures));
+            return Err(error.with_cleanup_failures(failures).into());
+        }
+
+        if let Err(cancelled) = cancel_check() {
+            let failures = if let Some(path) = manifest_path {
+                match self.recover_cleanup_manifest(path) {
+                    Ok(()) => Vec::new(),
+                    Err(cleanup) => cleanup.cleanup_failures().to_vec(),
+                }
+            } else {
+                self.cleanup_created(&account, &mut shares, &mut acl_grants)
+            };
+            return Err(cancellation_with_cleanup_context(cancelled, &failures));
         }
 
         let share_create_phase = self.phase(WindowsSmbLifecyclePhase::ShareCreate);
@@ -416,7 +544,7 @@ where
                         } else {
                             self.cleanup_created(&account, &mut shares, &mut acl_grants)
                         };
-                        return Err(error.with_cleanup_failures(failures));
+                        return Err(error.with_cleanup_failures(failures).into());
                     }
                 };
             journal.shares.push(WindowsSmbCleanupShare {
@@ -431,8 +559,20 @@ where
                         Ok(()) => Vec::new(),
                         Err(cleanup) => cleanup.cleanup_failures().to_vec(),
                     };
-                    return Err(error.with_cleanup_failures(failures));
+                    return Err(error.with_cleanup_failures(failures).into());
                 }
+            }
+            if let Err(cancelled) = cancel_check() {
+                share_create_phase.finish(false, BTreeMap::new());
+                let failures = if let Some(path) = manifest_path {
+                    match self.recover_cleanup_manifest(path) {
+                        Ok(()) => Vec::new(),
+                        Err(cleanup) => cleanup.cleanup_failures().to_vec(),
+                    }
+                } else {
+                    self.cleanup_created(&account, &mut shares, &mut acl_grants)
+                };
+                return Err(cancellation_with_cleanup_context(cancelled, &failures));
             }
             let share = match self.shares.create_share(WindowsSmbShareCreateRequest {
                 name: share_name,
@@ -454,7 +594,7 @@ where
                     } else {
                         self.cleanup_created(&account, &mut shares, &mut acl_grants)
                     };
-                    return Err(error.with_cleanup_failures(failures));
+                    return Err(error.with_cleanup_failures(failures).into());
                 }
             };
             mount_requests.push(build_mount_request(
@@ -464,6 +604,18 @@ where
                 &mount.target,
             ));
             shares.push(share);
+            if let Err(cancelled) = cancel_check() {
+                share_create_phase.finish(false, BTreeMap::new());
+                let failures = if let Some(path) = manifest_path {
+                    match self.recover_cleanup_manifest(path) {
+                        Ok(()) => Vec::new(),
+                        Err(cleanup) => cleanup.cleanup_failures().to_vec(),
+                    }
+                } else {
+                    self.cleanup_created(&account, &mut shares, &mut acl_grants)
+                };
+                return Err(cancellation_with_cleanup_context(cancelled, &failures));
+            }
         }
         share_create_phase.finish(
             true,
@@ -1157,7 +1309,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::rc::Rc;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     use super::*;
@@ -2426,5 +2578,87 @@ mod tests {
         assert!(!display.contains(&secret));
         assert!(debug.contains("<redacted>"));
         assert_eq!(display, "<redacted>");
+    }
+
+    #[derive(Debug)]
+    struct TestCancellation;
+
+    impl std::fmt::Display for TestCancellation {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("test cancellation")
+        }
+    }
+
+    impl std::error::Error for TestCancellation {}
+
+    #[test]
+    fn cancellation_at_every_lifecycle_boundary_preserves_type_and_rolls_back() {
+        let mut observed_success = false;
+        for cancel_at in 0..64 {
+            let root = temp_dir(&format!("cancel-boundary-{cancel_at}"));
+            let manifest = root.join(WINDOWS_SMB_CLEANUP_MANIFEST_FILE);
+            let log = EventLog::default();
+            let mut manager = fake_manager(
+                log.clone(),
+                [
+                    vec![0, 1, 2, 3, 4, 5],
+                    vec![0xaa, 0xbb, 0xcc, 0xdd],
+                    vec![0xee, 0xff, 0x10, 0x20],
+                ],
+            );
+            let checks = AtomicUsize::new(0);
+            let result = manager.prepare_with_cleanup_manifest_and_cancel_check(
+                &config(),
+                &manifest,
+                &|| {
+                    if checks.fetch_add(1, Ordering::SeqCst) == cancel_at {
+                        Err(TestCancellation.into())
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+
+            match result {
+                Ok(_) => {
+                    manager
+                        .recover_cleanup_manifest(&manifest)
+                        .expect("successful setup should remain recoverable");
+                    observed_success = true;
+                }
+                Err(error) => {
+                    assert!(
+                        error
+                            .chain()
+                            .any(|cause| cause.downcast_ref::<TestCancellation>().is_some()),
+                        "boundary {cancel_at} lost the typed cancellation: {error:#}"
+                    );
+                }
+            }
+
+            let events = log.snapshot();
+            let count = |prefix: &str| {
+                events
+                    .iter()
+                    .filter(|event| event.starts_with(prefix))
+                    .count()
+            };
+            assert_eq!(count("create_user:"), count("delete_user:"));
+            assert!(count("revoke_acl:") >= count("grant_acl:"));
+            assert!(count("remove_share:") >= count("create_share:"));
+            assert!(
+                !manifest.exists(),
+                "boundary {cancel_at} left the cleanup manifest behind"
+            );
+            let _ = std::fs::remove_dir_all(root);
+
+            if observed_success {
+                break;
+            }
+        }
+        assert!(
+            observed_success,
+            "test schedule must cover every cancellation check"
+        );
     }
 }

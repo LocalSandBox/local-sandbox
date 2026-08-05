@@ -876,7 +876,10 @@ fn run(
     if session_cancellation.is_cancelled() || startup_cancellation.is_cancelled() {
         let _ = cleanup_instance(&engine, &spec);
         telemetry.update_crash_context("sandbox.cleaned_up", Some(&spec.resource_id), None, true);
-        let _ = ready.send(Err(anyhow::anyhow!("operation cancelled")));
+        let cancelled = session_cancellation
+            .check()
+            .and_then(|()| startup_cancellation.check());
+        let _ = ready.send(cancelled);
         return;
     }
     let result = build_and_start(
@@ -1844,9 +1847,8 @@ fn build_and_start(
             Ok(())
         },
         || {
-            if session_cancellation.is_cancelled() || startup_cancellation.is_cancelled() {
-                bail!("operation cancelled");
-            }
+            session_cancellation.check()?;
+            startup_cancellation.check()?;
             Ok(())
         },
     );

@@ -1153,7 +1153,7 @@ impl Sandbox {
     ) -> Result<()>
     where
         F: FnOnce(&Sandbox) -> Result<()>,
-        C: Fn() -> Result<()>,
+        C: Fn() -> Result<()> + Sync,
     {
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         self.mount_metrics.begin_start();
@@ -1279,7 +1279,7 @@ impl Sandbox {
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         {
             let branches = run_concurrent_startup_branches(
-                || self.prepare_windows_smb_mounts_traced(),
+                || self.prepare_windows_smb_mounts_traced(&cancel_check),
                 || {
                     cancel_check()?;
                     self.boot_guest(&mut windows_mount_cache_run)?;
@@ -1353,14 +1353,17 @@ impl Sandbox {
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    fn prepare_windows_smb_mounts_traced(&self) -> Result<()> {
+    fn prepare_windows_smb_mounts_traced(
+        &self,
+        cancel_check: &dyn Fn() -> Result<()>,
+    ) -> Result<()> {
         let phase = LifecyclePhaseGuard::start(
             self.lifecycle_observer.as_ref(),
             SandboxLifecyclePhase::SmbSetup,
             std::collections::BTreeMap::new(),
         );
         let result = self
-            .prepare_windows_smb_mounts()
+            .prepare_windows_smb_mounts(cancel_check)
             .context("Failed to prepare Windows SMB mounts");
         phase.finish(result.is_ok(), windows_smb_setup_telemetry_data(&result));
         if result.is_err() {
@@ -3072,7 +3075,8 @@ impl Sandbox {
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    fn prepare_windows_smb_mounts(&self) -> Result<()> {
+    fn prepare_windows_smb_mounts(&self, cancel_check: &dyn Fn() -> Result<()>) -> Result<()> {
+        cancel_check()?;
         let mounts = self
             .windows_smb_mounts
             .lock()
@@ -3123,6 +3127,8 @@ impl Sandbox {
         lock_phase.finish(guard_result.is_ok(), std::collections::BTreeMap::new());
         let guard = guard_result?;
 
+        cancel_check()?;
+
         let revalidate_phase = LifecyclePhaseGuard::start_child(
             self.lifecycle_observer.as_ref(),
             SandboxLifecyclePhase::SmbMountRevalidate,
@@ -3131,6 +3137,7 @@ impl Sandbox {
         );
         let mut refreshed_mounts = Vec::with_capacity(mounts.len());
         for mount in &mounts {
+            cancel_check()?;
             let refreshed_result = replan_windows_smb_mount(mount).with_context(|| {
                 format!(
                     "revalidating Windows SMB mount target '{}' source before sharing",
@@ -3180,8 +3187,24 @@ impl Sandbox {
                 })?;
         }
 
-        let mut resources = manager
-            .prepare_with_cleanup_manifest(&config, &self.windows_smb_cleanup_manifest_path)?;
+        cancel_check()?;
+
+        let mut resources = manager.prepare_with_cleanup_manifest_and_cancel_check(
+            &config,
+            &self.windows_smb_cleanup_manifest_path,
+            cancel_check,
+        )?;
+
+        if let Err(cancelled) = cancel_check() {
+            let cleanup_result =
+                manager.recover_cleanup_manifest(&self.windows_smb_cleanup_manifest_path);
+            return Err(match cleanup_result {
+                Ok(()) => cancelled,
+                Err(cleanup) => cancelled.context(format!(
+                    "Windows SMB cancellation cleanup failed: {cleanup}"
+                )),
+            });
+        }
 
         let publish_phase = LifecyclePhaseGuard::start_child(
             self.lifecycle_observer.as_ref(),

@@ -62,6 +62,15 @@ pub trait WindowsSmbAclManager {
         })
     }
 
+    fn prepare_grant_with_cancel_check(
+        &mut self,
+        request: &WindowsSmbAclGrantRequest,
+        cancel_check: &dyn Fn() -> anyhow::Result<()>,
+    ) -> anyhow::Result<WindowsSmbAclGrant> {
+        cancel_check()?;
+        Ok(self.prepare_grant(request)?)
+    }
+
     fn grant_access(
         &mut self,
         grant: WindowsSmbAclGrant,
@@ -98,6 +107,35 @@ impl WindowsSmbAclManager for NativeWindowsSmbAclManager {
     ) -> Result<WindowsSmbAclGrant, WindowsSmbLifecycleError> {
         let inspected_entries =
             inspect_tree(&request.path, &request.prune_subtrees, request.entry_limit)?;
+        Ok(WindowsSmbAclGrant {
+            path: request.path.clone(),
+            traverse_paths: request
+                .path
+                .ancestors()
+                .skip(1)
+                .map(std::path::Path::to_path_buf)
+                .collect(),
+            prune_subtrees: request.prune_subtrees.clone(),
+            principal: request.account.principal.clone(),
+            sid: request.account.sid.clone(),
+            access: request.access,
+            original_dacl_control: Some(security_descriptor_control(&request.path)?),
+            inspected_entries,
+            descendant_aces: false,
+        })
+    }
+
+    fn prepare_grant_with_cancel_check(
+        &mut self,
+        request: &WindowsSmbAclGrantRequest,
+        cancel_check: &dyn Fn() -> anyhow::Result<()>,
+    ) -> anyhow::Result<WindowsSmbAclGrant> {
+        let inspected_entries = inspect_tree_with_cancel_check(
+            &request.path,
+            &request.prune_subtrees,
+            request.entry_limit,
+            cancel_check,
+        )?;
         Ok(WindowsSmbAclGrant {
             path: request.path.clone(),
             traverse_paths: request
@@ -453,6 +491,20 @@ fn inspect_tree(
     prune_subtrees: &[String],
     entry_limit: usize,
 ) -> Result<usize, WindowsSmbLifecycleError> {
+    inspect_tree_with_cancel_check(root, prune_subtrees, entry_limit, &|| Ok(())).map_err(|error| {
+        error
+            .downcast::<WindowsSmbLifecycleError>()
+            .expect("non-cancellable SMB inspection only returns lifecycle errors")
+    })
+}
+
+#[cfg(windows)]
+fn inspect_tree_with_cancel_check(
+    root: &std::path::Path,
+    prune_subtrees: &[String],
+    entry_limit: usize,
+    cancel_check: &dyn Fn() -> anyhow::Result<()>,
+) -> anyhow::Result<usize> {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::fs::MetadataExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
@@ -460,6 +512,7 @@ fn inspect_tree(
     let mut entries = 0usize;
     let mut pending = vec![root.to_path_buf()];
     while let Some(path) = pending.pop() {
+        cancel_check()?;
         if path.as_os_str().encode_wide().count() > MAX_WINDOWS_PATH_UNITS {
             return Err(WindowsSmbLifecycleError::mount_invalid(
                 &path,
