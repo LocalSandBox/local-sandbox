@@ -30,6 +30,8 @@ use anyhow::{bail, Context, Result};
 use crossbeam_channel::Receiver;
 #[cfg(target_os = "macos")]
 use lsb_platform::terminal;
+#[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
+use lsb_platform::windows_x86_64::fs::smb::WindowsSmbLifecycleError;
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 use lsb_platform::windows_x86_64::fs::smb::{
     windows_smb_cleanup_manifest_path, WindowsSmbActiveResources, WindowsSmbInstanceGuard,
@@ -1408,13 +1410,8 @@ impl Sandbox {
                 std::collections::BTreeMap::new(),
             );
             let cleanup_result = self.cleanup_windows_smb_mounts();
-            smb_teardown_phase.finish(
-                cleanup_result.is_ok(),
-                std::collections::BTreeMap::from([(
-                    "transport.type".to_string(),
-                    "smb".to_string(),
-                )]),
-            );
+            let cleanup_telemetry = windows_smb_cleanup_telemetry_data(&cleanup_result);
+            smb_teardown_phase.finish(cleanup_result.is_ok(), cleanup_telemetry);
             let result = match (stop_result, cleanup_result) {
                 (Ok(()), Ok(())) => Ok(()),
                 (Err(error), Ok(())) => Err(error),
@@ -4269,6 +4266,52 @@ fn windows_smb_cleanup_manifest_path_from_rootfs(rootfs_path: &str) -> Result<Pa
     Ok(windows_smb_cleanup_manifest_path(instance_dir))
 }
 
+#[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
+fn windows_smb_cleanup_telemetry_data(
+    result: &Result<()>,
+) -> std::collections::BTreeMap<String, String> {
+    let mut data =
+        std::collections::BTreeMap::from([("transport.type".to_string(), "smb".to_string())]);
+    let Err(error) = result else {
+        return data;
+    };
+    let Some(error) = error.downcast_ref::<WindowsSmbLifecycleError>() else {
+        return data;
+    };
+
+    let failures = error.cleanup_failures();
+    data.insert(
+        "cleanup.failure_count".to_string(),
+        failures.len().max(1).to_string(),
+    );
+    if let Some(failure) = failures.first() {
+        data.insert(
+            "cleanup.failure.phase".to_string(),
+            failure.phase.label().to_string(),
+        );
+        if let Some(path) = &failure.path {
+            data.insert(
+                "cleanup.failure.path".to_string(),
+                path.display().to_string(),
+            );
+        }
+    } else {
+        if let Some(phase) = error.operation_phase() {
+            data.insert(
+                "cleanup.failure.phase".to_string(),
+                phase.label().to_string(),
+            );
+        }
+        if let Some(path) = error.operation_path() {
+            data.insert(
+                "cleanup.failure.path".to_string(),
+                path.display().to_string(),
+            );
+        }
+    }
+    data
+}
+
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 fn temp_sibling_path(destination: &Path, label: &str) -> Result<PathBuf> {
     let parent = destination.parent().ok_or_else(|| {
@@ -4754,6 +4797,28 @@ mod tests {
     use std::path::PathBuf;
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn windows_smb_cleanup_telemetry_records_failure_phase_and_path() {
+        use lsb_platform::windows_x86_64::fs::smb::{
+            WindowsSmbCleanupFailure, WindowsSmbLifecyclePhase,
+        };
+
+        let path = std::path::PathBuf::from(r"C:\Users\profile\workspace\locked");
+        let result = Err(WindowsSmbLifecycleError::CleanupFailed {
+            failures: vec![WindowsSmbCleanupFailure::at_path(
+                WindowsSmbLifecyclePhase::AclRevoke,
+                path.clone(),
+                "access denied",
+            )],
+        }
+        .into());
+
+        let data = windows_smb_cleanup_telemetry_data(&result);
+        assert_eq!(data["cleanup.failure_count"], "1");
+        assert_eq!(data["cleanup.failure.phase"], "NTFS ACL revoke");
+        assert_eq!(data["cleanup.failure.path"], path.display().to_string());
+    }
 
     #[test]
     fn concurrent_startup_overlaps_smb_and_guest_pipeline() {

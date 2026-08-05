@@ -134,58 +134,47 @@ impl WindowsSmbAclManager for NativeWindowsSmbAclManager {
         &mut self,
         grant: &WindowsSmbAclGrant,
     ) -> Result<(), WindowsSmbLifecycleError> {
-        let entries = match enumerate_tree(&grant.path, &[], WindowsSmbLifecyclePhase::AclRevoke) {
-            Ok(entries) => entries,
-            Err(_error) if !grant.path.exists() => Vec::new(),
-            Err(error) => return Err(error),
-        };
+        let mut failures = Vec::new();
+
+        // Remove the root ACE before walking the mutable tree. This immediately
+        // withdraws inherited access even when a descendant later disappears or
+        // cannot be inspected during the best-effort sweep.
+        revoke_acl_entry_best_effort(&grant.path, &grant.sid, grant.access, true, &mut failures);
+
+        let (entries, enumeration_failures) = enumerate_tree_for_cleanup(&grant.path);
+        failures.extend(enumeration_failures);
         for entry in entries.iter().rev() {
-            apply_acl_change(
+            revoke_acl_entry_best_effort(
                 &entry.path,
                 &grant.sid,
                 grant.access,
-                windows_sys::Win32::Security::Authorization::REVOKE_ACCESS,
                 entry.is_dir,
-                WindowsSmbLifecyclePhase::AclRevoke,
-            )?;
-        }
-        for entry in &entries {
-            if contains_explicit_sid(&entry.path, &grant.sid)? {
-                return Err(WindowsSmbLifecycleError::operation_failed(
-                    WindowsSmbLifecyclePhase::AclRevoke,
-                    format!(
-                        "explicit ACE for generated SID {} remains on '{}'",
-                        grant.sid,
-                        entry.path.display()
-                    ),
-                ));
-            }
+                &mut failures,
+            );
         }
         for path in &grant.traverse_paths {
-            if !path.exists() {
-                continue;
-            }
-            apply_traverse_acl_change(
-                path,
-                &grant.sid,
-                windows_sys::Win32::Security::Authorization::REVOKE_ACCESS,
-                WindowsSmbLifecyclePhase::AclRevoke,
-            )?;
-            if contains_explicit_sid(path, &grant.sid)? {
-                return Err(WindowsSmbLifecycleError::operation_failed(
-                    WindowsSmbLifecyclePhase::AclRevoke,
-                    format!(
-                        "explicit ancestor traverse ACE for generated SID {} remains on '{}'",
-                        grant.sid,
-                        path.display()
-                    ),
-                ));
-            }
+            revoke_traverse_acl_best_effort(path, &grant.sid, &mut failures);
         }
         if let Some(control) = grant.original_dacl_control {
-            if grant.path.exists() {
-                restore_security_descriptor_control(&grant.path, control)?;
+            if !path_is_absent(&grant.path) {
+                if let Err(error) = restore_security_descriptor_control(&grant.path, control) {
+                    if !path_is_absent(&grant.path) {
+                        failures.push(cleanup_error_at(&grant.path, error));
+                    }
+                }
             }
+        }
+
+        if let Some(first) = failures.first() {
+            let path = first.operation_path().unwrap_or(&grant.path).to_path_buf();
+            return Err(WindowsSmbLifecycleError::operation_failed_at(
+                WindowsSmbLifecyclePhase::AclRevoke,
+                path,
+                format!(
+                    "{} ACL cleanup operation(s) failed; first failure: {first}",
+                    failures.len()
+                ),
+            ));
         }
         Ok(())
     }
@@ -522,6 +511,175 @@ fn enumerate_tree(
         }
     }
     Ok(result)
+}
+
+#[cfg(windows)]
+fn enumerate_tree_for_cleanup(
+    root: &std::path::Path,
+) -> (Vec<WindowsSmbAclPlanEntry>, Vec<WindowsSmbLifecycleError>) {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    let mut result = Vec::new();
+    let mut failures = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        if path.as_os_str().encode_wide().count() > MAX_WINDOWS_PATH_UNITS {
+            failures.push(WindowsSmbLifecycleError::operation_failed_at(
+                WindowsSmbLifecyclePhase::AclRevoke,
+                path.clone(),
+                "SMB mount cleanup path exceeds the Windows path limit",
+            ));
+            continue;
+        }
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                failures.push(WindowsSmbLifecycleError::operation_failed_at(
+                    WindowsSmbLifecyclePhase::AclRevoke,
+                    path.clone(),
+                    format!("failed to inspect SMB mount cleanup entry: {error}"),
+                ));
+                continue;
+            }
+        };
+        if path != root && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            // Reparse-point descendants were rejected during grant planning, so
+            // any created later are outside the journaled ACL mutation set.
+            continue;
+        }
+        let is_dir = metadata.is_dir();
+        if path != root {
+            result.push(WindowsSmbAclPlanEntry {
+                path: path.clone(),
+                is_dir,
+            });
+            if result.len() > MAX_ACL_TREE_ENTRIES {
+                failures.push(WindowsSmbLifecycleError::operation_failed_at(
+                    WindowsSmbLifecyclePhase::AclRevoke,
+                    root.to_path_buf(),
+                    format!(
+                        "SMB mount cleanup tree exceeds the {MAX_ACL_TREE_ENTRIES}-entry safety limit"
+                    ),
+                ));
+                break;
+            }
+        }
+        if !is_dir {
+            continue;
+        }
+        let children = match std::fs::read_dir(&path) {
+            Ok(children) => children,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                failures.push(WindowsSmbLifecycleError::operation_failed_at(
+                    WindowsSmbLifecyclePhase::AclRevoke,
+                    path.clone(),
+                    format!("failed to enumerate SMB mount cleanup directory: {error}"),
+                ));
+                continue;
+            }
+        };
+        for child in children {
+            match child {
+                Ok(child) => pending.push(child.path()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => failures.push(WindowsSmbLifecycleError::operation_failed_at(
+                    WindowsSmbLifecyclePhase::AclRevoke,
+                    path.clone(),
+                    format!("failed to read SMB mount cleanup directory entry: {error}"),
+                )),
+            }
+        }
+    }
+    (result, failures)
+}
+
+#[cfg(windows)]
+fn revoke_acl_entry_best_effort(
+    path: &std::path::Path,
+    sid: &str,
+    access: WindowsSmbAccess,
+    is_dir: bool,
+    failures: &mut Vec<WindowsSmbLifecycleError>,
+) {
+    if path_is_absent(path) {
+        return;
+    }
+    if let Err(error) = apply_acl_change(
+        path,
+        sid,
+        access,
+        windows_sys::Win32::Security::Authorization::REVOKE_ACCESS,
+        is_dir,
+        WindowsSmbLifecyclePhase::AclRevoke,
+    ) {
+        if !path_is_absent(path) {
+            failures.push(cleanup_error_at(path, error));
+        }
+        return;
+    }
+    verify_explicit_sid_removed(path, sid, failures);
+}
+
+#[cfg(windows)]
+fn revoke_traverse_acl_best_effort(
+    path: &std::path::Path,
+    sid: &str,
+    failures: &mut Vec<WindowsSmbLifecycleError>,
+) {
+    if path_is_absent(path) {
+        return;
+    }
+    if let Err(error) = apply_traverse_acl_change(
+        path,
+        sid,
+        windows_sys::Win32::Security::Authorization::REVOKE_ACCESS,
+        WindowsSmbLifecyclePhase::AclRevoke,
+    ) {
+        if !path_is_absent(path) {
+            failures.push(cleanup_error_at(path, error));
+        }
+        return;
+    }
+    verify_explicit_sid_removed(path, sid, failures);
+}
+
+#[cfg(windows)]
+fn verify_explicit_sid_removed(
+    path: &std::path::Path,
+    sid: &str,
+    failures: &mut Vec<WindowsSmbLifecycleError>,
+) {
+    match contains_explicit_sid(path, sid) {
+        Ok(false) => {}
+        Ok(true) => failures.push(WindowsSmbLifecycleError::operation_failed_at(
+            WindowsSmbLifecyclePhase::AclRevoke,
+            path.to_path_buf(),
+            format!("explicit ACE for generated SID {sid} remains"),
+        )),
+        Err(error) if path_is_absent(path) => {}
+        Err(error) => failures.push(cleanup_error_at(path, error)),
+    }
+}
+
+#[cfg(windows)]
+fn cleanup_error_at(
+    path: &std::path::Path,
+    error: WindowsSmbLifecycleError,
+) -> WindowsSmbLifecycleError {
+    WindowsSmbLifecycleError::operation_failed_at(
+        WindowsSmbLifecyclePhase::AclRevoke,
+        path.to_path_buf(),
+        error.to_string(),
+    )
+}
+
+#[cfg(windows)]
+fn path_is_absent(path: &std::path::Path) -> bool {
+    matches!(path.try_exists(), Ok(false))
 }
 
 #[cfg(windows)]

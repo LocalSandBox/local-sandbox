@@ -133,6 +133,7 @@ impl WindowsSmbLifecyclePhase {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsSmbCleanupFailure {
     pub phase: WindowsSmbLifecyclePhase,
+    pub path: Option<PathBuf>,
     pub detail: String,
 }
 
@@ -140,6 +141,19 @@ impl WindowsSmbCleanupFailure {
     pub fn new(phase: WindowsSmbLifecyclePhase, detail: impl Into<String>) -> Self {
         Self {
             phase,
+            path: None,
+            detail: sanitize_error_detail(detail),
+        }
+    }
+
+    pub fn at_path(
+        phase: WindowsSmbLifecyclePhase,
+        path: impl Into<PathBuf>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            phase,
+            path: Some(path.into()),
             detail: sanitize_error_detail(detail),
         }
     }
@@ -150,10 +164,12 @@ pub enum WindowsSmbLifecycleError {
     NotElevated,
     OperationFailed {
         phase: WindowsSmbLifecyclePhase,
+        path: Option<PathBuf>,
         detail: String,
     },
     SetupFailed {
         phase: WindowsSmbLifecyclePhase,
+        path: Option<PathBuf>,
         detail: String,
         cleanup_failures: Vec<WindowsSmbCleanupFailure>,
     },
@@ -172,6 +188,19 @@ impl WindowsSmbLifecycleError {
     pub fn operation_failed(phase: WindowsSmbLifecyclePhase, detail: impl Into<String>) -> Self {
         Self::OperationFailed {
             phase,
+            path: None,
+            detail: sanitize_error_detail(detail),
+        }
+    }
+
+    pub fn operation_failed_at(
+        phase: WindowsSmbLifecyclePhase,
+        path: impl Into<PathBuf>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self::OperationFailed {
+            phase,
+            path: Some(path.into()),
             detail: sanitize_error_detail(detail),
         }
     }
@@ -182,18 +211,25 @@ impl WindowsSmbLifecycleError {
         }
 
         match self {
-            Self::OperationFailed { phase, detail } => Self::SetupFailed {
+            Self::OperationFailed {
                 phase,
+                path,
+                detail,
+            } => Self::SetupFailed {
+                phase,
+                path,
                 detail,
                 cleanup_failures,
             },
             Self::InvalidUserName { reason } => Self::SetupFailed {
                 phase: WindowsSmbLifecyclePhase::UserNameGeneration,
+                path: None,
                 detail: reason,
                 cleanup_failures,
             },
             Self::InvalidShareName { reason } => Self::SetupFailed {
                 phase: WindowsSmbLifecyclePhase::ShareNameGeneration,
+                path: None,
                 detail: reason,
                 cleanup_failures,
             },
@@ -210,6 +246,21 @@ impl WindowsSmbLifecycleError {
             _ => &[],
         }
     }
+
+    pub fn operation_path(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::OperationFailed { path, .. } | Self::SetupFailed { path, .. } => path.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn operation_phase(&self) -> Option<WindowsSmbLifecyclePhase> {
+        match self {
+            Self::OperationFailed { phase, .. } | Self::SetupFailed { phase, .. } => Some(*phase),
+            Self::CleanupFailed { failures } => failures.first().map(|failure| failure.phase),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for WindowsSmbLifecycleError {
@@ -218,24 +269,48 @@ impl fmt::Display for WindowsSmbLifecycleError {
             Self::NotElevated => {
                 f.write_str("Windows direct mounts require an elevated Administrator shell")
             }
-            Self::OperationFailed { phase, detail } => {
-                write!(f, "Windows SMB {} failed: {detail}", phase.label())
+            Self::OperationFailed {
+                phase,
+                path,
+                detail,
+            } => {
+                write!(f, "Windows SMB {} failed", phase.label())?;
+                if let Some(path) = path {
+                    write!(f, " at '{}'", path.display())?;
+                }
+                write!(f, ": {detail}")
             }
             Self::SetupFailed {
                 phase,
+                path,
                 detail,
                 cleanup_failures,
-            } => write!(
-                f,
-                "Windows SMB {} failed: {detail}; best-effort cleanup had {} failure(s)",
-                phase.label(),
-                cleanup_failures.len()
-            ),
-            Self::CleanupFailed { failures } => write!(
-                f,
-                "Windows SMB cleanup failed for {} resource operation(s)",
-                failures.len()
-            ),
+            } => {
+                write!(f, "Windows SMB {} failed", phase.label())?;
+                if let Some(path) = path {
+                    write!(f, " at '{}'", path.display())?;
+                }
+                write!(
+                    f,
+                    ": {detail}; best-effort cleanup had {} failure(s)",
+                    cleanup_failures.len()
+                )
+            }
+            Self::CleanupFailed { failures } => {
+                write!(
+                    f,
+                    "Windows SMB cleanup failed for {} resource operation(s)",
+                    failures.len()
+                )?;
+                if let Some(first) = failures.first() {
+                    write!(f, "; first failure during {}", first.phase.label())?;
+                    if let Some(path) = &first.path {
+                        write!(f, " at '{}'", path.display())?;
+                    }
+                    write!(f, ": {}", first.detail)?;
+                }
+                Ok(())
+            }
             Self::InvalidUserName { reason } => {
                 write!(f, "generated Windows SMB user name is invalid: {reason}")
             }

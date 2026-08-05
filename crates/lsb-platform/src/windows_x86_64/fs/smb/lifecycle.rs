@@ -336,8 +336,9 @@ where
 
         for share in shares.iter().rev() {
             if let Err(error) = self.shares.remove_share(&share) {
-                failures.push(WindowsSmbCleanupFailure::new(
+                failures.push(WindowsSmbCleanupFailure::at_path(
                     WindowsSmbLifecyclePhase::ShareRemove,
+                    share.path.clone(),
                     error.to_string(),
                 ));
             }
@@ -363,8 +364,9 @@ where
         }
         for grant in acl_grants.iter().rev() {
             if let Err(error) = self.acls.revoke_access(&grant) {
-                failures.push(WindowsSmbCleanupFailure::new(
+                failures.push(WindowsSmbCleanupFailure::at_path(
                     WindowsSmbLifecyclePhase::AclRevoke,
+                    error.operation_path().unwrap_or(&grant.path).to_path_buf(),
                     error.to_string(),
                 ));
             }
@@ -729,8 +731,9 @@ pub fn remove_windows_smb_cleanup_manifest(path: &Path) -> Result<(), WindowsSmb
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(WindowsSmbLifecycleError::operation_failed(
+        Err(error) => Err(WindowsSmbLifecycleError::operation_failed_at(
             WindowsSmbLifecyclePhase::CleanupManifest,
+            path.to_path_buf(),
             format!(
                 "failed to remove cleanup manifest '{}': {error}",
                 path.display()
@@ -1835,6 +1838,50 @@ mod tests {
             .snapshot()
             .iter()
             .all(|event| !event.starts_with("revoke_acl:") && !event.starts_with("delete_user:")));
+    }
+
+    #[test]
+    fn cleanup_records_each_failed_acl_root_and_retains_account() {
+        let log = EventLog::default();
+        let mut manager = fake_manager(
+            log.clone(),
+            [
+                vec![0, 1, 2, 3, 4, 5],
+                vec![0xaa, 0xbb, 0xcc, 0xdd],
+                vec![0xee, 0xff, 0x10, 0x20],
+            ],
+        );
+        let resources = manager.prepare(&config()).expect("prepare succeeds");
+        manager.acls.fail_revoke = true;
+
+        let error = manager
+            .cleanup(resources)
+            .expect_err("ACL cleanup should report every failed mount root");
+
+        let failures = error.cleanup_failures();
+        assert_eq!(failures.len(), 2);
+        assert_eq!(failures[0].path.as_deref(), Some(Path::new("/host/b")));
+        assert_eq!(failures[1].path.as_deref(), Some(Path::new("/host/a")));
+        assert!(error.to_string().contains("/host/b"));
+        assert_eq!(
+            log.snapshot(),
+            [
+                "admin",
+                "random:6",
+                "password",
+                "create_user:lsb_000102030405",
+                "grant_acl:0:/host/a",
+                "grant_acl:1:/host/b",
+                "random:4",
+                "create_share:0:lsb-instancemounts01-m0-aabbccdd",
+                "random:4",
+                "create_share:1:lsb-instancemounts01-m1-eeff1020",
+                "remove_share:lsb-instancemounts01-m1-eeff1020",
+                "remove_share:lsb-instancemounts01-m0-aabbccdd",
+                "revoke_acl:/host/b",
+                "revoke_acl:/host/a",
+            ]
+        );
     }
 
     #[test]

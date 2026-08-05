@@ -348,18 +348,27 @@ impl lsb_vm::SandboxLifecycleObserver for SandboxLifecycleTrace {
                     });
                 }
                 if event.succeeded == Some(false) {
-                    self.telemetry.capture_failure(
-                        crate::telemetry::FailureEvent::new(
-                            operation,
-                            "SANDBOX_LIFECYCLE_PHASE_FAILED",
-                            crate::telemetry::Level::Error,
-                            format!("sandbox lifecycle phase {operation} failed"),
-                        )
-                        .with_detailed_failure_kind("lifecycle_phase")
-                        .with_correlation_id(&self.correlation_id)
-                        .with_resource_id(&self.resource_id)
-                        .with_phase(operation),
-                    );
+                    let mut failure = crate::telemetry::FailureEvent::new(
+                        operation,
+                        "SANDBOX_LIFECYCLE_PHASE_FAILED",
+                        crate::telemetry::Level::Error,
+                        format!("sandbox lifecycle phase {operation} failed"),
+                    )
+                    .with_detailed_failure_kind("lifecycle_phase")
+                    .with_correlation_id(&self.correlation_id)
+                    .with_resource_id(&self.resource_id)
+                    .with_phase(operation);
+                    if let Some(phase) = event.data.get("cleanup.failure.phase") {
+                        failure.contexts.insert(
+                            "cleanup_failure".to_string(),
+                            serde_json::json!({
+                                "phase": phase,
+                                "path": event.data.get("cleanup.failure.path"),
+                                "failure_count": event.data.get("cleanup.failure_count"),
+                            }),
+                        );
+                    }
+                    self.telemetry.capture_failure(failure);
                 }
             }
         }
