@@ -4,6 +4,7 @@
 
 ## Unreleased
 
+- Added `rg` (ripgrep) to the Linux VM sandbox image.
 - Fixed controlled self-update activation and rollback on Windows by admitting
   the signed, maintenance-root-pinned LocalSystem updater to the service IPC
   endpoint while keeping service identities excluded from normal client

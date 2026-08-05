@@ -33,6 +33,7 @@ const versions = {
   node: process.version,
   npm: run('npm', ['--version']),
   bun: run('bun', ['--version']),
+  ripgrep: run('rg', ['--version']).split('\n')[0],
   tsx: run('tsx', ['--version']),
   typescript: run('tsc', ['--version']),
 }

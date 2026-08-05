@@ -97,8 +97,9 @@ DPKGEOF
 chroot /mnt/rootfs apt-get update -qq
 chroot /mnt/rootfs apt-get install -y -qq --no-install-recommends \
     ca-certificates curl git iproute2 \
-    openssh-client jq less procps rsync xz-utils libgomp1 libatomic1 \
+    openssh-client jq less procps ripgrep rsync xz-utils libgomp1 libatomic1 \
     cifs-utils e2fsprogs > /dev/null 2>&1
+test -x /mnt/rootfs/usr/bin/rg
 test -x /mnt/rootfs/sbin/mount.cifs || test -x /mnt/rootfs/usr/sbin/mount.cifs
 test -x /mnt/rootfs/sbin/mkfs.ext4 || test -x /mnt/rootfs/usr/sbin/mkfs.ext4
 
@@ -368,8 +369,9 @@ DPKGEOF
 chroot "$MOUNT_DIR" apt-get update -qq
 chroot "$MOUNT_DIR" apt-get install -y -qq --no-install-recommends \
     ca-certificates curl git iproute2 \
-    openssh-client jq less procps rsync xz-utils libgomp1 libatomic1 \
+    openssh-client jq less procps ripgrep rsync xz-utils libgomp1 libatomic1 \
     ffmpeg cifs-utils e2fsprogs > /dev/null 2>&1
+test -x "$MOUNT_DIR/usr/bin/rg"
 test -x "$MOUNT_DIR/sbin/mount.cifs" || test -x "$MOUNT_DIR/usr/sbin/mount.cifs"
 test -x "$MOUNT_DIR/sbin/mkfs.ext4" || test -x "$MOUNT_DIR/usr/sbin/mkfs.ext4"
 
@@ -680,6 +682,14 @@ mod tests {
         assert!(script.contains("e2fsprogs"));
         assert!(script.contains("mkfs.ext4"));
         assert!(script.contains("rsync"));
+    }
+
+    #[test]
+    fn rootfs_scripts_install_and_check_ripgrep() {
+        for script in [macos_rootfs_docker_script(), linux_rootfs_script()] {
+            assert!(script.contains("ripgrep"));
+            assert!(script.contains("/usr/bin/rg"));
+        }
     }
 
     #[test]
