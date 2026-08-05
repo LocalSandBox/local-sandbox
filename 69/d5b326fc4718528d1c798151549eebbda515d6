@@ -1,0 +1,55 @@
+crates/lsb-seawork-service/src/telemetry/native.rs
+  s_c275d1be85a445::t_6bcdd4f9f24692 82-85,561-562,597
+scripts/windows-test/suites/diagnostics/sentry-smoke.ps1
+  s_c275d1be85a445::t_a48f3c0666e68f 106,108-111,120-122,199-201
+crates/lsb-seawork-service/tests/fixtures/sentry-smoke/sentry-smoke.c
+  s_c275d1be85a445::t_a48f3c0666e68f 34-36,78-97,100
+crates/lsb-seawork-service/src/scm.rs
+  s_c275d1be85a445::t_5026d59d2fe7c5 437,462-465,1105-1116
+  s_c275d1be85a445::t_6a4e33176500d9 1117-1118
+  s_c275d1be85a445::t_6bcdd4f9f24692 435-436
+  s_c275d1be85a445::t_1fbceafec07cbb 1039-1040
+scripts/windows-test/catalog.json
+  s_c275d1be85a445::t_ba87d2fb25bd21 109
+sentry-native.lock.json
+  s_c275d1be85a445::t_6bcdd4f9f24692 4-5,7-8,12-13,15
+scripts/windows-test-service-harness.ps1
+  s_c275d1be85a445::t_edacc2d51721c0 949-966
+  s_c275d1be85a445::t_1b04df406a3906 19-22,811,944
+crates/lsb-seawork-service/build.rs
+  s_c275d1be85a445::t_a48f3c0666e68f 124-143
+  s_c275d1be85a445::t_954da6d79417e5 172
+  s_c275d1be85a445::t_66cb5d6ac7ea5c 158
+scripts/windows-test/suites/service/installed-service-smoke.ps1
+  s_c275d1be85a445::t_1b04df406a3906 134-138
+  s_c275d1be85a445::t_ab21c6184ea007 169
+  s_c275d1be85a445::t_ba87d2fb25bd21 20-109,122-123,125-133,139-142,150-153,170
+docs/seawork-service-sentry-runbook.md
+  s_c275d1be85a445::t_a21baf371a987a 28-29
+crates/lsb-seawork-service/tests/fixtures/sentry-smoke/CMakeLists.txt
+  s_c275d1be85a445::t_66cb5d6ac7ea5c 15
+  s_c275d1be85a445::t_954da6d79417e5 17
+scripts/prepare-sentry-native.ps1
+  s_c275d1be85a445::t_10c18079978c06 111-112,115
+fixtures/windows/guest/service-acceptance.mjs
+  s_c275d1be85a445::t_90966368394abe 66-67,69-70
+  s_c275d1be85a445::t_fef2f568ae3ef8 52,57-58,319
+  s_c275d1be85a445::t_caf100997a2787 68
+  s_c275d1be85a445::t_c510e1dbfd63ef 73
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "69d5b326fc4718528d1c798151549eebbda515d6",
+  "prompts": {},
+  "sessions": {
+    "s_c275d1be85a445": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd104-5ed1-7532-a4ac-15b577776936",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
