@@ -117,16 +117,17 @@ pub(crate) enum TelemetryFailure {
     Qmp,
     Hyperv,
     Dump,
+    UpdateDelivery,
 }
 
-static TELEMETRY_FAILURES: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
+static TELEMETRY_FAILURES: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
 
 pub(crate) fn record_failure(failure: TelemetryFailure) {
     TELEMETRY_FAILURES[failure as usize].fetch_add(1, Ordering::Relaxed);
 }
 
 pub(crate) fn failure_counter_context() -> serde_json::Value {
-    let values: [u64; 11] =
+    let values: [u64; 12] =
         std::array::from_fn(|index| TELEMETRY_FAILURES[index].load(Ordering::Relaxed));
     serde_json::json!({
         "initialization_failure": values[TelemetryFailure::Initialization as usize],
@@ -140,6 +141,7 @@ pub(crate) fn failure_counter_context() -> serde_json::Value {
         "qmp_failure": values[TelemetryFailure::Qmp as usize],
         "hyperv_failure": values[TelemetryFailure::Hyperv as usize],
         "dump_failure": values[TelemetryFailure::Dump as usize],
+        "update_delivery_failure": values[TelemetryFailure::UpdateDelivery as usize],
     })
 }
 

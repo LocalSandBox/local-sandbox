@@ -142,7 +142,7 @@ pub fn report_terminal_journal(path: &Path, telemetry: &Telemetry) {
         return;
     };
     if journal.mark_reported(event_id).is_ok() {
-        let _ = write_json_atomic(path, &journal);
+        persist_telemetry_receipt(path, &journal);
     }
 }
 
@@ -158,7 +158,7 @@ pub fn report_update_telemetry(
     };
     if let Some(hostname) = hostname {
         replay_attempt_path(&paths.updates.current_attempt, telemetry, hostname, channel);
-        for path in bounded_json_files(&paths.updates.attempt_history) {
+        for path in durable_json_files(&paths.updates.attempt_history) {
             replay_attempt_path(&path, telemetry, hostname, channel);
         }
         replay_transaction_path(
@@ -167,7 +167,7 @@ pub fn report_update_telemetry(
             hostname,
             channel,
         );
-        for path in bounded_json_files(&paths.updates.history) {
+        for path in durable_json_files(&paths.updates.history) {
             replay_transaction_path(&path, telemetry, hostname, channel);
         }
         prune_reported_attempts(&paths.updates.attempt_history);
@@ -186,7 +186,7 @@ pub fn last_update_snapshot(paths: &ServicePaths) -> Option<lsb_seawork_update::
             snapshots.push(attempt.attempt.snapshot());
         }
     }
-    for path in bounded_json_files(&paths.updates.attempt_history) {
+    for path in durable_json_files(&paths.updates.attempt_history) {
         if let Ok(attempt) = protected_load_json::<UpdateAttemptEnvelope>(&path) {
             if attempt.validate().is_ok() {
                 snapshots.push(attempt.attempt.snapshot());
@@ -194,7 +194,7 @@ pub fn last_update_snapshot(paths: &ServicePaths) -> Option<lsb_seawork_update::
         }
     }
     let mut transaction_paths = vec![paths.updates.current_transaction.clone()];
-    transaction_paths.extend(bounded_json_files(&paths.updates.history));
+    transaction_paths.extend(durable_json_files(&paths.updates.history));
     for path in transaction_paths {
         if let Ok(transaction) = protected_load_json::<TransactionEnvelope>(&path) {
             if transaction.validate().is_ok() {
@@ -266,7 +266,7 @@ fn replay_attempt_path(path: &Path, telemetry: &Telemetry, hostname: &str, chann
                 .mark_checkpoint_reported(index, boundary, event_id)
                 .is_ok()
             {
-                let _ = write_json_atomic(path, &envelope);
+                persist_telemetry_receipt(path, &envelope);
             }
         }
     }
@@ -313,7 +313,7 @@ fn replay_transaction_path(path: &Path, telemetry: &Telemetry, hostname: &str, c
                 .mark_checkpoint_reported(index, boundary, event_id)
                 .is_ok()
             {
-                let _ = write_json_atomic(path, &envelope);
+                persist_telemetry_receipt(path, &envelope);
             }
         }
     }
@@ -324,7 +324,7 @@ fn replay_transaction_path(path: &Path, telemetry: &Telemetry, hostname: &str, c
             reconstruct_update(telemetry, &envelope, Some(hostname), Some(channel))
         {
             if envelope.mark_reported(event_id).is_ok() {
-                let _ = write_json_atomic(path, &envelope);
+                persist_telemetry_receipt(path, &envelope);
             }
         }
     }
@@ -378,7 +378,7 @@ fn replay_attempt_failures(
                 .mark_failure_reported(index, receipt_boundary, event_id)
                 .is_ok()
             {
-                let _ = write_json_atomic(path, envelope);
+                persist_telemetry_receipt(path, envelope);
             }
         }
     }
@@ -417,7 +417,7 @@ fn replay_transaction_failures(
             .mark_failure_reported(index, UpdateFailureBoundary::FirstError, event_id)
             .is_ok()
         {
-            let _ = write_json_atomic(path, envelope);
+            persist_telemetry_receipt(path, envelope);
         }
     }
 }
@@ -531,7 +531,7 @@ fn checkpoint_is_reported(
     }
 }
 
-fn bounded_json_files(directory: &Path) -> Vec<PathBuf> {
+fn durable_json_files(directory: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(directory) else {
         return Vec::new();
     };
@@ -542,14 +542,19 @@ fn bounded_json_files(directory: &Path) -> Vec<PathBuf> {
             path.extension()
                 .is_some_and(|extension| extension == "json")
         })
-        .take(256)
         .collect()
+}
+
+fn persist_telemetry_receipt<T: Serialize>(path: &Path, value: &T) {
+    if write_json_atomic(path, value).is_err() {
+        crate::telemetry::record_failure(crate::telemetry::TelemetryFailure::UpdateDelivery);
+    }
 }
 
 const RETAIN_REPORTED_UPDATES: usize = 64;
 
 fn prune_reported_attempts(directory: &Path) {
-    let mut reported = bounded_json_files(directory)
+    let mut reported = durable_json_files(directory)
         .into_iter()
         .filter_map(|path| {
             let envelope = protected_load_json::<UpdateAttemptEnvelope>(&path).ok()?;
@@ -569,7 +574,7 @@ fn prune_reported_attempts(directory: &Path) {
 }
 
 fn prune_reported_transactions(directory: &Path) {
-    let mut reported = bounded_json_files(directory)
+    let mut reported = durable_json_files(directory)
         .into_iter()
         .filter_map(|path| {
             let envelope = protected_load_json::<TransactionEnvelope>(&path).ok()?;
@@ -849,6 +854,19 @@ impl Coordinator {
                 Err(error) => return Err(error).context("load protected preinstall request"),
             };
         request.validate()?;
+        let mut attempt = request
+            .request
+            .attempt_id
+            .as_deref()
+            .and_then(|attempt_id| {
+                AttemptRecorder::resume(
+                    &self.paths,
+                    self.context.telemetry(),
+                    self.machine_name.clone(),
+                    self.channel,
+                    attempt_id,
+                )
+            });
         match protected_load_json::<PreinstallReceiptEnvelope>(
             &self.paths.updates.preinstall_receipt,
         ) {
@@ -857,7 +875,15 @@ impl Coordinator {
                 if !receipt.matches_request(&request) {
                     bail!("protected preinstall receipt differs from its request");
                 }
-                self.activate_preinstalled(&request)?;
+                if let Some(attempt) = attempt.as_mut() {
+                    attempt.complete_external(
+                        "update.preinstall",
+                        UpdateActor::Updater,
+                        &request.request.created_utc,
+                        &receipt.receipt.completed_utc,
+                    );
+                }
+                self.activate_preinstalled(&request, &mut attempt)?;
             }
             Err(error) if is_not_found(&error) => {
                 let fixed = FixedProductPaths::discover()?;
@@ -868,11 +894,28 @@ impl Coordinator {
                 if observed != request.request.helper_protocol {
                     bail!("installed helper protocol changed during preinstall recovery");
                 }
-                start_helper()?;
-                self.wait_for_preinstall_receipt(&request)?;
-                self.activate_preinstalled(&request)?;
+                let mut timeline = request.request.timeline.clone();
+                record_rollout_action(
+                    &mut attempt,
+                    &mut timeline,
+                    "update.preinstall",
+                    UpdateActor::Updater,
+                    || {
+                        start_helper()?;
+                        self.wait_for_preinstall_receipt(&request).map(|_| ())
+                    },
+                )?;
+                self.activate_preinstalled(&request, &mut attempt)?;
             }
             Err(error) => return Err(error).context("load protected preinstall receipt"),
+        }
+        if let (Some(attempt), Ok(transaction)) = (
+            attempt.as_mut(),
+            protected_load_json::<TransactionEnvelope>(&self.paths.updates.current_transaction),
+        ) {
+            if transaction.validate().is_ok() {
+                attempt.handoff(&transaction.transaction.transaction_id);
+            }
         }
         Ok(true)
     }
@@ -911,7 +954,11 @@ impl Coordinator {
         }
     }
 
-    fn activate_preinstalled(&mut self, request: &PreinstallRequestEnvelope) -> Result<()> {
+    fn activate_preinstalled(
+        &mut self,
+        request: &PreinstallRequestEnvelope,
+        attempt: &mut Option<AttemptRecorder>,
+    ) -> Result<()> {
         request.validate()?;
         let receipt: PreinstallReceiptEnvelope =
             protected_load_json(&self.paths.updates.preinstall_receipt)
@@ -937,31 +984,38 @@ impl Coordinator {
             bail!("preinstall request no longer matches committed state");
         }
 
-        let mut timeline = request.request.timeline.clone();
-        timeline.push(UpdateTransition {
-            phase: "update.preinstall".to_string(),
-            actor: UpdateActor::Updater,
-            started_utc: request.request.created_utc.clone(),
-            completed_utc: Some(receipt.receipt.completed_utc.clone()),
-            duration_ms: Some(duration_between(
-                &request.request.created_utc,
-                &receipt.receipt.completed_utc,
-            )),
-            outcome: Some(UpdateTransitionOutcome::Succeeded),
-            failure_code: None,
-            retryable: None,
-            retry_attempt: None,
-            started_event_id: None,
-            completed_event_id: None,
-            first_error_event_id: None,
-            retry_exhausted_event_id: None,
-        });
+        let mut timeline = attempt.as_ref().map_or_else(
+            || {
+                let mut timeline = request.request.timeline.clone();
+                timeline.push(UpdateTransition {
+                    phase: "update.preinstall".to_string(),
+                    actor: UpdateActor::Updater,
+                    started_utc: request.request.created_utc.clone(),
+                    completed_utc: Some(receipt.receipt.completed_utc.clone()),
+                    duration_ms: Some(duration_between(
+                        &request.request.created_utc,
+                        &receipt.receipt.completed_utc,
+                    )),
+                    outcome: Some(UpdateTransitionOutcome::Succeeded),
+                    failure_code: None,
+                    retryable: None,
+                    retry_attempt: None,
+                    started_event_id: None,
+                    completed_event_id: None,
+                    first_error_event_id: None,
+                    retry_exhausted_event_id: None,
+                });
+                timeline
+            },
+            |attempt| attempt.envelope.attempt.timeline.clone(),
+        );
         self.wait_for_helper_stopped()?;
         self.set_phase(
             UpdatePhase::UpdateWaitingForIdle,
             Some(request.request.candidate.clone()),
         )?;
-        record_update_action(
+        record_rollout_action(
+            attempt,
             &mut timeline,
             "update.idle_wait",
             UpdateActor::Service,
@@ -1037,6 +1091,13 @@ impl Coordinator {
                 let _ = self.context.abort_automatic_update(&update_id);
             } else {
                 let _ = self.context.cancel_preinstalled_seal();
+            }
+            if let Some(attempt) = attempt.as_mut() {
+                let diagnostic = anyhow::anyhow!("{error:#}");
+                let _: Result<()> =
+                    attempt.record("update.activation", UpdateActor::Service, || {
+                        Err(diagnostic)
+                    });
             }
             return Err(error);
         }
@@ -1182,6 +1243,9 @@ impl Coordinator {
             self.failed_target_suppression(&candidate)?
         {
             self.record_suppressed(candidate, retry_after_utc, permanently_suppressed, etag)?;
+            if let Some(attempt) = attempt.as_mut() {
+                attempt.finish(UpdateAttemptOutcome::Suppressed, None);
+            }
             return Ok(());
         }
         self.set_phase(UpdatePhase::UpdateDownloading, Some(candidate.clone()))?;
@@ -1283,9 +1347,18 @@ impl Coordinator {
         })?;
         create_json(&self.paths.updates.preinstall_request, &request)
             .context("persist protected preinstall request")?;
-        if let Err(error) = start_helper()
-            .and_then(|()| self.wait_for_preinstall_receipt(&request).map(|_| ()))
-            .and_then(|()| self.activate_preinstalled(&request))
+        let mut preinstall_timeline = request.request.timeline.clone();
+        if let Err(error) = record_rollout_action(
+            attempt,
+            &mut preinstall_timeline,
+            "update.preinstall",
+            UpdateActor::Updater,
+            || {
+                start_helper()?;
+                self.wait_for_preinstall_receipt(&request).map(|_| ())
+            },
+        )
+        .and_then(|()| self.activate_preinstalled(&request, attempt))
         {
             let _ = self.cleanup_abandoned_preinstall();
             return Err(error);
@@ -2061,6 +2134,79 @@ impl AttemptRecorder {
         Ok(recorder)
     }
 
+    fn resume(
+        paths: &ServicePaths,
+        telemetry: Telemetry,
+        hostname: Option<String>,
+        channel: ReleaseChannel,
+        attempt_id: &str,
+    ) -> Option<Self> {
+        let envelope =
+            protected_load_json::<UpdateAttemptEnvelope>(&paths.updates.current_attempt).ok()?;
+        if envelope.validate().is_err()
+            || envelope.attempt.outcome != UpdateAttemptOutcome::Active
+            || envelope.attempt.attempt_id != attempt_id
+        {
+            return None;
+        }
+        Some(Self {
+            envelope,
+            current_path: paths.updates.current_attempt.clone(),
+            history_path: paths.updates.attempt_history.clone(),
+            telemetry,
+            hostname,
+            channel: match channel {
+                ReleaseChannel::Stable => "stable",
+                ReleaseChannel::Prerelease => "prerelease",
+            },
+        })
+    }
+
+    fn complete_external(
+        &mut self,
+        phase: &'static str,
+        actor: UpdateActor,
+        started_utc: &str,
+        completed_utc: &str,
+    ) {
+        if self
+            .envelope
+            .attempt
+            .timeline
+            .iter()
+            .any(|transition| transition.phase == phase && transition.outcome.is_some())
+        {
+            return;
+        }
+        if !self
+            .envelope
+            .attempt
+            .timeline
+            .last()
+            .is_some_and(|transition| transition.phase == phase && transition.outcome.is_none())
+        {
+            let _ = self
+                .envelope
+                .attempt
+                .begin_transition(phase, actor, started_utc.to_string());
+        }
+        if self
+            .envelope
+            .attempt
+            .complete_transition(
+                completed_utc.to_string(),
+                duration_between(started_utc, completed_utc),
+                UpdateTransitionOutcome::Succeeded,
+                None,
+            )
+            .is_ok()
+        {
+            let _ = self.envelope.refresh();
+            self.persist();
+            self.replay();
+        }
+    }
+
     fn settle_interrupted(paths: &ServicePaths) {
         let Ok(mut previous) =
             protected_load_json::<UpdateAttemptEnvelope>(&paths.updates.current_attempt)
@@ -2089,13 +2235,15 @@ impl AttemptRecorder {
                 Some("UPDATE_ATTEMPT_INTERRUPTED".to_string()),
             );
             let _ = previous.refresh();
-            let _ = write_json_atomic(&paths.updates.current_attempt, &previous);
+            persist_telemetry_receipt(&paths.updates.current_attempt, &previous);
         }
         let destination = paths
             .updates
             .attempt_history
             .join(format!("{}.json", previous.attempt.attempt_id));
-        let _ = archive_file(&paths.updates.current_attempt, &destination);
+        if archive_file(&paths.updates.current_attempt, &destination).is_err() {
+            crate::telemetry::record_failure(crate::telemetry::TelemetryFailure::UpdateDelivery);
+        }
     }
 
     fn set_target(&mut self, candidate: &ReleaseCandidate) {
@@ -2194,7 +2342,9 @@ impl AttemptRecorder {
         let destination = self
             .history_path
             .join(format!("{}.json", self.envelope.attempt.attempt_id));
-        let _ = archive_file(&self.current_path, &destination);
+        if archive_file(&self.current_path, &destination).is_err() {
+            crate::telemetry::record_failure(crate::telemetry::TelemetryFailure::UpdateDelivery);
+        }
     }
 
     fn handoff(&mut self, transaction_id: &str) {
@@ -2206,7 +2356,7 @@ impl AttemptRecorder {
     }
 
     fn persist(&self) {
-        let _ = write_json_atomic(&self.current_path, &self.envelope);
+        persist_telemetry_receipt(&self.current_path, &self.envelope);
     }
 
     fn capture_failure(

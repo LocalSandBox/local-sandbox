@@ -122,7 +122,8 @@ impl UpdateAttempt {
         failure_code: Option<String>,
     ) -> Result<()> {
         self.validate()?;
-        if outcome == UpdateAttemptOutcome::Active
+        if self.outcome != UpdateAttemptOutcome::Active
+            || outcome == UpdateAttemptOutcome::Active
             || self
                 .timeline
                 .last()
@@ -332,5 +333,8 @@ mod tests {
                 Some("UPDATE_DISCOVERY_FAILED".to_string())
             )
             .is_ok());
+        assert!(attempt
+            .finish(UpdateAttemptOutcome::Suppressed, None)
+            .is_err());
     }
 }
