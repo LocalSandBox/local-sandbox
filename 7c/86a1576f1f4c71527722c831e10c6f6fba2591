@@ -1,0 +1,50 @@
+crates/lsb-platform/src/windows_x86_64/fs/smb/lifecycle.rs
+  s_62f6dbacabedd3::t_ff386b9de0885b 1366
+  s_62f6dbacabedd3::t_368a2722d2eb46 185-187
+crates/lsb-service-proto/src/lib.rs
+  s_62f6dbacabedd3::t_c51f777856975a 38-39
+crates/lsb-platform/src/windows_x86_64/fs/smb/acl.rs
+  s_62f6dbacabedd3::t_ff386b9de0885b 99-100,993
+  s_62f6dbacabedd3::t_2d1c41e6b3e9fd 464-466,470-472,476-478,485,491-493,498-500
+  s_62f6dbacabedd3::t_368a2722d2eb46 484,486
+  s_62f6dbacabedd3::t_f9cc8abd3f2708 659
+crates/lsb-seawork-service/src/pipe.rs
+  s_62f6dbacabedd3::t_dea2e9f3ec4ecf 2441-2463
+  s_62f6dbacabedd3::t_e5f46b93fbe1e6 1615-1616,2310-2318,2326,2332-2350
+  s_62f6dbacabedd3::t_5d176dea669cab 2351
+  s_62f6dbacabedd3::t_1081e99da4b45f 2440
+crates/lsb-seawork-service/src/rpc/sandbox.rs
+  s_62f6dbacabedd3::t_f9cc8abd3f2708 40,91
+  s_62f6dbacabedd3::t_dea2e9f3ec4ecf 850-867,869,871-875,880
+  s_62f6dbacabedd3::t_ad146135ebc72d 180,182,198,206,211,219,223-224,245,247,249,267,338,351,353-354,376
+  s_62f6dbacabedd3::t_ff386b9de0885b 15,594-596,636
+  s_62f6dbacabedd3::t_39b02951051d38 303-304,592-593,597-599,601-607,612-614,616-635,637-667,670,681-682,684-686,696,700,707,712
+  s_62f6dbacabedd3::t_368a2722d2eb46 600,608-611,615,868,870,876-879
+crates/lsb-service-proto/src/error.rs
+  s_62f6dbacabedd3::t_7ec59bacee5f31 33-34,71-72,119-120,131-161,236-255
+crates/lsb-platform/src/windows_x86_64/fs/smb/types.rs
+  s_62f6dbacabedd3::t_368a2722d2eb46 172,207-214,217,259,263,311,356,363-365
+  s_62f6dbacabedd3::t_d13bb81227ad20 165-171,173-174,198-206,215-216,218-221,248-258,260-262,264-265,294-300,310,319-321,335-355,357-362,366-374
+crates/lsb-service-proto/src/version.rs
+  s_62f6dbacabedd3::t_c51f777856975a 7,11,24,153,157-169
+  s_62f6dbacabedd3::t_7fc15e0008a13e 170-171
+crates/lsb-seawork-service/src/rpc/mod.rs
+  s_62f6dbacabedd3::t_ff386b9de0885b 13
+  s_62f6dbacabedd3::t_112a34875d670f 5-12,14-41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "7c86a1576f1f4c71527722c831e10c6f6fba2591",
+  "prompts": {},
+  "sessions": {
+    "s_62f6dbacabedd3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd166-9fe1-7783-babb-981907a4d7c2",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
