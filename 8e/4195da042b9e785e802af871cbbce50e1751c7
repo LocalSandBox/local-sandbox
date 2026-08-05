@@ -1,0 +1,19 @@
+.gitattributes
+  s_9dd67d0e9b4f0b::t_7f9c91f4958b3c 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "8e4195da042b9e785e802af871cbbce50e1751c7",
+  "prompts": {},
+  "sessions": {
+    "s_9dd67d0e9b4f0b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd35f-2d0d-7080-8126-2ae959be383a",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
