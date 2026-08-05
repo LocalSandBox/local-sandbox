@@ -13,7 +13,10 @@ pub use lsb_proto::{
     frame, ExecRequest, ForwardRequest, ForwardResponse, MountRequest, MountResponse, PortMapping,
     ReadFileRequest, WriteFileRequest, WriteFileResponse, VSOCK_PORT, VSOCK_PORT_FORWARD,
 };
-pub use sandbox::{MountConfig, PortForwardHandle, Sandbox, VmConfigBuilder};
+pub use sandbox::{
+    combine_concurrent_windows_startup_errors, concurrent_windows_smb_startup_error, MountConfig,
+    PortForwardHandle, Sandbox, VmConfigBuilder,
+};
 
 /// Reject checkpoint names that could escape the checkpoints directory.
 pub fn validate_checkpoint_name(name: &str) -> Result<(), String> {
