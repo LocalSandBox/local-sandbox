@@ -1933,6 +1933,7 @@ mod tests {
         UpdateTransaction {
             transaction_id: "1".repeat(32),
             update_id: "2".repeat(32),
+            attempt_id: None,
             phase: lsb_seawork_update::TransactionPhase::HelperStarted,
             created_utc: "2026-07-24T00:00:00Z".to_string(),
             old_bundle_identity: old,

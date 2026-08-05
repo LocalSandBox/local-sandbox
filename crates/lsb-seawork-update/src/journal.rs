@@ -321,6 +321,8 @@ impl TransactionPhase {
 pub struct UpdateTransaction {
     pub transaction_id: String,
     pub update_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<String>,
     pub phase: TransactionPhase,
     pub created_utc: String,
     pub old_bundle_identity: BundleIdentity,
@@ -346,9 +348,16 @@ pub struct UpdateTransaction {
 }
 
 impl UpdateTransaction {
+    pub fn attempt_id(&self) -> &str {
+        self.attempt_id.as_deref().unwrap_or(&self.update_id)
+    }
+
     pub fn validate(&self) -> Result<()> {
         validate_id(&self.transaction_id)?;
         validate_id(&self.update_id)?;
+        if let Some(attempt_id) = &self.attempt_id {
+            validate_id(attempt_id)?;
+        }
         validate_utc(&self.created_utc)?;
         self.old_bundle_identity
             .validate()
@@ -582,6 +591,7 @@ mod tests {
         UpdateTransaction {
             transaction_id: "1".repeat(32),
             update_id: "2".repeat(32),
+            attempt_id: None,
             phase: TransactionPhase::Prepared,
             created_utc: "2026-07-22T12:00:00Z".to_string(),
             old_bundle_identity: identity("0.5.0-rc.1", 'a'),

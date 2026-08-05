@@ -209,7 +209,7 @@ pub fn last_update_snapshot(paths: &ServicePaths) -> Option<lsb_seawork_update::
                     ),
                     phase: transition.map(|item| item.phase.clone()),
                     outcome: transition.and_then(|item| item.outcome),
-                    attempt_id: transaction.transaction.update_id.clone(),
+                    attempt_id: transaction.transaction.attempt_id().to_string(),
                     retry_count: transaction.transaction.attempt_count,
                     last_transition_utc: transition.map(|item| {
                         item.completed_utc
@@ -292,7 +292,7 @@ fn replay_transaction_path(path: &Path, telemetry: &Telemetry, hostname: &str, c
             let run_id = telemetry.run_id();
             let checkpoint = UpdateCheckpoint {
                 hostname,
-                attempt_id: &envelope.transaction.update_id,
+                attempt_id: envelope.transaction.attempt_id(),
                 transaction_id: Some(&envelope.transaction.transaction_id),
                 source_version: &envelope.transaction.old_bundle_identity.version,
                 target_version: Some(&envelope.transaction.target_bundle_identity.version),
@@ -401,7 +401,7 @@ fn replay_transaction_failures(
         let Some(event_id) = emit_persisted_update_failure(
             telemetry,
             hostname,
-            &envelope.transaction.update_id,
+            envelope.transaction.attempt_id(),
             Some(&envelope.transaction.transaction_id),
             &envelope.transaction.old_bundle_identity.version,
             Some(&envelope.transaction.target_bundle_identity.version),
@@ -1001,6 +1001,7 @@ impl Coordinator {
             let transaction = TransactionEnvelope::new(UpdateTransaction {
                 transaction_id: request.request.request_id.clone(),
                 update_id: id,
+                attempt_id: request.request.attempt_id.clone(),
                 phase: TransactionPhase::FinalPathVerified,
                 created_utc: now_utc()?,
                 old_bundle_identity: request.request.old_bundle_identity.clone(),
@@ -1268,6 +1269,9 @@ impl Coordinator {
         let helper_protocol = verify_helper(&helper, required_helper_protocol)?;
         let request = PreinstallRequestEnvelope::new(PreinstallRequest {
             request_id: transaction_id,
+            attempt_id: attempt
+                .as_ref()
+                .map(|attempt| attempt.envelope.attempt.attempt_id.clone()),
             created_utc: now_utc()?,
             candidate: candidate.clone(),
             old_bundle_identity: committed.committed.current,

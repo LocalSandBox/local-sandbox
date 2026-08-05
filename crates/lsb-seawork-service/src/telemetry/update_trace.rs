@@ -60,7 +60,7 @@ pub(crate) fn reconstruct_update(
             &journal.transaction.target_bundle_identity.version,
         )
         .with_data("result", result)
-        .with_data("update.attempt_id", &journal.transaction.update_id)
+        .with_data("update.attempt_id", journal.transaction.attempt_id())
         .with_data("update.transaction_id", &journal.transaction.transaction_id);
     description = description
         .with_data(

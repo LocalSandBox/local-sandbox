@@ -189,6 +189,7 @@ fn run_windows(options: Options) -> Result<()> {
             committed.validate()?;
             let request = PreinstallRequestEnvelope::new(PreinstallRequest {
                 request_id: options.transaction_id,
+                attempt_id: None,
                 created_utc: options.created_utc.expect("validated candidate option"),
                 candidate: ReleaseCandidate {
                     release_id: options.release_id.expect("validated candidate option"),
