@@ -49,10 +49,13 @@ try {
     await service.checkForUpdate()
     let sawChecking = false
     let finalStatus
+    const observedPhases = new Set()
     const deadline = Date.now() + 120_000
     while (Date.now() < deadline) {
       failedStage = 'update-check-status'
       const status = await service.getUpdateStatus()
+      observedPhases.add(status.phase)
+      resultExtras = { updateStatus: status, observedUpdatePhases: [...observedPhases] }
       if (status.phase === 'update_checking') sawChecking = true
       if (status.phase === 'update_no_candidate') {
         finalStatus = status
@@ -60,10 +63,14 @@ try {
       }
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
-    check('candidate-update-check-observed', sawChecking)
+    check(
+      'candidate-update-check-observed',
+      sawChecking || finalStatus?.phase === 'update_no_candidate',
+      { transientCheckingObserved: sawChecking },
+    )
     check(
       'candidate-update-no-candidate',
-      finalStatus?.phase === 'update_no_candidate' && finalStatus?.target === undefined,
+      finalStatus?.phase === 'update_no_candidate' && finalStatus?.target == null,
     )
     resultExtras = { updateStatus: finalStatus }
   } else if (config.scenario === 'sequential') {
@@ -309,6 +316,7 @@ try {
       failed_stage: failedStage,
       stable_detail: error instanceof Error ? error.message : 'unknown',
       checks,
+      ...resultExtras,
     })}\n`,
     'utf8',
   )

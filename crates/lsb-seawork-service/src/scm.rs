@@ -432,8 +432,9 @@ fn spawn_telemetry_heartbeat(
     let (stop, mut stopped) = tokio::sync::oneshot::channel();
     let task = runtime.spawn(async move {
         let started = std::time::Instant::now();
-        let first = tokio::time::Instant::now() + TELEMETRY_HEARTBEAT_INTERVAL;
-        let mut interval = tokio::time::interval_at(first, TELEMETRY_HEARTBEAT_INTERVAL);
+        // The task is spawned only after SCM has accepted RUNNING. Emit the first
+        // fleet heartbeat immediately, then retain the 15-minute cadence.
+        let mut interval = telemetry_heartbeat_interval(TELEMETRY_HEARTBEAT_INTERVAL);
         loop {
             tokio::select! {
                 _ = interval.tick() => {
@@ -456,6 +457,10 @@ fn spawn_telemetry_heartbeat(
         }
     });
     TelemetryHeartbeat { stop, task }
+}
+
+fn telemetry_heartbeat_interval(period: Duration) -> tokio::time::Interval {
+    tokio::time::interval_at(tokio::time::Instant::now(), period)
 }
 
 fn emit_telemetry_heartbeat(
@@ -1031,8 +1036,8 @@ fn cap_memory_limit(configured_mib: u32, physical_mib: u64) -> Result<u32> {
 mod tests {
     use super::{
         attempt_windows_smb_policy_fix, cap_memory_limit, run_startup_operation,
-        wait_for_pipe_drain, wait_for_runtime_exit, PipeDrainOutcome, RuntimeExit,
-        StartupHostFixOutcome,
+        telemetry_heartbeat_interval, wait_for_pipe_drain, wait_for_runtime_exit, PipeDrainOutcome,
+        RuntimeExit, StartupHostFixOutcome,
     };
     use std::time::Duration;
     use windows_service::service::ServiceControl;
@@ -1095,6 +1100,20 @@ mod tests {
 
         assert!(error.to_string().contains("verification failed"));
         assert_eq!(checkpoint, 1);
+    }
+
+    #[tokio::test]
+    async fn telemetry_heartbeat_ticks_immediately_then_observes_its_period() {
+        let mut interval = telemetry_heartbeat_interval(Duration::from_secs(60));
+        tokio::time::timeout(Duration::from_millis(100), interval.tick())
+            .await
+            .expect("initial heartbeat was delayed");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), interval.tick())
+                .await
+                .is_err(),
+            "second heartbeat ignored the configured period"
+        );
     }
 
     #[test]

@@ -79,6 +79,10 @@ impl NativeAdapter {
                 sentry_options_add_attachmentw(options, attachment.as_ptr());
             }
             sentry_options_set_traces_sample_rate(options, sample_rate);
+            // Sentry Native 0.14.0 made both pipelines opt-out. This service does not
+            // use either API, so retain the pre-upgrade telemetry surface explicitly.
+            sentry_options_set_enable_logs(options, 0);
+            sentry_options_set_enable_metrics(options, 0);
             sentry_options_set_auto_session_tracking(options, 0);
             sentry_options_set_shutdown_timeout(options, 2_000);
             if sentry_init(options) != 0 {
@@ -554,6 +558,8 @@ unsafe extern "C" {
     fn sentry_options_set_handler_pathw(options: *mut c_void, path: *const u16);
     fn sentry_options_add_attachmentw(options: *mut c_void, path: *const u16);
     fn sentry_options_set_traces_sample_rate(options: *mut c_void, sample_rate: f64);
+    fn sentry_options_set_enable_logs(options: *mut c_void, enable_logs: c_int);
+    fn sentry_options_set_enable_metrics(options: *mut c_void, enable_metrics: c_int);
     fn sentry_options_set_auto_session_tracking(options: *mut c_void, value: c_int);
     fn sentry_options_set_shutdown_timeout(options: *mut c_void, timeout: u64);
     fn sentry_init(options: *mut c_void) -> c_int;
@@ -588,7 +594,7 @@ unsafe extern "C" {
     fn sentry_value_set_by_key(value: SentryValue, key: *const c_char, child: SentryValue)
         -> c_int;
     fn sentry_value_append(value: SentryValue, child: SentryValue) -> c_int;
-    fn sentry_value_decref(value: SentryValue);
+    fn sentry_value_decref(value: SentryValue) -> c_int;
     fn sentry_add_breadcrumb(value: SentryValue);
     fn sentry_capture_event(value: SentryValue) -> SentryUuid;
     fn sentry_uuid_as_string(uuid: *const SentryUuid, output: *mut c_char);

@@ -108,9 +108,11 @@ if (-not (Test-Path -LiteralPath $complete -PathType Leaf)) {
         }
         Assert-PlainFile (Join-Path $stagingSource 'include\sentry.h') 'Sentry Native header' |
             Out-Null
+        $versionPattern = '^\s*#\s*define\s+SENTRY_SDK_VERSION\s+"' +
+            [regex]::Escape([string]$native.tag) + '"\s*$'
         $versionMatches = @(Select-String `
                 -LiteralPath (Join-Path $stagingSource 'include\sentry.h') `
-                -Pattern "#define SENTRY_SDK_VERSION `"$($native.tag)`"" -SimpleMatch)
+                -Pattern $versionPattern)
         if ($versionMatches.Count -ne 1) {
             throw 'The extracted Sentry Native version does not match the dependency lock.'
         }

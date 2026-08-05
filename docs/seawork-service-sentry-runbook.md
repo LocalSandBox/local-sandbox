@@ -25,7 +25,8 @@ Create an **Observed active fleet** Discover widget with transaction
 client-side and includes `user.id`, `release`, `service.version`, `run_id`,
 `update.channel`, and `uptime.bucket`. Keep the **observed active** label: a
 sleeping, offline, or Sentry-blocked machine is absent, so this is not exact
-inventory.
+inventory. The first heartbeat is emitted immediately after the service reaches
+`RUNNING`; subsequent heartbeats retain the 15-minute cadence.
 
 Create an issue alert for new or regressed fatal crashes and error events with
 `component:local-sandbox-service`, routed to the existing SeaWork notification

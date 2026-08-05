@@ -103,7 +103,12 @@ foreach ($expected in @(
     'representative sandbox failure',
     'representative diagnostic',
     '"transaction":"sandbox.start"',
+    '"transaction":"service.heartbeat"',
     '"op":"sandbox.preflight"',
+    '"trace_id":"22222222222222222222222222222222"',
+    '"parent_span_id":"2222222222222222"',
+    '"trace_id":"33333333333333333333333333333333"',
+    '"parent_span_id":"3333333333333333"',
     '"component":"local-sandbox-service"',
     'smoke-correlation',
     '"release":"local-sandbox-service@smoke"'
@@ -111,6 +116,9 @@ foreach ($expected in @(
     if (-not $envelopeText.Contains($expected, [StringComparison]::Ordinal)) {
         throw "Captured envelope does not contain expected value: $expected"
     }
+}
+if ($envelopeText.Contains('ordinary.unsampled', [StringComparison]::Ordinal)) {
+    throw 'Trace-based sampling retained a transaction that should have been dropped.'
 }
 
 $crash = Start-Process -FilePath $fixture -ArgumentList @(
@@ -188,6 +196,9 @@ Invoke-Native ([string]$dependency.sentry_cli) @(
     local_envelope_check = 'passed'
     wide_attachment_check = 'passed'
     transaction_child_span_check = 'passed'
+    explicit_trace_boundary_check = 'passed'
+    trace_sampling_check = 'passed'
+    forced_heartbeat_sampling_check = 'passed'
     abort_minidump_check = 'passed'
     handler_space_path_check = 'passed'
     handler_loss_isolation_check = 'passed'

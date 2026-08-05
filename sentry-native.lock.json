@@ -1,18 +1,18 @@
 {
   "schema_version": 1,
   "sentry_native": {
-    "tag": "0.9.1",
-    "commit": "a64d5bd8ee130f2cda196b6fa7d9b65bfa6d32e2",
+    "tag": "0.16.1",
+    "commit": "a185ce80ba2416b0a0bb04b4ee8f11f1117ae08f",
     "release_archive": {
-      "url": "https://github.com/getsentry/sentry-native/releases/download/0.9.1/sentry-native.zip",
-      "sha256": "e5349b1a233ac52291e54cba3a6d028781d8173e8b3cd759f17cd27769f02eab"
+      "url": "https://github.com/getsentry/sentry-native/releases/download/0.16.1/sentry-native.zip",
+      "sha256": "8cd6daa3f896186f2f559129ec6badf7eecf44e5fa1a444c175b75b4b866fea0"
     },
     "recursive_revisions": {
       "external/benchmark": "48f5cc21bac647a8a64e9787cb84f349e334b7ac",
-      "external/breakpad": "7fbf89065fbb0d26526278a5e733270f83993cda",
-      "external/crashpad": "e24b0f9e760e27464fe2ed30fdd7be45a27a67ad",
+      "external/breakpad": "25b6b727af49fa383161e7dba4a82ab0661b69b8",
+      "external/crashpad": "aae505d3daf73e8a48136ccc7398663f16096712",
       "external/crashpad/third_party/lss/lss": "9719c1e1e676814c456b55f5f070eabad6709d31",
-      "external/crashpad/third_party/mini_chromium/mini_chromium": "fd75723d16e99fb1e6d1487c4f278a5ce618fdf0",
+      "external/crashpad/third_party/mini_chromium/mini_chromium": "bcc80d6edf8b49d9bbe7a06fff308c222287b112",
       "external/crashpad/third_party/zlib/zlib": "fef58692c1d7bec94c4ed3d030a45a1832a9615d",
       "external/libunwindstack-ndk": "284202fb1e42dbeba6598e26ced2e1ec404eecd1",
       "external/third_party/lss": "ed31caa60f20a4f6569883b2d752ef7522de51e0"
@@ -47,21 +47,6 @@
     "darwin_x86_64": {
       "url": "https://github.com/getsentry/sentry-cli/releases/download/3.6.2/sentry-cli-Darwin-x86_64",
       "sha256": "efe0a5289cdd0ea8ff727b1228a1bea6c840f2da38152e8f9f5ced05bd6659cd"
-    }
-  },
-  "compatibility_evidence": {
-    "status": "passed",
-    "win_test_run": "20260724t183255z-64714-6b76be41fb14",
-    "snapshot_sha": "6b76be41fb1419ce574777157f878fcda523de0e",
-    "debug_id": "0d958dbe-2750-4c13-bbd2-935b20723e90-3",
-    "checks": {
-      "static_msvc_runtime": "passed",
-      "message_and_transaction_capture": "passed",
-      "wide_path_attachment": "passed",
-      "abort_minidump": "passed",
-      "handler_path_with_spaces": "passed",
-      "handler_loss_is_fail_open": "passed",
-      "pdb_debug_file_recognition": "passed"
     }
   }
 }

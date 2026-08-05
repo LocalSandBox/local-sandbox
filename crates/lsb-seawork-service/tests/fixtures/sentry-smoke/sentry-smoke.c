@@ -31,7 +31,9 @@ static int configure(const wchar_t *database, const wchar_t *handler,
     sentry_options_set_environment(options, "windows-smoke");
     sentry_options_set_database_pathw(options, database);
     sentry_options_set_handler_pathw(options, handler);
-    sentry_options_set_traces_sample_rate(options, 1.0);
+    sentry_options_set_traces_sample_rate(options, 0.0);
+    sentry_options_set_enable_logs(options, 0);
+    sentry_options_set_enable_metrics(options, 0);
     sentry_options_add_attachmentw(options, attachment);
     if (local_transport) {
         sentry_options_set_transport(
@@ -73,8 +75,29 @@ int wmain(int argc, wchar_t **argv)
 
     sentry_capture_event(sentry_value_new_message_event(
         SENTRY_LEVEL_ERROR, "lsb-smoke", "representative sandbox failure"));
+    sentry_set_trace("11111111111111111111111111111111",
+        "1111111111111111");
+    sentry_transaction_context_t *unsampled_context
+        = sentry_transaction_context_new("ordinary.unsampled", "ordinary.unsampled");
+    sentry_transaction_t *unsampled_transaction
+        = sentry_transaction_start(unsampled_context, sentry_value_new_object());
+    sentry_transaction_finish(unsampled_transaction);
+
+    sentry_set_trace("22222222222222222222222222222222",
+        "2222222222222222");
+    sentry_transaction_context_t *heartbeat_context
+        = sentry_transaction_context_new("service.heartbeat", "service.heartbeat");
+    sentry_transaction_context_set_sampled(heartbeat_context, 1);
+    sentry_transaction_t *heartbeat
+        = sentry_transaction_start(heartbeat_context, sentry_value_new_object());
+    sentry_transaction_set_status(heartbeat, SENTRY_SPAN_STATUS_OK);
+    sentry_transaction_finish(heartbeat);
+
+    sentry_set_trace("33333333333333333333333333333333",
+        "3333333333333333");
     sentry_transaction_context_t *context
         = sentry_transaction_context_new("sandbox.start", "sandbox.start");
+    sentry_transaction_context_set_sampled(context, 1);
     sentry_transaction_t *transaction
         = sentry_transaction_start(context, sentry_value_new_object());
     sentry_transaction_set_tag(

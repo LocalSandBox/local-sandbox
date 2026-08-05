@@ -12,9 +12,9 @@ target_link_options(lsb-sentry-smoke PRIVATE /DEBUG)
 target_include_directories(lsb-sentry-smoke PRIVATE "${SENTRY_INCLUDE_DIR}")
 target_link_directories(lsb-sentry-smoke PRIVATE "${SENTRY_LIBRARY_DIR}")
 target_link_libraries(lsb-sentry-smoke PRIVATE
-  sentry crashpad_client crashpad_util crashpad_compat crashpad_zlib
+  sentry crashpad_client crashpad_mpack crashpad_util crashpad_compat crashpad_zlib
   mini_chromium dbghelp shlwapi version winhttp user32 advapi32 kernel32
-  rpcrt4 powrprof
+  rpcrt4 powrprof synchronization
 )
 set_property(TARGET lsb-sentry-smoke PROPERTY
   MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")

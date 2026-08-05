@@ -16,7 +16,10 @@ param(
 
     [string] $InstallBundleRoot = '',
 
-    [string] $InstallEvidencePath = ''
+    [string] $InstallEvidencePath = '',
+
+    [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$')]
+    [string] $ClientHarnessLeaf = 'SeaWork Test'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -805,7 +808,7 @@ function Install-And-Smoke {
     $clientUserSid = [string]$clientIdentity.sid
     $clientLocalAppData = [string]$clientIdentity.local_app_data
     $clientPrograms = Join-Path $clientLocalAppData 'Programs'
-    $clientHarnessBase = Join-Path $clientPrograms 'SeaWork Test'
+    $clientHarnessBase = Join-Path $clientPrograms $ClientHarnessLeaf
     $clientHarness = Join-Path $clientHarnessBase 'Primary'
     $clientTestHarness = Join-Path $clientHarnessBase 'Untrusted'
     $clientCollisionHarness = Join-Path $clientPrograms "SeaWork-copy-$($evidence.snapshot_sha.Substring(0, 12))"
@@ -938,11 +941,29 @@ function Install-And-Smoke {
         publisher_thumbprints = @([string]$evidence.publisher_sha256)
         client_roots = @(
             '%CALLER_LOCALAPPDATA%\Programs\SeaWork',
-            '%CALLER_LOCALAPPDATA%\Programs\SeaWork Test'
+            "%CALLER_LOCALAPPDATA%\Programs\$ClientHarnessLeaf"
         )
         maintenance_roots = @(Join-Path $programFiles 'SeaWork')
         egress_allow = @(); upstream_proxy = $null; ports_enabled = $false
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $stateRoot 'config\service.json') -Encoding utf8NoBOM
+    $serviceArchive = [IO.Path]::GetFullPath((Join-Path $RunRoot `
+        "release-work\out\lsb-seawork-service-v$version-windows-x86_64.zip"))
+    if (-not $serviceArchive.StartsWith($expectedRunPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+        -not (Test-Path -LiteralPath $serviceArchive -PathType Leaf)) {
+        throw 'The baseline service archive is missing or outside the run root.'
+    }
+    $updatesRoot = Join-Path $stateRoot 'updates'
+    New-Item -ItemType Directory -Path $updatesRoot | Out-Null
+    $initialTransactionId = ('0' * 24) + $SnapshotSha.Substring(0, 8)
+    Invoke-Native cargo.exe @(
+        'run', '-p', 'xtask', '--locked', '--', 'seed-update-candidate',
+        'initialize-baseline', '--archive', $serviceArchive,
+        '--bundle', $versionRoot,
+        '--committed', (Join-Path $updatesRoot 'committed.json'),
+        '--publisher-subject', [string]$evidence.publisher_subject,
+        '--publisher-sha256', [string]$evidence.publisher_sha256,
+        '--transaction-id', $initialTransactionId
+    ) 'baseline committed-state initialization'
     Set-Sddl $stateRoot 'O:SYG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
     if (Test-Path -LiteralPath $eventKey) { throw 'Refusing to adopt an existing Event Log source.' }
     New-Item -Path $eventKey | Out-Null

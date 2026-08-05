@@ -121,6 +121,26 @@ fn compile_sentry_configuration() {
         if wer.file_name().and_then(|value| value.to_str()) != Some("crashpad_wer.dll") {
             panic!("{WER} must name the prepared crashpad_wer.dll");
         }
+        let install_root = include
+            .canonicalize()
+            .expect("canonicalize prepared Sentry include directory")
+            .parent()
+            .expect("prepared Sentry include directory has no parent")
+            .to_path_buf();
+        for (name, artifact) in [(LIBRARY, &library), (HANDLER, &handler), (WER, &wer)] {
+            let artifact_root = artifact
+                .canonicalize()
+                .unwrap_or_else(|_| panic!("canonicalize {name}"))
+                .parent()
+                .and_then(std::path::Path::parent)
+                .unwrap_or_else(|| panic!("{name} is outside a prepared install tree"))
+                .to_path_buf();
+            if artifact_root != install_root {
+                panic!(
+                    "{INCLUDE}, {LIBRARY}, {HANDLER}, and {WER} must come from the same prepared Sentry Native build"
+                );
+            }
+        }
         println!(
             "cargo:rustc-env=LSB_SENTRY_CRASHPAD_HANDLER={}",
             handler.display()
@@ -135,6 +155,7 @@ fn compile_sentry_configuration() {
         for library in [
             "sentry",
             "crashpad_client",
+            "crashpad_mpack",
             "crashpad_util",
             "crashpad_compat",
             "crashpad_zlib",
@@ -148,6 +169,7 @@ fn compile_sentry_configuration() {
             "kernel32",
             "rpcrt4",
             "powrprof",
+            "synchronization",
         ] {
             println!("cargo:rustc-link-lib={library}");
         }
