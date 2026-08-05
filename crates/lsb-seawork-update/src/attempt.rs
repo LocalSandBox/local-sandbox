@@ -75,6 +75,8 @@ impl UpdateAttempt {
                 .terminal_trace_event_id
                 .as_ref()
                 .is_some_and(|id| validate_id(id).is_err())
+            || (self.terminal_trace_event_id.is_some()
+                && (self.outcome == UpdateAttemptOutcome::Active || self.transaction_id.is_some()))
         {
             bail!("update attempt metadata is invalid");
         }
@@ -358,6 +360,10 @@ mod tests {
 
     #[test]
     fn terminal_trace_receipt_is_single_assignment() {
+        let mut invalid_active = attempt();
+        invalid_active.terminal_trace_event_id = Some("b".repeat(32));
+        assert!(invalid_active.validate().is_err());
+
         let mut attempt = attempt();
         attempt
             .finish(UpdateAttemptOutcome::Succeeded, None)
