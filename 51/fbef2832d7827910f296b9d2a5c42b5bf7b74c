@@ -1,0 +1,30 @@
+scripts/windows-test/suites/service/installed-service-smoke.ps1
+  s_a197eff11730b6::t_bcf920fcac6432 124-125,146-148,151-164,171-177
+scripts/windows-test/suites/service/service-reboot.ps1
+  s_a197eff11730b6::t_bcf920fcac6432 38,40-44,55-58,65-66,70,72-91,93
+scripts/windows-test-service-harness.ps1
+  s_a197eff11730b6::t_68cd7809eb371a 4,33-34,1103-1124,1194
+scripts/windows-test/suites/release/release-service-core-update-reboot.ps1
+  s_a197eff11730b6::t_c4971f5762f990 334,336-340,342-345,352-353,357,360-373,375,377
+scripts/windows-test/lib/failure-diagnostics.ps1
+  s_a197eff11730b6::t_318e7499edd83a 1-169
+scripts/windows-test/test-contracts.ps1
+  s_a197eff11730b6::t_d080ff68356653 8,111-114,116-130,136-143,145-147,150-153,155,160-176
+  s_a197eff11730b6::t_9ec866cd35e515 115,131-135,144,148-149,154,156-159
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "51fbef2832d7827910f296b9d2a5c42b5bf7b74c",
+  "prompts": {},
+  "sessions": {
+    "s_a197eff11730b6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd33e-e0f9-70a0-a06a-914f3fed7217",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}

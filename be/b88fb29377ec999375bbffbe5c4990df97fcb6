@@ -1,0 +1,19 @@
+crates/lsb-platform/src/windows_x86_64/fs/smb/acl.rs
+  s_a197eff11730b6::t_58da940daad467 520-521,533-534,542-543
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "beb88fb29377ec999375bbffbe5c4990df97fcb6",
+  "prompts": {},
+  "sessions": {
+    "s_a197eff11730b6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd33e-e0f9-70a0-a06a-914f3fed7217",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
