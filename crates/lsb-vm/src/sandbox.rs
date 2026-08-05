@@ -990,12 +990,87 @@ fn build_windows_mount_plan(
     })
 }
 
+#[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
+struct StartupBranchResults {
+    smb_setup: Result<()>,
+    guest_pipeline: Result<()>,
+}
+
+#[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
+impl StartupBranchResults {
+    fn into_result(self) -> Result<()> {
+        match (self.smb_setup, self.guest_pipeline) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+            (Err(smb_error), Err(guest_error)) => Err(guest_error).context(format!(
+                "guest startup pipeline failed; additionally SMB preparation failed: {smb_error:#}"
+            )),
+        }
+    }
+
+    fn into_result_with_post_join_check<C>(self, post_join_check: C) -> Result<()>
+    where
+        C: FnOnce() -> Result<()>,
+    {
+        self.into_result()?;
+        post_join_check()
+    }
+}
+
+#[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
+fn run_concurrent_startup_branches<S, G>(smb_setup: S, guest_pipeline: G) -> StartupBranchResults
+where
+    S: FnOnce() -> Result<()> + Send,
+    G: FnOnce() -> Result<()>,
+{
+    std::thread::scope(|scope| {
+        let smb_thread = scope.spawn(smb_setup);
+        let guest_pipeline = guest_pipeline();
+        let smb_setup = smb_thread
+            .join()
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("SMB preparation thread panicked")));
+        StartupBranchResults {
+            smb_setup,
+            guest_pipeline,
+        }
+    })
+}
+
 impl Sandbox {
     pub fn builder() -> VmConfigBuilder {
         VmConfigBuilder::new()
     }
 
     pub fn start(&self) -> Result<()> {
+        self.start_with_pre_mount_hook(|_| Ok(()))
+    }
+
+    /// Starts the guest and runs `pre_mount_hook` after guest readiness but
+    /// before any guest mount requests are sent.
+    ///
+    /// On Windows, host SMB preparation runs concurrently with guest boot and
+    /// this hook. Both branches are always joined before mount initialisation
+    /// or rollback begins.
+    pub fn start_with_pre_mount_hook<F>(&self, pre_mount_hook: F) -> Result<()>
+    where
+        F: FnOnce(&Sandbox) -> Result<()>,
+    {
+        self.start_with_pre_mount_hook_and_cancel_check(pre_mount_hook, || Ok(()))
+    }
+
+    /// Like [`Sandbox::start_with_pre_mount_hook`], with cancellation checks
+    /// around the guest pipeline and again after both startup branches join.
+    /// A failed check prevents guest mount initialisation.
+    pub fn start_with_pre_mount_hook_and_cancel_check<F, C>(
+        &self,
+        pre_mount_hook: F,
+        cancel_check: C,
+    ) -> Result<()>
+    where
+        F: FnOnce(&Sandbox) -> Result<()>,
+        C: Fn() -> Result<()>,
+    {
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         self.mount_metrics.begin_start();
 
@@ -1119,81 +1194,43 @@ impl Sandbox {
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         {
-            let smb_setup_phase = LifecyclePhaseGuard::start(
-                self.lifecycle_observer.as_ref(),
-                SandboxLifecyclePhase::SmbSetup,
-                std::collections::BTreeMap::new(),
+            let branches = run_concurrent_startup_branches(
+                || self.prepare_windows_smb_mounts_traced(),
+                || {
+                    cancel_check()?;
+                    self.boot_guest(&mut windows_mount_cache_run)?;
+                    cancel_check()?;
+                    pre_mount_hook(self)?;
+                    cancel_check()
+                },
             );
-            let smb_setup_result = self
-                .prepare_windows_smb_mounts()
-                .context("Failed to prepare Windows SMB mounts");
-            smb_setup_phase.finish(
-                smb_setup_result.is_ok(),
-                std::collections::BTreeMap::from([(
-                    "transport.type".to_string(),
-                    "smb".to_string(),
-                )]),
-            );
-            if let Err(error) = smb_setup_result {
-                self.mount_metrics.finish_failure(
-                    FailedPhase::Configuration,
-                    ErrorCategory::InvalidConfiguration,
-                );
+            let joined_result = branches.into_result_with_post_join_check(|| cancel_check());
+            if let Err(error) = joined_result {
+                let _ = self.vm.stop();
+                let _ = self.vm.configure_data_disks(Vec::new());
+                self.cleanup_windows_smb_mounts_best_effort();
+                self.mount_metrics.finish_current_failure();
                 return Err(error);
             }
         }
 
-        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        self.mount_metrics
-            .set_failure_context(FailedPhase::GuestReady, ErrorCategory::VmStartFailed);
-        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        let guest_ready_started = Instant::now();
-        let vm_boot_phase = LifecyclePhaseGuard::start(
-            self.lifecycle_observer.as_ref(),
-            SandboxLifecyclePhase::VmBoot,
-            std::collections::BTreeMap::new(),
-        );
-        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        let vm_start_result = match self.vm.start() {
-            Ok(()) => Ok(()),
-            Err(first_error) if windows_mount_cache_run.has_disks() => {
-                eprintln!(
-                    "lsb: VM start with mount cache disks failed; retrying once without cache disks: {first_error:#}"
-                );
-                let clear_result = self.vm.configure_data_disks(Vec::new());
-                windows_mount_cache_run.disable_before_boot(format!(
-                    "VM start with cache disks failed: {first_error:#}"
-                ));
-                match clear_result {
-                    Ok(()) => self.vm.start().with_context(|| {
-                        format!(
-                            "VM start failed after diskless retry; initial cache-disk start error: {first_error:#}"
-                        )
-                    }),
-                    Err(error) => Err(error).context(format!(
-                        "failed to clear cache disks after VM start error: {first_error:#}"
-                    )),
-                }
-            }
-            Err(error) => Err(error),
-        };
         #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
-        let vm_start_result = self.vm.start();
-        if let Err(error) = vm_start_result.context("Failed to start VM") {
-            vm_boot_phase.finish(false, std::collections::BTreeMap::new());
-            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-            {
-                self.mount_metrics
-                    .add_duration(DurationMetric::GuestReady, guest_ready_started.elapsed());
-                self.cleanup_windows_smb_mounts_best_effort();
-                self.mount_metrics.finish_current_failure();
+        {
+            cancel_check()?;
+            self.boot_guest()?;
+            if let Err(error) = cancel_check() {
+                let _ = self.vm.stop();
+                return Err(error);
             }
-            return Err(error);
+            if let Err(error) = pre_mount_hook(self) {
+                let _ = self.vm.stop();
+                return Err(error);
+            }
+            if let Err(error) = cancel_check() {
+                let _ = self.vm.stop();
+                return Err(error);
+            }
         }
-        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        self.mount_metrics
-            .add_duration(DurationMetric::GuestReady, guest_ready_started.elapsed());
-        vm_boot_phase.finish(true, std::collections::BTreeMap::new());
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         if !self.supports_mount_cache() && windows_mount_cache_run.has_disks() {
@@ -1204,7 +1241,7 @@ impl Sandbox {
 
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         if let Err(error) =
-            self.initialize_windows_mounts(&windows_mount_snapshots, &mut windows_mount_cache_run)
+            self.initialize_mounts(&windows_mount_snapshots, &mut windows_mount_cache_run)
         {
             let _ = self.vm.stop();
             let _ = self.vm.configure_data_disks(Vec::new());
@@ -1229,6 +1266,81 @@ impl Sandbox {
         }
 
         Ok(())
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn prepare_windows_smb_mounts_traced(&self) -> Result<()> {
+        let phase = LifecyclePhaseGuard::start(
+            self.lifecycle_observer.as_ref(),
+            SandboxLifecyclePhase::SmbSetup,
+            std::collections::BTreeMap::new(),
+        );
+        let result = self
+            .prepare_windows_smb_mounts()
+            .context("Failed to prepare Windows SMB mounts");
+        phase.finish(
+            result.is_ok(),
+            std::collections::BTreeMap::from([("transport.type".to_string(), "smb".to_string())]),
+        );
+        if result.is_err() {
+            self.mount_metrics.finish_failure(
+                FailedPhase::Configuration,
+                ErrorCategory::InvalidConfiguration,
+            );
+        }
+        result
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn boot_guest(&self, cache_run: &mut WindowsMountCacheRun) -> Result<()> {
+        self.mount_metrics
+            .set_failure_context(FailedPhase::GuestReady, ErrorCategory::VmStartFailed);
+        let started = Instant::now();
+        let phase = LifecyclePhaseGuard::start(
+            self.lifecycle_observer.as_ref(),
+            SandboxLifecyclePhase::VmBoot,
+            std::collections::BTreeMap::new(),
+        );
+        let result = match self.vm.start() {
+            Ok(()) => Ok(()),
+            Err(first_error) if cache_run.has_disks() => {
+                eprintln!(
+                    "lsb: VM start with mount cache disks failed; retrying once without cache disks: {first_error:#}"
+                );
+                let clear_result = self.vm.configure_data_disks(Vec::new());
+                cache_run.disable_before_boot(format!(
+                    "VM start with cache disks failed: {first_error:#}"
+                ));
+                match clear_result {
+                    Ok(()) => self.vm.start().with_context(|| {
+                        format!(
+                            "VM start failed after diskless retry; initial cache-disk start error: {first_error:#}"
+                        )
+                    }),
+                    Err(error) => Err(error).context(format!(
+                        "failed to clear cache disks after VM start error: {first_error:#}"
+                    )),
+                }
+            }
+            Err(error) => Err(error),
+        }
+        .context("Failed to start VM");
+        self.mount_metrics
+            .add_duration(DurationMetric::GuestReady, started.elapsed());
+        phase.finish(result.is_ok(), std::collections::BTreeMap::new());
+        result
+    }
+
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    fn boot_guest(&self) -> Result<()> {
+        let phase = LifecyclePhaseGuard::start(
+            self.lifecycle_observer.as_ref(),
+            SandboxLifecyclePhase::VmBoot,
+            std::collections::BTreeMap::new(),
+        );
+        let result = self.vm.start().context("Failed to start VM");
+        phase.finish(result.is_ok(), std::collections::BTreeMap::new());
+        result
     }
 
     pub fn stop(&self) -> Result<()> {
@@ -2966,6 +3078,14 @@ impl Sandbox {
             .map_err(|_| anyhow::anyhow!("Windows SMB resource lock poisoned"))?
             .take();
         let Some(resources) = resources else {
+            if self.windows_smb_cleanup_manifest_path.is_file() {
+                let mut manager = WindowsSmbLifecycleManager::native();
+                let cleanup_result =
+                    manager.recover_cleanup_manifest(&self.windows_smb_cleanup_manifest_path);
+                self.release_windows_smb_instance_guard()?;
+                cleanup_result?;
+                return Ok(());
+            }
             self.release_windows_smb_instance_guard()?;
             return Ok(());
         };
@@ -3146,7 +3266,7 @@ impl Sandbox {
     }
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    fn initialize_windows_mounts(
+    fn initialize_mounts(
         &self,
         snapshots: &[WindowsMountSnapshot],
         cache_run: &mut WindowsMountCacheRun,
@@ -4634,6 +4754,120 @@ mod tests {
     use std::path::PathBuf;
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn concurrent_startup_overlaps_smb_and_guest_pipeline() {
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let smb_barrier = barrier.clone();
+        let results = run_concurrent_startup_branches(
+            move || {
+                smb_barrier.wait();
+                Ok(())
+            },
+            || {
+                barrier.wait();
+                Ok(())
+            },
+        );
+        results.into_result().unwrap();
+    }
+
+    #[test]
+    fn startup_branch_resolution_covers_smb_boot_ca_and_cancellation_failures() {
+        for smb_fails in [false, true] {
+            for boot_fails in [false, true] {
+                for ca_fails in [false, true] {
+                    for cancelled in [false, true] {
+                        let ca_ran = Arc::new(AtomicBool::new(false));
+                        let ca_ran_in_guest = ca_ran.clone();
+                        let results = run_concurrent_startup_branches(
+                            move || {
+                                if smb_fails {
+                                    bail!("mount.smb_setup")
+                                }
+                                Ok(())
+                            },
+                            move || {
+                                if boot_fails {
+                                    bail!("vm.boot")
+                                }
+                                if cancelled {
+                                    bail!("operation cancelled")
+                                }
+                                ca_ran_in_guest.store(true, Ordering::SeqCst);
+                                if ca_fails {
+                                    bail!("sandbox.proxy_ca_install")
+                                }
+                                Ok(())
+                            },
+                        );
+                        let result = results.into_result();
+                        let guest_fails = boot_fails || cancelled || ca_fails;
+                        assert_eq!(result.is_err(), smb_fails || guest_fails);
+                        assert_eq!(ca_ran.load(Ordering::SeqCst), !boot_fails && !cancelled);
+                        if smb_fails && guest_fails {
+                            assert!(format!("{:#}", result.unwrap_err())
+                                .contains("additionally SMB preparation failed"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn guest_failure_or_cancellation_waits_for_smb_branch_to_finish() {
+        for guest_error in ["vm.boot", "sandbox.proxy_ca_install", "operation cancelled"] {
+            let smb_finished = Arc::new(AtomicBool::new(false));
+            let smb_finished_in_thread = smb_finished.clone();
+            let results = run_concurrent_startup_branches(
+                move || {
+                    std::thread::sleep(Duration::from_millis(10));
+                    smb_finished_in_thread.store(true, Ordering::SeqCst);
+                    Ok(())
+                },
+                move || bail!(guest_error),
+            );
+            assert!(smb_finished.load(Ordering::SeqCst));
+            assert!(format!("{:#}", results.into_result().unwrap_err()).contains(guest_error));
+        }
+    }
+
+    #[test]
+    fn smb_failure_waits_for_guest_pipeline_to_finish() {
+        let guest_finished = Arc::new(AtomicBool::new(false));
+        let guest_finished_in_pipeline = guest_finished.clone();
+        let results = run_concurrent_startup_branches(
+            || bail!("mount.smb_setup"),
+            move || {
+                std::thread::sleep(Duration::from_millis(10));
+                guest_finished_in_pipeline.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+        assert!(guest_finished.load(Ordering::SeqCst));
+        assert!(format!("{:#}", results.into_result().unwrap_err()).contains("mount.smb_setup"));
+    }
+
+    #[test]
+    fn post_join_cancellation_check_runs_after_smb_finishes() {
+        let smb_finished = Arc::new(AtomicBool::new(false));
+        let smb_finished_in_thread = smb_finished.clone();
+        let smb_finished_at_check = smb_finished.clone();
+        let results = run_concurrent_startup_branches(
+            move || {
+                std::thread::sleep(Duration::from_millis(10));
+                smb_finished_in_thread.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+            || Ok(()),
+        );
+        let result = results.into_result_with_post_join_check(move || {
+            assert!(smb_finished_at_check.load(Ordering::SeqCst));
+            bail!("operation cancelled")
+        });
+        assert!(format!("{:#}", result.unwrap_err()).contains("operation cancelled"));
+    }
 
     struct TestVm;
 

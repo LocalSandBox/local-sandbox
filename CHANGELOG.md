@@ -5,6 +5,9 @@
 ## Unreleased
 
 - Added `rg` (ripgrep) to the Linux VM sandbox image.
+- Reduced Windows sandbox startup latency by overlapping host SMB preparation
+  with VM boot and pre-mount ephemeral proxy CA installation, while preserving
+  joined rollback and cleanup on failure or cancellation.
 - Fixed controlled self-update activation and rollback on Windows by admitting
   the signed, maintenance-root-pinned LocalSystem updater to the service IPC
   endpoint while keeping service identities excluded from normal client

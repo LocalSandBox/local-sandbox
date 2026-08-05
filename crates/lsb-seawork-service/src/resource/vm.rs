@@ -783,6 +783,8 @@ fn run(
         process_containment.clone(),
         &trace_parent,
         lifecycle_observer.clone(),
+        &session_cancellation,
+        &startup_cancellation,
     );
     let Ok((sandbox, mut proxy_handle)) = result else {
         if let Err(error) = &result {
@@ -1649,6 +1651,8 @@ fn build_and_start(
     process_containment: Arc<SandboxJob>,
     trace_parent: &crate::telemetry::SpanParent,
     lifecycle_observer: Arc<SandboxLifecycleTrace>,
+    session_cancellation: &CancellationToken,
+    startup_cancellation: &CancellationToken,
 ) -> Result<(lsb_vm::Sandbox, Option<lsb_proxy::ProxyHandle>)> {
     let proxy_span = trace_parent.start_child(crate::telemetry::SpanDescription::child(
         "sandbox.proxy_start",
@@ -1685,7 +1689,8 @@ fn build_and_start(
         "sandbox.mount_initialize",
         "initialize sandbox mounts and boot VM",
     ));
-    lifecycle_observer.attach_parent(mount_span.parent());
+    let mount_parent = mount_span.parent();
+    lifecycle_observer.attach_parent(mount_parent.clone());
     let mut builder = lsb_vm::Sandbox::builder()
         .data_dir(path_text(engine.resources_root())?)
         .service_qemu_executable(path_text(engine.qemu_executable())?)
@@ -1717,29 +1722,38 @@ fn build_and_start(
             return Err(error);
         }
     };
-    let start_result = sandbox.start();
+    let start_result = sandbox.start_with_pre_mount_hook_and_cancel_check(
+        |sandbox| {
+            if let Some(handle) = &proxy_handle {
+                let proxy_ca_span =
+                    mount_parent.start_child(crate::telemetry::SpanDescription::child(
+                        "sandbox.proxy_ca_install",
+                        "install guest proxy CA",
+                    ));
+                let install_result = install_proxy_ca(sandbox, &handle.ca_cert_pem)
+                    .context("sandbox.proxy_ca_install");
+                proxy_ca_span.finish(if install_result.is_ok() {
+                    crate::telemetry::SpanStatus::Ok
+                } else {
+                    crate::telemetry::SpanStatus::InternalError
+                });
+                install_result?;
+            }
+            Ok(())
+        },
+        || {
+            if session_cancellation.is_cancelled() || startup_cancellation.is_cancelled() {
+                bail!("operation cancelled");
+            }
+            Ok(())
+        },
+    );
     mount_span.finish(if start_result.is_ok() {
         crate::telemetry::SpanStatus::Ok
     } else {
         crate::telemetry::SpanStatus::InternalError
     });
     start_result?;
-    if let Some(handle) = &proxy_handle {
-        let proxy_ca_span = trace_parent.start_child(crate::telemetry::SpanDescription::child(
-            "sandbox.proxy_ca_install",
-            "install guest proxy CA",
-        ));
-        let install_result = install_proxy_ca(&sandbox, &handle.ca_cert_pem);
-        proxy_ca_span.finish(if install_result.is_ok() {
-            crate::telemetry::SpanStatus::Ok
-        } else {
-            crate::telemetry::SpanStatus::InternalError
-        });
-        if let Err(error) = install_result {
-            let _ = sandbox.stop();
-            return Err(error);
-        }
-    }
     Ok((sandbox, proxy_handle))
 }
 
