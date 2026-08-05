@@ -1,0 +1,24 @@
+xtask/src/rootfs.rs
+  s_22792cae2eab40::t_2a572821ba7762 693-694
+  s_22792cae2eab40::t_cda8e2518e1f40 100,102,372,374,687-692
+fixtures/office-rootfs-smoke.mjs
+  s_22792cae2eab40::t_cda8e2518e1f40 36
+CHANGELOG.md
+  s_22792cae2eab40::t_cda8e2518e1f40 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "930d3ecab5296bf3d3a6f5ec16230ee4da5e8ed4",
+  "prompts": {},
+  "sessions": {
+    "s_22792cae2eab40": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd05a-5350-7362-9138-f80eebb352d2",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
