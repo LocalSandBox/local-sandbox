@@ -1,0 +1,22 @@
+fixtures/windows/guest/service-acceptance.mjs
+  s_de7733c7308128::t_17af338f326c6c 156-198
+scripts/windows-test-service-harness.ps1
+  s_de7733c7308128::t_029f272762843d 715-717
+  s_de7733c7308128::t_17af338f326c6c 581-582,587-592,595-596,702-709,712-714,718-719,756-757
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "538e9119c0e90cc3ae39181bf6038647f1bf9ec0",
+  "prompts": {},
+  "sessions": {
+    "s_de7733c7308128": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd077-9a32-7de0-b561-2eab611f3233",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
