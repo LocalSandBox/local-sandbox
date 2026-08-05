@@ -19,14 +19,16 @@ pub struct WindowsSmbAclPlanEntry {
 }
 
 /// A recoverable ACL operation. `path` is the mount root; cleanup deliberately
-/// sweeps it so grants remain removable after descendants are renamed. Ancestor
-/// traverse grants are journaled separately because they are outside that tree.
+/// sweeps the same non-pruned tree used for setup. Ancestor traverse grants are
+/// journaled separately because they are outside that tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsSmbAclGrant {
     pub path: PathBuf,
     /// Ancestors that receive a non-inheriting traverse-only ACE for the
     /// generated SID. Stored explicitly so crash recovery can remove them.
     pub traverse_paths: Vec<PathBuf>,
+    /// Case-insensitive subtree basenames skipped during both grant and cleanup.
+    pub prune_subtrees: Vec<String>,
     pub principal: String,
     pub sid: String,
     pub access: WindowsSmbAccess,
@@ -42,6 +44,7 @@ pub trait WindowsSmbAclManager {
         Ok(WindowsSmbAclGrant {
             path: request.path.clone(),
             traverse_paths: Vec::new(),
+            prune_subtrees: request.prune_subtrees.clone(),
             principal: request.account.principal.clone(),
             sid: request.account.sid.clone(),
             access: request.access,
@@ -96,6 +99,7 @@ impl WindowsSmbAclManager for NativeWindowsSmbAclManager {
                 .skip(1)
                 .map(std::path::Path::to_path_buf)
                 .collect(),
+            prune_subtrees: request.prune_subtrees.clone(),
             principal: request.account.principal.clone(),
             sid: request.account.sid.clone(),
             access: request.access,
@@ -139,9 +143,17 @@ impl WindowsSmbAclManager for NativeWindowsSmbAclManager {
         // Remove the root ACE before walking the mutable tree. This immediately
         // withdraws inherited access even when a descendant later disappears or
         // cannot be inspected during the best-effort sweep.
-        revoke_acl_entry_best_effort(&grant.path, &grant.sid, grant.access, true, &mut failures);
+        revoke_acl_entry_best_effort(
+            &grant.path,
+            &grant.sid,
+            grant.access,
+            true,
+            true,
+            &mut failures,
+        );
 
-        let (entries, enumeration_failures) = enumerate_tree_for_cleanup(&grant.path);
+        let (entries, enumeration_failures) =
+            enumerate_tree_for_cleanup(&grant.path, &grant.prune_subtrees);
         failures.extend(enumeration_failures);
         for entry in entries.iter().rev() {
             revoke_acl_entry_best_effort(
@@ -149,6 +161,7 @@ impl WindowsSmbAclManager for NativeWindowsSmbAclManager {
                 &grant.sid,
                 grant.access,
                 entry.is_dir,
+                false,
                 &mut failures,
             );
         }
@@ -498,12 +511,7 @@ fn enumerate_tree(
                         ),
                     )
                 })?;
-                if prune_subtrees.iter().any(|pruned| {
-                    child
-                        .file_name()
-                        .to_string_lossy()
-                        .eq_ignore_ascii_case(pruned)
-                }) {
+                if is_pruned_subtree(&child.file_name(), prune_subtrees) {
                     continue;
                 }
                 pending.push(child.path());
@@ -516,6 +524,7 @@ fn enumerate_tree(
 #[cfg(windows)]
 fn enumerate_tree_for_cleanup(
     root: &std::path::Path,
+    prune_subtrees: &[String],
 ) -> (Vec<WindowsSmbAclPlanEntry>, Vec<WindowsSmbLifecycleError>) {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::fs::MetadataExt;
@@ -584,6 +593,7 @@ fn enumerate_tree_for_cleanup(
         };
         for child in children {
             match child {
+                Ok(child) if is_pruned_subtree(&child.file_name(), prune_subtrees) => {}
                 Ok(child) => pending.push(child.path()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => failures.push(WindowsSmbLifecycleError::operation_failed_at(
@@ -603,11 +613,9 @@ fn revoke_acl_entry_best_effort(
     sid: &str,
     access: WindowsSmbAccess,
     is_dir: bool,
+    verify: bool,
     failures: &mut Vec<WindowsSmbLifecycleError>,
 ) {
-    if path_is_absent(path) {
-        return;
-    }
     if let Err(error) = apply_acl_change(
         path,
         sid,
@@ -621,7 +629,9 @@ fn revoke_acl_entry_best_effort(
         }
         return;
     }
-    verify_explicit_sid_removed(path, sid, failures);
+    if verify {
+        verify_explicit_sid_removed(path, sid, failures);
+    }
 }
 
 #[cfg(windows)]
@@ -630,9 +640,6 @@ fn revoke_traverse_acl_best_effort(
     sid: &str,
     failures: &mut Vec<WindowsSmbLifecycleError>,
 ) {
-    if path_is_absent(path) {
-        return;
-    }
     if let Err(error) = apply_traverse_acl_change(
         path,
         sid,
@@ -680,6 +687,14 @@ fn cleanup_error_at(
 #[cfg(windows)]
 fn path_is_absent(path: &std::path::Path) -> bool {
     matches!(path.try_exists(), Ok(false))
+}
+
+#[cfg(windows)]
+fn is_pruned_subtree(name: &std::ffi::OsStr, prune_subtrees: &[String]) -> bool {
+    let name = name.to_string_lossy();
+    prune_subtrees
+        .iter()
+        .any(|pruned| name.eq_ignore_ascii_case(pruned))
 }
 
 #[cfg(windows)]
@@ -994,6 +1009,25 @@ mod tests {
                 )
             })
         }));
+
+        let (cleanup_entries, cleanup_failures) = enumerate_tree_for_cleanup(
+            &fixture,
+            &["node_modules".to_string(), ".seawork".to_string()],
+        );
+        assert!(cleanup_failures.is_empty());
+        let cleanup_relative = cleanup_entries
+            .iter()
+            .map(|entry| entry.path.strip_prefix(&fixture).unwrap().to_path_buf())
+            .collect::<Vec<_>>();
+        assert!(cleanup_relative.contains(&PathBuf::from("nested/src/main.rs")));
+        assert!(cleanup_relative.iter().all(|path| {
+            !path.components().any(|component| {
+                matches!(
+                    component.as_os_str().to_str(),
+                    Some("node_modules" | ".SeaWork")
+                )
+            })
+        }));
         let _ = std::fs::remove_dir_all(fixture);
     }
 
@@ -1051,6 +1085,7 @@ mod tests {
             plan.traverse_paths.contains(&fixture),
             "protected mount ancestor must be included in the recoverable ACL plan"
         );
+        assert!(plan.prune_subtrees.is_empty());
         let grant = acls
             .grant_access(plan)
             .expect("grant across protected boundary");
