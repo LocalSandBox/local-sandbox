@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::journal::MAX_TIMELINE_ENTRIES;
 use crate::{
     is_lower_hex, sha256_json, validate_id, validate_utc, ReleaseChannel, UpdateActor,
-    UpdateTransition, UpdateTransitionOutcome, UPDATE_STATE_SCHEMA_VERSION,
+    UpdateFailureBoundary, UpdateTransition, UpdateTransitionOutcome, UPDATE_STATE_SCHEMA_VERSION,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,6 +220,22 @@ impl UpdateAttemptEnvelope {
             .get_mut(index)
             .ok_or_else(|| anyhow::anyhow!("update checkpoint index is invalid"))?;
         transition.mark_reported(boundary, event_id)?;
+        self.refresh()
+    }
+
+    pub fn mark_failure_reported(
+        &mut self,
+        index: usize,
+        boundary: UpdateFailureBoundary,
+        event_id: impl Into<String>,
+    ) -> Result<()> {
+        self.validate()?;
+        let transition = self
+            .attempt
+            .timeline
+            .get_mut(index)
+            .ok_or_else(|| anyhow::anyhow!("update failure index is invalid"))?;
+        transition.mark_failure_reported(boundary, event_id)?;
         self.refresh()
     }
 }

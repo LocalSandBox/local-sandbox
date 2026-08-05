@@ -452,6 +452,10 @@ impl HealthContext {
         self
     }
 
+    pub(crate) fn telemetry(&self) -> Telemetry {
+        self.telemetry.clone()
+    }
+
     pub fn with_logger(mut self, logger: Arc<ServiceLogger>) -> Self {
         self.logger = Some(logger);
         self

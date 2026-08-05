@@ -208,6 +208,7 @@ impl Adapter for NativeAdapter {
                 "detailed_failure_kind",
                 event.detailed_failure_kind,
             )?;
+            set_string(&operation, "failure_boundary", event.failure_boundary)?;
             set_value(
                 &operation,
                 "retryable",
@@ -361,6 +362,13 @@ impl Adapter for NativeAdapter {
                     sentry_span_set_data(native, key.as_ptr(), value);
                 } else {
                     sentry_transaction_set_data(native, key.as_ptr(), value);
+                }
+            }
+            if parent_id.is_none() {
+                for (key, value) in &span.tags {
+                    let key = CString::new(key.as_str()).map_err(|_| ())?;
+                    let value = CString::new(value.as_str()).map_err(|_| ())?;
+                    sentry_transaction_set_tag(native, key.as_ptr(), value.as_ptr());
                 }
             }
         }
@@ -624,6 +632,11 @@ unsafe extern "C" {
         transaction: *mut c_void,
         key: *const c_char,
         value: SentryValue,
+    );
+    fn sentry_transaction_set_tag(
+        transaction: *mut c_void,
+        key: *const c_char,
+        value: *const c_char,
     );
     fn sentry_span_set_status(span: *mut c_void, status: c_int);
     fn sentry_span_set_data(span: *mut c_void, key: *const c_char, value: SentryValue);

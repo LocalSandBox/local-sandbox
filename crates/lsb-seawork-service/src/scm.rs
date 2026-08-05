@@ -266,6 +266,7 @@ fn run_registered(
             paths.clone(),
             config.update_channel,
             logger.clone(),
+            common_context.runtime.machine_name.clone(),
         )),
         crate::update::StartupRecovery::OldService { .. }
         | crate::update::StartupRecovery::TargetService { .. } => {
@@ -275,6 +276,7 @@ fn run_registered(
                 paths.clone(),
                 config.update_channel,
                 logger.clone(),
+                common_context.runtime.machine_name.clone(),
             ))
         }
         crate::update::StartupRecovery::Quarantined => None,
@@ -293,13 +295,18 @@ fn run_registered(
     startup_span.finish(SpanStatus::Ok);
     telemetry.breadcrumb(Breadcrumb::lifecycle("service", "running"));
     telemetry.start_session();
-    crate::update::report_terminal_journal(&paths.updates.current_transaction, &telemetry);
+    crate::update::report_update_telemetry(
+        &paths,
+        &telemetry,
+        common_context.runtime.machine_name.as_deref(),
+        config.update_channel,
+    );
     let mut telemetry_heartbeat = Some(spawn_telemetry_heartbeat(
         &runtime,
         telemetry.clone(),
         common_context.runtime.machine_name.clone(),
         config.update_channel,
-        paths.updates.current_transaction.clone(),
+        paths.clone(),
     ));
     logger.write(EventId::ServiceStarted, "runtime", "RUNNING")?;
     let control = match runtime.block_on(wait_for_runtime_exit(&mut control_rx, &mut pipe_task)) {
@@ -420,7 +427,7 @@ fn spawn_telemetry_heartbeat(
     telemetry: Telemetry,
     machine_name: Option<String>,
     update_channel: crate::config::UpdateChannel,
-    update_journal: std::path::PathBuf,
+    paths: ServicePaths,
 ) -> TelemetryHeartbeat {
     let (stop, mut stopped) = tokio::sync::oneshot::channel();
     let task = runtime.spawn(async move {
@@ -435,8 +442,14 @@ fn spawn_telemetry_heartbeat(
                         machine_name.as_deref(),
                         update_channel,
                         started.elapsed(),
+                        crate::update::last_update_snapshot(&paths),
                     );
-                    crate::update::report_terminal_journal(&update_journal, &telemetry);
+                    crate::update::report_update_telemetry(
+                        &paths,
+                        &telemetry,
+                        machine_name.as_deref(),
+                        update_channel,
+                    );
                 },
                 _ = &mut stopped => break,
             }
@@ -450,6 +463,7 @@ fn emit_telemetry_heartbeat(
     machine_name: Option<&str>,
     update_channel: crate::config::UpdateChannel,
     uptime: Duration,
+    update_snapshot: Option<lsb_seawork_update::UpdateSnapshot>,
 ) {
     let update_channel = match update_channel {
         crate::config::UpdateChannel::Stable => "stable",
@@ -475,6 +489,26 @@ fn emit_telemetry_heartbeat(
     }
     if let Some(machine_name) = machine_name {
         description = description.with_data("user.id", machine_name);
+    }
+    if let Some(snapshot) = update_snapshot {
+        description = description
+            .with_data("update.attempt_id", snapshot.attempt_id)
+            .with_data("update.retry_count", snapshot.retry_count.to_string());
+        if let Some(target) = snapshot.target_version {
+            description = description.with_data("update.target_version", target);
+        }
+        if let Some(phase) = snapshot.phase {
+            description = description.with_data("update.phase", phase);
+        }
+        if let Some(outcome) = snapshot.outcome {
+            description = description.with_data(
+                "update.outcome",
+                format!("{outcome:?}").to_ascii_lowercase(),
+            );
+        }
+        if let Some(observed_utc) = snapshot.last_transition_utc {
+            description = description.with_data("update.last_transition_utc", observed_utc);
+        }
     }
     telemetry.start_span(description).finish(SpanStatus::Ok);
 }

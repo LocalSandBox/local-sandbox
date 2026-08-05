@@ -10,6 +10,8 @@ use super::{
 pub(crate) fn reconstruct_update(
     telemetry: &Telemetry,
     journal: &TransactionEnvelope,
+    hostname: Option<&str>,
+    channel: Option<&str>,
 ) -> Option<String> {
     if journal.validate().is_err()
         || !journal.transaction.phase.is_terminal()
@@ -40,6 +42,15 @@ pub(crate) fn reconstruct_update(
     let mut description = SpanDescription::transaction(TRANSACTION_SERVICE_UPDATE)
         .always_sampled()
         .started_at(start)
+        .with_tag(
+            "update.source_version",
+            &journal.transaction.old_bundle_identity.version,
+        )
+        .with_tag(
+            "update.target_version",
+            &journal.transaction.target_bundle_identity.version,
+        )
+        .with_tag("update.result", result)
         .with_data(
             "source.version",
             &journal.transaction.old_bundle_identity.version,
@@ -49,12 +60,35 @@ pub(crate) fn reconstruct_update(
             &journal.transaction.target_bundle_identity.version,
         )
         .with_data("result", result)
+        .with_data("update.attempt_id", &journal.transaction.update_id)
         .with_data("update.transaction_id", &journal.transaction.transaction_id);
+    description = description
+        .with_data(
+            "update.target_archive_sha256",
+            &journal.transaction.target_bundle_identity.archive_sha256,
+        )
+        .with_data(
+            "update.total_duration_ms",
+            end.saturating_sub(start).saturating_div(1_000).to_string(),
+        );
+    if let Some(hostname) = hostname {
+        description = description.with_data("user.id", hostname);
+    }
+    if let Some(channel) = channel {
+        description = description
+            .with_tag("update.channel", channel)
+            .with_data("update.channel", channel);
+    }
+    if let Some(run_id) = telemetry.run_id() {
+        description = description.with_data("run_id", run_id);
+    }
     if let Some(step) = journal.transaction.last_failure_step {
         description = description.with_data("failure.phase", format!("{step:?}"));
     }
     if let Some(code) = journal.transaction.last_failure_code {
-        description = description.with_data("failure.code", code.stable_code());
+        description = description
+            .with_tag("update.failure_code", code.stable_code())
+            .with_data("failure.code", code.stable_code());
     }
     let root = telemetry.continue_trace(trace.clone(), description);
     for transition in &journal.transaction.timeline {
@@ -72,8 +106,17 @@ pub(crate) fn reconstruct_update(
             format!("service update ended as {result}"),
         )
         .with_detailed_failure_kind(failure_kind(journal.transaction.phase))
+        .with_failure_boundary(failure_kind(journal.transaction.phase))
         .with_correlation_id(&journal.transaction.transaction_id)
         .with_tag("update.result", result)
+        .with_tag(
+            "update.source_version",
+            &journal.transaction.old_bundle_identity.version,
+        )
+        .with_tag(
+            "update.target_version",
+            &journal.transaction.target_bundle_identity.version,
+        )
         .with_tag("trace.id", &trace.trace_id);
         event.contexts.insert(
             "update".to_string(),
@@ -84,6 +127,7 @@ pub(crate) fn reconstruct_update(
                 "failure_phase": journal.transaction.last_failure_step,
                 "failure_code": journal.transaction.last_failure_code.map(|code| code.stable_code()),
                 "trace_id": trace.trace_id,
+                "timeline": journal.transaction.timeline,
             }),
         );
         let _ = root.capture_failure(event);
@@ -126,7 +170,7 @@ fn emit_transition(root: &super::SpanGuard, transition: &UpdateTransition, root_
 
 fn transition_name(phase: &str) -> &'static str {
     match phase {
-        "update.check" => "update.check",
+        "update.check" | "update.discovery" => "update.discovery",
         "update.release_selection" => "update.release_selection",
         "update.download" => "update.download",
         "update.extraction" => "update.extraction",

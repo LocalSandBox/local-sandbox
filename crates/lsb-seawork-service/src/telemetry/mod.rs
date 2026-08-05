@@ -3,6 +3,7 @@ mod diagnostics;
 #[cfg(all(windows, feature = "sentry-telemetry"))]
 mod native;
 mod run_marker;
+mod update_checkpoint;
 mod update_trace;
 #[cfg(windows)]
 mod windows_events;
@@ -39,7 +40,9 @@ pub const TRANSACTION_SANDBOX_START: &str = "sandbox.start";
 pub const TRANSACTION_SANDBOX_STOP: &str = "sandbox.stop";
 pub const TRANSACTION_SERVICE_HEARTBEAT: &str = "service.heartbeat";
 pub const TRANSACTION_SERVICE_UPDATE: &str = "service.update";
+pub const TRANSACTION_SERVICE_UPDATE_CHECKPOINT: &str = "service.update.checkpoint";
 
+pub(crate) use update_checkpoint::{emit_update_checkpoint, UpdateCheckpoint};
 pub(crate) use update_trace::reconstruct_update;
 
 #[cfg(windows)]
@@ -190,6 +193,7 @@ pub struct FailureEvent {
     pub operation: &'static str,
     pub stable_error_code: &'static str,
     pub detailed_failure_kind: &'static str,
+    pub failure_boundary: &'static str,
     pub level: Level,
     pub summary: String,
     pub retryable: bool,
@@ -213,6 +217,7 @@ impl FailureEvent {
             operation,
             stable_error_code,
             detailed_failure_kind: "unknown",
+            failure_boundary: "occurrence",
             level,
             summary: bounded(summary.into(), 2_048),
             retryable: false,
@@ -226,17 +231,23 @@ impl FailureEvent {
     }
 
     #[cfg(any(test, all(windows, feature = "sentry-telemetry")))]
-    pub fn fingerprint(&self) -> [String; 4] {
+    pub fn fingerprint(&self) -> [String; 5] {
         [
             COMPONENT.to_string(),
             self.operation.to_string(),
             self.stable_error_code.to_string(),
             self.detailed_failure_kind.to_string(),
+            self.failure_boundary.to_string(),
         ]
     }
 
     pub fn with_detailed_failure_kind(mut self, kind: &'static str) -> Self {
         self.detailed_failure_kind = kind;
+        self
+    }
+
+    pub fn with_failure_boundary(mut self, boundary: &'static str) -> Self {
+        self.failure_boundary = boundary;
         self
     }
 
@@ -282,6 +293,7 @@ pub struct SpanDescription {
     pub operation: &'static str,
     pub description: &'static str,
     pub data: BTreeMap<String, String>,
+    pub tags: BTreeMap<String, String>,
     pub sampled: Option<bool>,
     pub started_at_micros: Option<u64>,
 }
@@ -292,6 +304,7 @@ impl SpanDescription {
             operation: name,
             description: name,
             data: BTreeMap::new(),
+            tags: BTreeMap::new(),
             sampled: None,
             started_at_micros: None,
         }
@@ -302,6 +315,7 @@ impl SpanDescription {
             operation,
             description,
             data: BTreeMap::new(),
+            tags: BTreeMap::new(),
             sampled: None,
             started_at_micros: None,
         }
@@ -309,6 +323,11 @@ impl SpanDescription {
 
     pub fn with_data(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.data.insert(key.into(), bounded(value.into(), 256));
+        self
+    }
+
+    pub fn with_tag(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.tags.insert(key.into(), bounded(value.into(), 64));
         self
     }
 
@@ -814,6 +833,99 @@ mod tests {
     }
 
     #[test]
+    fn update_checkpoint_payload_is_queryable_and_always_sampled() {
+        use lsb_seawork_update::{
+            UpdateActor, UpdateCheckpointBoundary, UpdateTransition, UpdateTransitionOutcome,
+        };
+
+        let adapter = Arc::new(FakeAdapter::default());
+        let telemetry = Telemetry::new(adapter.clone());
+        let mut transition = UpdateTransition::started(
+            "update.download",
+            UpdateActor::Service,
+            "2026-08-05T01:02:03Z",
+        )
+        .unwrap();
+        transition
+            .complete(
+                "2026-08-05T01:02:04Z",
+                1_000,
+                UpdateTransitionOutcome::Succeeded,
+                None,
+            )
+            .unwrap();
+        let checkpoint = UpdateCheckpoint {
+            hostname: "host-01",
+            attempt_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            transaction_id: Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            source_version: "0.6.0",
+            target_version: Some("0.6.1"),
+            target_archive_sha256: Some(
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            ),
+            installed_version: "0.6.0",
+            channel: "stable",
+            run_id: Some("run-01"),
+            retry_count: 2,
+            transition: &transition,
+            boundary: UpdateCheckpointBoundary::Completed,
+        };
+
+        assert_eq!(
+            emit_update_checkpoint(&telemetry, &checkpoint),
+            Some("00000000000000000000000000000001".to_string())
+        );
+        let state = adapter.state.lock().unwrap();
+        let description = &state.spans[0].3;
+        assert_eq!(description.sampled, Some(true));
+        assert_eq!(
+            description.tags.get("update.phase").map(String::as_str),
+            Some("update.download")
+        );
+        assert_eq!(
+            description.tags.get("update.outcome").map(String::as_str),
+            Some("succeeded")
+        );
+        assert_eq!(
+            description.data.get("user.id").map(String::as_str),
+            Some("host-01")
+        );
+        assert_eq!(description.data["update.duration_ms"], "1000");
+        assert_eq!(description.data["update.event_identity"].len(), 64);
+    }
+
+    #[test]
+    fn update_checkpoint_submission_failure_is_fail_open() {
+        use lsb_seawork_update::{UpdateActor, UpdateCheckpointBoundary, UpdateTransition};
+
+        let adapter = Arc::new(FakeAdapter::default());
+        adapter.state.lock().unwrap().fail_calls = true;
+        let telemetry = Telemetry::new(adapter);
+        let transition = UpdateTransition::started(
+            "update.discovery",
+            UpdateActor::Service,
+            "2026-08-05T01:02:03Z",
+        )
+        .unwrap();
+        let checkpoint = UpdateCheckpoint {
+            hostname: "host-01",
+            attempt_id: "a",
+            transaction_id: None,
+            source_version: "0.6.0",
+            target_version: None,
+            target_archive_sha256: None,
+            installed_version: "0.6.0",
+            channel: "stable",
+            run_id: None,
+            retry_count: 0,
+            transition: &transition,
+            boundary: UpdateCheckpointBoundary::Started,
+        };
+
+        assert_eq!(emit_update_checkpoint(&telemetry, &checkpoint), None);
+    }
+
+    #[test]
     fn attaching_run_state_indexes_the_run_id() {
         let root = std::env::temp_dir().join(format!(
             "lsbs-telemetry-run-id-{}",
@@ -951,14 +1063,15 @@ mod tests {
     }
 
     #[test]
-    fn detailed_failure_kind_is_the_fourth_stable_fingerprint_part() {
+    fn detailed_failure_kind_and_boundary_are_stable_fingerprint_parts() {
         let event = FailureEvent::new(
             "sandbox.start",
             "SANDBOX_BOOT_FAILED",
             Level::Error,
             "timeout",
         )
-        .with_detailed_failure_kind("guest_ready_timeout");
+        .with_detailed_failure_kind("guest_ready_timeout")
+        .with_failure_boundary("retry_exhausted");
 
         assert_eq!(
             event.fingerprint(),
@@ -967,6 +1080,7 @@ mod tests {
                 "sandbox.start".to_string(),
                 "SANDBOX_BOOT_FAILED".to_string(),
                 "guest_ready_timeout".to_string(),
+                "retry_exhausted".to_string(),
             ]
         );
     }
@@ -1116,13 +1230,16 @@ mod tests {
                     retry_attempt: None,
                     started_event_id: None,
                     completed_event_id: None,
+                    first_error_event_id: None,
+                    retry_exhausted_event_id: None,
                 }],
                 reported_event_id: None,
             })
             .unwrap();
             let adapter = Arc::new(FakeAdapter::default());
             let telemetry = Telemetry::new(adapter.clone());
-            let receipt = reconstruct_update(&telemetry, &journal).unwrap();
+            let receipt =
+                reconstruct_update(&telemetry, &journal, Some("host-01"), Some("stable")).unwrap();
             assert_eq!(receipt.len(), 32);
             let state = adapter.state.lock().unwrap();
             assert_eq!(state.spans.len(), 2);
@@ -1140,7 +1257,7 @@ mod tests {
             assert_eq!(state.finished.last().unwrap().2, expected_end);
             drop(state);
             journal.mark_reported(receipt).unwrap();
-            assert_eq!(reconstruct_update(&telemetry, &journal), None);
+            assert_eq!(reconstruct_update(&telemetry, &journal, None, None), None);
         }
     }
 }

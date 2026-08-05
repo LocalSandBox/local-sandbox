@@ -24,6 +24,12 @@ pub enum UpdateTransitionOutcome {
     Skipped,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateFailureBoundary {
+    FirstError,
+    RetryExhausted,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateTransition {
@@ -46,6 +52,10 @@ pub struct UpdateTransition {
     pub started_event_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_error_event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_exhausted_event_id: Option<String>,
 }
 
 impl UpdateTransition {
@@ -66,6 +76,8 @@ impl UpdateTransition {
             retry_attempt: None,
             started_event_id: None,
             completed_event_id: None,
+            first_error_event_id: None,
+            retry_exhausted_event_id: None,
         };
         transition.validate()?;
         Ok(transition)
@@ -109,6 +121,22 @@ impl UpdateTransition {
         self.validate()
     }
 
+    pub fn mark_failure_reported(
+        &mut self,
+        boundary: UpdateFailureBoundary,
+        event_id: impl Into<String>,
+    ) -> Result<()> {
+        let event_id = event_id.into();
+        if self.outcome != Some(UpdateTransitionOutcome::Failed) || !is_lower_hex(&event_id, 32) {
+            bail!("update failure Sentry receipt is invalid");
+        }
+        match boundary {
+            UpdateFailureBoundary::FirstError => self.first_error_event_id = Some(event_id),
+            UpdateFailureBoundary::RetryExhausted => self.retry_exhausted_event_id = Some(event_id),
+        }
+        self.validate()
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         if self.phase.is_empty()
             || self.phase.len() > 64
@@ -137,6 +165,16 @@ impl UpdateTransition {
                 .completed_event_id
                 .as_ref()
                 .is_some_and(|event_id| self.completed_utc.is_none() || !is_lower_hex(event_id, 32))
+            || self.first_error_event_id.as_ref().is_some_and(|event_id| {
+                self.outcome != Some(UpdateTransitionOutcome::Failed) || !is_lower_hex(event_id, 32)
+            })
+            || self
+                .retry_exhausted_event_id
+                .as_ref()
+                .is_some_and(|event_id| {
+                    self.outcome != Some(UpdateTransitionOutcome::Failed)
+                        || !is_lower_hex(event_id, 32)
+                })
             || self
                 .failure_code
                 .as_ref()
@@ -473,6 +511,40 @@ impl TransactionEnvelope {
             bail!("reported Sentry event id is invalid");
         }
         self.transaction.reported_event_id = Some(event_id);
+        self.checksum_sha256 = sha256_json(&self.transaction)?;
+        Ok(())
+    }
+
+    pub fn mark_checkpoint_reported(
+        &mut self,
+        index: usize,
+        boundary: crate::UpdateCheckpointBoundary,
+        event_id: impl Into<String>,
+    ) -> Result<()> {
+        self.validate()?;
+        let transition = self
+            .transaction
+            .timeline
+            .get_mut(index)
+            .ok_or_else(|| anyhow::anyhow!("update checkpoint index is invalid"))?;
+        transition.mark_reported(boundary, event_id)?;
+        self.checksum_sha256 = sha256_json(&self.transaction)?;
+        Ok(())
+    }
+
+    pub fn mark_failure_reported(
+        &mut self,
+        index: usize,
+        boundary: UpdateFailureBoundary,
+        event_id: impl Into<String>,
+    ) -> Result<()> {
+        self.validate()?;
+        let transition = self
+            .transaction
+            .timeline
+            .get_mut(index)
+            .ok_or_else(|| anyhow::anyhow!("update failure index is invalid"))?;
+        transition.mark_failure_reported(boundary, event_id)?;
         self.checksum_sha256 = sha256_json(&self.transaction)?;
         Ok(())
     }

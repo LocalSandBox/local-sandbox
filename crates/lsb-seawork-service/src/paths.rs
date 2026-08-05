@@ -23,6 +23,8 @@ pub struct UpdatePaths {
     pub root: PathBuf,
     pub committed: PathBuf,
     pub status: PathBuf,
+    pub current_attempt: PathBuf,
+    pub attempt_history: PathBuf,
     pub failed_target: PathBuf,
     pub downloads: PathBuf,
     pub staging: PathBuf,
@@ -51,6 +53,8 @@ impl ServicePaths {
             updates: UpdatePaths {
                 committed: update_root.join("committed.json"),
                 status: update_root.join("status.json"),
+                current_attempt: update_root.join("attempts").join("current.json"),
+                attempt_history: update_root.join("attempt-history"),
                 failed_target: update_root.join("failed-target.json"),
                 downloads: update_root.join("downloads"),
                 staging: update_root.join("staging"),
@@ -84,6 +88,11 @@ impl ServicePaths {
             self.updates.root.as_path(),
             self.updates.downloads.as_path(),
             self.updates.staging.as_path(),
+            self.updates
+                .current_attempt
+                .parent()
+                .context("attempt path has no parent")?,
+            self.updates.attempt_history.as_path(),
             self.updates
                 .current_transaction
                 .parent()
