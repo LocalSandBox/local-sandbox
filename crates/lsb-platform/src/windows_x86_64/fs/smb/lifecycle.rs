@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use lsb_proto::MountRequest;
 use serde::{Deserialize, Serialize};
 
-use super::acl::{WindowsSmbAclGrant, WindowsSmbAclGrantRequest, WindowsSmbAclManager};
+use super::acl::{
+    WindowsSmbAclGrant, WindowsSmbAclGrantRequest, WindowsSmbAclManager, MAX_ACL_AGGREGATE_ENTRIES,
+};
 use super::admin::WindowsSmbAdmin;
 use super::password::{WindowsSmbPassword, WindowsSmbPasswordGenerator};
 use super::share::{
@@ -20,7 +22,7 @@ use super::user::{WindowsSmbUserAccount, WindowsSmbUserManager, WindowsSmbUserNa
 
 pub const WINDOWS_SMB_CLEANUP_MANIFEST_FILE: &str = "windows-smb-cleanup.json";
 pub const WINDOWS_SMB_INSTANCE_LOCK_FILE: &str = "windows-smb-active.lock";
-const WINDOWS_SMB_CLEANUP_SCHEMA_VERSION: u32 = 4;
+const WINDOWS_SMB_CLEANUP_SCHEMA_VERSION: u32 = 5;
 
 #[cfg(windows)]
 pub struct WindowsSmbInstanceGuard {
@@ -155,14 +157,15 @@ where
 
         let mut acl_grants = Vec::new();
         let mut shares = Vec::new();
-        let mut mount_requests = Vec::new();
-
+        let mut intended_grants = Vec::with_capacity(config.mounts.len());
+        let mut remaining_acl_entries = MAX_ACL_AGGREGATE_ENTRIES;
         for mount in &config.mounts {
             let request = WindowsSmbAclGrantRequest {
                 path: mount.source.clone(),
                 account: account.clone(),
                 access: mount.access,
                 prune_subtrees: mount.prune_subtrees.clone(),
+                entry_limit: remaining_acl_entries,
             };
             let intended_grant = match self.acls.prepare_grant(&request) {
                 Ok(grant) => grant,
@@ -178,6 +181,28 @@ where
                     return Err(error.with_cleanup_failures(failures));
                 }
             };
+            if intended_grant.inspected_entries > remaining_acl_entries {
+                let error = WindowsSmbLifecycleError::operation_failed(
+                    WindowsSmbLifecyclePhase::AclGrant,
+                    "SMB mounts exceed the 10,000-entry aggregate safety limit",
+                );
+                let failures = if let Some(path) = manifest_path {
+                    match self.recover_cleanup_manifest(path) {
+                        Ok(()) => Vec::new(),
+                        Err(cleanup) => cleanup.cleanup_failures().to_vec(),
+                    }
+                } else {
+                    self.cleanup_created(&account, &mut shares, &mut acl_grants)
+                };
+                return Err(error.with_cleanup_failures(failures));
+            }
+            remaining_acl_entries -= intended_grant.inspected_entries;
+            intended_grants.push(intended_grant);
+        }
+
+        let mut mount_requests = Vec::new();
+
+        for intended_grant in intended_grants {
             journal
                 .acl_grants
                 .push(WindowsSmbCleanupAclGrant::from_grant(&intended_grant));
@@ -480,6 +505,14 @@ pub struct WindowsSmbCleanupAclGrant {
     pub access: super::types::WindowsSmbAccess,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_dacl_control: Option<u16>,
+    /// Older manifests omitted this field and may contain explicit descendant
+    /// ACEs, so absence must retain the legacy cleanup sweep.
+    #[serde(default = "default_true")]
+    pub descendant_aces: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl WindowsSmbCleanupAclGrant {
@@ -492,6 +525,7 @@ impl WindowsSmbCleanupAclGrant {
             sid: Some(grant.sid.clone()),
             access: grant.access,
             original_dacl_control: grant.original_dacl_control,
+            descendant_aces: grant.descendant_aces,
         }
     }
 }
@@ -584,7 +618,8 @@ impl WindowsSmbCleanupManifest {
                     sid: grant.sid.unwrap_or_default(),
                     access: grant.access,
                     original_dacl_control: grant.original_dacl_control,
-                    planned_entries: Vec::new(),
+                    inspected_entries: 0,
+                    descendant_aces: grant.descendant_aces,
                 })
                 .collect(),
             shares: self
@@ -1083,9 +1118,27 @@ mod tests {
         fail_grant_index: Option<usize>,
         fail_revoke: bool,
         grants: usize,
+        entries_per_grant: usize,
     }
 
     impl WindowsSmbAclManager for FakeAcls {
+        fn prepare_grant(
+            &mut self,
+            request: &WindowsSmbAclGrantRequest,
+        ) -> Result<WindowsSmbAclGrant, WindowsSmbLifecycleError> {
+            Ok(WindowsSmbAclGrant {
+                path: request.path.clone(),
+                traverse_paths: Vec::new(),
+                prune_subtrees: request.prune_subtrees.clone(),
+                principal: request.account.principal.clone(),
+                sid: request.account.sid.clone(),
+                access: request.access,
+                original_dacl_control: None,
+                inspected_entries: self.entries_per_grant,
+                descendant_aces: false,
+            })
+        }
+
         fn grant_access(
             &mut self,
             grant: WindowsSmbAclGrant,
@@ -1186,6 +1239,7 @@ mod tests {
                 fail_grant_index: None,
                 fail_revoke: false,
                 grants: 0,
+                entries_per_grant: 1,
             },
             FakeShares {
                 log,
@@ -1300,6 +1354,29 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_rejects_mounts_over_the_aggregate_acl_entry_budget_before_granting() {
+        let log = EventLog::default();
+        let mut manager = fake_manager(log.clone(), [vec![0, 1, 2, 3, 4, 5]]);
+        manager.acls.entries_per_grant = 6_000;
+
+        let error = manager
+            .prepare(&config())
+            .expect_err("two 6,000-entry mounts must exceed the aggregate budget");
+
+        assert!(error
+            .to_string()
+            .contains("10,000-entry aggregate safety limit"));
+        assert!(log
+            .snapshot()
+            .iter()
+            .all(|event| !event.starts_with("grant_acl:")));
+        assert!(log
+            .snapshot()
+            .iter()
+            .any(|event| event.starts_with("delete_user:")));
+    }
+
+    #[test]
     fn cleanup_manifest_roundtrips_without_password_and_recovers_resources() {
         let prepare_log = EventLog::default();
         let mut prepare_manager = fake_manager(
@@ -1332,7 +1409,7 @@ mod tests {
 
         let manifest =
             read_windows_smb_cleanup_manifest(&manifest_path).expect("manifest should parse");
-        assert_eq!(manifest.schema_version, 4);
+        assert_eq!(manifest.schema_version, 5);
         assert_eq!(
             manifest.account.sid.as_deref(),
             Some("S-1-5-21-1000-1001-1002-1003")
@@ -1345,6 +1422,7 @@ mod tests {
             manifest.acl_grants[0].prune_subtrees,
             ["node_modules", ".seawork"]
         );
+        assert!(!manifest.acl_grants[0].descendant_aces);
         assert_eq!(manifest.shares.len(), 2);
 
         let recover_log = EventLog::default();
@@ -1364,6 +1442,7 @@ mod tests {
                 fail_grant_index: None,
                 fail_revoke: false,
                 grants: 0,
+                entries_per_grant: 1,
             },
             FakeShares {
                 log: recover_log.clone(),
@@ -1430,6 +1509,7 @@ mod tests {
                 fail_grant_index: None,
                 fail_revoke: false,
                 grants: 0,
+                entries_per_grant: 1,
             },
             FakeShares {
                 log: recover_log.clone(),
@@ -1487,6 +1567,7 @@ mod tests {
         assert!(manifest.account.sid.is_none());
         assert!(manifest.acl_grants[0].traverse_paths.is_empty());
         assert!(manifest.acl_grants[0].prune_subtrees.is_empty());
+        assert!(manifest.acl_grants[0].descendant_aces);
 
         let log = EventLog::default();
         let mut manager = fake_manager(log.clone(), Vec::<Vec<u8>>::new());
@@ -1517,7 +1598,7 @@ mod tests {
             .expect_err("ACL grant should fail");
 
         let manifest = read_windows_smb_cleanup_manifest(&manifest_path).expect("journal retained");
-        assert_eq!(manifest.schema_version, 4);
+        assert_eq!(manifest.schema_version, 5);
         assert_eq!(
             manifest.account.sid.as_deref(),
             Some("S-1-5-21-1000-1001-1002-1003")
@@ -1914,6 +1995,7 @@ mod tests {
                 fail_grant_index: None,
                 fail_revoke: false,
                 grants: 0,
+                entries_per_grant: 1,
             },
             FakeShares {
                 log: log.clone(),
@@ -1950,6 +2032,7 @@ mod tests {
                 fail_grant_index: None,
                 fail_revoke: false,
                 grants: 0,
+                entries_per_grant: 1,
             },
             FakeShares {
                 log: log.clone(),
@@ -1985,6 +2068,7 @@ mod tests {
                 fail_grant_index: None,
                 fail_revoke: false,
                 grants: 0,
+                entries_per_grant: 1,
             },
             FakeShares {
                 log: log.clone(),

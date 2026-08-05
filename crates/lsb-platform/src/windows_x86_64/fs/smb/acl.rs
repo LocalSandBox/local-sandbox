@@ -10,6 +10,9 @@ pub struct WindowsSmbAclGrantRequest {
     pub account: WindowsSmbUserAccount,
     pub access: WindowsSmbAccess,
     pub prune_subtrees: Vec<String>,
+    /// Maximum number of non-pruned entries this mount may contribute to the
+    /// lifecycle-wide ACL inspection budget.
+    pub entry_limit: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,22 +21,27 @@ pub struct WindowsSmbAclPlanEntry {
     pub is_dir: bool,
 }
 
-/// A recoverable ACL operation. `path` is the mount root; cleanup deliberately
-/// sweeps the same non-pruned tree used for setup. Ancestor traverse grants are
-/// journaled separately because they are outside that tree.
+/// A recoverable ACL operation. New grants place one inheritable ACE on `path`.
+/// `descendant_aces` remains journaled for cleanup of manifests produced by the
+/// legacy per-entry grant implementation. Ancestor traverse grants are tracked
+/// separately because they are outside the mount tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsSmbAclGrant {
     pub path: PathBuf,
     /// Ancestors that receive a non-inheriting traverse-only ACE for the
     /// generated SID. Stored explicitly so crash recovery can remove them.
     pub traverse_paths: Vec<PathBuf>,
-    /// Case-insensitive subtree basenames skipped during both grant and cleanup.
+    /// Case-insensitive subtree basenames skipped during budget inspection and
+    /// legacy descendant cleanup.
     pub prune_subtrees: Vec<String>,
     pub principal: String,
     pub sid: String,
     pub access: WindowsSmbAccess,
     pub original_dacl_control: Option<u16>,
-    pub planned_entries: Vec<WindowsSmbAclPlanEntry>,
+    /// Number of non-pruned entries inspected before this grant was accepted.
+    pub inspected_entries: usize,
+    /// Whether cleanup must sweep descendants for legacy explicit ACEs.
+    pub descendant_aces: bool,
 }
 
 pub trait WindowsSmbAclManager {
@@ -49,7 +57,8 @@ pub trait WindowsSmbAclManager {
             sid: request.account.sid.clone(),
             access: request.access,
             original_dacl_control: None,
-            planned_entries: Vec::new(),
+            inspected_entries: 1,
+            descendant_aces: false,
         })
     }
 
@@ -71,8 +80,9 @@ pub trait WindowsSmbAclManager {
     }
 }
 
+pub(crate) const MAX_ACL_AGGREGATE_ENTRIES: usize = 10_000;
 #[cfg(windows)]
-const MAX_ACL_TREE_ENTRIES: usize = 100_000;
+const MAX_LEGACY_ACL_CLEANUP_ENTRIES: usize = 100_000;
 #[cfg(windows)]
 const MAX_WINDOWS_PATH_UNITS: usize = 32_767;
 
@@ -86,9 +96,10 @@ impl WindowsSmbAclManager for NativeWindowsSmbAclManager {
         &mut self,
         request: &WindowsSmbAclGrantRequest,
     ) -> Result<WindowsSmbAclGrant, WindowsSmbLifecycleError> {
-        let planned_entries = enumerate_tree(
+        let inspected_entries = inspect_tree(
             &request.path,
             &request.prune_subtrees,
+            request.entry_limit,
             WindowsSmbLifecyclePhase::AclGrant,
         )?;
         Ok(WindowsSmbAclGrant {
@@ -104,13 +115,14 @@ impl WindowsSmbAclManager for NativeWindowsSmbAclManager {
             sid: request.account.sid.clone(),
             access: request.access,
             original_dacl_control: Some(security_descriptor_control(&request.path)?),
-            planned_entries,
+            inspected_entries,
+            descendant_aces: false,
         })
     }
 
     fn grant_access(
         &mut self,
-        mut grant: WindowsSmbAclGrant,
+        grant: WindowsSmbAclGrant,
     ) -> Result<WindowsSmbAclGrant, WindowsSmbLifecycleError> {
         for path in grant.traverse_paths.iter().rev() {
             apply_traverse_acl_change(
@@ -120,17 +132,14 @@ impl WindowsSmbAclManager for NativeWindowsSmbAclManager {
                 WindowsSmbLifecyclePhase::AclGrant,
             )?;
         }
-        for entry in &grant.planned_entries {
-            apply_acl_change(
-                &entry.path,
-                &grant.sid,
-                grant.access,
-                windows_sys::Win32::Security::Authorization::GRANT_ACCESS,
-                entry.is_dir,
-                WindowsSmbLifecyclePhase::AclGrant,
-            )?;
-        }
-        grant.planned_entries.clear();
+        apply_acl_change(
+            &grant.path,
+            &grant.sid,
+            grant.access,
+            windows_sys::Win32::Security::Authorization::GRANT_ACCESS,
+            true,
+            WindowsSmbLifecyclePhase::AclGrant,
+        )?;
         Ok(grant)
     }
 
@@ -152,18 +161,20 @@ impl WindowsSmbAclManager for NativeWindowsSmbAclManager {
             &mut failures,
         );
 
-        let (entries, enumeration_failures) =
-            enumerate_tree_for_cleanup(&grant.path, &grant.prune_subtrees);
-        failures.extend(enumeration_failures);
-        for entry in entries.iter().rev() {
-            revoke_acl_entry_best_effort(
-                &entry.path,
-                &grant.sid,
-                grant.access,
-                entry.is_dir,
-                false,
-                &mut failures,
-            );
+        if grant.descendant_aces {
+            let (entries, enumeration_failures) =
+                enumerate_tree_for_cleanup(&grant.path, &grant.prune_subtrees);
+            failures.extend(enumeration_failures);
+            for entry in entries.iter().rev() {
+                revoke_acl_entry_best_effort(
+                    &entry.path,
+                    &grant.sid,
+                    grant.access,
+                    entry.is_dir,
+                    false,
+                    &mut failures,
+                );
+            }
         }
         for path in &grant.traverse_paths {
             revoke_traverse_acl_best_effort(path, &grant.sid, &mut failures);
@@ -441,16 +452,17 @@ fn restore_security_descriptor_control(
 }
 
 #[cfg(windows)]
-fn enumerate_tree(
+fn inspect_tree(
     root: &std::path::Path,
     prune_subtrees: &[String],
+    entry_limit: usize,
     phase: WindowsSmbLifecyclePhase,
-) -> Result<Vec<WindowsSmbAclPlanEntry>, WindowsSmbLifecycleError> {
+) -> Result<usize, WindowsSmbLifecycleError> {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::fs::MetadataExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 
-    let mut result = Vec::new();
+    let mut entries = 0usize;
     let mut pending = vec![root.to_path_buf()];
     while let Some(path) = pending.pop() {
         if path.as_os_str().encode_wide().count() > MAX_WINDOWS_PATH_UNITS {
@@ -481,14 +493,11 @@ fn enumerate_tree(
             ));
         }
         let is_dir = metadata.is_dir();
-        result.push(WindowsSmbAclPlanEntry {
-            path: path.clone(),
-            is_dir,
-        });
-        if result.len() > MAX_ACL_TREE_ENTRIES {
+        entries += 1;
+        if entries > entry_limit {
             return Err(WindowsSmbLifecycleError::operation_failed(
                 phase,
-                format!("SMB mount tree exceeds the {MAX_ACL_TREE_ENTRIES}-entry safety limit"),
+                "SMB mounts exceed the 10,000-entry aggregate safety limit",
             ));
         }
         if is_dir {
@@ -518,7 +527,7 @@ fn enumerate_tree(
             }
         }
     }
-    Ok(result)
+    Ok(entries)
 }
 
 #[cfg(windows)]
@@ -565,12 +574,12 @@ fn enumerate_tree_for_cleanup(
                 path: path.clone(),
                 is_dir,
             });
-            if result.len() > MAX_ACL_TREE_ENTRIES {
+            if result.len() > MAX_LEGACY_ACL_CLEANUP_ENTRIES {
                 failures.push(WindowsSmbLifecycleError::operation_failed_at(
                     WindowsSmbLifecyclePhase::AclRevoke,
                     root.to_path_buf(),
                     format!(
-                        "SMB mount cleanup tree exceeds the {MAX_ACL_TREE_ENTRIES}-entry safety limit"
+                        "SMB mount cleanup tree exceeds the {MAX_LEGACY_ACL_CLEANUP_ENTRIES}-entry safety limit"
                     ),
                 ));
                 break;
@@ -988,27 +997,24 @@ mod tests {
         std::fs::write(fixture.join("nested/.SeaWork/cache/state"), b"ignored").unwrap();
         std::fs::write(fixture.join("nested/src/main.rs"), b"included").unwrap();
 
-        let entries = enumerate_tree(
+        let entries = inspect_tree(
             &fixture,
             &["node_modules".to_string(), ".seawork".to_string()],
+            MAX_ACL_AGGREGATE_ENTRIES,
             WindowsSmbLifecyclePhase::AclGrant,
         )
         .unwrap();
-        let relative = entries
-            .iter()
-            .map(|entry| entry.path.strip_prefix(&fixture).unwrap().to_path_buf())
-            .collect::<Vec<_>>();
-        assert!(relative.contains(&PathBuf::from("nested")));
-        assert!(relative.contains(&PathBuf::from("nested/src")));
-        assert!(relative.contains(&PathBuf::from("nested/src/main.rs")));
-        assert!(relative.iter().all(|path| {
-            !path.components().any(|component| {
-                matches!(
-                    component.as_os_str().to_str(),
-                    Some("node_modules" | ".SeaWork")
-                )
-            })
-        }));
+        assert_eq!(entries, 4);
+        let error = inspect_tree(
+            &fixture,
+            &["node_modules".to_string(), ".seawork".to_string()],
+            3,
+            WindowsSmbLifecyclePhase::AclGrant,
+        )
+        .expect_err("the fourth non-pruned entry must exceed the remaining budget");
+        assert!(error
+            .to_string()
+            .contains("10,000-entry aggregate safety limit"));
 
         let (cleanup_entries, cleanup_failures) = enumerate_tree_for_cleanup(
             &fixture,
@@ -1079,6 +1085,7 @@ mod tests {
             account: account.clone(),
             access: WindowsSmbAccess::ReadOnly,
             prune_subtrees: Vec::new(),
+            entry_limit: MAX_ACL_AGGREGATE_ENTRIES,
         };
         let plan = acls.prepare_grant(&request).expect("prepare ACL plan");
         assert!(
@@ -1086,11 +1093,13 @@ mod tests {
             "protected mount ancestor must be included in the recoverable ACL plan"
         );
         assert!(plan.prune_subtrees.is_empty());
+        assert_eq!(plan.inspected_entries, 3);
+        assert!(!plan.descendant_aces);
         let grant = acls
             .grant_access(plan)
-            .expect("grant across protected boundary");
+            .expect("grant root across protected ancestor boundary");
         acls.verify_access(&account, &password, std::slice::from_ref(&grant))
-            .expect("generated account should enumerate and read the protected tree");
+            .expect("generated account should open the mount root");
         acls.revoke_access(&grant).expect("revoke exact SID grants");
         users.delete_user(&account).expect("delete temporary user");
 
