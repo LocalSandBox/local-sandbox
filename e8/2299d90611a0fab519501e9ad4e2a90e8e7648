@@ -1,0 +1,31 @@
+README.md
+  s_f75801d1f66397::t_c1019c400a0965 114
+  s_f75801d1f66397::t_d72880f4bbc675 127
+  s_f75801d1f66397::t_6586e80a3163da 107,111-113,124-126
+fixtures/office-rootfs-smoke.mjs
+  s_f75801d1f66397::t_6586e80a3163da 37-39
+scripts/windows-test/suites/runtime/office-rootfs-smoke.ps1
+  s_f75801d1f66397::t_c1019c400a0965 63-66
+xtask/src/rootfs.rs
+  s_f75801d1f66397::t_6586e80a3163da 22-26,192-228,351,354,417,474,480-482,746,749-750,768-775
+  s_f75801d1f66397::t_87227dc1eed587 758-760
+  s_f75801d1f66397::t_950382b7644ab3 776-777
+  s_f75801d1f66397::t_85f5e2f1ef9793 106,743-745
+  s_f75801d1f66397::t_33167e29fb84a1 747-748
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "e82299d90611a0fab519501e9ad4e2a90e8e7648",
+  "prompts": {},
+  "sessions": {
+    "s_f75801d1f66397": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd11d-bb36-7f42-9908-520c7fc92a82",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
