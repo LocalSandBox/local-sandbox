@@ -949,7 +949,10 @@ fn run(
             &process_containment,
             &lifecycle_observer,
         );
-        let _ = ready.send(Err(anyhow::anyhow!("operation cancelled")));
+        let cancelled = session_cancellation
+            .check()
+            .and_then(|()| startup_cancellation.check());
+        let _ = ready.send(cancelled);
         return;
     }
     if ready.send(Ok(())).is_err() {

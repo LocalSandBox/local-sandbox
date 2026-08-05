@@ -206,7 +206,7 @@ async fn start_inner(
         return Err(ErrorCode::InvalidRequest.into());
     }
     let free_bytes =
-        available_disk_bytes(engine.resources_root()).map_err(|_| ErrorCode::ServiceUnavailable)?;
+        available_disk_bytes(engine.resources_root()).map_err(|_| ErrorCode::InternalError)?;
     if requested_bytes > free_bytes {
         return Err(ErrorCode::QuotaExceeded.into());
     }
@@ -264,7 +264,7 @@ async fn start_inner(
                 &identity,
                 client_instance_id.as_deref(),
             );
-            return Err(ErrorCode::ServiceUnavailable.into());
+            return Err(ErrorCode::InternalError.into());
         }
     };
     let cleanup_sessions = sessions.clone();
@@ -341,7 +341,7 @@ async fn start_inner(
                             Duration::from_secs(30),
                             None,
                         );
-                        return Err(ErrorCode::ServiceUnavailable.into());
+                        return Err(ErrorCode::InternalError.into());
                     }
                 }
                 Ok(sandbox_started(handle, selected_mounts))
