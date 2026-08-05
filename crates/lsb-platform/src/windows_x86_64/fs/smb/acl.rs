@@ -96,12 +96,8 @@ impl WindowsSmbAclManager for NativeWindowsSmbAclManager {
         &mut self,
         request: &WindowsSmbAclGrantRequest,
     ) -> Result<WindowsSmbAclGrant, WindowsSmbLifecycleError> {
-        let inspected_entries = inspect_tree(
-            &request.path,
-            &request.prune_subtrees,
-            request.entry_limit,
-            WindowsSmbLifecyclePhase::AclGrant,
-        )?;
+        let inspected_entries =
+            inspect_tree(&request.path, &request.prune_subtrees, request.entry_limit)?;
         Ok(WindowsSmbAclGrant {
             path: request.path.clone(),
             traverse_paths: request
@@ -456,7 +452,6 @@ fn inspect_tree(
     root: &std::path::Path,
     prune_subtrees: &[String],
     entry_limit: usize,
-    phase: WindowsSmbLifecyclePhase,
 ) -> Result<usize, WindowsSmbLifecycleError> {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::fs::MetadataExt;
@@ -466,58 +461,43 @@ fn inspect_tree(
     let mut pending = vec![root.to_path_buf()];
     while let Some(path) = pending.pop() {
         if path.as_os_str().encode_wide().count() > MAX_WINDOWS_PATH_UNITS {
-            return Err(WindowsSmbLifecycleError::operation_failed(
-                phase,
-                format!(
-                    "SMB mount tree path exceeds the Windows path limit: '{}'",
-                    path.display()
-                ),
+            return Err(WindowsSmbLifecycleError::mount_invalid(
+                &path,
+                "path exceeds the Windows path limit",
             ));
         }
         let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
-            WindowsSmbLifecycleError::operation_failed(
-                phase,
-                format!(
-                    "failed to inspect SMB mount tree entry '{}': {error}",
-                    path.display()
-                ),
+            WindowsSmbLifecycleError::mount_invalid(
+                &path,
+                format!("failed to inspect mount entry: {error}"),
             )
         })?;
         if path != root && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return Err(WindowsSmbLifecycleError::operation_failed(
-                phase,
-                format!(
-                    "SMB mount tree contains an unsafe reparse-point descendant: '{}'",
-                    path.display()
-                ),
+            return Err(WindowsSmbLifecycleError::mount_invalid(
+                &path,
+                "reparse-point descendants are not supported",
             ));
         }
         let is_dir = metadata.is_dir();
         entries += 1;
         if entries > entry_limit {
-            return Err(WindowsSmbLifecycleError::operation_failed(
-                phase,
-                "SMB mounts exceed the 10,000-entry aggregate safety limit",
+            return Err(WindowsSmbLifecycleError::mount_limit_exceeded_at(
+                MAX_ACL_AGGREGATE_ENTRIES,
+                &path,
             ));
         }
         if is_dir {
             let children = std::fs::read_dir(&path).map_err(|error| {
-                WindowsSmbLifecycleError::operation_failed(
-                    phase,
-                    format!(
-                        "failed to enumerate SMB mount directory '{}': {error}",
-                        path.display()
-                    ),
+                WindowsSmbLifecycleError::mount_invalid(
+                    &path,
+                    format!("failed to enumerate mount directory: {error}"),
                 )
             })?;
             for child in children {
                 let child = child.map_err(|error| {
-                    WindowsSmbLifecycleError::operation_failed(
-                        phase,
-                        format!(
-                            "failed to enumerate SMB mount directory '{}': {error}",
-                            path.display()
-                        ),
+                    WindowsSmbLifecycleError::mount_invalid(
+                        &path,
+                        format!("failed to read mount directory entry: {error}"),
                     )
                 })?;
                 if is_pruned_subtree(&child.file_name(), prune_subtrees) {
@@ -676,7 +656,7 @@ fn verify_explicit_sid_removed(
             path.to_path_buf(),
             format!("explicit ACE for generated SID {sid} remains"),
         )),
-        Err(error) if path_is_absent(path) => {}
+        Err(_error) if path_is_absent(path) => {}
         Err(error) => failures.push(cleanup_error_at(path, error)),
     }
 }
@@ -1001,7 +981,6 @@ mod tests {
             &fixture,
             &["node_modules".to_string(), ".seawork".to_string()],
             MAX_ACL_AGGREGATE_ENTRIES,
-            WindowsSmbLifecyclePhase::AclGrant,
         )
         .unwrap();
         assert_eq!(entries, 4);
@@ -1009,12 +988,9 @@ mod tests {
             &fixture,
             &["node_modules".to_string(), ".seawork".to_string()],
             3,
-            WindowsSmbLifecyclePhase::AclGrant,
         )
         .expect_err("the fourth non-pruned entry must exceed the remaining budget");
-        assert!(error
-            .to_string()
-            .contains("10,000-entry aggregate safety limit"));
+        assert!(error.to_string().contains("10000-entry aggregate limit"));
 
         let (cleanup_entries, cleanup_failures) = enumerate_tree_for_cleanup(
             &fixture,

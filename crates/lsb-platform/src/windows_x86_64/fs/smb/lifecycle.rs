@@ -182,9 +182,9 @@ where
                 }
             };
             if intended_grant.inspected_entries > remaining_acl_entries {
-                let error = WindowsSmbLifecycleError::operation_failed(
-                    WindowsSmbLifecyclePhase::AclGrant,
-                    "SMB mounts exceed the 10,000-entry aggregate safety limit",
+                let error = WindowsSmbLifecycleError::mount_limit_exceeded_at(
+                    MAX_ACL_AGGREGATE_ENTRIES,
+                    &intended_grant.path,
                 );
                 let failures = if let Some(path) = manifest_path {
                     match self.recover_cleanup_manifest(path) {
@@ -1363,9 +1363,7 @@ mod tests {
             .prepare(&config())
             .expect_err("two 6,000-entry mounts must exceed the aggregate budget");
 
-        assert!(error
-            .to_string()
-            .contains("10,000-entry aggregate safety limit"));
+        assert!(error.to_string().contains("10000-entry aggregate limit"));
         assert!(log
             .snapshot()
             .iter()

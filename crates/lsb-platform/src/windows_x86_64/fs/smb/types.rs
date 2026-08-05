@@ -162,6 +162,16 @@ impl WindowsSmbCleanupFailure {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WindowsSmbLifecycleError {
     NotElevated,
+    MountInvalid {
+        path: PathBuf,
+        detail: String,
+        cleanup_failures: Vec<WindowsSmbCleanupFailure>,
+    },
+    MountLimitExceeded {
+        limit: usize,
+        path: Option<PathBuf>,
+        cleanup_failures: Vec<WindowsSmbCleanupFailure>,
+    },
     OperationFailed {
         phase: WindowsSmbLifecyclePhase,
         path: Option<PathBuf>,
@@ -185,6 +195,30 @@ pub enum WindowsSmbLifecycleError {
 }
 
 impl WindowsSmbLifecycleError {
+    pub fn mount_invalid(path: impl Into<PathBuf>, detail: impl Into<String>) -> Self {
+        Self::MountInvalid {
+            path: path.into(),
+            detail: sanitize_error_detail(detail),
+            cleanup_failures: Vec::new(),
+        }
+    }
+
+    pub fn mount_limit_exceeded(limit: usize) -> Self {
+        Self::MountLimitExceeded {
+            limit,
+            path: None,
+            cleanup_failures: Vec::new(),
+        }
+    }
+
+    pub fn mount_limit_exceeded_at(limit: usize, path: impl Into<PathBuf>) -> Self {
+        Self::MountLimitExceeded {
+            limit,
+            path: Some(path.into()),
+            cleanup_failures: Vec::new(),
+        }
+    }
+
     pub fn operation_failed(phase: WindowsSmbLifecyclePhase, detail: impl Into<String>) -> Self {
         Self::OperationFailed {
             phase,
@@ -211,6 +245,24 @@ impl WindowsSmbLifecycleError {
         }
 
         match self {
+            Self::MountInvalid {
+                path,
+                detail,
+                cleanup_failures: _,
+            } => Self::MountInvalid {
+                path,
+                detail,
+                cleanup_failures,
+            },
+            Self::MountLimitExceeded {
+                limit,
+                path,
+                cleanup_failures: _,
+            } => Self::MountLimitExceeded {
+                limit,
+                path,
+                cleanup_failures,
+            },
             Self::OperationFailed {
                 phase,
                 path,
@@ -239,7 +291,13 @@ impl WindowsSmbLifecycleError {
 
     pub fn cleanup_failures(&self) -> &[WindowsSmbCleanupFailure] {
         match self {
-            Self::SetupFailed {
+            Self::MountInvalid {
+                cleanup_failures, ..
+            }
+            | Self::MountLimitExceeded {
+                cleanup_failures, ..
+            }
+            | Self::SetupFailed {
                 cleanup_failures, ..
             } => cleanup_failures,
             Self::CleanupFailed { failures } => failures,
@@ -249,6 +307,8 @@ impl WindowsSmbLifecycleError {
 
     pub fn operation_path(&self) -> Option<&std::path::Path> {
         match self {
+            Self::MountInvalid { path, .. } => Some(path),
+            Self::MountLimitExceeded { path, .. } => path.as_deref(),
             Self::OperationFailed { path, .. } | Self::SetupFailed { path, .. } => path.as_deref(),
             _ => None,
         }
@@ -256,6 +316,9 @@ impl WindowsSmbLifecycleError {
 
     pub fn operation_phase(&self) -> Option<WindowsSmbLifecyclePhase> {
         match self {
+            Self::MountInvalid { .. } | Self::MountLimitExceeded { .. } => {
+                Some(WindowsSmbLifecyclePhase::AclGrant)
+            }
             Self::OperationFailed { phase, .. } | Self::SetupFailed { phase, .. } => Some(*phase),
             Self::CleanupFailed { failures } => failures.first().map(|failure| failure.phase),
             _ => None,
@@ -268,6 +331,46 @@ impl fmt::Display for WindowsSmbLifecycleError {
         match self {
             Self::NotElevated => {
                 f.write_str("Windows direct mounts require an elevated Administrator shell")
+            }
+            Self::MountInvalid {
+                path,
+                detail,
+                cleanup_failures,
+            } => {
+                write!(
+                    f,
+                    "Windows SMB mount tree is invalid at '{}': {detail}",
+                    path.display()
+                )?;
+                if !cleanup_failures.is_empty() {
+                    write!(
+                        f,
+                        "; best-effort cleanup had {} failure(s)",
+                        cleanup_failures.len()
+                    )?;
+                }
+                Ok(())
+            }
+            Self::MountLimitExceeded {
+                limit,
+                path,
+                cleanup_failures,
+            } => {
+                write!(
+                    f,
+                    "Windows SMB mounts exceed the {limit}-entry aggregate limit"
+                )?;
+                if let Some(path) = path {
+                    write!(f, " while inspecting '{}'", path.display())?;
+                }
+                if !cleanup_failures.is_empty() {
+                    write!(
+                        f,
+                        "; best-effort cleanup had {} failure(s)",
+                        cleanup_failures.len()
+                    )?;
+                }
+                Ok(())
             }
             Self::OperationFailed {
                 phase,

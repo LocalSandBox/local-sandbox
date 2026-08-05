@@ -30,6 +30,8 @@ pub enum ErrorCode {
     MountPathBecameUnsafe,
     MountConflict,
     MountUnavailable,
+    MountInvalid,
+    MountLimitExceeded,
     CheckpointUnsupported,
     StartResultExpired,
     NetworkPolicyDenied,
@@ -66,6 +68,8 @@ impl ErrorCode {
             Self::MountPathBecameUnsafe => "MOUNT_PATH_BECAME_UNSAFE",
             Self::MountConflict => "MOUNT_CONFLICT",
             Self::MountUnavailable => "MOUNT_UNAVAILABLE",
+            Self::MountInvalid => "MOUNT_INVALID",
+            Self::MountLimitExceeded => "MOUNT_LIMIT_EXCEEDED",
             Self::CheckpointUnsupported => "CHECKPOINT_UNSUPPORTED",
             Self::StartResultExpired => "START_RESULT_EXPIRED",
             Self::NetworkPolicyDenied => "NETWORK_POLICY_DENIED",
@@ -112,6 +116,8 @@ impl ErrorEnvelope {
             ErrorCode::InvalidRequest | ErrorCode::ProtocolError => {
                 ("The request was invalid.", false)
             }
+            ErrorCode::MountInvalid => ("The mount tree is invalid.", false),
+            ErrorCode::MountLimitExceeded => ("The mount tree exceeds service limits.", false),
             _ => ("The LocalSandbox operation failed.", false),
         };
         Self {
@@ -122,6 +128,37 @@ impl ErrorEnvelope {
             correlation_id: correlation_id.into(),
         }
     }
+
+    pub fn mount_failure(
+        code: ErrorCode,
+        message: impl Into<String>,
+        correlation_id: impl Into<String>,
+    ) -> Self {
+        assert!(matches!(
+            code,
+            ErrorCode::MountInvalid | ErrorCode::MountLimitExceeded
+        ));
+        Self {
+            code,
+            message: bounded_message(message.into()),
+            retryable: false,
+            retry_after_ms: None,
+            correlation_id: correlation_id.into(),
+        }
+    }
+}
+
+fn bounded_message(message: String) -> String {
+    let mut message = message.replace('\0', "<nul>");
+    if message.len() <= crate::limits::MAX_STRING_LEN {
+        return message;
+    }
+    let mut end = crate::limits::MAX_STRING_LEN;
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    message.truncate(end);
+    message
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,5 +232,25 @@ mod tests {
         assert_eq!(envelope.code.as_str(), "CANCELLATION_TOO_LATE");
         assert!(!envelope.retryable);
         assert!(envelope.message.contains("commit point"));
+    }
+
+    #[test]
+    fn mount_failures_preserve_bounded_user_safe_details() {
+        let envelope = ErrorEnvelope::mount_failure(
+            ErrorCode::MountInvalid,
+            "Mount path 'C:\\Users\\alice\\work\\link' contains a reparse point.",
+            "correlation",
+        );
+        assert_eq!(envelope.code.as_str(), "MOUNT_INVALID");
+        assert!(envelope.message.contains(r"C:\Users\alice\work\link"));
+        assert!(!envelope.retryable);
+
+        let oversized = ErrorEnvelope::mount_failure(
+            ErrorCode::MountLimitExceeded,
+            "é".repeat(crate::limits::MAX_STRING_LEN),
+            "correlation",
+        );
+        assert!(oversized.message.len() <= crate::limits::MAX_STRING_LEN);
+        assert!(oversized.message.is_char_boundary(oversized.message.len()));
     }
 }

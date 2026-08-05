@@ -1612,8 +1612,8 @@ async fn dispatch_request(
         ($future:expr) => {
             match $future.await {
                 Ok(result) => result,
-                Err(code) => {
-                    write_error(&writer, protocol, correlation, code).await?;
+                Err(error) => {
+                    write_rpc_error(&writer, protocol, correlation, error.into()).await?;
                     return Ok(());
                 }
             }
@@ -2308,19 +2308,45 @@ async fn write_error(
     correlation: Correlation,
     code: ErrorCode,
 ) -> Result<()> {
+    write_rpc_error(writer, protocol, correlation, code.into()).await
+}
+
+async fn write_rpc_error(
+    writer: &OutboundWriter,
+    protocol: lsb_service_proto::ProtocolVersion,
+    correlation: Correlation,
+    error: rpc::RpcError,
+) -> Result<()> {
     write_control(
         writer,
         FrameKind::Response,
         protocol,
         correlation,
         &Response::Err {
-            error: ErrorEnvelope::safe(
-                code,
-                format!("{:016x}{:016x}", correlation.high, correlation.low),
-            ),
+            error: rpc_error_envelope(protocol, correlation, error),
         },
     )
     .await
+}
+
+fn rpc_error_envelope(
+    protocol: lsb_service_proto::ProtocolVersion,
+    correlation: Correlation,
+    error: rpc::RpcError,
+) -> ErrorEnvelope {
+    let correlation_id = format!("{:016x}{:016x}", correlation.high, correlation.low);
+    if protocol.minor < lsb_service_proto::MOUNT_ERROR_DETAILS_MIN_MINOR
+        && matches!(
+            error.code(),
+            ErrorCode::MountInvalid | ErrorCode::MountLimitExceeded
+        )
+    {
+        return ErrorEnvelope::safe(ErrorCode::InvalidRequest, correlation_id);
+    }
+    match error.mount_message() {
+        Some(message) => ErrorEnvelope::mount_failure(error.code(), message, correlation_id),
+        None => ErrorEnvelope::safe(error.code(), correlation_id),
+    }
 }
 
 struct WireFrame {
@@ -2410,6 +2436,30 @@ fn random_epoch() -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detailed_mount_errors_are_gated_and_preserve_paths() {
+        let correlation = Correlation { high: 1, low: 2 };
+        let error = rpc::RpcError::mount(
+            ErrorCode::MountInvalid,
+            r"The mount tree is invalid at 'C:\Users\alice\work\link': reparse-point descendants are not supported",
+        );
+        let current = rpc_error_envelope(lsb_service_proto::CURRENT, correlation, error.clone());
+        assert_eq!(current.code, ErrorCode::MountInvalid);
+        assert!(current.message.contains(r"C:\Users\alice\work\link"));
+        assert!(!current.retryable);
+
+        let legacy = rpc_error_envelope(
+            lsb_service_proto::ProtocolVersion {
+                major: 1,
+                minor: lsb_service_proto::MOUNT_ERROR_DETAILS_MIN_MINOR - 1,
+            },
+            correlation,
+            error,
+        );
+        assert_eq!(legacy.code, ErrorCode::InvalidRequest);
+        assert_eq!(legacy.message, "The request was invalid.");
+    }
 
     #[test]
     fn stale_coordinator_maintenance_phase_does_not_override_idle_maintenance() {

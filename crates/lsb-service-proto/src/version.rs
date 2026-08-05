@@ -4,11 +4,11 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::ProtocolError;
 
-pub const CURRENT: ProtocolVersion = ProtocolVersion { major: 1, minor: 7 };
+pub const CURRENT: ProtocolVersion = ProtocolVersion { major: 1, minor: 8 };
 pub const SUPPORTED: ProtocolRange = ProtocolRange {
     major: 1,
     min_minor: 0,
-    max_minor: 7,
+    max_minor: 8,
 };
 
 pub const FEATURE_NETWORK_EGRESS: u64 = 1 << 0;
@@ -21,6 +21,7 @@ pub const START_REPLAY_MIN_MINOR: u16 = 4;
 pub const CANCELLATION_COMMIT_MIN_MINOR: u16 = 5;
 pub const CONTROLLED_UPDATE_MIN_MINOR: u16 = 6;
 pub const NETWORK_LIVE_UPDATE_MIN_MINOR: u16 = 7;
+pub const MOUNT_ERROR_DETAILS_MIN_MINOR: u16 = 8;
 pub const CLIENT_FEATURE_BITS: u64 = FEATURE_NETWORK_EGRESS
     | FEATURE_NETWORK_SECRETS
     | FEATURE_HTTPS_INTERCEPTION
@@ -149,8 +150,23 @@ mod tests {
 
     #[test]
     fn live_network_update_has_a_dedicated_minor_and_feature() {
-        assert_eq!(CURRENT.minor, NETWORK_LIVE_UPDATE_MIN_MINOR);
+        assert!(CURRENT.minor >= NETWORK_LIVE_UPDATE_MIN_MINOR);
         assert_ne!(CLIENT_FEATURE_BITS & FEATURE_NETWORK_LIVE_UPDATE, 0);
+    }
+
+    #[test]
+    fn detailed_mount_errors_have_a_dedicated_minor_gate() {
+        assert_eq!(CURRENT.minor, MOUNT_ERROR_DETAILS_MIN_MINOR);
+        let selected = negotiate(
+            SUPPORTED,
+            ProtocolRange {
+                major: CURRENT.major,
+                min_minor: MOUNT_ERROR_DETAILS_MIN_MINOR,
+                max_minor: MOUNT_ERROR_DETAILS_MIN_MINOR,
+            },
+        )
+        .unwrap();
+        assert_eq!(selected.minor, MOUNT_ERROR_DETAILS_MIN_MINOR);
     }
 
     #[test]

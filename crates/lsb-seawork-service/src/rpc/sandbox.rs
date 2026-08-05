@@ -12,6 +12,7 @@ use lsb_service_proto::{
 };
 use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 
+use super::RpcError;
 use crate::engine::ServiceEngineConfig;
 use crate::ledger::schema::ResourceRecord;
 use crate::resource::transaction::ResourceTransaction;
@@ -36,7 +37,7 @@ pub async fn update_network_interception(
     https_interception: ServiceHttpsInterceptionSpec,
     deadline_ms: Option<u32>,
     cancellation: CancellationToken,
-) -> Result<ResponseValue, ErrorCode> {
+) -> std::result::Result<ResponseValue, ErrorCode> {
     let handle = ResourceHandle::parse(&sandbox_id).map_err(|_| ErrorCode::InvalidRequest)?;
     let policy = crate::network_policy::build_interception_policy(secrets, https_interception)
         .map_err(|_| ErrorCode::InvalidRequest)?;
@@ -87,7 +88,7 @@ pub async fn start(
     ports: Vec<ServicePortSpec>,
     network: Option<ServiceNetworkSpec>,
     cancellation: CancellationToken,
-) -> Result<ResponseValue, ErrorCode> {
+) -> std::result::Result<ResponseValue, RpcError> {
     telemetry.breadcrumb(
         Breadcrumb::lifecycle("request", "accepted")
             .with_data("operation", TRANSACTION_SANDBOX_START)
@@ -176,9 +177,9 @@ async fn start_inner(
     network: Option<ServiceNetworkSpec>,
     cancellation: CancellationToken,
     trace_parent: crate::telemetry::SpanParent,
-) -> Result<ResponseValue, ErrorCode> {
+) -> std::result::Result<ResponseValue, RpcError> {
     if from.is_some() {
-        return Err(ErrorCode::CheckpointUnsupported);
+        return Err(ErrorCode::CheckpointUnsupported.into());
     }
     let (mounts, selected_mounts) = normalize_mounts(mounts)?;
     let mut proxy_config = network
@@ -194,7 +195,7 @@ async fn start_inner(
         .map_err(|_| ErrorCode::InvalidRequest)?;
     proxy_config = proxy_config_for_mounts(proxy_config, !mounts.is_empty());
     if !ports.is_empty() {
-        return Err(ErrorCode::PortIsolationUnavailable);
+        return Err(ErrorCode::PortIsolationUnavailable.into());
     }
     let engine = engine.ok_or(ErrorCode::BundleInvalid)?;
     let requested_bytes = u64::from(disk_mib) * 1024 * 1024;
@@ -202,12 +203,12 @@ async fn start_inner(
         .map_err(|_| ErrorCode::BundleInvalid)?
         .len();
     if requested_bytes < base_bytes {
-        return Err(ErrorCode::InvalidRequest);
+        return Err(ErrorCode::InvalidRequest.into());
     }
     let free_bytes =
         available_disk_bytes(engine.resources_root()).map_err(|_| ErrorCode::ServiceUnavailable)?;
     if requested_bytes > free_bytes {
-        return Err(ErrorCode::QuotaExceeded);
+        return Err(ErrorCode::QuotaExceeded.into());
     }
     if let Some(replay_id) = client_instance_id.as_deref() {
         match sessions
@@ -215,12 +216,12 @@ async fn start_inner(
             .map_err(|_| ErrorCode::ResourceNotFound)?
         {
             StartReplayDecision::Begin => {}
-            StartReplayDecision::InProgress => return Err(ErrorCode::DuplicateRequest),
+            StartReplayDecision::InProgress => return Err(ErrorCode::DuplicateRequest.into()),
             StartReplayDecision::Replay { sandbox_id, mounts } => {
                 return Ok(sandbox_started(sandbox_id, mounts));
             }
-            StartReplayDecision::Expired => return Err(ErrorCode::StartResultExpired),
-            StartReplayDecision::CapacityExceeded => return Err(ErrorCode::QuotaExceeded),
+            StartReplayDecision::Expired => return Err(ErrorCode::StartResultExpired.into()),
+            StartReplayDecision::CapacityExceeded => return Err(ErrorCode::QuotaExceeded.into()),
         }
     }
     let sandbox_id = match sessions.reserve_managed_vm(
@@ -241,11 +242,11 @@ async fn start_inner(
                 client_instance_id.as_deref(),
             );
             if error.downcast_ref::<QuotaError>().is_some() {
-                return Err(ErrorCode::QuotaExceeded);
+                return Err(ErrorCode::QuotaExceeded.into());
             } else if !sessions.admissions().accepts_work() {
-                return Err(ErrorCode::ServiceDraining);
+                return Err(ErrorCode::ServiceDraining.into());
             } else {
-                return Err(ErrorCode::ResourceNotFound);
+                return Err(ErrorCode::ResourceNotFound.into());
             }
         }
     };
@@ -263,7 +264,7 @@ async fn start_inner(
                 &identity,
                 client_instance_id.as_deref(),
             );
-            return Err(ErrorCode::ServiceUnavailable);
+            return Err(ErrorCode::ServiceUnavailable.into());
         }
     };
     let cleanup_sessions = sessions.clone();
@@ -299,7 +300,8 @@ async fn start_inner(
                     ErrorCode::Cancelled
                 } else {
                     ErrorCode::InternalError
-                });
+                }
+                .into());
             }
         };
         let started = sessions.start_reserved_managed_vm(
@@ -333,7 +335,7 @@ async fn start_inner(
                             Duration::from_secs(30),
                             None,
                         );
-                        return Err(ErrorCode::ServiceUnavailable);
+                        return Err(ErrorCode::ServiceUnavailable.into());
                     }
                 }
                 Ok(sandbox_started(handle, selected_mounts))
@@ -346,9 +348,10 @@ async fn start_inner(
                     client_instance_id.as_deref(),
                 );
                 if error.downcast_ref::<QuotaError>().is_some() {
-                    Err(ErrorCode::QuotaExceeded)
+                    Err(ErrorCode::QuotaExceeded.into())
                 } else {
-                    Err(ErrorCode::ServiceUnavailable)
+                    Err(classify_mount_start_error(&error)
+                        .unwrap_or_else(|| ErrorCode::ServiceUnavailable.into()))
                 }
             }
         }
@@ -370,7 +373,7 @@ async fn start_inner(
                 &cleanup_identity,
                 sandbox_id,
             );
-            Err(ErrorCode::InternalError)
+            Err(ErrorCode::InternalError.into())
         }
     }
 }
@@ -586,10 +589,85 @@ fn response_sandbox_id(response: &ResponseValue) -> Option<&str> {
     }
 }
 
-fn finish_operation(
+fn classify_mount_start_error(error: &anyhow::Error) -> Option<RpcError> {
+    for cause in error.chain() {
+        if let Some(error) =
+            cause.downcast_ref::<lsb_platform::windows_x86_64::fs::smb::WindowsSmbLifecycleError>()
+        {
+            match error {
+                lsb_platform::windows_x86_64::fs::smb::WindowsSmbLifecycleError::MountLimitExceeded {
+                    limit,
+                    path,
+                    ..
+                } => {
+                    let limit = if *limit == 10_000 {
+                        "10,000".to_string()
+                    } else {
+                        limit.to_string()
+                    };
+                    let location = path
+                        .as_ref()
+                        .map(|path| format!(" while inspecting '{}'", path.display()))
+                        .unwrap_or_default();
+                    return Some(RpcError::mount(
+                        ErrorCode::MountLimitExceeded,
+                        format!(
+                            "The mounted directories contain more than {limit} non-pruned files/directories in aggregate{location}. Reduce the mounted trees or add subtree exclusions."
+                        ),
+                    ));
+                }
+                lsb_platform::windows_x86_64::fs::smb::WindowsSmbLifecycleError::MountInvalid {
+                    path,
+                    detail,
+                    ..
+                } => {
+                    return Some(RpcError::mount(
+                        ErrorCode::MountInvalid,
+                        format!(
+                            "The mount tree is invalid at '{}': {}",
+                            path.display(),
+                            detail
+                        ),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if let Some(error) = cause.downcast_ref::<lsb_platform::windows_x86_64::fs::CopyPathError>()
+        {
+            return Some(RpcError::mount(
+                ErrorCode::MountInvalid,
+                format!(
+                    "The mount tree is invalid at '{}': {}",
+                    error.path(),
+                    error.reason()
+                ),
+            ));
+        }
+    }
+    None
+}
+
+trait OperationErrorCode {
+    fn operation_error_code(&self) -> ErrorCode;
+}
+
+impl OperationErrorCode for ErrorCode {
+    fn operation_error_code(&self) -> ErrorCode {
+        *self
+    }
+}
+
+impl OperationErrorCode for RpcError {
+    fn operation_error_code(&self) -> ErrorCode {
+        self.code()
+    }
+}
+
+fn finish_operation<E: OperationErrorCode>(
     telemetry: &Telemetry,
     span: crate::telemetry::SpanGuard,
-    result: &Result<ResponseValue, ErrorCode>,
+    result: &std::result::Result<ResponseValue, E>,
     operation: &'static str,
     stable_error_code: &'static str,
     correlation_id: String,
@@ -600,9 +678,12 @@ fn finish_operation(
             span.finish(SpanStatus::Ok);
         }
         Err(error) => {
-            let status = match error {
+            let code = error.operation_error_code();
+            let status = match code {
                 ErrorCode::Cancelled => SpanStatus::Cancelled,
-                ErrorCode::InvalidRequest => SpanStatus::InvalidArgument,
+                ErrorCode::InvalidRequest
+                | ErrorCode::MountInvalid
+                | ErrorCode::MountLimitExceeded => SpanStatus::InvalidArgument,
                 ErrorCode::ServiceUnavailable
                 | ErrorCode::BundleInvalid
                 | ErrorCode::ServiceDraining => SpanStatus::Unavailable,
@@ -612,23 +693,23 @@ fn finish_operation(
                 operation,
                 stable_error_code,
                 Level::Error,
-                format!("{operation} failed with {error:?}"),
+                format!("{operation} failed with {code:?}"),
             )
             .with_correlation_id(correlation_id)
             .retryable(matches!(
-                error,
+                code,
                 ErrorCode::ServiceUnavailable | ErrorCode::ServiceDraining
             ));
             if let Some(resource_id) = resource_id {
                 event = event.with_resource_id(resource_id);
             }
             let actionable = matches!(
-                error,
+                code,
                 ErrorCode::InternalError | ErrorCode::BundleInvalid | ErrorCode::ServiceUnavailable
             );
             if actionable
                 && !(operation == TRANSACTION_SANDBOX_START
-                    && *error == ErrorCode::ServiceUnavailable)
+                    && code == ErrorCode::ServiceUnavailable)
             {
                 telemetry.capture_failure(event);
             }
@@ -766,6 +847,37 @@ fn remove_prepared_instance(engine: &ServiceEngineConfig, path: &Path) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn smb_mount_failures_map_to_dedicated_user_facing_errors() {
+        let invalid = anyhow::Error::new(
+            lsb_platform::windows_x86_64::fs::smb::WindowsSmbLifecycleError::mount_invalid(
+                r"C:\Users\alice\work\link",
+                "reparse-point descendants are not supported",
+            ),
+        )
+        .context("Failed to prepare Windows SMB mounts");
+        let classified = classify_mount_start_error(&invalid).expect("classified mount error");
+        assert_eq!(classified.code(), ErrorCode::MountInvalid);
+        assert!(classified
+            .mount_message()
+            .unwrap()
+            .contains(r"C:\Users\alice\work\link"));
+
+        let limit = anyhow::Error::new(
+            lsb_platform::windows_x86_64::fs::smb::WindowsSmbLifecycleError::mount_limit_exceeded_at(
+                10_000,
+                r"C:\Users\alice\work\large-tree",
+            ),
+        );
+        let classified = classify_mount_start_error(&limit).expect("classified limit error");
+        assert_eq!(classified.code(), ErrorCode::MountLimitExceeded);
+        assert!(classified.mount_message().unwrap().contains("10,000"));
+        assert!(classified
+            .mount_message()
+            .unwrap()
+            .contains(r"C:\Users\alice\work\large-tree"));
+    }
     use crate::paths::ServicePaths;
 
     #[test]
