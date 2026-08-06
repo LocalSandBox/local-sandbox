@@ -1,0 +1,23 @@
+scripts/win-release-accept
+  s_1f49be8dc7b167::t_b06da91e83f575 74,89,154
+fixtures/windows/guest/service-acceptance.mjs
+  s_1f49be8dc7b167::t_b2eefdde001667 263-264,266-267,277
+scripts/windows-test-service-harness.ps1
+  s_1f49be8dc7b167::t_b2eefdde001667 554-556,559,563-564,731,737-738,740,745,1043-1044
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "056397b93559833d540c083e45712572ff715316",
+  "prompts": {},
+  "sessions": {
+    "s_1f49be8dc7b167": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd3a0-a4db-7f31-8865-8881e29a3643",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
