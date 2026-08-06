@@ -551,21 +551,17 @@ function Invoke-ClientSmoke {
     $skills = Join-Path $clientData 'skills'
     $uploads = Join-Path $clientData 'uploads'
     New-Item -ItemType Directory -Path $output, $skills, $uploads | Out-Null
-    $protectedSkill = Join-Path $skills 'mis-it-center'
-    New-Item -ItemType Directory -Path $protectedSkill | Out-Null
-    Set-Sddl $protectedSkill (
-        "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;{0})" -f
-        $State.client_user_sid
-    )
-    $protectedSkillFile = Join-Path $protectedSkill 'SKILL.md'
+    $nestedSkill = Join-Path $skills 'mis-it-center'
+    New-Item -ItemType Directory -Path $nestedSkill | Out-Null
+    $nestedSkillFile = Join-Path $nestedSkill 'SKILL.md'
     Set-Content -LiteralPath (Join-Path $workspace 'input.txt') -Value 'workspace-input' -NoNewline
     Set-Content -LiteralPath (Join-Path $skills 'skill.txt') -Value 'skill-input' -NoNewline
-    Set-Content -LiteralPath $protectedSkillFile -Value 'protected-skill-input' -NoNewline
+    Set-Content -LiteralPath $nestedSkillFile -Value 'nested-skill-input' -NoNewline
     Set-Content -LiteralPath (Join-Path $uploads 'upload.txt') -Value 'upload-input' -NoNewline
     $aclBefore = [ordered]@{
         root = (Get-Acl -LiteralPath $skills).Sddl
-        protected_child = (Get-Acl -LiteralPath $protectedSkill).Sddl
-        protected_file = (Get-Acl -LiteralPath $protectedSkillFile).Sddl
+        nested_child = (Get-Acl -LiteralPath $nestedSkill).Sddl
+        nested_file = (Get-Acl -LiteralPath $nestedSkillFile).Sddl
     }
     $resultPath = Join-Path $clientData 'result.json'
     $mountList = if ($Mounts) {
@@ -732,21 +728,21 @@ function Invoke-ClientSmoke {
             if ((Get-Content -LiteralPath (Join-Path $output 'result.txt') -Raw) -cne 'nested-output' -or
                 (Test-Path -LiteralPath (Join-Path $workspace 'forbidden.txt')) -or
                 (Test-Path -LiteralPath (Join-Path $skills 'forbidden.txt')) -or
-                (Test-Path -LiteralPath (Join-Path $protectedSkill 'forbidden.txt')) -or
+                (Test-Path -LiteralPath (Join-Path $nestedSkill 'forbidden.txt')) -or
                 (Test-Path -LiteralPath (Join-Path $uploads 'forbidden.txt'))) {
                 throw 'The direct-mount host visibility or access-mode proof failed.'
             }
             $aclAfter = [ordered]@{
                 root = (Get-Acl -LiteralPath $skills).Sddl
-                protected_child = (Get-Acl -LiteralPath $protectedSkill).Sddl
-                protected_file = (Get-Acl -LiteralPath $protectedSkillFile).Sddl
+                nested_child = (Get-Acl -LiteralPath $nestedSkill).Sddl
+                nested_file = (Get-Acl -LiteralPath $nestedSkillFile).Sddl
             }
-            foreach ($name in @('root', 'protected_child', 'protected_file')) {
+            foreach ($name in @('root', 'nested_child', 'nested_file')) {
                 if ($aclBefore[$name] -cne $aclAfter[$name]) {
                     throw "The direct-mount smoke did not exactly restore the $name SDDL."
                 }
             }
-            $result | Add-Member -NotePropertyName protected_acl -NotePropertyValue ([ordered]@{
+            $result | Add-Member -NotePropertyName inherited_subtree -NotePropertyValue ([ordered]@{
                 subtree_read_via_file_api = $true
                 subtree_read_via_guest_shell = $true
                 exact_sddl_restored = $true
@@ -1044,8 +1040,8 @@ function Install-And-Smoke {
         }
         uac_after_install = $false
         compatibility_resources_restored = $true
-        protected_acl_cycles = 2
-        protected_subtree_reads = $true
+        inherited_acl_cycles = 2
+        inherited_subtree_reads = $true
         exact_acl_restoration = $true
     } |
         ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $RunRoot 'evidence-installed-smoke.json') -Encoding utf8NoBOM

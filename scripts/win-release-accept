@@ -71,6 +71,7 @@ echo "Qualifying v$version from $release_url"
 
 harness_retry=0
 harness_overlay_paths=(
+    fixtures/windows/guest/service-acceptance.mjs
     scripts/windows-test-service-harness.ps1
     scripts/windows-test/suites/release/release-service-core-update-reboot.ps1
     scripts/windows-test/test-contracts.ps1
@@ -85,7 +86,7 @@ if [[ "$allow_dirty" == 1 && -n "$(git status --porcelain --untracked-files=all)
         [[ "$status" != *R* && "$status" != *C* ]] || \
             fail 'harness retry does not accept renamed or copied paths'
         case "$path" in
-            scripts/win-release-accept|scripts/windows-test-service-harness.ps1|scripts/windows-test/suites/release/release-service-core-update-reboot.ps1|scripts/windows-test/test-contracts.ps1) ;;
+            fixtures/windows/guest/service-acceptance.mjs|scripts/win-release-accept|scripts/windows-test-service-harness.ps1|scripts/windows-test/suites/release/release-service-core-update-reboot.ps1|scripts/windows-test/test-contracts.ps1) ;;
             *) fail "dirty path is outside the harness-retry allowlist: $path" ;;
         esac
     done < <(git status --porcelain --untracked-files=all)
@@ -150,7 +151,7 @@ if (( harness_retry == 1 )); then
         [[ -n "$entry" ]] || continue
         path="${entry:3}"
         case "$path" in
-            scripts/windows-test-service-harness.ps1|scripts/windows-test/suites/release/release-service-core-update-reboot.ps1|scripts/windows-test/test-contracts.ps1) ;;
+            fixtures/windows/guest/service-acceptance.mjs|scripts/windows-test-service-harness.ps1|scripts/windows-test/suites/release/release-service-core-update-reboot.ps1|scripts/windows-test/test-contracts.ps1) ;;
             *) fail "isolated release worktree has unrelated dirtiness: $path" ;;
         esac
     done < <(git -C "$worktree" status --porcelain --untracked-files=all)
