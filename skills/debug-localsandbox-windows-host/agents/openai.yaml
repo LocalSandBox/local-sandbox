@@ -1,0 +1,4 @@
+interface:
+  display_name: "Debug LocalSandbox Windows Host"
+  short_description: "Diagnose LocalSandbox issues by Windows hostname"
+  default_prompt: "Use $debug-localsandbox-windows-host to investigate hostname FK6XB54, explain the root cause, and recommend fixes and follow-ups."
