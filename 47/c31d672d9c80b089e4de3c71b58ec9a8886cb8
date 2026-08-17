@@ -1,0 +1,39 @@
+skills/debug-localsandbox-windows-host/agents/openai.yaml
+  s_c4767826b63051::t_76589920b4f99f 1-4
+skills/debug-localsandbox-windows-host/SKILL.md
+  s_c4767826b63051::t_b007a04f94b762 47-50
+  s_c4767826b63051::t_6cc7f75d0552c9 46
+  s_c4767826b63051::t_9510db8d8c6bd5 3,6,8,10,12,14,16,18,20-26,28,30,32-34,36,38,40,42-45,52,54,56-58,60,62,64-67,69,71,73,75-82,84
+  s_c4767826b63051::t_76589920b4f99f 1-2,4-5,7,9,11,13,15,17,19,27,29,31,35,37,39,41,51,53,55,59,61,63,68,70,72,74,83
+skills/debug-localsandbox-windows-host/references/sentry-queries.md
+  s_c4767826b63051::t_6cc7f75d0552c9 30,61,66
+  s_c4767826b63051::t_b007a04f94b762 35,62-65,91
+  s_c4767826b63051::t_9510db8d8c6bd5 1-29,31-34,36-60,67-90
+skills/debug-localsandbox-windows-host/references/localsandbox-telemetry.md
+  s_c4767826b63051::t_8869c3b4ca3c52 95
+  s_c4767826b63051::t_9510db8d8c6bd5 1-81,84-94
+  s_c4767826b63051::t_b007a04f94b762 82-83
+skills/debug-localsandbox-windows-host/scripts/collect_observed_telemetry.py
+  s_c4767826b63051::t_b007a04f94b762 8,251-369,484,510-513,534-536,546-547,584
+  s_c4767826b63051::t_af5c6d13a69ff3 157-158,171-180,220,382,398-399,407,485-488,530,589,594-597
+  s_c4767826b63051::t_9510db8d8c6bd5 1-7,9-40,46-156,181-219,221-243,370-381,383-397,400-406,408-483,489-497,514-517,531-533,537-545,548-583,585-588,590-593,598-699
+  s_c4767826b63051::t_6cc7f75d0552c9 41-45,498-509
+  s_c4767826b63051::t_c7c7a584039599 159-170,518-529
+  s_c4767826b63051::t_1a07ff8817c75c 244-250
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "47c31d672d9c80b089e4de3c71b58ec9a8886cb8",
+  "prompts": {},
+  "sessions": {
+    "s_c4767826b63051": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a00e32-0d1a-7082-8092-7037d7f61045",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "kaian <caika@sea.com>"
+    }
+  }
+}
